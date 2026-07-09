@@ -24,11 +24,14 @@
 - 白名单页管理动作、审计 Trace 串联增强、模板「禁用版本」前端入口（后端已具）。
 - ⚠ 部署注意：升级到 B7·一 需在既有 PG 上执行两新表 DDL（`model_asset`/`model_access_grant`，schema.sql 幂等可直接重放）；旧 `platform_runtime_config` 的 `platform_model` 域已废弃不再读写。
 
-## B8 Docker Sandbox + 用户 Skill 执行
+## B8 Docker Sandbox + Skill 执行（平台+用户）+ 容器内受控 Bash（2026-07-09 需求变更重写）
 
-- 用户级容器、task 独立工作目录、资源限制、artifact 回传；执行前校验包 checksum。
-- 沙箱不注入 Cookie/Secret/`X-OpenOps-*`/`effective_appids` 明细；Runner 代理只经 Tool Gateway。
-- 覆盖 SKILL-* / SANDBOX-* 用例：超时、日志截断、Secret/Cookie 不进沙箱。
+- 触发范围：**所有 Skill 脚本（平台默认 + 用户自定义）一律进该用户容器**；纯指令型 Skill（无 entrypoint）无执行面。entrypoint 统一为容器内 shell 命令（`python run.py`/`bash run.sh`）。
+- 生命周期：**会话期常驻**——run 开启边界容量准入+确保容器（`SANDBOX_CAPACITY_FULL`=开会话被拒），末个活跃 run 关闭后置 idle 交 TTL 回收；task 只查并发限额。
+- 容器内受控 Bash 开放给 Agent：agentscope 原生 Bash 内置安全分析 → 平台 deny → 非只读 ask（复用 HITL 审批流）→ 容器隔离兜底；每条命令写 `sandbox.command.asked/denied/executed` 审计。
+- 底座选型（少 patch 用框架）：agentscope `DockerWorkspaceManager`（按 user 缓存+idle sweep）/`DockerWorkspace`（add_skill+exec_shell）/`Bash`+`PermissionEngine`；OpenOps 包容量准入、生命周期、审计、安全基线。依赖 aiodocker，compose 补 Docker socket。
+- 沙箱（含 Bash 与全部 Skill）不注入 Cookie/Secret/`X-OpenOps-*`/`effective_appids` 明细；Runner 代理只经 Tool Gateway。
+- 覆盖 31 号 SKILL-007/008、BASH-001~005、SBX-001/002、CANCEL-004/007：平台 Skill 进容器、Bash 三态（放行/ask/deny）、删文件仅限自身容器、首 run 建末 run 收、超时日志截断、Secret/Cookie 不进沙箱。
 
 ## B9 真实 W3/IAM + E2E + 发布准备
 
