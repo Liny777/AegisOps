@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -23,6 +26,18 @@ from domain.errors import ApiError, Err
 from sandbox.backends import SandboxBackend, create_backend
 
 _DEFAULT_IMAGE = "python:3.11-slim"
+# 单次 Skill/命令执行限额（09/28.3 号；env 可调，同其他 B 块的 SRE_* 旋钮风格）
+_SKILL_TIMEOUT_S = float(os.getenv("OPENOPS_SKILL_TIMEOUT_S", "600"))
+_OUTPUT_MAX_BYTES = int(os.getenv("OPENOPS_SKILL_OUTPUT_MAX_BYTES", str(2 * 1024 * 1024)))
+
+
+@dataclass
+class SkillResult:
+    status: str  # success / failed / timeout
+    exit_code: int
+    stdout: str
+    stderr: str
+    result_json: dict[str, Any] | None = None  # 解析 output.json（若 Skill 写了）
 
 
 @dataclass
@@ -121,6 +136,54 @@ class SandboxExecutor:
         for c in expired:
             await c.backend.close()
         return len(expired)
+
+    async def run_skill(
+        self, user_id: str, *, task_id: str, tool_call_id: str, entrypoint: str,
+        files: dict[str, bytes], expected_checksum: str | None = None, timeout: float | None = None,
+    ) -> SkillResult:
+        """在该用户容器内执行一个脚本型 Skill（28.3）：checksum 校验 → 装包 → 执行 entrypoint。
+
+        - `files`：Skill 包内文件（相对 skill 目录），执行前按 `expected_checksum` 校验整包一致性。
+        - `entrypoint`：容器内一条 shell 命令（`python run.py` / `bash run.sh`），经 sh 通道执行。
+        - 每次调用独立 workdir（`skills/{tool_call_id}/`），不与其他调用/task 共享。
+        容器必须已由 ensure_user_container 就位（会话期常驻）；缺失即 SANDBOX_CONTAINER_FAILED。
+        """
+        c = self._by_user.get(user_id)
+        if c is None:
+            raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
+        if expected_checksum:
+            digest = hashlib.sha256(b"".join(files[k] for k in sorted(files))).hexdigest()
+            if digest != expected_checksum:
+                raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝执行")
+        rel_dir = f"skills/{task_id}/{tool_call_id}"
+        for name, data in files.items():
+            await c.backend.write_file(f"{rel_dir}/{name}", data)
+        cmd = ["sh", "-lc", f"cd {c.backend.workdir}/{rel_dir} && {entrypoint}"]
+        r = await c.backend.exec_shell(cmd, timeout=timeout or _SKILL_TIMEOUT_S, max_output_bytes=_OUTPUT_MAX_BYTES)
+        if r.timed_out:
+            raise ApiError(Err.SKILL_TIMEOUT, f"Skill 执行超时（>{int(timeout or _SKILL_TIMEOUT_S)}s），已终止")
+        result_json = None
+        try:  # 约定 Skill 把结构化结果写 output.json（28.3）
+            raw = await c.backend.read_file(f"{rel_dir}/output.json")
+            result_json = json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001 — 无 output.json 时仅回 stdout 摘要，不报错
+            pass
+        return SkillResult(
+            status="success" if r.exit_code == 0 else "failed",
+            exit_code=r.exit_code, stdout=r.stdout, stderr=r.stderr, result_json=result_json,
+        )
+
+    async def run_command(
+        self, user_id: str, command: str, *, timeout: float | None = None,
+    ) -> SkillResult:
+        """容器内执行一条 Bash 命令（B8-3 受控 Bash 的执行原语；管控/审计在装配层）。"""
+        c = self._by_user.get(user_id)
+        if c is None:
+            raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
+        r = await c.backend.exec_shell(["sh", "-lc", command], timeout=timeout or _SKILL_TIMEOUT_S,
+                                       max_output_bytes=_OUTPUT_MAX_BYTES)
+        status = "timeout" if r.timed_out else ("success" if r.exit_code == 0 else "failed")
+        return SkillResult(status=status, exit_code=r.exit_code, stdout=r.stdout, stderr=r.stderr)
 
     def get(self, user_id: str) -> Container | None:
         return self._by_user.get(user_id)

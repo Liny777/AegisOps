@@ -54,6 +54,144 @@ def test_sbx_002_capacity_full_rejects_new_session(client):
     asyncio.run(scenario())
 
 
+def test_skill_007_entrypoint_executes_in_container(client):
+    """SKILL-007：脚本型 Skill 的 entrypoint 在容器内执行，回结构化 output.json + stdout。"""
+    import hashlib
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uS", "r1", _CFG)
+        files = {"run.py": b"import json;print('inspect done');open('output.json','w').write(json.dumps({'status':'success','findings':3}))"}
+        checksum = hashlib.sha256(files["run.py"]).hexdigest()
+        res = await sandbox_executor.run_skill(
+            "uS", task_id="t1", tool_call_id="tc1", entrypoint="python3 run.py",
+            files=files, expected_checksum=checksum)
+        assert res.status == "success" and res.exit_code == 0
+        assert "inspect done" in res.stdout
+        assert res.result_json == {"status": "success", "findings": 3}
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_skill_003_checksum_mismatch_rejected(client):
+    """SKILL-003：包 checksum 不匹配 → SKILL_CHECKSUM_MISMATCH，不执行。"""
+    from domain.errors import ApiError, Err
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uS", "r1", _CFG)
+        with pytest.raises(ApiError) as ei:
+            await sandbox_executor.run_skill(
+                "uS", task_id="t", tool_call_id="tc", entrypoint="python3 run.py",
+                files={"run.py": b"print(1)"}, expected_checksum="deadbeef")
+        assert ei.value.code == Err.SKILL_CHECKSUM_MISMATCH
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_skill_005_timeout_terminated(client):
+    """SKILL-005：执行超时 → SKILL_TIMEOUT，进程被终止。"""
+    from domain.errors import ApiError, Err
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uS", "r1", _CFG)
+        with pytest.raises(ApiError) as ei:
+            await sandbox_executor.run_skill(
+                "uS", task_id="t", tool_call_id="tc", entrypoint="sleep 5",
+                files={"noop": b""}, timeout=0.3)
+        assert ei.value.code == Err.SKILL_TIMEOUT
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_bash_004_delete_confined_to_own_container(client):
+    """BASH-004：容器内删文件只影响该用户容器（run_command 原语，隔离验证）。"""
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uA", "ra", _CFG)
+        await sandbox_executor.ensure_user_container("uB", "rb", _CFG)
+        # uA 在自己容器建文件再删；uB 容器不受影响
+        await sandbox_executor.run_command("uA", "echo hi > a.txt && test -f a.txt && echo created")
+        rm = await sandbox_executor.run_command("uA", "rm a.txt && test ! -f a.txt && echo removed")
+        assert "removed" in rm.stdout and rm.status == "success"
+        b = await sandbox_executor.run_command("uB", "test ! -f a.txt && echo b-clean")
+        assert "b-clean" in b.stdout  # uB 容器里从来没有 a.txt
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("cmd,expect", [
+    ("ls -la", "allow"),          # BASH-001：只读自动放行
+    ("git status", "allow"),
+    ("rm -rf /", "ask"),          # BASH-003：危险删除关键路径 → 强制确认
+    ("chmod 777 /etc", "ask"),
+    ("rm data.txt", "ask"),       # BASH-002：非只读 → 确认
+    ("python3 run.py", "ask"),
+])
+def test_bash_001_002_003_decision_matrix(client, cmd, expect):
+    """BASH-001/002/003：四层裁决决策矩阵（agentscope 内置分析 + 回退分类器一致）。"""
+    from sandbox import command_guard
+
+    async def scenario():
+        d = await command_guard.decide_async(cmd)
+        assert d.action == expect, f"{cmd!r} → {d.action}（reason={d.reason}）"
+
+    asyncio.run(scenario())
+
+
+def test_bash_003b_platform_deny_rule_highest_priority(client):
+    """BASH-003：平台 deny 前缀规则最高优先，即使内置分析会放行也拦（层 1）。"""
+    from sandbox import command_guard
+
+    async def scenario():
+        d = await command_guard.decide_async("docker ps", deny_prefixes=["docker:*"])
+        assert d.action == "deny" and d.layer == 1
+        # 无 deny 规则时 docker ps 走内置/回退（非拦截）
+        d2 = await command_guard.decide_async("docker ps")
+        assert d2.action != "deny"
+
+    asyncio.run(scenario())
+
+
+def test_bash_002_ask_approve_reject_and_audit(client):
+    """BASH-002：非只读命令走 ask——批准则执行+审计 executed，拒绝则不执行+审计 denied。"""
+    from runtime import sandbox_bash
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "bh1", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    run = _run_dict(run_row)
+    st = TaskState(task_id="tk", run_id=str(run["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+
+    async def scenario():
+        # 批准 → 执行
+        async def approve():
+            return True
+        res = await sandbox_bash.run_bash(st, run, "echo hi > f.txt && cat f.txt", cfg={}, approver=approve)
+        assert res.status == "success" and "hi" in res.stdout
+        # 拒绝 → 不执行
+        async def reject():
+            return False
+        res2 = await sandbox_bash.run_bash(st, run, "rm f.txt", cfg={}, approver=reject)
+        assert res2.status == "denied"
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    types = [e["event_type"] for e in events]
+    assert "openops.sandbox.command.asked" in types
+    assert "openops.sandbox.command.executed" in types
+    assert "openops.sandbox.command.denied" in types
+
+
+def _run_dict(run_row: dict) -> dict:
+    """把 API 返回的 run（str 化）转回 emit 需要的 dict（audit_trace_id/agent_run_id/instance_id）。"""
+    return {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+            "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+
 def test_sbx_003_run_lifecycle_via_api_audits_container(client):
     """端到端：开 run 写 sandbox.container.ready 审计 + 容器就位；关 run 后容器置 idle。"""
     instance = create_instance(client)
