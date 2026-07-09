@@ -145,4 +145,25 @@ uvicorn main:app --app-dir src --port 18081
 ## 8. 反馈内容
 
 跑完请回报：①第 5 节 `events` 实际输出；②`task` 状态与 `rca_revision`；③agentscope vs mock 的事件序列是否同形；④任何异常堆栈。
-这版仅 stub 模型验证 runtime 接缝；真 GLM 驱动的端到端在 B2 接入后再压。
+
+---
+
+## 9. B2 变体：接真实 GLM（可选，需 API Key）
+
+B2 已把 stub model 换成「有 Key 用真 GLM、无 Key 回退 stub」。要压真实 `glm-5.1`：
+
+```bash
+# 在第 3 步启动后端前，额外 export GLM 的 API Key（仅环境变量，绝不落库/日志）
+export OPENOPS_PLATFORM_GLM_API_KEY="<你的智谱 GLM API Key>"
+export OPENOPS_RUNTIME=agentscope
+uvicorn main:app --app-dir src --port 18081
+```
+然后照第 4 节走一遍。**与 stub 的差别**：
+- `events` 里出现 `openops.model.call.started`/`succeeded`，且 `model.call.started` 的 payload `model` 为 **`glm-5.1`**（stub 时是 `stub-rca`）—— 用这个判断真模型是否在驱动。
+- `task.completed` / 末条 `rca.updated` 的 `conclusion` 来自 **GLM 真实输出**（stub 时是固定脚本文案）。
+- `model.call.succeeded` 带 `input_tokens`/`output_tokens`。
+- Key 缺失或错误：应回退 stub（缺失）或 `openops.model.call.failed` + `task.failed`（错误，错误信息已脱敏）。
+
+> ⚠ GLM 是否稳定按预期调用 `query_resource`/`recover_execute` 取决于其 tool-calling 表现；若 GLM 不调工具或流程异常，回报实际 `events` 与结论文本即可，据此调 system prompt / 工具描述。真实 Key 不要贴进任何工单/日志。
+
+请回报 stub 版与（如有 Key）GLM 版的 `events` 与 `conclusion`，以及是否同形。
