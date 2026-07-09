@@ -5,6 +5,7 @@ import { toneColor } from "../theme/tokens";
 import { Icon, IconButton, Button } from "../ui";
 import { api, API_MODE } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
+import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
 import { approvalToHitl, eventToNode, groupNodes } from "../lib/api/projection";
 import type {
   ActivityNode,
@@ -46,10 +47,83 @@ export function Workbench() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(true);
   const seen = useRef(new Set<string>());
+  // agui 流活跃期间对话区文本归 agui 独占（TEXT_MESSAGE_*）；SSE 的终态文本仅在无 agui 流（刷新接续）时追加，
+  // 否则 SSE task.completed 先到会以同 event_id 建泡，agui 合成文本再追加 → 文本双写（双通道竞态）
+  const aguiActive = useRef(false);
 
   const pushNode = useCallback((n: ActivityNode) => {
     setNodes((prev) => (seen.current.has(n.id) ? prev : (seen.current.add(n.id), [...prev, n])));
   }, []);
+
+  /** 按 id 去重追加消息（AG-UI 合成结论与 SSE task.completed 共用 event_id，天然去重）。 */
+  const appendMessage = useCallback((msg: ChatMessage) => {
+    setMessages((m) => (m.some((x) => x.id === msg.id) ? m : [...m, msg]));
+  }, []);
+
+  /** 助手流式增量：同 messageId 累加，首个增量建气泡。 */
+  const streamDelta = useCallback((messageId: string, delta: string) => {
+    setMessages((m) => {
+      const i = m.findIndex((x) => x.id === messageId);
+      if (i < 0) return [...m, { id: messageId, role: "bot", text: delta, showCopy: true }];
+      const next = m.slice();
+      next[i] = { ...next[i], text: next[i].text + delta };
+      return next;
+    });
+  }, []);
+
+  /** openops.* 事件统一处理器：AG-UI CUSTOM 与 SSE 双通道复用（活动线按 event_id 去重）。 */
+  const handleOpenOpsEvent = useCallback((e: OpenOpsEvent) => {
+    if (e.event_type === "openops.assistant.delta") return; // 文本增量走 TEXT_MESSAGE_*，不进活动线
+    pushNode(eventToNode(e));
+    const p = (e.payload_redacted_json ?? {}) as Record<string, any>;
+    switch (e.event_type) {
+      case "openops.task.started":
+        setTaskStatus("running");
+        if (e.task_id) setTaskId(e.task_id);
+        break;
+      case "openops.rca.updated":
+        setRca(p as unknown as RcaCardData);
+        break;
+      case "openops.approval.required":
+        setHitl({
+          approval_request_id: String(p.approval_request_id ?? ""),
+          title: "需要人工批准",
+          tool: String(p.tool ?? "recover_execute"),
+          summary: e.message,
+          facts: [
+            { label: "目标", value: String(p.target ?? "—") },
+            { label: "影响说明", value: String(p.impact ?? "—") },
+          ],
+          countdown: "5:00",
+          status: "pending",
+          tone: "warning",
+        });
+        break;
+      case "openops.approval.approved":
+        setHitl((h) => (h ? { ...h, status: "approved" } : h));
+        break;
+      case "openops.approval.rejected":
+        setHitl((h) => (h ? { ...h, status: "rejected" } : h));
+        break;
+      case "openops.task.completed":
+        setTaskStatus("completed");
+        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
+        break;
+      case "openops.task.failed":
+        setTaskStatus("failed");
+        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        break;
+      case "openops.task.cancelled":
+        setTaskStatus("cancelled");
+        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        break;
+      case "openops.run.closed":
+        setRunStatus("closed");
+        break;
+      default:
+        break;
+    }
+  }, [pushNode, appendMessage]);
 
   const refresh = useCallback(async (rid: string) => {
     const d = (await api.getRunState(rid)) as Record<string, any>;
@@ -104,56 +178,11 @@ export function Workbench() {
         setCurrentModel(ms.find((m) => m.current)?.label ?? ms[0].label);
       }).catch(() => undefined);
       await refresh(rid);
+      // SSE 通道保留：被动更新（他端触发 / 刷新后接续运行中任务）。agui 主动流与之按 event_id 去重。
       handle = subscribeSse(`/api/openops/v1/agent-runs/${rid}/events/stream`, {
         onStateChange: setConn,
         onResync: () => void refresh(rid),
-        onEvent: (raw) => {
-          const e = raw as OpenOpsEvent;
-          pushNode(eventToNode(e));
-          const p = (e.payload_redacted_json ?? {}) as Record<string, any>;
-          switch (e.event_type) {
-            case "openops.task.started":
-              setTaskStatus("running");
-              break;
-            case "openops.rca.updated":
-              setRca(p as unknown as RcaCardData);
-              break;
-            case "openops.approval.required":
-              setHitl({
-                approval_request_id: String(p.approval_request_id ?? ""),
-                title: "需要人工批准",
-                tool: String(p.tool ?? "recover_execute"),
-                summary: e.message,
-                facts: [
-                  { label: "目标", value: String(p.target ?? "—") },
-                  { label: "影响说明", value: String(p.impact ?? "—") },
-                ],
-                countdown: "5:00",
-                status: "pending",
-                tone: "warning",
-              });
-              break;
-            case "openops.approval.approved":
-              setHitl((h) => (h ? { ...h, status: "approved" } : h));
-              break;
-            case "openops.approval.rejected":
-              setHitl((h) => (h ? { ...h, status: "rejected" } : h));
-              break;
-            case "openops.task.completed":
-              setTaskStatus("completed");
-              setMessages((m) => [...m, { id: e.event_id, role: "bot", text: e.message, showCopy: true }]);
-              break;
-            case "openops.task.cancelled":
-              setTaskStatus("cancelled");
-              setMessages((m) => [...m, { id: e.event_id, role: "bot", text: e.message }]);
-              break;
-            case "openops.run.closed":
-              setRunStatus("closed");
-              break;
-            default:
-              break;
-          }
-        },
+        onEvent: (raw) => handleOpenOpsEvent(raw as OpenOpsEvent),
       });
     })();
     return () => {
@@ -168,12 +197,31 @@ export function Workbench() {
       setTimeout(() => setMessages((m) => [...m, { id: `b${m.length}`, role: "bot", text: "（mock 演示）任务已受理。", showCopy: true }]), 400);
       return;
     }
+    setRca(undefined);
+    setHitl(undefined);
+    if (TRANSPORT === "agui") {
+      // B5：任务经 AG-UI 端点启动并流式接收（标准事件→对话区；CUSTOM→同一 openops 处理器）
+      setTaskStatus("running");
+      aguiActive.current = true;
+      runAguiTask(runId, text, {
+        onOpenOps: handleOpenOpsEvent,
+        onAssistantDelta: streamDelta,
+        onDone: () => {
+          aguiActive.current = false;
+          void refresh(runId);
+        },
+        onError: (msg) => {
+          aguiActive.current = false;
+          setTaskStatus((s) => (s === "running" ? "failed" : s));
+          appendMessage({ id: `e${Date.now()}`, role: "bot", text: `任务异常：${msg}` });
+        },
+      });
+      return;
+    }
     try {
       const r = await api.startTask(runId, text);
       setTaskId(r.task_id);
       setTaskStatus("running");
-      setRca(undefined);
-      setHitl(undefined);
     } catch (err) {
       setMessages((m) => [...m, { id: `e${m.length}`, role: "bot", text: `无法启动任务：${(err as Error).message}` }]);
     }

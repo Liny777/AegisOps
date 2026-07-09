@@ -23,7 +23,9 @@ export interface OpenOpsRuntimeAdapter {
   closeRun(runId: string): Promise<void>;
 }
 
-/** live adapter 占位：真实联调阶段实现（CopilotKit runtime + AG-UI）。 */
+/** live AG-UI 运行态已接入（B5）：见 ./agui.ts —— HttpAgent 打 POST /agent-runs/{id}/agui，
+ *  标准事件流式进对话区、CUSTOM(openops.*) 与 SSE 复用同一处理器；Workbench 直接消费。
+ *  本聚合接口保留为后续 CopilotKit v2 <CopilotChat> 接入时的边界。 */
 export function createLiveAdapter(): OpenOpsRuntimeAdapter {
-  throw new Error("live AG-UI adapter 尚未接入——待真实后端联调阶段实现（见本文件顶部说明）。");
+  throw new Error("请使用 lib/runtime/agui.ts 的 runAguiTask（B5 已接入）；本聚合接口留给 CopilotKit v2。");
 }

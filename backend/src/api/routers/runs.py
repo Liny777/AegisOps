@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Header
 from fastapi.responses import StreamingResponse
 
 from api.deps import User
 from api.responses import ok
-from app import event_stream_service, run_state_service
+from app import agui_service, event_stream_service, run_state_service
 from domain.schemas import CreateRunRequest, SelectModelRequest, StartTaskRequest
 from runtime import events
 
@@ -54,6 +54,21 @@ async def ag_ui_batch(run_id: str, user: User):
     """批量事件端点（兼容保留）；实时走 SSE /events/stream。"""
     await run_state_service.owned_run(user["user_id"], run_id)
     return ok({"events": events.snapshot(run_id)})
+
+
+@router.post("/agent-runs/{run_id}/agui")
+async def agui_run(run_id: str, body: dict[str, Any], user: User):
+    """AG-UI 运行态端点（B5，30.4）：RunAgentInput → 启动 task → AG-UI 标准事件流。
+
+    校验/启动在流开始前完成（错误走标准错误 envelope）；断线恢复走 GET /state。
+    """
+    await run_state_service.owned_run(user["user_id"], run_id)
+    ctx = await agui_service.start(user, run_id, body)
+    return StreamingResponse(
+        agui_service.stream(ctx),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/agent-runs/{run_id}/events/stream")

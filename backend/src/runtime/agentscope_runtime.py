@@ -23,7 +23,7 @@ import os
 import re
 from typing import Any
 
-from runtime import tool_gateway
+from runtime import events, tool_gateway
 from infra.repositories import runs
 from runtime.emit import emit
 from runtime.rca_demo import rca
@@ -240,6 +240,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         ModelCallEndEvent,
         ModelCallStartEvent,
         RequireUserConfirmEvent,
+        TextBlockDeltaEvent,
         UserConfirmResultEvent,
     )
     from agentscope.message import Msg, TextBlock
@@ -265,6 +266,12 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 elif isinstance(ev, ModelCallEndEvent):
                     await emit(st, run, "openops.model.call.succeeded", action="model_call", message="模型推理完成",
                                payload={"input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
+                elif isinstance(ev, TextBlockDeltaEvent):
+                    # 助手文本增量（B5）：只发 SSE 供 AG-UI 流翻译成 TEXT_MESSAGE_*，不写审计（增量非事实）
+                    events.publish(st.run_id, events.envelope(
+                        st.run_id, "openops.assistant.delta", task_id=st.task_id,
+                        payload={"delta": ev.delta, "message_id": ev.block_id},
+                    ))
                 elif isinstance(ev, RequireUserConfirmEvent):
                     require_ev = ev
                     break  # 停止消费，去做审批握手，再以 UserConfirmResultEvent 恢复
