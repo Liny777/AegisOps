@@ -17,6 +17,7 @@
 | B7·一 | 管理台 IA 重构 + 模型资产白名单（2026-07-09 原型对齐：导航 6→5、模板 drill「资产治理→Tool 标注」标注全局一份、标注保存接通；`model_asset`/`model_access_grant` 两新表（DDL 20→22）、按人授权、三处 fail-closed gating：列表过滤/select-model `MODEL_NOT_AUTHORIZED`/Gateway 二次校验） | 见 git log | — |
 | B7·二 | 模板版本写闭环 + 模板工具集 enforcement + 28.7 升级自动派生（草稿 upsert/发布切 active 不可变（再发布 409）/禁用摘指针；`_validate_content` 只许 allowed 标注 tool；`TaskState.template_tools` 双 runtime fail-closed（gateway 模板门 + agentscope toolkit 剪枝）；任务边界 `_derive_if_template_upgraded` 结转 overlay+绑定、审计 `config.version.derived`、SSE `config.changed_notice`；前端模板编辑器真表单（载入前禁写防空发布）+ 资产治理「绑定/解绑」草稿写路径；playwright e2e 过） | 见 git log | docs/test/B7-* |
 | B7·补 | GPT B7 报告修复（B7-SEC-001：`template_tools` 哨兵化 `None`/空集——空模板=零平台工具，mock 门与 agentscope 剪枝双 runtime fail-closed，顺带消掉空模板的无意义 `runtime_plan.updated`；顺修 `_validate_content` 误放行 blocked 标注 tool + tool_blocked 收口在 rca 为 None 时结论丢失；B7-TEST-001：补发布期重校验 400 + 模板写面 403 用例；66/70 双绿） | 见 git log | docs/test/B7-* |
+| B8 | Docker Sandbox 执行面（2026-07-09 新口径）：`SandboxExecutor` per-user 容器**会话期常驻**（run 开启边界容量准入 `SANDBOX_CAPACITY_FULL`/strict_ttl 腾位，末 run 关闭→idle→TTL 回收）；`OPENOPS_SANDBOX=fake(默认)\|docker` 双后端（fake=tempdir+subprocess 进程内、docker=aiodocker+agentscope `DockerBackend`，安全基线 非root/只读rootfs/cap_drop=ALL/不注入平台上下文）；`run_skill`（checksum 门+entrypoint shell 执行+超时/2MiB 截断+output.json）；容器内受控 Bash 四层裁决（`command_guard`：平台 deny→agentscope 原生 `Bash.check_permissions` 内置分析→只读放行/非只读 ask→容器隔离，无 agentscope 回退分类器、决策两路径一致）+ `sandbox.command.*` 审计；管理台容器列表(active_run_count)+强制销毁。真容器 exec+隔离经 scratchpad proof 验证 | 见 git log | docs/test/B8-*（待 GPT） |
 
 ## 待办（块序同 33 号）
 
@@ -25,14 +26,14 @@
 - 白名单页管理动作、审计 Trace 串联增强、模板「禁用版本」前端入口（后端已具）。
 - ⚠ 部署注意：升级到 B7·一 需在既有 PG 上执行两新表 DDL（`model_asset`/`model_access_grant`，schema.sql 幂等可直接重放）；旧 `platform_runtime_config` 的 `platform_model` 域已废弃不再读写。
 
-## B8 Docker Sandbox + Skill 执行（平台+用户）+ 容器内受控 Bash（2026-07-09 需求变更重写）
+## B8 剩余（执行面已落，见上表 B8 行）
 
-- 触发范围：**所有 Skill 脚本（平台默认 + 用户自定义）一律进该用户容器**；纯指令型 Skill（无 entrypoint）无执行面。entrypoint 统一为容器内 shell 命令（`python run.py`/`bash run.sh`）。
-- 生命周期：**会话期常驻**——run 开启边界容量准入+确保容器（`SANDBOX_CAPACITY_FULL`=开会话被拒），末个活跃 run 关闭后置 idle 交 TTL 回收；task 只查并发限额。
-- 容器内受控 Bash 开放给 Agent：agentscope 原生 Bash 内置安全分析 → 平台 deny → 非只读 ask（复用 HITL 审批流）→ 容器隔离兜底；每条命令写 `sandbox.command.asked/denied/executed` 审计。
-- 底座选型（少 patch 用框架）：agentscope `DockerWorkspaceManager`（按 user 缓存+idle sweep）/`DockerWorkspace`（add_skill+exec_shell）/`Bash`+`PermissionEngine`；OpenOps 包容量准入、生命周期、审计、安全基线。依赖 aiodocker，compose 补 Docker socket。
-- 沙箱（含 Bash 与全部 Skill）不注入 Cookie/Secret/`X-OpenOps-*`/`effective_appids` 明细；Runner 代理只经 Tool Gateway。
-- 覆盖 31 号 SKILL-007/008、BASH-001~005、SBX-001/002、CANCEL-004/007：平台 Skill 进容器、Bash 三态（放行/ask/deny）、删文件仅限自身容器、首 run 建末 run 收、超时日志截断、Secret/Cookie 不进沙箱。
+- **实机 Docker E2E**：`OPENOPS_SANDBOX=docker` 需装 `pip install -e ".[sandbox]"`（aiodocker）+ compose 挂 Docker socket；生产内网镜像离线预构建 + `docker load`。真容器 exec/隔离已用 scratchpad proof 端到端验证，自动化实机用例待补（默认 fake 后端覆盖生命周期/checksum/超时/裁决/审计）。
+- **live agent 驱动 Bash-in-conversation**：`command_guard`/`run_bash` 四层裁决与审计已就位并单测；真 GLM 自主调 Bash 的 HITL 靠 agentscope `RequireUserConfirmEvent` 桥（B1 `_handle_ask`），随真 Key live E2E 一并验（无 Key 期回退 stub/fake）。
+- **Skill Hub 真包投递**：`run_skill` 执行原语已就位（fake 注入包字节验证）；真 ZIP 从 Skill Hub 经 29.3 `X-Checksum-SHA256` 下载的装配路径待集成。
+- 平台 deny 前缀规则 UI（管理台下发 `bash_deny_prefixes`）、artifact 回传落地、chunk 拆包沿用 ROADMAP 附注。
+
+> 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。
 
 ## B9 真实 W3/IAM + E2E + 发布准备
 
