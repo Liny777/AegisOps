@@ -237,6 +237,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context()),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
+        recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）
 
         while True:
             require_ev = None
@@ -260,6 +261,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 return await _finish_cancel(st, run)
             confirmed = decision == "approved"
             if not confirmed:
+                recovery_denied = True
                 st.rca = rca(2, "验证 H1", {"conclusion": {
                     "rejected": "恢复动作被拒绝：保持观察，建议走短期配置优化。",
                     "timeout": "批准超时：恢复动作未执行，待人工跟进。",
@@ -275,18 +277,23 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
 
         if st.status == "running":
             st.status = "completed"
-            conclusion = _final_text(agent)  # 模型生成的结论（GLM 真实结论 / stub 脚本结论）
-            if conclusion and st.rca:
-                st.rca = {**st.rca, "conclusion": conclusion}
-                await emit(st, run, "openops.rca.updated", message="结论已更新（模型生成）", payload=st.rca)
-            await emit(st, run, "openops.task.completed", action="task",
-                       message="任务完成：根因 H1，已按审批推进",
-                       payload={"conclusion": conclusion} if conclusion else None)
+            if not recovery_denied:
+                # 已执行恢复（或本就无需 ASK）：采纳模型生成的结论（GLM 真实结论 / stub 脚本结论）
+                conclusion = _final_text(agent)
+                if conclusion and st.rca:
+                    st.rca = {**st.rca, "conclusion": conclusion}
+                    await emit(st, run, "openops.rca.updated", message="结论已更新（模型生成）", payload=st.rca)
+                msg = "任务完成：根因 H1，已按审批执行恢复"
+            else:
+                # 恢复被拒绝/超时：保留「未执行」结论，不被模型最终文本覆盖（B2-RUNTIME-001）
+                msg = "任务结束：恢复动作未执行（按用户决策），保持观察"
+            await emit(st, run, "openops.task.completed", action="task", message=msg,
+                       payload={"conclusion": st.rca.get("conclusion")} if st.rca else None)
     except asyncio.CancelledError:
         await _finish_cancel(st, run)
         raise
-    except Exception as e:  # 模型/工具异常：脱敏错误 + 任务失败（不外泄凭证）
-        log.exception("agentscope run_task failed task=%s run=%s", st.task_id, st.run_id)
+    except Exception as e:  # 模型/工具异常：结构化脱敏错误 + 任务失败（不外泄凭证；B2-LOG-001 降噪不打堆栈）
+        log.warning("agentscope run_task failed task=%s run=%s: %s", st.task_id, st.run_id, _redact(str(e)))
         st.status = "failed"
         await emit(st, run, "openops.model.call.failed", severity="error", action="model_call",
                    message="模型调用失败", reason_code="MODEL_CALL_FAILED", payload={"error": _redact(str(e))})

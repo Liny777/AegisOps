@@ -606,7 +606,7 @@ COMMENT ON COLUMN user_whitelist.deleted_at IS '软删除时间，NULL 表示未
 
 COMMENT ON TABLE platform_runtime_config IS '平台运行配置表，用于管理台控制沙箱容量、idle TTL 和默认资源配额';
 COMMENT ON COLUMN platform_runtime_config.config_id IS '配置主键';
-COMMENT ON COLUMN platform_runtime_config.config_domain IS '配置域，V1 使用 sandbox';
+COMMENT ON COLUMN platform_runtime_config.config_domain IS '配置域，V1 使用 sandbox / platform_model';
 COMMENT ON COLUMN platform_runtime_config.config_key IS '配置 key，如 max_user_containers_per_host';
 COMMENT ON COLUMN platform_runtime_config.config_value_json IS '配置值，JSON 保存 number / string / boolean / object';
 COMMENT ON COLUMN platform_runtime_config.value_type IS 'integer / number / string / boolean / object';
