@@ -8,7 +8,7 @@ from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, sco
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
-from infra.repositories import agent_teams, audit, runs, runtime_config
+from infra.repositories import agent_teams, audit, runs, runtime_config, templates
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
 
@@ -64,6 +64,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     assert inst is not None
     task_id = "tsk_" + uuid.uuid4().hex[:10]
+    inst = await _derive_if_template_upgraded(user, run, inst)  # 28.7：模板升级 → 边界自动派生（保留 overlay/绑定）
 
     # Scope resolve（RUN-003：先范围后任务，fail-closed 由 scope_service 抛错）
     scope = await scope_service.resolve_for_task(uid, inst, run_id, task_id, str(run["audit_trace_id"]))
@@ -94,11 +95,50 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
 
     # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
     st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
-    # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4；runtime 不回读 DB）
+    # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4）
     st.scope_ctx = scope
-    st.tool_annotations = await mcp_tool_annotation_service.runtime_annotations()
+    # 模板工具集（B7·二）：RuntimePlan 只装配模板 default_tools 内的平台工具；标注快照按此过滤
+    tpl_ver = await templates.get_version(str(inst["template_version_id"]))
+    st.template_tools = set(((tpl_ver or {}).get("content_json") or {}).get("main", {}).get("default_tools", []))
+    anns = await mcp_tool_annotation_service.runtime_annotations()
+    st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
+
+
+async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any], inst: dict[str, Any]) -> dict[str, Any]:
+    """28.7 使用时派生：平台模板发布新版本后，实例在下一次任务边界自动派生新配置版本。
+
+    保留用户 main overlay 与用户资产绑定（derive_config_version 结转），回写实例模板版本指针；
+    写审计 config.version.derived + 推送 openops.config.changed_notice（30.4）。
+    """
+    from app import agent_team_service  # 局部导入避免环
+
+    tpl = await templates.get_template(str(inst["template_id"]))
+    active_ver = str(tpl["active_template_version_id"]) if tpl and tpl["active_template_version_id"] else None
+    cur_ver = str(inst["template_version_id"])
+    if not active_ver or active_ver == cur_ver:
+        return inst
+    instance_id = str(inst["agent_team_instance_id"])
+    out = await agent_team_service.derive_config_version(
+        inst, user["user_id"], "template upgraded", template_version_id=active_ver,
+    )
+    await agent_teams.update_template_version(instance_id, active_ver, user["user_id"])
+    trace = str(run["audit_trace_id"])
+    await audit.insert_event(
+        audit_trace_id=trace, event_type="config.version.derived", user_id=user["user_id"],
+        run_id=str(run["agent_run_id"]), instance_id=instance_id, action="template_upgrade",
+        payload_redacted={"from_template_version": cur_ver, "to_template_version": active_ver,
+                          "config_version_id": str(out["config_version"]["config_version_id"])},
+    )
+    events.publish(str(run["agent_run_id"]), events.envelope(
+        str(run["agent_run_id"]), "openops.config.changed_notice",
+        message="平台模板已升级：本次任务起按新模板配置执行（你的角色追加与资产绑定已保留）",
+        payload={"to_template_version": active_ver}, audit_trace_id=trace,
+    ))
+    refreshed = await agent_teams.get_instance(instance_id)
+    assert refreshed is not None
+    return refreshed
 
 
 async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:

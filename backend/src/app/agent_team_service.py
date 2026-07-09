@@ -99,18 +99,19 @@ async def derive_config_version(
     overlay: dict[str, Any] | None = None,
     add_binding: dict[str, Any] | None = None,
     drop_binding_id: str | None = None,
+    template_version_id: str | None = None,
 ) -> dict[str, Any]:
     """派生新配置版本（不可变链，28.7）：沿用/替换 overlay + **结转上一版绑定**（±增删）。
 
     历史版本的绑定行不做任何原地改写（unbind = 新版本少一行，旧版本行保留供审计回放）。
-    save_config / bind / unbind / 后续模板升级派生统一走本函数。
+    save_config / bind / unbind / 模板升级派生统一走本函数（升级时传新 template_version_id）。
     """
     instance_id = str(inst["agent_team_instance_id"])
     active_cv = str(inst["active_config_version_id"])
     prev = await agent_teams.get_config_version(active_cv)
     new_overlay = overlay if overlay is not None else ((prev or {}).get("overlay_json") or {})
     cfg = await agent_teams.create_config_version(
-        instance_id, str(inst["template_version_id"]), new_overlay, by, reason
+        instance_id, template_version_id or str(inst["template_version_id"]), new_overlay, by, reason
     )
     new_cv = str(cfg["config_version_id"])
     for b in await agent_teams.list_bindings(active_cv):  # 结转（可丢弃指定一条）

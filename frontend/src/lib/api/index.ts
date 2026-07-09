@@ -65,6 +65,14 @@ export interface OpenOpsApi {
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getAuditTimeline(): Promise<AuditNode[]>;
+  // admin B7b：模板版本写闭环（草稿/发布）
+  getAdminTemplateDetail(templateId: string): Promise<{
+    template: Record<string, unknown>;
+    active_version: Record<string, unknown> | null;
+    draft_version: Record<string, unknown> | null;
+  }>;
+  saveTemplateDraft(templateId: string, content: Record<string, unknown>): Promise<Record<string, unknown>>;
+  publishTemplateVersion(versionId: string): Promise<void>;
   // admin B7a：模板 drill（资产治理→Tool 标注）+ 标注保存 + 模型资产授权
   getAdminTemplateAssets(): Promise<AdminTableData>;
   getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
@@ -300,7 +308,7 @@ const realApi: OpenOpsApi = {
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/templates");
       return {
         title: "模板管理",
-        cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "操作", width: "96px" }],
+        cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "治理", width: "88px" }, { label: "编辑", width: "64px" }],
         rows: rows.map((r) => ({
           id: String(r.template_id),
           cells: [
@@ -308,6 +316,7 @@ const realApi: OpenOpsApi = {
             { text: String(r.template_key), mono: true },
             { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
             { text: "资产治理", kind: "action" as const, onClickKey: "open-template" },
+            { text: "编辑", kind: "action" as const, onClickKey: "edit-template" },
           ],
         })),
       };
@@ -353,6 +362,22 @@ const realApi: OpenOpsApi = {
       };
     }
     return M.adminTables[key] ?? M.adminTables.templates;
+  },
+  // ---- admin B7b：模板版本写闭环 ----
+  async getAdminTemplateDetail(templateId) {
+    return apiFetch(`/openops/v1/admin/templates/${templateId}`);
+  },
+  async saveTemplateDraft(templateId, content) {
+    return apiFetch(`/openops/v1/admin/templates/${templateId}/versions`, {
+      method: "POST",
+      body: { client_request_id: crid(), content_json: content },
+    });
+  },
+  async publishTemplateVersion(versionId) {
+    await apiFetch(`/openops/v1/admin/template-versions/${versionId}:publish`, {
+      method: "POST",
+      body: { client_request_id: crid() },
+    });
   },
   // ---- admin B7a：模板 drill + 标注保存 + 模型授权 ----
   async getAdminTemplateAssets() {
@@ -512,6 +537,9 @@ const mockApi: OpenOpsApi = {
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getAuditTimeline: () => delay(M.auditTimeline),
+  getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
+  saveTemplateDraft: () => delay({}),
+  publishTemplateVersion: () => delay(undefined as unknown as void),
   getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
   getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
   adminSaveAnnotation: () => delay(undefined as unknown as void),

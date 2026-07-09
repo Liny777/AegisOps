@@ -15,15 +15,13 @@
 | B5 | CopilotKit/AG-UI 工作台接管（`POST /agent-runs/{id}/agui` AG-UI 标准事件流 + `@ag-ui/client` HttpAgent 适配器 + 流式对话；`VITE_OPENOPS_TRANSPORT` 可回退 SSE。口径：**headless**——AG-UI 协议 + HttpAgent 客户端，UI 仍为本设计系统自定义组件（30.3/32 号拍板），非 CopilotKit 成品聊天组件，B5-OBS-001） | `fcef0f8` `deca093` | docs/test/B5-* |
 | B6 | 资产对账 + 配置热更新 + 设置页写闭环（`derive_config_version` 不可变链结转绑定；reconcile：source=openops/checksum 补版本/schema_hash 变化标注不继承；Gateway 边界热更新 + `runtime_plan.updated`；设置页三 tab 写闭环 + `POST /assets:reconcile`） | `c7f4118` | docs/test/B6-* |
 | B7·一 | 管理台 IA 重构 + 模型资产白名单（2026-07-09 原型对齐：导航 6→5、模板 drill「资产治理→Tool 标注」标注全局一份、标注保存接通；`model_asset`/`model_access_grant` 两新表（DDL 20→22）、按人授权、三处 fail-closed gating：列表过滤/select-model `MODEL_NOT_AUTHORIZED`/Gateway 二次校验） | 见 git log | — |
+| B7·二 | 模板版本写闭环 + 模板工具集 enforcement + 28.7 升级自动派生（草稿 upsert/发布切 active 不可变（再发布 409）/禁用摘指针；`_validate_content` 只许 allowed 标注 tool；`TaskState.template_tools` 双 runtime fail-closed（gateway 模板门 + agentscope toolkit 剪枝）；任务边界 `_derive_if_template_upgraded` 结转 overlay+绑定、审计 `config.version.derived`、SSE `config.changed_notice`；前端模板编辑器真表单（载入前禁写防空发布）+ 资产治理「绑定/解绑」草稿写路径；playwright e2e 过） | 见 git log | — |
 
 ## 待办（块序同 33 号）
 
-## B7·二 管理台真能力补齐（剩余）
+## B7·三 管理台小尾巴（后置）
 
-- 模板版本「另存新版本/发布/禁用」写闭环、模板资产「绑定/解绑」写路径（按模板 content_json 过滤展示）。
-- 白名单页管理动作、审计 Trace 串联增强。
-- 覆盖 ADMIN-* 用例：普通用户 forbidden、管理员修改写审计、标注变化影响 Tool Gateway 运行时判断（已有）。
-- 28.7「模板升级 → 已有实例边界自动派生配置版本」（`config.version.derived`/`config.changed_notice`）——B6 只落了标注热读，此项归本块（B6-SCOPE-001）。
+- 白名单页管理动作、审计 Trace 串联增强、模板「禁用版本」前端入口（后端已具）。
 - ⚠ 部署注意：升级到 B7·一 需在既有 PG 上执行两新表 DDL（`model_asset`/`model_access_grant`，schema.sql 幂等可直接重放）；旧 `platform_runtime_config` 的 `platform_model` 域已废弃不再读写。
 
 ## B8 Docker Sandbox + 用户 Skill 执行

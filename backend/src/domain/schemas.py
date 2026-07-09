@@ -97,6 +97,16 @@ class DecisionRequest(BaseModel):
     reason: str = ""
 
 
+class SaveTemplateVersionRequest(BaseModel):
+    """保存模板草稿版本（B7·二）：全量 content_json（main/sub_agents/default_llm）。"""
+    client_request_id: str = Field(min_length=1)
+    content_json: dict[str, Any] = Field(default_factory=dict)
+
+
+class TemplateVersionActionRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+
+
 class RegisterModelAssetRequest(BaseModel):
     """注册模型接口（B7 模型资产）：DTO 白名单字段，api_key/token 等敏感键天然进不来。"""
     client_request_id: str = Field(min_length=1)

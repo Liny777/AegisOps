@@ -24,6 +24,7 @@ class TaskState:
     tool_annotations: dict[str, dict[str, Any]] | None = None  # 平台工具标注快照（by tool_name）；Gateway/ASK 判定用
     plan_notified: set[str] = field(default_factory=set)  # 已发过 runtime_plan.updated 的工具（每 task 每工具一次）
     tool_blocked: bool = False  # 本 task 出现过工具拦截（B6-RT-001：阻断后不得采纳模型「已恢复」结论）
+    template_tools: set[str] = field(default_factory=set)  # 模板 default_tools（B7·二：RuntimePlan 只装配模板内工具）
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

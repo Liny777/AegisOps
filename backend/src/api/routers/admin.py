@@ -18,6 +18,8 @@ from domain.schemas import (
     ModelGrantsRequest,
     ModelStatusRequest,
     RegisterModelAssetRequest,
+    SaveTemplateVersionRequest,
+    TemplateVersionActionRequest,
     UpdateRuntimeConfigRequest,
     WhitelistRequest,
 )
@@ -28,6 +30,28 @@ router = APIRouter(prefix="/api/openops/v1/admin", tags=["admin"])
 @router.get("/templates")
 async def templates(_admin: Admin):
     return ok(await template_service.admin_list())
+
+
+# ---- 模板版本写闭环（B7·二，21 号契约） ----
+@router.get("/templates/{template_id}")
+async def template_detail(template_id: str, _admin: Admin):
+    return ok(await template_service.admin_detail(template_id))
+
+
+@router.post("/templates/{template_id}/versions")
+async def save_template_version(template_id: str, req: SaveTemplateVersionRequest, admin: Admin):
+    return ok(await template_service.save_draft(template_id, req.content_json, admin["user_id"]))
+
+
+@router.post("/template-versions/{template_version_id}:publish")
+async def publish_template_version(template_version_id: str, _req: TemplateVersionActionRequest, admin: Admin):
+    return ok(await template_service.publish(template_version_id, admin["user_id"]))
+
+
+@router.post("/template-versions/{template_version_id}:disable")
+async def disable_template_version(template_version_id: str, _req: TemplateVersionActionRequest, admin: Admin):
+    await template_service.disable_version(template_version_id, admin["user_id"])
+    return ok({"disabled": True})
 
 
 @router.get("/mcp-tools")

@@ -4,24 +4,8 @@ import os
 import time
 
 import psycopg
-import pytest
 from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
 from infra.external import mcp_registry_client, skill_hub_client
-
-
-def _runtime_params() -> list[str]:
-    """热更新 fail-closed 用例跑双 runtime（B6-RT-001：不只覆盖 mock）；无 agentscope 环境自动降级只跑 mock。"""
-    try:
-        import agentscope  # noqa: F401
-        return ["mock", "agentscope"]
-    except ModuleNotFoundError:
-        return ["mock"]
-
-
-@pytest.fixture(params=_runtime_params())
-def runtime_backend(request, monkeypatch):
-    monkeypatch.setenv("OPENOPS_RUNTIME", request.param)
-    return request.param
 
 
 def _upload_skill(client, name: str) -> dict:

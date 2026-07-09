@@ -179,6 +179,8 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         ann = anns.get(name)
         if ann is not None and ann.get("status") == "allowed":  # 标注裁剪（28.2）
             tools.append(FunctionTool(fn, name=name, is_read_only=readonly))
+        elif st.template_tools and name not in st.template_tools:
+            pruned.append((name, "TOOL_BLOCKED"))  # B7·二：模板未绑定
         else:
             pruned.append((name, "TOOL_NOT_ANNOTATED" if ann is None else "TOOL_BLOCKED"))
     return Toolkit(tools=tools), pruned

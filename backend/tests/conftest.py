@@ -76,6 +76,21 @@ def client() -> TestClient:
     asset_reconcile_service._reset()
 
 
+def _runtime_params() -> list[str]:
+    """fail-closed 类用例跑双 runtime（B6-RT-001）；无 agentscope 环境自动降级只跑 mock。"""
+    try:
+        import agentscope  # noqa: F401
+        return ["mock", "agentscope"]
+    except ModuleNotFoundError:
+        return ["mock"]
+
+
+@pytest.fixture(params=_runtime_params())
+def runtime_backend(request, monkeypatch):
+    monkeypatch.setenv("OPENOPS_RUNTIME", request.param)
+    return request.param
+
+
 def unwrap(response):
     assert response.status_code < 400, response.text
     return response.json()["data"]

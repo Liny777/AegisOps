@@ -30,7 +30,8 @@ MODEL_ASSETS = [
 TEMPLATE_CONTENT = {
     "main": {
         "role": "理解用户任务，调度巡检/定界/恢复能力，工具调用前遵守平台安全策略。",
-        "default_tools": ["query_resource"],
+        # B7·二：RuntimePlan 只装配模板 default_tools 内的平台工具（恢复类照常受 ASK 标注管控）
+        "default_tools": ["query_resource", "recover_execute"],
     },
     "sub_agents": [
         {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险"},

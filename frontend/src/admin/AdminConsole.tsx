@@ -6,6 +6,7 @@ import { Icon, Button, Dot, Pill } from "../ui";
 import { api } from "../lib/api";
 import type { AdminTableData, SandboxCfg, AuditNode } from "../lib/api/types";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
+import { TemplateEditorModal } from "./TemplateEditorModal";
 
 const TITLES: Record<string, string> = {
   templates: "模板管理",
@@ -25,9 +26,10 @@ export function AdminConsole() {
   const [mcpDrill, setMcpDrill] = useState<string | null>(null);
   const [toolsRaw, setToolsRaw] = useState<Record<string, unknown>[]>([]);
   const [annotRow, setAnnotRow] = useState<Record<string, unknown> | null>(null);
-  // 模型资产：注册 / 白名单授权弹窗
+  // 模型资产：注册 / 白名单授权弹窗；模板编辑器（B7·二）
   const [registerOpen, setRegisterOpen] = useState(false);
   const [grantsFor, setGrantsFor] = useState<{ id: string; name: string } | null>(null);
+  const [tplEdit, setTplEdit] = useState<string | null>(null);
 
   const isTable = ["templates", "model-assets", "users"].includes(page);
 
@@ -38,7 +40,30 @@ export function AdminConsole() {
         setToolsRaw(d.raw);
         setTable(d);
       } else if (tplDrill) {
-        setTable(await api.getAdminTemplateAssets());
+        // 资产治理（drill 1）：平台资产表 + 按模板 default_tools 计算「绑定/解绑」列（B7·二写路径）
+        const [assets, detail, toolsData] = await Promise.all([
+          api.getAdminTemplateAssets(),
+          api.getAdminTemplateDetail(tplDrill.id),
+          api.getAdminMcpTools(null),
+        ]);
+        const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
+        const bound = new Set((((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[]);
+        const allowedByMcp = new Map<string, string[]>();
+        for (const r of toolsData.raw) {
+          if (r.annotation_id != null && r.annotation_status === "allowed") {
+            const k = String(r.mcp_display_name);
+            allowedByMcp.set(k, [...(allowedByMcp.get(k) ?? []), String(r.tool_name)]);
+          }
+        }
+        setTable({
+          ...assets,
+          cols: [...assets.cols, { label: "模板绑定", width: "72px" }],
+          rows: assets.rows.map((r) => {
+            const tools = allowedByMcp.get(r.id) ?? [];
+            const isBound = tools.length > 0 && tools.every((t) => bound.has(t));
+            return { ...r, cells: [...r.cells, { text: isBound ? "解绑" : "绑定", kind: "action" as const, onClickKey: "toggle-bind" }] };
+          }),
+        });
       } else {
         setTable(await api.getAdminTable("templates"));
       }
@@ -57,9 +82,37 @@ export function AdminConsole() {
 
   const onCellAction = (key: string | undefined, rowId: string, rowName: string) => {
     if (key === "open-template") setTplDrill({ id: rowId, name: rowName });
+    else if (key === "edit-template") setTplEdit(rowId);
     else if (key === "open-mcp") setMcpDrill(rowId);
     else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
     else if (key === "model-grants") setGrantsFor({ id: rowId, name: rowName });
+    else if (key === "toggle-bind" && tplDrill) void toggleBind(rowId);
+  };
+
+  /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
+  const toggleBind = async (mcpName: string) => {
+    if (!tplDrill) return;
+    const [detail, toolsData] = await Promise.all([
+      api.getAdminTemplateDetail(tplDrill.id),
+      api.getAdminMcpTools(null),
+    ]);
+    const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
+    const content = { ...((base?.content_json ?? {}) as Record<string, unknown>) };
+    const main = { ...((content.main ?? {}) as Record<string, unknown>) };
+    const cur = new Set(((main.default_tools ?? []) as string[]));
+    const mcpTools = toolsData.raw
+      .filter((r) => String(r.mcp_display_name) === mcpName && r.annotation_id != null && r.annotation_status === "allowed")
+      .map((r) => String(r.tool_name));
+    const isBound = mcpTools.length > 0 && mcpTools.every((t) => cur.has(t));
+    mcpTools.forEach((t) => (isBound ? cur.delete(t) : cur.add(t)));
+    content.main = { ...main, default_tools: [...cur] };
+    try {
+      const v = await api.saveTemplateDraft(tplDrill.id, content);
+      alert(`已保存到草稿 v${v.version_no}（在模板编辑器发布后生效）`);
+      void load();
+    } catch (e) {
+      alert((e as Error).message);
+    }
   };
 
   // 面包屑（drill 时替换标题）：模板管理 / 模板名 · 资产治理 / MCP名 · Tool 标注
@@ -168,6 +221,7 @@ export function AdminConsole() {
       />
       {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
       {grantsFor ? <ModelGrantsDialog target={grantsFor} onClose={() => setGrantsFor(null)} onSaved={() => { setGrantsFor(null); void load(); }} /> : null}
+      <TemplateEditorModal open={!!tplEdit} templateId={tplEdit} onClose={() => setTplEdit(null)} onChanged={() => void load()} />
     </>
   );
 }

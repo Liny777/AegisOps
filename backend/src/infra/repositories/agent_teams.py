@@ -78,6 +78,17 @@ async def set_status(instance_id: str, status: str, by: str) -> int:
     )
 
 
+async def update_template_version(instance_id: str, template_version_id: str, by: str) -> int:
+    """模板升级派生后回写实例的模板版本指针（28.7）。"""
+    return await exec1(
+        """
+        update agent_team_instance set template_version_id=%(tv)s, last_updated_by=%(b)s, last_update_date=now()
+        where agent_team_instance_id=%(i)s and deleted_at is null
+        """,
+        {"i": instance_id, "tv": template_version_id, "b": by},
+    )
+
+
 async def update_scope_revision(instance_id: str, scope_revision: str, by: str) -> int:
     """回写实例 scope_revision（oModel 返回新版本时；28.6 scope.updated）。"""
     return await exec1(
