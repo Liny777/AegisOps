@@ -1,9 +1,9 @@
-"""启动种子（幂等）：demo 用户/白名单、感知快恢模板、平台资产+tool 标注、沙箱配置、平台模型。"""
+"""启动种子（幂等）：demo 用户/白名单、感知快恢模板、平台资产+tool 标注、沙箱配置、模型资产。"""
 from __future__ import annotations
 
 from infra.db import q_one
 from infra.external import mcp_registry_client
-from infra.repositories import assets, mcp_tools, runtime_config, templates, users
+from infra.repositories import assets, mcp_tools, model_assets, runtime_config, templates, users
 
 SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "max_user_containers_per_host": (26, "单机最大用户容器数"),
@@ -14,20 +14,17 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "container_memory_limit_mib": (2048, "新建容器内存限额"),
 }
 
-PLATFORM_MODELS = [
-    {"name": "Qwen3.5-千问", "protocol": "OpenAI 兼容", "model_id": "qwen3.5-instruct", "status": "active", "probe": "探测通过 · tool calling"},
-    {
-        "name": "GLM-5.1",
-        "protocol": "OpenAI 兼容",
-        "model_id": "glm-5.1",
-        "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        "status": "active",
-        "probe": "探测通过 · tool calling",
-        "secret_env_var": "OPENOPS_PLATFORM_GLM_API_KEY",
-    },
-    {"name": "GPT-4.1", "protocol": "OpenAI 兼容", "model_id": "gpt-4.1", "status": "active", "probe": "探测通过 · tool calling"},
-    {"name": "DeepSeek-V3", "protocol": "OpenAI 兼容", "model_id": "deepseek-chat", "status": "active", "probe": "探测通过 · tool calling"},
-    {"name": "Claude 3.5", "protocol": "OpenAI 兼容", "model_id": "claude-3-5-sonnet", "status": "disabled", "probe": "Secret 缺失"},
+# 模型资产（B7：model_asset 表；替代旧 platform_runtime_config platform_model 域）
+# (display_name, model_id, base_url, secret_env_var, access_scope, status)
+MODEL_ASSETS = [
+    ("Qwen3.5-千问", "qwen3.5-instruct", None, None, "all", "active"),
+    ("GLM-5.1", "glm-5.1", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+     "OPENOPS_PLATFORM_GLM_API_KEY", "all", "active"),
+    ("GPT-4.1", "gpt-4.1", None, None, "all", "active"),
+    ("DeepSeek-V3", "deepseek-chat", None, None, "all", "active"),
+    ("Claude 3.5", "claude-3-5-sonnet", None, None, "all", "disabled"),
+    # restricted 演示（部门私有模型接口，仅白名单授权用户可用）：授权 0026demo01
+    ("交易大模型-TX", "tx-llm-v2", None, None, "restricted", "active"),
 ]
 
 TEMPLATE_CONTENT = {
@@ -85,6 +82,8 @@ async def seed() -> None:
     for key, (val, desc) in SANDBOX_DEFAULTS.items():
         await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, key, val, description=desc, reason="seed")
 
-    # 平台模型注册（管理台「模型」Tab 数据源）
-    for m in PLATFORM_MODELS:
-        await runtime_config.upsert(runtime_config.DOMAIN_MODEL, m["model_id"], m, description=m["name"], reason="seed")
+    # 模型资产（管理台「模型资产」页数据源；restricted 演示模型授权 demo 用户）
+    for display_name, model_id, base_url, env_var, scope, status in MODEL_ASSETS:
+        row = await model_assets.create(display_name, "openai_compatible", model_id, base_url, env_var, scope, status, "system")
+        if scope == "restricted":
+            await model_assets.replace_grants(str(row["model_asset_id"]), ["0026demo01"], "system")

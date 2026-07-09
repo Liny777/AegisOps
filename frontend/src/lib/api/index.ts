@@ -65,6 +65,14 @@ export interface OpenOpsApi {
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getAuditTimeline(): Promise<AuditNode[]>;
+  // admin B7a：模板 drill（资产治理→Tool 标注）+ 标注保存 + 模型资产授权
+  getAdminTemplateAssets(): Promise<AdminTableData>;
+  getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
+  adminSaveAnnotation(toolCatalogId: string, payload: Record<string, unknown>): Promise<void>;
+  adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
+  adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
+  adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
+  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string }): Promise<void>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -288,6 +296,22 @@ const realApi: OpenOpsApi = {
   },
 
   async getAdminTable(key) {
+    if (key === "templates") {
+      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/templates");
+      return {
+        title: "模板管理",
+        cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "操作", width: "96px" }],
+        rows: rows.map((r) => ({
+          id: String(r.template_id),
+          cells: [
+            { text: String(r.display_name) },
+            { text: String(r.template_key), mono: true },
+            { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+            { text: "资产治理", kind: "action" as const, onClickKey: "open-template" },
+          ],
+        })),
+      };
+    }
     if (key === "users") {
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/users");
       return {
@@ -306,49 +330,100 @@ const realApi: OpenOpsApi = {
         })),
       };
     }
-    if (key === "mcp-tools") {
-      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/mcp-tools");
+    if (key === "model-assets") {
+      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-assets");
       return {
-        title: "MCP Tool 标注",
-        tabs: [{ key: "all", label: "全部" }, { key: "unreviewed", label: "未标注" }],
-        cols: [{ label: "tool_name" }, { label: "所属 MCP" }, { label: "标注状态" }, { label: "操作", width: "88px" }],
-        rows: rows.map((r) => {
-          const annotated = r.annotation_id != null;
-          const needAsk = Boolean(r.is_approval_required);
-          return {
-            id: String(r.tool_catalog_id),
-            cells: [
-              { text: String(r.tool_name), mono: true },
-              { text: String(r.mcp_display_name ?? "") },
-              annotated
-                ? { text: needAsk ? "allowed · 需审批" : String(r.annotation_status), kind: "badge" as const, tone: needAsk ? "warning" as const : "good" as const }
-                : { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const },
-              { text: annotated ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
-            ],
-          };
-        }),
-      };
-    }
-    if (key === "models") {
-      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/models");
-      return {
-        title: "平台模型",
+        title: "模型资产",
         primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "状态" }, { label: "探测" }, { label: "操作", width: "72px" }],
+        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "授权范围" }, { label: "状态" }, { label: "操作", width: "96px" }],
         rows: rows.map((m) => ({
-          id: String(m.model_id),
+          id: String(m.model_asset_id),
           cells: [
-            { text: String(m.name) },
-            { text: String(m.protocol) },
+            { text: String(m.display_name) },
+            { text: m.protocol === "openai_compatible" ? "OpenAI 兼容" : String(m.protocol) },
             { text: String(m.model_id), mono: true },
-            { text: String(m.status), kind: "badge" as const, tone: m.status === "active" ? "good" as const : "warning" as const },
-            { text: String(m.probe), kind: "badge" as const, tone: String(m.probe).includes("通过") ? "good" as const : "danger" as const },
-            { text: "编辑", kind: "action" as const, onClickKey: "edit-model" },
+            { text: m.registered_by === "system" ? "平台" : String(m.registered_by) },
+            m.access_scope === "all"
+              ? { text: "全员开放", kind: "badge" as const, tone: "good" as const }
+              : { text: `限 ${m.grant_count ?? 0} 人`, kind: "badge" as const, tone: "warning" as const },
+            { text: String(m.status), kind: "badge" as const, tone: m.status === "active" ? "good" as const : "neutral" as const },
+            { text: "白名单授权", kind: "action" as const, onClickKey: "model-grants" },
           ],
         })),
       };
     }
     return M.adminTables[key] ?? M.adminTables.templates;
+  },
+  // ---- admin B7a：模板 drill + 标注保存 + 模型授权 ----
+  async getAdminTemplateAssets() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/mcps");
+    const platform = rows.filter((r) => r.source_type === "platform");
+    return {
+      title: "资产治理",
+      cols: [{ label: "名称" }, { label: "类型" }, { label: "最新版本" }, { label: "状态" }, { label: "操作", width: "96px" }],
+      rows: platform.map((r) => ({
+        id: String(r.display_name),
+        cells: [
+          { text: String(r.display_name) },
+          { text: "HTTP MCP" },
+          { text: `v${r.version_no ?? 1}` },
+          { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "warning" as const },
+          { text: "Tool 标注", kind: "action" as const, onClickKey: "open-mcp" },
+        ],
+      })),
+    };
+  },
+  async getAdminMcpTools(mcpName) {
+    const raw = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/mcp-tools");
+    const rows = mcpName ? raw.filter((r) => String(r.mcp_display_name) === mcpName) : raw;
+    return {
+      title: "Tool 标注",
+      cols: [{ label: "tool_name" }, { label: "所属 MCP" }, { label: "标注状态" }, { label: "操作", width: "88px" }],
+      raw: rows,
+      rows: rows.map((r) => {
+        const annotated = r.annotation_id != null;
+        const blocked = annotated && r.annotation_status !== "allowed";
+        const needAsk = Boolean(r.is_approval_required);
+        return {
+          id: String(r.tool_catalog_id),
+          cells: [
+            { text: String(r.tool_name), mono: true },
+            { text: String(r.mcp_display_name ?? "") },
+            !annotated
+              ? { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const }
+              : blocked
+                ? { text: `blocked${r.blocked_reason ? " · " + r.blocked_reason : ""}`, kind: "badge" as const, tone: "danger" as const }
+                : { text: needAsk ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: needAsk ? "warning" as const : "good" as const },
+            { text: annotated ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
+          ],
+        };
+      }),
+    };
+  },
+  async adminSaveAnnotation(toolCatalogId, payload) {
+    await apiFetch(`/openops/v1/admin/mcp-tools/${toolCatalogId}/annotation`, { method: "PUT", body: payload });
+  },
+  async adminListUsers() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/users");
+    return rows.map((r) => ({ user_id: String(r.user_id), display_name: String(r.display_name ?? "") }));
+  },
+  async adminGetModelGrants(modelAssetId) {
+    const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
+      `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
+    );
+    return { access_scope: d.access_scope, user_ids: d.user_ids };
+  },
+  async adminSaveModelGrants(modelAssetId, accessScope, userIds) {
+    await apiFetch(`/openops/v1/admin/model-assets/${modelAssetId}/grants`, {
+      method: "PUT",
+      body: { client_request_id: crid(), access_scope: accessScope, user_ids: userIds },
+    });
+  },
+  async adminRegisterModel(fields) {
+    await apiFetch("/openops/v1/admin/model-assets", {
+      method: "POST",
+      body: { client_request_id: crid(), protocol: "openai_compatible", ...fields },
+    });
   },
   async getSandboxCfg() {
     const rows = await apiFetch<{ key: string; val: unknown; desc: string }[]>("/openops/v1/admin/sandbox");
@@ -437,6 +512,13 @@ const mockApi: OpenOpsApi = {
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getAuditTimeline: () => delay(M.auditTimeline),
+  getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
+  getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
+  adminSaveAnnotation: () => delay(undefined as unknown as void),
+  adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
+  adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
+  adminSaveModelGrants: () => delay(undefined as unknown as void),
+  adminRegisterModel: () => delay(undefined as unknown as void),
   getTemplates: () => delay(M.mockTemplates),
   getWorkspaces: () => delay(M.mockWorkspaces),
   getAppTree: () => delay(M.mockAppTree),

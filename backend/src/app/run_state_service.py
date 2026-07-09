@@ -92,8 +92,8 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         audit_trace_id=trace,
     ))
 
-    # 平台模型元数据（无 Key）挂到 TaskState；agentscope 后端据此建真模型或回退 stub（mock 后端忽略）
-    st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model)
+    # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
+    st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
     # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4；runtime 不回读 DB）
     st.scope_ctx = scope
     st.tool_annotations = await mcp_tool_annotation_service.runtime_annotations()
@@ -197,9 +197,15 @@ async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
-    """会话级临时模型选择（MODEL-005：不生成配置版本）。"""
+    """会话级临时模型选择（MODEL-005：不生成配置版本）。平台模型须经授权（B7 模型 ACL）。"""
+    from app import model_asset_service  # 局部导入避免环
+
     run = await owned_run(user["user_id"], run_id)
     st = task_registry.get_by_run(run_id)
+    # 平台模型（非用户自有 llm_config）：白名单外 fail-closed（MODEL-ACL-002）
+    if not req.llm_config_id and req.model_source:
+        if not await model_asset_service.is_authorized(user["user_id"], req.model_source):
+            raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该模型未对你授权，请联系管理员申请白名单")
     label = req.llm_config_id or req.model_source
     if st:
         st.selected_model = label

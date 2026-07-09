@@ -10,10 +10,17 @@ from app import (
     audit_trace_service,
     identity_service,
     mcp_tool_annotation_service,
+    model_asset_service,
     runtime_config_service,
     template_service,
 )
-from domain.schemas import UpdateRuntimeConfigRequest, WhitelistRequest
+from domain.schemas import (
+    ModelGrantsRequest,
+    ModelStatusRequest,
+    RegisterModelAssetRequest,
+    UpdateRuntimeConfigRequest,
+    WhitelistRequest,
+)
 
 router = APIRouter(prefix="/api/openops/v1/admin", tags=["admin"])
 
@@ -56,15 +63,31 @@ async def update_sandbox(req: UpdateRuntimeConfigRequest, admin: Admin):
     return ok({"saved": True})
 
 
-@router.get("/models")
-async def platform_models(_admin: Admin):
-    return ok(await runtime_config_service.list_platform_models())
+# ---- 模型资产与白名单授权（B7，30.6 五；替代旧 /models 端点） ----
+@router.get("/model-assets")
+async def model_assets_list(_admin: Admin):
+    return ok(await model_asset_service.admin_list())
 
 
-@router.post("/models")
-async def register_model(model: dict[str, Any], admin: Admin):
-    await runtime_config_service.register_platform_model(model, admin["user_id"])
-    return ok({"registered": True})
+@router.post("/model-assets")
+async def model_assets_register(req: RegisterModelAssetRequest, admin: Admin):
+    return ok(await model_asset_service.register(req, admin["user_id"]))
+
+
+@router.put("/model-assets/{model_asset_id}:status")
+async def model_assets_status(model_asset_id: str, req: ModelStatusRequest, admin: Admin):
+    await model_asset_service.set_status(model_asset_id, req.status, admin["user_id"])
+    return ok({"status": req.status})
+
+
+@router.get("/model-assets/{model_asset_id}/grants")
+async def model_assets_grants(model_asset_id: str, _admin: Admin):
+    return ok(await model_asset_service.get_grants(model_asset_id))
+
+
+@router.put("/model-assets/{model_asset_id}/grants")
+async def model_assets_save_grants(model_asset_id: str, req: ModelGrantsRequest, admin: Admin):
+    return ok(await model_asset_service.save_grants(model_asset_id, req, admin["user_id"]))
 
 
 @router.get("/audit/recent")

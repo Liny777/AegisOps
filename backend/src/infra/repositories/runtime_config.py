@@ -7,7 +7,7 @@ from typing import Any
 from infra.db import exec1, jsonb, q_all, q_one
 
 DOMAIN_SANDBOX = "sandbox"
-DOMAIN_MODEL = "platform_model"
+DOMAIN_MODEL = "platform_model"  # 已废弃（B7 起模型迁 model_asset 表），保留常量供旧数据语义追溯
 
 
 async def get_domain(domain: str) -> list[dict[str, Any]]:

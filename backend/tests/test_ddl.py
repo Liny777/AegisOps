@@ -9,8 +9,10 @@ DDL = Path(__file__).resolve().parents[1] / "sql" / "openops_v1_core.sql"
 def test_ddl_001_has_core_tables_plus_runtime_config():
     ddl = DDL.read_text(encoding="utf-8")
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 20
+    assert len(tables) == 22  # 21 业务核心表 + platform_runtime_config（B7 增 model_asset/model_access_grant）
     assert "platform_runtime_config" in tables
+    assert "model_asset" in tables
+    assert "model_access_grant" in tables
     assert "user_entitlement_cache" not in tables
 
 

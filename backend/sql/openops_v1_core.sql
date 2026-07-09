@@ -286,6 +286,36 @@ CREATE TABLE IF NOT EXISTS user_llm_config (
   deleted_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS model_asset (
+  model_asset_id uuid NOT NULL PRIMARY KEY,
+  display_name text NOT NULL,
+  protocol text NOT NULL DEFAULT 'openai_compatible',
+  model_id text NOT NULL,
+  base_url text,
+  secret_env_var text,
+  access_scope text NOT NULL DEFAULT 'all',
+  status text NOT NULL DEFAULT 'active',
+  registered_by text NOT NULL,
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS model_access_grant (
+  grant_id uuid NOT NULL PRIMARY KEY,
+  model_asset_id uuid NOT NULL,
+  user_id text NOT NULL,
+  granted_by text NOT NULL,
+  status text NOT NULL DEFAULT 'active',
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS agent_run (
   agent_run_id uuid NOT NULL PRIMARY KEY,
   user_id text NOT NULL,
@@ -388,6 +418,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_user_whitelist_user
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_platform_runtime_config_key
   ON platform_runtime_config (config_domain, config_key)
+  WHERE deleted_at IS NULL;
+
+-- 模型资产 model_id 未删行唯一；授权同一 (模型,用户) 未删行唯一（改授权=软删+插新，不原地改写）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_asset_model_id
+  ON model_asset (model_id)
+  WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_access_grant_user
+  ON model_access_grant (model_asset_id, user_id)
+  WHERE deleted_at IS NULL;
+
+CREATE INDEX IF NOT EXISTS ix_model_access_grant_user
+  ON model_access_grant (user_id)
   WHERE deleted_at IS NULL;
 
 -- 软删后 template_key 可复用，与实例 owner+name 的处理一致
@@ -831,6 +874,34 @@ COMMENT ON COLUMN user_llm_config.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN user_llm_config.created_by IS '创建人工号';
 COMMENT ON COLUMN user_llm_config.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN user_llm_config.deleted_at IS '软删除时间，NULL 表示未删除';
+
+COMMENT ON TABLE model_asset IS '平台/部门注册的模型接口资产（管理台「模型资产」页；2026-07-09 自 platform_runtime_config platform_model 域迁移）';
+COMMENT ON COLUMN model_asset.model_asset_id IS '模型资产主键';
+COMMENT ON COLUMN model_asset.display_name IS '展示名，如「交易大模型-TX」';
+COMMENT ON COLUMN model_asset.protocol IS '协议，V1 固定 openai_compatible';
+COMMENT ON COLUMN model_asset.model_id IS '模型标识（如 glm-5.1），未删行内全局唯一';
+COMMENT ON COLUMN model_asset.base_url IS 'OpenAI 兼容 endpoint，可空';
+COMMENT ON COLUMN model_asset.secret_env_var IS '平台侧 API Key 环境变量名，Key 本身不落库';
+COMMENT ON COLUMN model_asset.access_scope IS 'all=全员开放 / restricted=仅白名单授权用户（按人，不按部门）';
+COMMENT ON COLUMN model_asset.status IS '状态：active / disabled';
+COMMENT ON COLUMN model_asset.registered_by IS '注册人（管理员工号），管理台「归属」展示来源';
+COMMENT ON COLUMN model_asset.creation_date IS '创建时间';
+COMMENT ON COLUMN model_asset.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN model_asset.created_by IS '创建人工号';
+COMMENT ON COLUMN model_asset.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN model_asset.deleted_at IS '软删除时间，NULL 表示未删除';
+
+COMMENT ON TABLE model_access_grant IS '模型白名单授权（按 user_id 逐人授权，仅 restricted 模型消费）';
+COMMENT ON COLUMN model_access_grant.grant_id IS '授权主键';
+COMMENT ON COLUMN model_access_grant.model_asset_id IS '关联模型资产 ID';
+COMMENT ON COLUMN model_access_grant.user_id IS '被授权用户工号';
+COMMENT ON COLUMN model_access_grant.granted_by IS '授权人（管理员工号）';
+COMMENT ON COLUMN model_access_grant.status IS '状态：active / revoked';
+COMMENT ON COLUMN model_access_grant.creation_date IS '创建时间';
+COMMENT ON COLUMN model_access_grant.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN model_access_grant.created_by IS '创建人工号';
+COMMENT ON COLUMN model_access_grant.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN model_access_grant.deleted_at IS '软删除时间，NULL 表示未删除';
 
 COMMENT ON TABLE agent_run IS 'OpenOps 对 AgentScope 运行态的业务索引';
 COMMENT ON COLUMN agent_run.agent_run_id IS '运行索引主键';

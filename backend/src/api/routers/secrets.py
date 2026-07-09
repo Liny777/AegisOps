@@ -4,7 +4,7 @@ from fastapi import APIRouter
 
 from api.deps import User
 from api.responses import ok
-from app import runtime_config_service, secret_model_gateway
+from app import model_asset_service, secret_model_gateway
 from domain.schemas import CreateLlmConfigRequest, CreateSecretRequest
 
 router = APIRouter(prefix="/api/openops/v1", tags=["secrets"])
@@ -26,8 +26,9 @@ async def list_llm(user: User):
 
 
 @router.get("/models/platform")
-async def list_platform_models(_user: User):
-    return ok(await runtime_config_service.list_platform_models())
+async def list_platform_models(user: User):
+    """按当前用户授权过滤的平台模型（B7 模型 ACL：scope=all ∪ 有 active grant）。"""
+    return ok(await model_asset_service.list_available(user))
 
 
 @router.post("/llm-configs")

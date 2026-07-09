@@ -80,10 +80,10 @@ export function Sidebar() {
       nav(`/agent-teams/${currentAgentId}/chat`);
     }
   };
+  // B7a IA（30.6 2026-07-09 拍板）：Tool 标注/资产治理并入模板管理 drill；新增模型资产
   const adminNav: NavItem[] = [
     { key: "templates", label: "模板管理", icon: "layout-grid", to: "/admin/templates" },
-    { key: "mcp-tools", label: "MCP Tool 标注", icon: "tag", to: "/admin/mcp-tools" },
-    { key: "assets", label: "资产治理", icon: "package", to: "/admin/assets" },
+    { key: "model-assets", label: "模型资产", icon: "cpu", to: "/admin/model-assets" },
     { key: "users", label: "用户与白名单", icon: "users", to: "/admin/users" },
     { key: "sandbox", label: "沙箱与容量", icon: "box", to: "/admin/sandbox" },
     { key: "audit", label: "审计回放", icon: "history", to: "/admin/audit" },

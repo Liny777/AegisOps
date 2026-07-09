@@ -6,70 +6,107 @@ import { Icon, Button, Dot, Pill } from "../ui";
 import { api } from "../lib/api";
 import type { AdminTableData, SandboxCfg, AuditNode } from "../lib/api/types";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
-import { TemplateEditorModal } from "./TemplateEditorModal";
 
 const TITLES: Record<string, string> = {
   templates: "模板管理",
-  "mcp-tools": "MCP Tool 标注",
-  assets: "平台资产治理",
+  "model-assets": "模型资产",
   users: "用户与白名单",
   sandbox: "沙箱与容量",
   audit: "审计与 Trace 回放",
 };
 
-/** 管理台（isAdminPage·新原型）：通用表（资产含 Skill/MCP/模型 三 Tab）/ 可编辑沙箱 / 审计。 */
+/** 管理台（30.6 2026-07-09 IA）：5 一级页；模板管理内 drill（资产治理 → Tool 标注，标注全局一份）。 */
 export function AdminConsole() {
   const { page = "templates" } = useParams();
   const [table, setTable] = useState<AdminTableData | null>(null);
   const [audit, setAudit] = useState<AuditNode[]>([]);
-  const [tab, setTab] = useState(0);
-  const [tplOpen, setTplOpen] = useState<string | null>(null);
-  const [annotTool, setAnnotTool] = useState<string | null>(null);
+  // 模板 drill：模板管理 → 模板名·资产治理 → MCP名·Tool 标注
+  const [tplDrill, setTplDrill] = useState<{ id: string; name: string } | null>(null);
+  const [mcpDrill, setMcpDrill] = useState<string | null>(null);
+  const [toolsRaw, setToolsRaw] = useState<Record<string, unknown>[]>([]);
+  const [annotRow, setAnnotRow] = useState<Record<string, unknown> | null>(null);
+  // 模型资产：注册 / 白名单授权弹窗
+  const [registerOpen, setRegisterOpen] = useState(false);
+  const [grantsFor, setGrantsFor] = useState<{ id: string; name: string } | null>(null);
 
-  const isTable = ["templates", "mcp-tools", "assets", "users"].includes(page);
-  // 新原型：资产页三 Tab（Skill / MCP / 模型）
-  const assetTabs = [{ key: "skill", label: "Skill" }, { key: "mcp", label: "MCP" }, { key: "model", label: "模型" }];
+  const isTable = ["templates", "model-assets", "users"].includes(page);
 
-  const loadTable = useCallback(async (p: string, tabIdx: number) => {
-    if (p === "assets" && assetTabs[tabIdx]?.key === "model") {
-      setTable(await api.getAdminTable("models"));
-    } else {
-      setTable(await api.getAdminTable(p));
+  const load = useCallback(async () => {
+    if (page === "templates") {
+      if (mcpDrill) {
+        const d = await api.getAdminMcpTools(mcpDrill);
+        setToolsRaw(d.raw);
+        setTable(d);
+      } else if (tplDrill) {
+        setTable(await api.getAdminTemplateAssets());
+      } else {
+        setTable(await api.getAdminTable("templates"));
+      }
+    } else if (isTable) {
+      setTable(await api.getAdminTable(page));
+    } else if (page === "audit") {
+      setAudit(await api.getAuditTimeline());
     }
-  }, []);
+  }, [page, isTable, tplDrill, mcpDrill]);
 
-  useEffect(() => {
-    setTab(0);
-    if (isTable) void loadTable(page, 0);
-    else if (page === "audit") api.getAuditTimeline().then(setAudit);
-  }, [page, isTable, loadTable]);
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); }, [page]);
+  useEffect(() => { void load(); }, [load]);
 
-  const tabs = page === "assets" ? assetTabs : table?.tabs;
+  const tabs = table?.tabs;
   const gridCols = useMemo(() => (table ? table.cols.map((c) => c.width ?? "1fr").join(" ") : ""), [table]);
 
-  const onCellAction = (key?: string, rowId?: string) => {
-    if (key === "edit-template") setTplOpen(rowId ?? "模板");
-    else if (key === "annotate") setAnnotTool(rowId ?? "tool");
+  const onCellAction = (key: string | undefined, rowId: string, rowName: string) => {
+    if (key === "open-template") setTplDrill({ id: rowId, name: rowName });
+    else if (key === "open-mcp") setMcpDrill(rowId);
+    else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
+    else if (key === "model-grants") setGrantsFor({ id: rowId, name: rowName });
   };
+
+  // 面包屑（drill 时替换标题）：模板管理 / 模板名 · 资产治理 / MCP名 · Tool 标注
+  const crumbs = page === "templates" && tplDrill
+    ? [
+        { label: "模板管理", onClick: () => { setTplDrill(null); setMcpDrill(null); } },
+        { label: `${tplDrill.name} · 资产治理`, onClick: mcpDrill ? () => setMcpDrill(null) : undefined },
+        ...(mcpDrill ? [{ label: `${mcpDrill} · Tool 标注`, onClick: undefined }] : []),
+      ]
+    : null;
 
   return (
     <>
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>{TITLES[page] ?? "管理台"}</div>
+        {crumbs ? (
+          <div style={{ fontSize: 14, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
+            {crumbs.map((c, i) => (
+              <span key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                {i > 0 ? <Icon name="chevron-right" size={14} color={color.textFaint} /> : null}
+                <span onClick={c.onClick} style={{ cursor: c.onClick ? "pointer" : "default", color: c.onClick ? color.brand : color.textStrong, fontWeight: i === crumbs.length - 1 ? 700 : 600 }}>{c.label}</span>
+              </span>
+            ))}
+          </div>
+        ) : (
+          <div style={{ fontSize: 15, fontWeight: 700 }}>{TITLES[page] ?? "管理台"}</div>
+        )}
         <div style={{ flex: 1 }} />
-        {isTable && table?.primary ? <Button icon={table.primary.icon}>{table.primary.label}</Button> : null}
+        {page === "model-assets" && table?.primary ? (
+          <Button icon={table.primary.icon} onClick={() => setRegisterOpen(true)}>{table.primary.label}</Button>
+        ) : null}
       </header>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
         <div style={{ maxWidth: 1080, margin: "0 auto" }}>
           {isTable && table ? (
             <>
+              {page === "templates" && tplDrill && !mcpDrill ? (
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: color.brandTintBg, border: "1px solid rgba(22,131,255,.18)", borderRadius: radius.lg, padding: "11px 14px", marginBottom: 14, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
+                  <Icon name="info-circle" size={15} color={color.brand} />
+                  <span>模板「{tplDrill.name}」的资产治理——此处治理该模板引用的平台资产；<b>Tool 标注为全局配置</b>，修改将影响引用同一 tool 的所有模板（30.6 拍板②）。</span>
+                </div>
+              ) : null}
               {tabs ? (
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  {tabs.map((tb, i) => (
+                  {tabs.map((tb) => (
                     <span key={tb.key}
-                      onClick={() => { setTab(i); void loadTable(page, i); }}
-                      style={{ fontSize: 12.5, fontWeight: 600, padding: "6px 14px", borderRadius: radius.md, cursor: "pointer", color: i === tab ? "#fff" : color.textNav, background: i === tab ? color.brand : "#eceef2" }}>
+                      style={{ fontSize: 12.5, fontWeight: 600, padding: "6px 14px", borderRadius: radius.md, color: color.textNav, background: "#eceef2" }}>
                       {tb.label}
                     </span>
                   ))}
@@ -88,7 +125,7 @@ export function AdminConsole() {
                             <Dot tone={cell.tone ?? "neutral"} />{cell.text}
                           </span>
                         ) : cell.kind === "action" ? (
-                          <span onClick={() => onCellAction(cell.onClickKey, r.id)} style={{ fontSize: 12, color: color.brand, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>{cell.text}<Icon name="chevron-right" size={13} color={color.brand} /></span>
+                          <span onClick={() => onCellAction(cell.onClickKey, r.id, String(r.cells[0]?.text ?? ""))} style={{ fontSize: 12, color: color.brand, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>{cell.text}<Icon name="chevron-right" size={13} color={color.brand} /></span>
                         ) : (
                           <span style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{cell.text}</span>
                         )}
@@ -123,9 +160,110 @@ export function AdminConsole() {
         </div>
       </div>
 
-      <TemplateEditorModal open={!!tplOpen} name="感知快恢 Agent" onClose={() => setTplOpen(null)} />
-      <ToolAnnotationSlideIn open={!!annotTool} tool={annotTool ?? ""} onClose={() => setAnnotTool(null)} />
+      <ToolAnnotationSlideIn
+        open={!!annotRow}
+        row={annotRow}
+        onClose={() => setAnnotRow(null)}
+        onSaved={() => { setAnnotRow(null); void load(); }}
+      />
+      {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
+      {grantsFor ? <ModelGrantsDialog target={grantsFor} onClose={() => setGrantsFor(null)} onSaved={() => { setGrantsFor(null); void load(); }} /> : null}
     </>
+  );
+}
+
+/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / access_scope。 */
+function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [f, setF] = useState({ display_name: "", model_id: "", base_url: "", secret_env_var: "", access_scope: "all" });
+  const [err, setErr] = useState("");
+  const ok = f.display_name.trim() && f.model_id.trim();
+  const input = (key: keyof typeof f, placeholder: string, mono = false) => (
+    <input value={f[key]} onChange={(e) => setF((d) => ({ ...d, [key]: e.target.value }))} placeholder={placeholder}
+      style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", fontFamily: mono ? "ui-monospace, monospace" : undefined, boxSizing: "border-box" }} />
+  );
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 460, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>注册模型接口</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {input("display_name", "展示名，如：交易大模型-TX")}
+          {input("model_id", "model_id，如：tx-llm-v2", true)}
+          {input("base_url", "OpenAI 兼容 endpoint（可空，用平台网关时）", true)}
+          {input("secret_env_var", "API Key 环境变量名（Key 本身不落库）", true)}
+        </div>
+        <div style={{ display: "flex", gap: 14, marginTop: 12, fontSize: 12.5 }}>
+          {(["all", "restricted"] as const).map((s) => (
+            <label key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="radio" checked={f.access_scope === s} onChange={() => setF((d) => ({ ...d, access_scope: s }))} />
+              {s === "all" ? "全员开放" : "限定人员（注册后配置授权）"}
+            </label>
+          ))}
+        </div>
+        {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button disabled={!ok} onClick={() => {
+            api.adminRegisterModel({
+              display_name: f.display_name.trim(), model_id: f.model_id.trim(),
+              base_url: f.base_url.trim() || undefined, secret_env_var: f.secret_env_var.trim() || undefined,
+              access_scope: f.access_scope,
+            }).then(onSaved).catch((e) => setErr((e as Error).message));
+          }}>注册</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 白名单授权弹窗（30.6 五·人员勾选版，2026-07-09 拍板按人不按部门）。 */
+function ModelGrantsDialog({ target, onClose, onSaved }: {
+  target: { id: string; name: string }; onClose: () => void; onSaved: () => void;
+}) {
+  const [scope, setScope] = useState<"all" | "restricted">("all");
+  const [users, setUsers] = useState<{ user_id: string; display_name: string }[]>([]);
+  const [picked, setPicked] = useState<Set<string>>(new Set());
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    api.adminGetModelGrants(target.id).then((g) => { setScope(g.access_scope as "all" | "restricted"); setPicked(new Set(g.user_ids)); });
+    api.adminListUsers().then(setUsers);
+  }, [target.id]);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 480, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>白名单授权 · {target.name}</div>
+        <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 14, lineHeight: 1.6 }}>私有模型接口通常只对指定人员开放。设置后，仅授权范围内的用户可在实例配置与会话中选用该模型。</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input type="radio" checked={scope === "all"} onChange={() => setScope("all")} />
+            全员开放 <span style={{ fontSize: 11.5, color: color.textSubtle }}>所有白名单用户可选用</span>
+          </label>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+            <input type="radio" checked={scope === "restricted"} onChange={() => setScope("restricted")} />
+            限定人员 <span style={{ fontSize: 11.5, color: color.textSubtle }}>仅勾选用户可选用</span>
+          </label>
+        </div>
+        {scope === "restricted" ? (
+          <div style={{ marginTop: 12, border: `1px solid ${color.border}`, borderRadius: radius.lg, maxHeight: 200, overflowY: "auto", padding: "6px 4px" }}>
+            {users.map((u) => (
+              <label key={u.user_id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", fontSize: 12.5, cursor: "pointer" }}>
+                <input type="checkbox" checked={picked.has(u.user_id)}
+                  onChange={(e) => setPicked((p) => { const n = new Set(p); e.target.checked ? n.add(u.user_id) : n.delete(u.user_id); return n; })} />
+                <span style={{ fontFamily: "ui-monospace, monospace" }}>{u.user_id}</span>
+                <span style={{ color: color.textSubtle }}>{u.display_name}</span>
+              </label>
+            ))}
+          </div>
+        ) : null}
+        {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button onClick={() => {
+            api.adminSaveModelGrants(target.id, scope, scope === "all" ? [] : [...picked])
+              .then(onSaved).catch((e) => setErr((e as Error).message));
+          }}>保存授权</Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

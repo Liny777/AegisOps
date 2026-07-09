@@ -97,6 +97,28 @@ class DecisionRequest(BaseModel):
     reason: str = ""
 
 
+class RegisterModelAssetRequest(BaseModel):
+    """注册模型接口（B7 模型资产）：DTO 白名单字段，api_key/token 等敏感键天然进不来。"""
+    client_request_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    model_id: str = Field(min_length=1)
+    protocol: str = "openai_compatible"
+    base_url: str | None = None
+    secret_env_var: str | None = None
+    access_scope: str = Field(default="all", pattern="^(all|restricted)$")
+
+
+class ModelGrantsRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+    access_scope: str = Field(pattern="^(all|restricted)$")
+    user_ids: list[str] = Field(default_factory=list)
+
+
+class ModelStatusRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+    status: str = Field(pattern="^(active|disabled)$")
+
+
 class UpdateRuntimeConfigRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     updates: dict[str, Any] = Field(default_factory=dict)
