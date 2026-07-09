@@ -55,6 +55,58 @@ async def get_skill(skill_id: str) -> dict[str, Any] | None:
     return await q_one("select * from skill_asset where skill_id=%(s)s and deleted_at is null", {"s": skill_id})
 
 
+async def get_skill_by_key(source_type: str, skill_key: str) -> dict[str, Any] | None:
+    return await q_one(
+        """
+        select * from skill_asset
+        where source_type=%(st)s and skill_key=%(k)s and deleted_at is null
+        order by creation_date desc limit 1
+        """,
+        {"st": source_type, "k": skill_key},
+    )
+
+
+async def latest_skill_version(skill_id: str) -> dict[str, Any] | None:
+    return await q_one(
+        """
+        select * from skill_asset_version
+        where skill_id=%(s)s and deleted_at is null order by version_no desc limit 1
+        """,
+        {"s": skill_id},
+    )
+
+
+async def add_skill_version(
+    skill_id: str, version_no: int, manifest_json: dict[str, Any], checksum: str, by: str
+) -> str:
+    vid = str(uuid.uuid4())
+    await exec1(
+        """
+        insert into skill_asset_version
+          (skill_version_id, skill_id, version_no, manifest_json, checksum_sha256, status, created_by, last_updated_by)
+        values (%(v)s, %(s)s, %(n)s, %(m)s, %(c)s, 'active', %(b)s, %(b)s)
+        """,
+        {"v": vid, "s": skill_id, "n": version_no, "m": jsonb(manifest_json), "c": checksum, "b": by},
+    )
+    return vid
+
+
+async def list_platform_mcps() -> list[dict[str, Any]]:
+    """平台 HTTP MCP（含最新版本 id）：对账 tools/list 用。"""
+    return await q_all(
+        """
+        select m.*, v.mcp_version_id
+        from mcp_asset m
+        join lateral (
+          select mcp_version_id from mcp_asset_version mv
+          where mv.mcp_id = m.mcp_id and mv.deleted_at is null
+          order by mv.version_no desc limit 1
+        ) v on true
+        where m.source_type='platform' and m.deleted_at is null
+        """
+    )
+
+
 async def delete_skill(skill_id: str, by: str) -> int:
     return await exec1(
         "update skill_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where skill_id=%(s)s and deleted_at is null",

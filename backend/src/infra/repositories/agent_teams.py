@@ -174,6 +174,12 @@ async def create_binding(
     return {"binding_id": bid}
 
 
+async def get_binding(binding_id: str) -> dict[str, Any] | None:
+    return await q_one(
+        "select * from instance_asset_binding where binding_id=%(b)s and deleted_at is null", {"b": binding_id}
+    )
+
+
 async def list_bindings(config_version_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """

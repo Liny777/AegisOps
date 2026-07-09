@@ -48,8 +48,18 @@ export interface OpenOpsApi {
   // settings
   getBoundSkills(instanceId: string): Promise<AssetRow[]>;
   getSkillLibrary(): Promise<AssetRow[]>;
+  getMcpLibrary(): Promise<AssetRow[]>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
+  // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
+  uploadSkill(name: string): Promise<void>;
+  registerMcp(name: string, endpoint: string): Promise<void>;
+  deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
+  bindAsset(instanceId: string, row: AssetRow): Promise<void>;
+  unbindAsset(bindingId: string): Promise<void>;
+  getMainAppend(instanceId: string): Promise<string>;
+  saveMainAppend(instanceId: string, text: string): Promise<void>;
+  reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
   getAdminTable(key: string): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
@@ -165,6 +175,8 @@ const realApi: OpenOpsApi = {
       statusTone: r.asset_status === "deleted" || r.status === "deleted" ? "danger" as const : "good" as const,
       meta: `${r.asset_type === "mcp" ? "HTTP MCP" : "Skill"} · ${r.source_type === "platform" ? "平台" : "我的"} · main`,
       bound: true,
+      kind: (r.asset_type === "mcp" ? "mcp" : "skill") as "skill" | "mcp",
+      assetId: String(r.skill_id ?? r.mcp_id ?? ""),
     }));
   },
   async getSkillLibrary() {
@@ -175,9 +187,73 @@ const realApi: OpenOpsApi = {
       version: `v${r.version_no ?? 1}`,
       status: String(r.status),
       statusTone: r.status === "active" ? "good" as const : "warning" as const,
-      meta: r.source_type === "platform" ? "平台" : "我的",
+      meta: r.source_type === "platform" ? "平台 Skill" : "我的 Skill",
       bound: false,
+      kind: "skill" as const,
+      versionId: r.skill_version_id ? String(r.skill_version_id) : undefined,
     }));
+  },
+  async getMcpLibrary() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/mcps");
+    return rows.map((r) => ({
+      id: String(r.mcp_id),
+      name: String(r.display_name),
+      version: `v${r.version_no ?? 1}`,
+      status: String(r.status),
+      statusTone: r.status === "active" ? "good" as const : "warning" as const,
+      meta: r.source_type === "platform" ? "平台 MCP" : "我的 MCP",
+      bound: false,
+      kind: "mcp" as const,
+      versionId: r.mcp_version_id ? String(r.mcp_version_id) : undefined,
+    }));
+  },
+  // ---- settings 写闭环（B6） ----
+  async uploadSkill(name) {
+    await apiFetch("/openops/v1/assets/skills", {
+      method: "POST",
+      body: { client_request_id: crid(), display_name: name, manifest_json: { entrypoint: "run.py" }, checksum_sha256: "" },
+    });
+  },
+  async registerMcp(name, endpoint) {
+    await apiFetch("/openops/v1/assets/mcps", {
+      method: "POST",
+      body: { client_request_id: crid(), display_name: name, transport: "http", endpoint, manifest_json: {} },
+    });
+  },
+  async deleteAsset(kind, id) {
+    await apiFetch(`/openops/v1/assets/${kind === "mcp" ? "mcps" : "skills"}/${id}`, { method: "DELETE" });
+  },
+  async bindAsset(instanceId, row) {
+    await apiFetch(`/openops/v1/agent-teams/${instanceId}/asset-bindings`, {
+      method: "POST",
+      body: {
+        client_request_id: crid(),
+        asset_type: row.kind ?? "skill",
+        skill_id: row.kind === "skill" ? row.id : null,
+        skill_version_id: row.kind === "skill" ? row.versionId ?? null : null,
+        mcp_id: row.kind === "mcp" ? row.id : null,
+        mcp_version_id: row.kind === "mcp" ? row.versionId ?? null : null,
+      },
+    });
+  },
+  async unbindAsset(bindingId) {
+    await apiFetch(`/openops/v1/asset-bindings/${bindingId}`, { method: "DELETE" });
+  },
+  async getMainAppend(instanceId) {
+    const d = await apiFetch<{ active_config_version?: Record<string, unknown> | null }>(
+      `/openops/v1/agent-teams/${instanceId}`,
+    );
+    const overlay = (d.active_config_version?.overlay_json ?? {}) as Record<string, unknown>;
+    return String(overlay.main_role_append ?? "");
+  },
+  async saveMainAppend(instanceId, text) {
+    await apiFetch(`/openops/v1/agent-teams/${instanceId}/config-versions`, {
+      method: "POST",
+      body: { client_request_id: crid(), overlay_json: { main_role_append: text }, change_reason: "main role append" },
+    });
+  },
+  async reconcileAssets() {
+    return apiFetch<Record<string, unknown>>("/openops/v1/assets:reconcile", { method: "POST", body: {} });
   },
   async getConfigVersions(instanceId) {
     const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/agent-teams/${instanceId}/config-versions`);
@@ -346,6 +422,15 @@ const mockApi: OpenOpsApi = {
   deleteInstance: () => delay(undefined as unknown as void),
   getBoundSkills: () => delay(M.mockBoundSkills),
   getSkillLibrary: () => delay(M.mockSkillLibrary),
+  getMcpLibrary: () => delay([]),
+  uploadSkill: () => delay(undefined as unknown as void),
+  registerMcp: () => delay(undefined as unknown as void),
+  deleteAsset: () => delay(undefined as unknown as void),
+  bindAsset: () => delay(undefined as unknown as void),
+  unbindAsset: () => delay(undefined as unknown as void),
+  getMainAppend: () => delay("优先关注支付链路核心接口的 P99 与错误率。"),
+  saveMainAppend: () => delay(undefined as unknown as void),
+  reconcileAssets: () => delay({ skipped: true }),
   getConfigVersions: () => delay(M.mockConfigVersions),
   getModelConfigs: () => delay(M.mockModels),
   getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),

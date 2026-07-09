@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from app import agent_team_service
 from domain.errors import ApiError, Err
 from infra.db import row_json
 from infra.repositories import agent_teams, assets
@@ -68,16 +69,14 @@ async def bind(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, An
     inst = await agent_teams.get_instance(instance_id)
     if inst is None or inst["owner_user_id"] != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权操作该 AgentTeam")
-    # 绑定生成新配置版本（30.5 保存链路），绑定目标固定 main
-    cfg = await agent_teams.create_config_version(
-        instance_id, str(inst["template_version_id"]),
-        {}, user["user_id"], f"bind {req.asset_type}",
+    # 绑定=派生新配置版本（不可变链：沿用 overlay + 结转已有绑定 + 加新绑定；绑定目标固定 main）
+    out = await agent_team_service.derive_config_version(
+        inst, user["user_id"], f"bind {req.asset_type}",
+        add_binding={"asset_type": req.asset_type, "skill_id": req.skill_id, "skill_version_id": req.skill_version_id,
+                     "mcp_id": req.mcp_id, "mcp_version_id": req.mcp_version_id},
     )
-    b = await agent_teams.create_binding(
-        instance_id, str(cfg["config_version_id"]), user["user_id"], req.asset_type,
-        req.skill_id, req.skill_version_id, req.mcp_id, req.mcp_version_id,
-    )
-    return {"binding_id": b["binding_id"], "config_version_id": str(cfg["config_version_id"])}
+    return {"binding_id": out["binding"]["binding_id"],
+            "config_version_id": str(out["config_version"]["config_version_id"])}
 
 
 async def list_instance_bindings(user: dict[str, Any], instance_id: str) -> list[dict[str, Any]]:
@@ -102,7 +101,17 @@ async def list_instance_bindings(user: dict[str, Any], instance_id: str) -> list
     return out
 
 
-async def unbind(user: dict[str, Any], binding_id: str) -> None:
-    n = await agent_teams.delete_binding(binding_id, user["user_id"])
-    if n == 0:
+async def unbind(user: dict[str, Any], binding_id: str) -> dict[str, Any]:
+    """解绑=派生新版本（少这一条绑定）；历史版本的绑定行不原地改写（28.7 不可变链）。"""
+    b = await agent_teams.get_binding(binding_id)
+    if b is None:
         raise ApiError(Err.NOT_FOUND, "绑定不存在")
+    inst = await agent_teams.get_instance(str(b["agent_team_instance_id"]))
+    if inst is None or inst["owner_user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "无权操作该绑定")
+    if str(b["config_version_id"]) != str(inst["active_config_version_id"]):
+        raise ApiError(Err.CONFIG_VERSION_INVALID, "绑定不在当前 active 配置上，请刷新后重试")
+    out = await agent_team_service.derive_config_version(
+        inst, user["user_id"], "unbind", drop_binding_id=binding_id,
+    )
+    return {"config_version_id": str(out["config_version"]["config_version_id"])}

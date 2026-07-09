@@ -55,11 +55,80 @@ async def get_annotation_by_tool_name(tool_name: str) -> dict[str, Any] | None:
         """
         select a.*, c.tool_name from mcp_tool_annotation a
         join mcp_tool_catalog c on c.tool_catalog_id = a.tool_catalog_id
-        where c.tool_name=%(n)s and a.deleted_at is null
+        where c.tool_name=%(n)s and a.deleted_at is null and c.deleted_at is null
         limit 1
         """,
         {"n": tool_name},
     )
+
+
+async def get_runtime_annotation(tool_name: str) -> dict[str, Any] | None:
+    """运行时事实（28.7 热更新）：**最新**未删 catalog 行 + 其标注（可能无标注）。
+
+    schema 变化后新行未标注 → annotation_id 为 NULL → Gateway 按 TOOL_NOT_ANNOTATED fail-closed；
+    旧行（已 superseded 软删）的历史标注不再生效（标注不继承）。
+    """
+    return await q_one(
+        """
+        select c.tool_catalog_id, c.tool_name, c.schema_hash,
+               a.annotation_id, a.is_approval_required, a.is_secret_required,
+               a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
+        from mcp_tool_catalog c
+        left join mcp_tool_annotation a
+          on a.tool_catalog_id = c.tool_catalog_id and a.deleted_at is null
+        where c.tool_name=%(n)s and c.deleted_at is null
+        order by c.discovered_at desc limit 1
+        """,
+        {"n": tool_name},
+    )
+
+
+async def sync_catalog_tool(
+    mcp_version_id: str, tool_name: str, description: str, input_schema: dict[str, Any], schema_hash: str
+) -> str:
+    """对账同步（28.7）：schema_hash 不变→noop；变化→原行更新 schema + **软删其标注**（标注不继承）。
+
+    DDL 对 (mcp_version_id, tool_name) 有绝对唯一索引 → 目录行保持一行、tool_catalog_id 稳定，
+    管理员在同一行上重新标注；历史标注行软删保留（审计可回放）。返回 unchanged / created / schema_changed。
+    """
+    row = await q_one(
+        """
+        select tool_catalog_id, schema_hash from mcp_tool_catalog
+        where mcp_version_id=%(v)s and tool_name=%(n)s and deleted_at is null
+        """,
+        {"v": mcp_version_id, "n": tool_name},
+    )
+    if row is None:
+        await exec1(
+            """
+            insert into mcp_tool_catalog
+              (tool_catalog_id, mcp_version_id, tool_name, description, input_schema_json, schema_hash,
+               discovered_at, status, created_by, last_updated_by)
+            values (%(t)s, %(v)s, %(n)s, %(d)s, %(s)s, %(h)s, now(), 'active', 'system', 'system')
+            """,
+            {"t": str(uuid.uuid4()), "v": mcp_version_id, "n": tool_name, "d": description,
+             "s": jsonb(input_schema), "h": schema_hash},
+        )
+        return "created"
+    if row["schema_hash"] == schema_hash:
+        return "unchanged"
+    # schema 变化：更新目录行 + 软删该行标注（不继承 → 未标注 fail-closed，待管理员重标）
+    await exec1(
+        """
+        update mcp_tool_catalog set description=%(d)s, input_schema_json=%(s)s, schema_hash=%(h)s,
+               discovered_at=now(), last_updated_by='system', last_update_date=now()
+        where tool_catalog_id=%(t)s
+        """,
+        {"t": row["tool_catalog_id"], "d": description, "s": jsonb(input_schema), "h": schema_hash},
+    )
+    await exec1(
+        """
+        update mcp_tool_annotation set deleted_at=now(), last_updated_by='system', last_update_date=now()
+        where tool_catalog_id=%(t)s and deleted_at is null
+        """,
+        {"t": row["tool_catalog_id"]},
+    )
+    return "schema_changed"
 
 
 async def get_tool_by_name(tool_name: str) -> dict[str, Any] | None:

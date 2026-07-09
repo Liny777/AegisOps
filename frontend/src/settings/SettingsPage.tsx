@@ -6,7 +6,7 @@ import { useApp } from "../lib/appState";
 import { api } from "../lib/api";
 import type { AgentInstance, AssetRow, ConfigVersionRow, ModelOption } from "../lib/api/types";
 
-type Tab = "lib" | "model";
+type Tab = "lib" | "prompt" | "model";
 type Filter = "all" | "on" | "off";
 
 /** 实例配置（isSettings·新原型）：「我的感知快恢 Agent 清单」管理页 → per-agent 配置。 */
@@ -184,7 +184,7 @@ function AgentDetail({ instanceId }: { instanceId: string }) {
   return (
     <>
       <div style={{ flex: "0 0 auto", background: "#fff", borderBottom: `1px solid ${color.border}`, padding: "0 24px", display: "flex", gap: 6 }}>
-        {([["lib", "Skill · MCP 库", "puzzle"], ["model", "模型配置", "cpu"]] as const).map(([k, label, icon]) => {
+        {([["lib", "Skill · MCP 库", "puzzle"], ["prompt", "角色提示词", "message-2"], ["model", "模型配置", "cpu"]] as const).map(([k, label, icon]) => {
           const active = tab === k;
           return (
             <div key={k} onClick={() => setTab(k)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "13px 4px", margin: "0 8px", cursor: "pointer", fontSize: 13.5, fontWeight: active ? 700 : 500, color: active ? color.brand : color.textNav, borderBottom: `2px solid ${active ? color.brand : "transparent"}` }}>
@@ -193,7 +193,7 @@ function AgentDetail({ instanceId }: { instanceId: string }) {
           );
         })}
       </div>
-      {tab === "lib" ? <LibTab instanceId={instanceId} /> : <ModelTab />}
+      {tab === "lib" ? <LibTab instanceId={instanceId} /> : tab === "prompt" ? <PromptTab instanceId={instanceId} /> : <ModelTab />}
     </>
   );
 }
@@ -203,28 +203,44 @@ function LibTab({ instanceId }: { instanceId: string }) {
   const [bound, setBound] = useState<AssetRow[]>([]);
   const [lib, setLib] = useState<AssetRow[]>([]);
   const [versions, setVersions] = useState<ConfigVersionRow[]>([]);
-  useEffect(() => {
+  const [dialog, setDialog] = useState<"skill" | "mcp" | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const reload = () => {
     api.getBoundSkills(instanceId).then(setBound);
-    api.getSkillLibrary().then(setLib);
+    Promise.all([api.getSkillLibrary(), api.getMcpLibrary()]).then(([s, m]) => setLib([...s, ...m]));
     api.getConfigVersions(instanceId).then(setVersions);
-  }, [instanceId]);
+  };
+  useEffect(reload, [instanceId]);
+
+  const run = (p: Promise<unknown>) => {
+    setBusy(true);
+    p.then(reload).catch((e) => alert((e as Error).message)).finally(() => setBusy(false));
+  };
+  const boundAssetIds = new Set(bound.map((b) => b.assetId));
 
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "22px 30px 40px" }}>
       <div style={{ maxWidth: 860 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-          <div style={{ width: 340 }}><TextInput value={search} onChange={setSearch} placeholder="搜索 Skill / HTTP MCP…" icon="search" /></div>
+          <div style={{ width: 300 }}><TextInput value={search} onChange={setSearch} placeholder="搜索 Skill / HTTP MCP…" icon="search" /></div>
           <div style={{ flex: 1 }} />
-          <Button variant="secondary" icon="upload">上传 Skill</Button>
-          <Button variant="secondary" icon="plug">注册 HTTP MCP</Button>
+          <Button variant="secondary" icon="refresh" disabled={busy} onClick={() => run(api.reconcileAssets())}>刷新对账</Button>
+          <Button variant="secondary" icon="upload" onClick={() => setDialog("skill")}>上传 Skill</Button>
+          <Button variant="secondary" icon="plug" onClick={() => setDialog("mcp")}>注册 HTTP MCP</Button>
         </div>
 
         <SectionLabel>当前已绑定（main Agent）</SectionLabel>
-        <AssetTable rows={bound} action="解绑" />
+        <AssetTable rows={bound} actionLabel={() => "解绑"} onAction={(r) => run(api.unbindAsset(r.id))} />
 
         <div style={{ height: 22 }} />
-        <SectionLabel>我的资产库</SectionLabel>
-        <AssetTable rows={lib.filter((r) => !search || r.name.includes(search))} action="toggle" />
+        <SectionLabel>资产库（平台 + 我的）</SectionLabel>
+        <AssetTable
+          rows={lib.filter((r) => !search || r.name.includes(search))}
+          actionLabel={(r) => (boundAssetIds.has(r.id) ? "已绑定" : "绑定")}
+          onAction={(r) => { if (!boundAssetIds.has(r.id)) run(api.bindAsset(instanceId, r)); }}
+          onDelete={(r) => (r.meta.includes("我的") ? run(api.deleteAsset(r.kind ?? "skill", r.id)) : undefined)}
+        />
 
         <div style={{ height: 22 }} />
         <SectionLabel>配置版本历史</SectionLabel>
@@ -239,7 +255,85 @@ function LibTab({ instanceId }: { instanceId: string }) {
           ))}
         </div>
         <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
-          保存配置会生成新的 active 版本。运行中的 Run 不重建会话，但下一次模型/工具边界会重新编译 RuntimePlan 生效。
+          保存配置会生成新的 active 版本（历史版本与绑定不改写）。运行中的 Run 不重建会话，下一次模型/工具边界按最新配置生效。
+        </div>
+      </div>
+
+      {dialog ? (
+        <AssetDialog
+          kind={dialog}
+          busy={busy}
+          onClose={() => setDialog(null)}
+          onSubmit={(name, endpoint) => {
+            run((dialog === "skill" ? api.uploadSkill(name) : api.registerMcp(name, endpoint)).then(() => setDialog(null)));
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+/** 上传 Skill / 注册 HTTP MCP 弹窗（30.5：V1 仅 HTTP MCP；Skill 包上传后台校验 checksum）。 */
+function AssetDialog({ kind, busy, onClose, onSubmit }: {
+  kind: "skill" | "mcp"; busy: boolean; onClose: () => void; onSubmit: (name: string, endpoint: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("https://");
+  const ok = name.trim().length > 0 && (kind === "skill" || endpoint.trim().length > 8);
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center", animation: "omFade .16s ease" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 440, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px", animation: "omPop .2s ease" }}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>{kind === "skill" ? "上传 Skill" : "注册 HTTP MCP"}</div>
+        <SectionLabel>名称</SectionLabel>
+        <TextInput value={name} onChange={setName} placeholder={kind === "skill" ? "例：日志聚类分析" : "例：CMDB 查询 MCP"} />
+        {kind === "mcp" ? (
+          <>
+            <div style={{ height: 12 }} />
+            <SectionLabel>Endpoint（仅 HTTP）</SectionLabel>
+            <TextInput value={endpoint} onChange={setEndpoint} placeholder="https://mcp.example.com/mcp" mono />
+          </>
+        ) : null}
+        <div style={{ marginTop: 12, fontSize: 11.5, color: color.textSubtle, lineHeight: 1.6 }}>
+          {kind === "skill" ? "V1 演示以名称建包（checksum 由后台生成）；绑定到 main 后在沙箱执行（B8）。" : "用户 MCP 不透传 Cookie、不注入平台 header，范围自担（28.2）。"}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
+          <Button variant="secondary" onClick={onClose}>取消</Button>
+          <Button disabled={!ok || busy} onClick={() => ok && onSubmit(name.trim(), endpoint.trim())}>{kind === "skill" ? "上传" : "注册"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** 角色提示词（30.5 CFG-002：只写 main overlay 的 append；平台默认只读）。 */
+function PromptTab({ instanceId }: { instanceId: string }) {
+  const [text, setText] = useState("");
+  const [saved, setSaved] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { api.getMainAppend(instanceId).then((t) => { setText(t); setSaved(t); }); }, [instanceId]);
+  const dirty = saved !== null && text !== saved;
+  return (
+    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "26px 30px 40px" }}>
+      <div style={{ maxWidth: 720 }}>
+        <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>main Agent 角色追加</h2>
+        <div style={{ fontSize: 12.5, color: color.textSubtle, marginBottom: 18 }}>
+          平台模板的默认角色只读；此处内容以「追加」方式作用于 main Agent（不影响 sub Agent）。保存生成新配置版本。
+        </div>
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="例：优先关注支付链路核心接口的 P99 与错误率；恢复动作前先给出影响面评估。"
+          style={{ width: "100%", minHeight: 180, border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "12px 14px", fontSize: 13, lineHeight: 1.7, fontFamily: "inherit", background: "#fff", outline: "none", boxSizing: "border-box" }}
+        />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+          <Button
+            disabled={!dirty || busy}
+            onClick={() => {
+              setBusy(true);
+              api.saveMainAppend(instanceId, text).then(() => setSaved(text)).catch((e) => alert((e as Error).message)).finally(() => setBusy(false));
+            }}
+          >保存（生成新版本）</Button>
+          {dirty ? <span style={{ fontSize: 12, color: color.textSubtle }}>有未保存的修改</span> : saved !== null ? <span style={{ fontSize: 12, color: color.textSubtle }}>已保存</span> : null}
         </div>
       </div>
     </div>
@@ -289,22 +383,33 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: color.textStrong }}>{children}</div>;
 }
 
-function AssetTable({ rows, action }: { rows: AssetRow[]; action: "解绑" | "toggle" }) {
+function AssetTable({ rows, actionLabel, onAction, onDelete }: {
+  rows: AssetRow[];
+  actionLabel: (r: AssetRow) => string;
+  onAction: (r: AssetRow) => void;
+  onDelete?: (r: AssetRow) => void;
+}) {
   return (
     <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
       {rows.length === 0 ? (
         <div style={{ padding: "18px 16px", fontSize: 12.5, color: color.textSubtle }}>暂无资产，点右上「上传 Skill / 注册 MCP」。</div>
-      ) : rows.map((r, i) => (
-        <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 1fr 80px", gap: 10, padding: "12px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
-          <span style={{ fontWeight: 600, color: color.textStrong }}>{r.name}</span>
-          <span style={{ color: color.textSubtle }}>{r.version}</span>
-          <Pill tone={r.statusTone}>{r.status}</Pill>
-          <span style={{ color: color.textSubtle }}>{r.meta}</span>
-          <span style={{ textAlign: "right", fontSize: 12, fontWeight: 600, color: color.brand, cursor: "pointer" }}>
-            {action === "解绑" ? "解绑" : r.bound ? "已绑定" : "绑定"}
-          </span>
-        </div>
-      ))}
+      ) : rows.map((r, i) => {
+        const label = actionLabel(r);
+        const inert = label === "已绑定";
+        const deletable = onDelete && r.meta.includes("我的");
+        return (
+          <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 1fr 120px", gap: 10, padding: "12px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
+            <span style={{ fontWeight: 600, color: color.textStrong }}>{r.name}</span>
+            <span style={{ color: color.textSubtle }}>{r.version}</span>
+            <Pill tone={r.statusTone}>{r.status}</Pill>
+            <span style={{ color: color.textSubtle }}>{r.meta}</span>
+            <span style={{ textAlign: "right", fontSize: 12, fontWeight: 600, display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <span onClick={() => !inert && onAction(r)} style={{ color: inert ? color.textSubtle : color.brand, cursor: inert ? "default" : "pointer" }}>{label}</span>
+              {deletable ? <span onClick={() => onDelete(r)} style={{ color: color.dangerText, cursor: "pointer" }}>删除</span> : null}
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }

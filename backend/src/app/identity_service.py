@@ -23,6 +23,9 @@ async def resolve_user(user_id: str, display_name: str | None) -> dict[str, Any]
 
 
 async def me(user: dict[str, Any]) -> dict[str, Any]:
+    from app import asset_reconcile_service  # 局部导入避免环依赖
+
+    asset_reconcile_service.kick_async("login")  # 登录对账（28.7）：节流 fire-and-forget，不阻塞 /me
     instances = await agent_teams.list_by_owner(user["user_id"])
     active = [i for i in instances if i["status"] == "active"]
     return {

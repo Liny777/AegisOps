@@ -4,10 +4,16 @@ from fastapi import APIRouter
 
 from api.deps import User
 from api.responses import ok
-from app import asset_registry_service
+from app import asset_reconcile_service, asset_registry_service
 from domain.schemas import RegisterMcpRequest, UploadSkillRequest
 
 router = APIRouter(prefix="/api/openops/v1/assets", tags=["assets"])
+
+
+@router.post(":reconcile")
+async def reconcile(_user: User):
+    """配置页 refresh：立即对账 Skill Hub / MCP Registry（28.7）。"""
+    return ok(await asset_reconcile_service.reconcile(force=True, trigger="refresh"))
 
 
 @router.get("/skills")

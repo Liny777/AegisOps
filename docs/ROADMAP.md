@@ -13,14 +13,9 @@
 | B3 | Scope Service + oModel 可切换 adapter（`OPENOPS_OMODEL`；30s TTL、分态 fail-closed、revision 回写） | `96d7702` | docs/test/B3-* |
 | B4 | Tool Gateway + 平台 HTTP MCP 受控调用链（标注/Scope/Secret/`X-OpenOps-*` header/审计；用户 MCP 隔离） | `0cd9898` | docs/test/B4-* |
 | B5 | CopilotKit/AG-UI 工作台接管（`POST /agent-runs/{id}/agui` AG-UI 标准事件流 + `@ag-ui/client` HttpAgent 适配器 + 流式对话；`VITE_OPENOPS_TRANSPORT` 可回退 SSE） | `fcef0f8` | — |
+| B6 | 资产对账 + 配置热更新 + 设置页写闭环（`derive_config_version` 不可变链结转绑定；reconcile：source=openops/checksum 补版本/schema_hash 变化标注不继承；Gateway 边界热更新 + `runtime_plan.updated`；设置页三 tab 写闭环 + `POST /assets:reconcile`） | 见 git log | — |
 
 ## 待办（块序同 33 号）
-
-## B6 资产对账 + 配置热更新 + 用户设置页写闭环
-
-- 接入真实 Skill Hub / MCP Registry（source=openops、checksum、schema_hash 变化重新标注）。
-- 登录对账、配置页 refresh、后台 reconciler；RuntimePlan 边界热更新。
-- 用户设置页 main role append、实例级 LLM、用户 Skill/HTTP MCP 上传绑定解绑删除；`ASSET_IN_USE`。
 
 ## B7 管理台真能力补齐
 

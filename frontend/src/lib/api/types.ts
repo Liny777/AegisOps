@@ -189,6 +189,9 @@ export interface AssetRow {
   statusTone: Tone;
   meta: string;
   bound: boolean;
+  kind?: "skill" | "mcp"; // 库行：资产类型（绑定/删除用）
+  versionId?: string; // 库行：最新版本 id（绑定用）
+  assetId?: string; // 已绑行：底层资产 id（与库行对照「已绑定」态）
 }
 export interface ConfigVersionRow {
   version_no: string;

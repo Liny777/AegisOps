@@ -17,6 +17,7 @@ import os
 from typing import Any
 
 from infra.external import http_mcp_client
+from infra.repositories import mcp_tools
 from runtime.emit import emit
 from runtime.task_registry import TaskState
 
@@ -62,22 +63,55 @@ async def _blocked(st: TaskState, run: dict[str, Any], tool_name: str, reason_co
     return ToolBlocked(reason_code, msg)
 
 
-def _check_platform(st: TaskState, tool_name: str, arguments: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
-    """平台分支静态校验：返回 (annotation, 拦截原因码)；原因码非 None 即 fail-closed。"""
-    ann = (st.tool_annotations or {}).get(tool_name)
+async def _effective_annotation(st: TaskState, run: dict[str, Any], tool_name: str) -> dict[str, Any] | None:
+    """运行时事实标注（28.7 热更新）：优先取 DB 最新（每次工具边界），读取失败回退任务启动快照。
+
+    最新 catalog 行未标注（schema 变化后不继承）→ 返回 None → TOOL_NOT_ANNOTATED fail-closed。
+    与快照不同 → 发 openops.runtime_plan.updated（每 task 每工具一次）。
+    """
+    snap = (st.tool_annotations or {}).get(tool_name)
+    try:
+        row = await mcp_tools.get_runtime_annotation(tool_name)
+    except Exception:
+        return snap  # ASSET-006：读取失败按缓存继续
+    if row is None:
+        return snap  # 目录无此工具：按快照口径判定
+    if row.get("annotation_id") is None:
+        fresh: dict[str, Any] | None = None  # 最新行未标注 → fail-closed
+    else:
+        fresh = {
+            "is_approval_required": bool(row["is_approval_required"]),
+            "is_secret_required": bool(row["is_secret_required"]),
+            "scope_mode": row["scope_mode"],
+            "appid_arg_path": row["appid_arg_path"],
+            "status": row["annotation_status"],
+            "blocked_reason": row["blocked_reason"],
+        }
+    if fresh != snap and tool_name not in st.plan_notified:
+        st.plan_notified.add(tool_name)
+        await emit(st, run, "openops.runtime_plan.updated", action=tool_name,
+                   message=f"工具 {tool_name} 配置已热更新，按最新标注执行",
+                   payload={"tool": tool_name})
+    return fresh
+
+
+def _validate_platform(
+    ann: dict[str, Any] | None, st: TaskState, arguments: dict[str, Any]
+) -> str | None:
+    """平台分支校验：返回拦截原因码；None 即放行。"""
     if ann is None:
-        return None, "TOOL_NOT_ANNOTATED"
+        return "TOOL_NOT_ANNOTATED"
     if ann.get("status") != "allowed":
-        return ann, "TOOL_BLOCKED"
+        return "TOOL_BLOCKED"
     mode = ann.get("scope_mode", "none")
     if mode in ("optional", "required"):
         appid = _extract_appid(arguments, ann.get("appid_arg_path"))
         allowed = set((st.scope_ctx or {}).get("effective_appids", []))
         if mode == "required" and appid is None:
-            return ann, "APPID_OUT_OF_SCOPE"  # required 必须取到 APPID（28.2）
+            return "APPID_OUT_OF_SCOPE"  # required 必须取到 APPID（28.2）
         if appid is not None and appid not in allowed:
-            return ann, "APPID_OUT_OF_SCOPE"
-    return ann, None
+            return "APPID_OUT_OF_SCOPE"
+    return None
 
 
 async def invoke(
@@ -93,7 +127,8 @@ async def invoke(
     """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。"""
     headers: dict[str, str] = {}
     if source_type == "platform":
-        ann, reason = _check_platform(st, tool_name, arguments)
+        ann = await _effective_annotation(st, run, tool_name)  # 热更新：每次边界取最新标注（28.7）
+        reason = _validate_platform(ann, st, arguments)
         if reason == "TOOL_NOT_ANNOTATED":
             raise await _blocked(st, run, tool_name, reason, f"平台工具 {tool_name} 未标注，禁止调用")
         if reason == "TOOL_BLOCKED":

@@ -94,15 +94,50 @@ def _has_running_task(instance_id: str) -> bool:
     return task_registry.instance_has_running(instance_id)
 
 
+async def derive_config_version(
+    inst: dict[str, Any], by: str, reason: str, *,
+    overlay: dict[str, Any] | None = None,
+    add_binding: dict[str, Any] | None = None,
+    drop_binding_id: str | None = None,
+) -> dict[str, Any]:
+    """派生新配置版本（不可变链，28.7）：沿用/替换 overlay + **结转上一版绑定**（±增删）。
+
+    历史版本的绑定行不做任何原地改写（unbind = 新版本少一行，旧版本行保留供审计回放）。
+    save_config / bind / unbind / 后续模板升级派生统一走本函数。
+    """
+    instance_id = str(inst["agent_team_instance_id"])
+    active_cv = str(inst["active_config_version_id"])
+    prev = await agent_teams.get_config_version(active_cv)
+    new_overlay = overlay if overlay is not None else ((prev or {}).get("overlay_json") or {})
+    cfg = await agent_teams.create_config_version(
+        instance_id, str(inst["template_version_id"]), new_overlay, by, reason
+    )
+    new_cv = str(cfg["config_version_id"])
+    for b in await agent_teams.list_bindings(active_cv):  # 结转（可丢弃指定一条）
+        if drop_binding_id and str(b["binding_id"]) == drop_binding_id:
+            continue
+        await agent_teams.create_binding(
+            instance_id, new_cv, by, b["asset_type"],
+            str(b["skill_id"]) if b["skill_id"] else None, str(b["skill_version_id"]) if b["skill_version_id"] else None,
+            str(b["mcp_id"]) if b["mcp_id"] else None, str(b["mcp_version_id"]) if b["mcp_version_id"] else None,
+        )
+    binding = None
+    if add_binding is not None:
+        binding = await agent_teams.create_binding(
+            instance_id, new_cv, by, add_binding["asset_type"],
+            add_binding.get("skill_id"), add_binding.get("skill_version_id"),
+            add_binding.get("mcp_id"), add_binding.get("mcp_version_id"),
+        )
+    return {"config_version": cfg, "binding": binding}
+
+
 async def save_config(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
     row = _owner_check(await agent_teams.get_instance(instance_id), user["user_id"])
     if req.base_config_version_id and req.base_config_version_id != str(row["active_config_version_id"]):
         raise ApiError(Err.CONFIG_VERSION_INVALID, "配置已被更新，请刷新后重试")
     overlay = {k: v for k, v in (req.overlay_json or {}).items() if k in _OVERLAY_ALLOWED}
-    cfg = await agent_teams.create_config_version(
-        instance_id, str(row["template_version_id"]), overlay, user["user_id"], req.change_reason or "update"
-    )
-    return {"config_version": row_json(cfg)}
+    out = await derive_config_version(row, user["user_id"], req.change_reason or "update", overlay=overlay)
+    return {"config_version": row_json(out["config_version"])}
 
 
 async def list_configs(user: dict[str, Any], instance_id: str) -> list[dict[str, Any]]:

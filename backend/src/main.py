@@ -30,7 +30,17 @@ from infra.db import close_pool, open_pool
 async def lifespan(_app: FastAPI):
     await open_pool()
     await seed.seed()
+    # 后台资产对账（28.7）：OPENOPS_RECONCILE_INTERVAL_S > 0 时启用（默认关；登录/refresh 触发已覆盖 V1）
+    import asyncio
+    import os
+
+    from app import asset_reconcile_service
+
+    interval = float(os.environ.get("OPENOPS_RECONCILE_INTERVAL_S", "0"))
+    reconciler = asyncio.create_task(asset_reconcile_service.background_loop(interval)) if interval > 0 else None
     yield
+    if reconciler:
+        reconciler.cancel()
     await close_pool()
 
 
