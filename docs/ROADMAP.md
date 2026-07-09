@@ -30,7 +30,7 @@
 ## B8 剩余（执行面已落，见上表 B8 行）
 
 - **实机 Docker E2E**：`OPENOPS_SANDBOX=docker` 需装 `pip install -e ".[sandbox]"`（aiodocker）+ compose 挂 Docker socket；生产内网镜像离线预构建 + `docker load`。真容器安全基线 + 写盘 + run_skill 执行 + 跨用户隔离已实机验证（`OPENOPS_SANDBOX_DOCKER_TEST=1` 跑 `test_docker_real_run_skill_write_exec_isolation` 回归护栏）；默认 fake 后端覆盖生命周期/checksum/超时/裁决/审计。
-- **live agent 驱动 Bash-in-conversation**：`command_guard`/`run_bash` 四层裁决与审计已就位并单测；真 GLM 自主调 Bash 的 HITL 靠 agentscope `RequireUserConfirmEvent` 桥（B1 `_handle_ask`），随真 Key live E2E 一并验（无 Key 期回退 stub/fake）。
+- ~~**live agent 驱动 Bash-in-conversation**~~ **✅ B8·补2 已接**：`run_container_command` 工具进 agentscope toolkit + mock orchestrator，双 runtime 端到端（BASH-007），四层裁决 + `sandbox.command.*` 审计 + HITL（`_bridge_command_approval` 复用审批流）。真 GLM 无论 demo 开关都可自主调该工具；env `OPENOPS_DEMO_SANDBOX_STEP=1` 让 stub demo 也演示一步。
 - **Skill Hub 真包投递**：`run_skill` 执行原语已就位（fake 注入包字节验证）；真 ZIP 从 Skill Hub 经 29.3 `X-Checksum-SHA256` 下载的装配路径待集成。
 - 平台 deny 前缀规则 UI（管理台下发 `bash_deny_prefixes`）、artifact 回传落地、chunk 拆包沿用 ROADMAP 附注。
 
