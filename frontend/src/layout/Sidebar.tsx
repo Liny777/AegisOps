@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
 import { useApp } from "../lib/appState";
+import { api } from "../lib/api";
 
 const EXPANDED = 248;
 const COLLAPSED = 60;
@@ -62,11 +63,23 @@ export function Sidebar() {
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
 
+  // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 先全部置灰，无对应页面）
   const userNav: NavItem[] = [
-    { key: "chat", label: "对话", icon: "message-2", to: `/agent-teams/${currentAgentId}/chat` },
-    { key: "knowledge", label: "知识（V1 禁用）", icon: "book-2", locked: true },
-    { key: "ontology", label: "对象图（后续）", icon: "sitemap", locked: true },
+    { key: "knowledge", label: "知识", icon: "book-2", locked: true },
+    { key: "plugins", label: "插件", icon: "puzzle", locked: true },
+    { key: "automation", label: "自动化", icon: "robot", locked: true },
+    { key: "ontology", label: "本体", icon: "sitemap", locked: true },
   ];
+
+  const newChat = async () => {
+    if (!currentAgentId) return nav("/init");
+    try {
+      const runId = await api.createRun(currentAgentId);
+      nav(`/agent-teams/${currentAgentId}/chat?run_id=${encodeURIComponent(runId)}`);
+    } catch {
+      nav(`/agent-teams/${currentAgentId}/chat`);
+    }
+  };
   const adminNav: NavItem[] = [
     { key: "templates", label: "模板管理", icon: "layout-grid", to: "/admin/templates" },
     { key: "mcp-tools", label: "MCP Tool 标注", icon: "tag", to: "/admin/mcp-tools" },
@@ -197,7 +210,19 @@ export function Sidebar() {
               </div>
             ) : null}
           </div>
-          <nav style={{ padding: "8px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
+          {/* 新对话（32 号主操作：白底 + 轻阴影） */}
+          <div style={{ padding: "6px 10px 2px" }}>
+            <Interactive
+              title="新对话"
+              onClick={newChat}
+              baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", background: "#fff", border: `1px solid ${color.border}`, boxShadow: shadow.card, fontSize: 13.5, fontWeight: 700, color: color.textStrong }}
+              hoverStyle={{ borderColor: color.brandTintBorder, background: "#f9fbff" }}
+            >
+              <Icon name="edit" size={18} color={color.brand} />
+              {showText ? <span style={{ flex: 1 }}>新对话</span> : null}
+            </Interactive>
+          </div>
+          <nav style={{ padding: "6px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
             {userNav.map((item) => (
               <NavRow key={item.key} item={item} active={activeKey === item.key} showText={showText} onClick={() => item.to && nav(item.to)} />
             ))}

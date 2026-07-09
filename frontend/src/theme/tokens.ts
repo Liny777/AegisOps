@@ -79,7 +79,7 @@ export const shadow = {
 
 export const font = {
   sans:
-    "'Inter Variable', 'Inter', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif",
+    "'Geist Variable', 'Inter Variable', 'Inter', system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', sans-serif",
   mono: "ui-monospace, 'SF Mono', Menlo, monospace",
 } as const;
 

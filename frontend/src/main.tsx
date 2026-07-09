@@ -1,3 +1,4 @@
+import "@fontsource-variable/geist"; // 32 号规范：字体族 Geist Variable，fallback Inter
 import "@fontsource-variable/inter";
 import "@tabler/icons-webfont/dist/tabler-icons.css";
 import "./theme/global.css";

@@ -21,12 +21,13 @@ body,
 }
 
 body {
-  font-family: "Inter Variable", "Inter", system-ui, -apple-system, "PingFang SC",
+  /* 32 号规范：Geist Variable 主字体，fallback Inter */
+  font-family: "Geist Variable", "Inter Variable", "Inter", system-ui, -apple-system, "PingFang SC",
     "Microsoft YaHei", "Segoe UI", sans-serif;
   -webkit-font-smoothing: antialiased;
   color: var(--om-ink);
   background: var(--om-page-bg);
-  letter-spacing: 0.1px;
+  letter-spacing: 0;
 }
 
 ::-webkit-scrollbar {
