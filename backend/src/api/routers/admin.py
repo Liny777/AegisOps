@@ -6,9 +6,14 @@ from fastapi import APIRouter
 
 from api.deps import Admin
 from api.responses import ok
-from app import audit_trace_service, mcp_tool_annotation_service, runtime_config_service, template_service
+from app import (
+    audit_trace_service,
+    identity_service,
+    mcp_tool_annotation_service,
+    runtime_config_service,
+    template_service,
+)
 from domain.schemas import UpdateRuntimeConfigRequest, WhitelistRequest
-from infra.repositories import users
 
 router = APIRouter(prefix="/api/openops/v1/admin", tags=["admin"])
 
@@ -31,13 +36,12 @@ async def save_annotation(tool_catalog_id: str, payload: dict[str, Any], admin: 
 
 @router.get("/users")
 async def list_users(_admin: Admin):
-    return ok([dict(r) for r in await users.list_users_with_whitelist()])
+    return ok(await identity_service.list_users())
 
 
 @router.post("/users/whitelist")
 async def add_whitelist(req: WhitelistRequest, admin: Admin):
-    await users.upsert_user(req.user_id, req.display_name or req.user_id, req.role)
-    await users.add_whitelist(req.user_id, admin["user_id"])
+    await identity_service.add_whitelist(req.user_id, req.display_name, req.role, admin["user_id"])
     return ok({"added": True})
 
 

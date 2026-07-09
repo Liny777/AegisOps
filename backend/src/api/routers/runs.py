@@ -52,7 +52,7 @@ async def select_model(run_id: str, req: SelectModelRequest, user: User):
 @router.post("/agent-runs/{run_id}/ag-ui")
 async def ag_ui_batch(run_id: str, user: User):
     """批量事件端点（兼容保留）；实时走 SSE /events/stream。"""
-    await run_state_service._owned_run(user["user_id"], run_id)  # noqa: SLF001
+    await run_state_service.owned_run(user["user_id"], run_id)
     return ok({"events": events.snapshot(run_id)})
 
 
@@ -63,7 +63,7 @@ async def events_stream(
     last_event_id: Annotated[str | None, Header()] = None,
 ):
     """AG-UI over SSE（28.9）：id=sequence 支持 Last-Event-ID 补发；心跳注释。"""
-    await run_state_service._owned_run(user["user_id"], run_id)  # noqa: SLF001
+    await run_state_service.owned_run(user["user_id"], run_id)
     leid = int(last_event_id) if last_event_id and last_event_id.isdigit() else None
     return StreamingResponse(
         event_stream_service.stream(run_id, leid),

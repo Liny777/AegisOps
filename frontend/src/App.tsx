@@ -1,4 +1,4 @@
-import { BrowserRouter, Navigate, Route, Routes, useParams } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
 import { AppProvider, useApp } from "./lib/appState";
 import { AppShell } from "./layout/AppShell";
@@ -32,12 +32,6 @@ function RoleGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** /agent-runs/:id → 恢复对话（P1 后按 30.7 补 run owner 反查）。 */
-function ChatFromRun() {
-  const { id } = useParams();
-  return <Navigate to={`/agent-teams/${id}/chat`} replace />;
-}
-
 export default function App() {
   return (
     <AppProvider>
@@ -51,11 +45,12 @@ export default function App() {
           <Route element={<WhitelistGuard><AppShell /></WhitelistGuard>}>
             <Route path="/agent-teams/:instanceId/chat" element={<Workbench />} />
             <Route path="/agent-teams/:instanceId/settings" element={<SettingsPage />} />
+            {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
+            <Route path="/agent-runs/:runId" element={<Workbench />} />
             <Route path="/admin" element={<RoleGuard><Navigate to="/admin/templates" replace /></RoleGuard>} />
             <Route path="/admin/:page" element={<RoleGuard><AdminConsole /></RoleGuard>} />
           </Route>
 
-          <Route path="/agent-runs/:id" element={<ChatFromRun />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

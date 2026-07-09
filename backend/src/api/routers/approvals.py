@@ -6,16 +6,13 @@ from api.deps import User
 from api.responses import ok
 from app import run_state_service
 from domain.schemas import DecisionRequest
-from infra.db import row_json
-from infra.repositories import runs
 
 router = APIRouter(prefix="/api/openops/v1", tags=["approvals"])
 
 
 @router.get("/agent-runs/{run_id}/approvals")
 async def pending(run_id: str, user: User):
-    await run_state_service._owned_run(user["user_id"], run_id)  # noqa: SLF001
-    return ok([row_json(a) for a in await runs.pending_approvals(run_id)])
+    return ok(await run_state_service.list_pending(user, run_id))
 
 
 @router.post("/approvals/{approval_id}:decide")

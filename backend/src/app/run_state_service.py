@@ -13,13 +13,19 @@ from runtime import events, task_registry
 from runtime.task_registry import TaskState
 
 
-async def _owned_run(user_id: str, run_id: str) -> dict[str, Any]:
+async def owned_run(user_id: str, run_id: str) -> dict[str, Any]:
     run = await runs.get_run(run_id)
     if run is None:
         raise ApiError(Err.NOT_FOUND, "Run 不存在")
     if run["user_id"] != user_id:
         raise ApiError(Err.FORBIDDEN, "无权访问该 Run")  # IAM-005
     return run
+
+
+async def list_pending(user: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+    """当前 Run 的 pending 审批（owner 校验后返回，router 不直连 repo）。"""
+    await owned_run(user["user_id"], run_id)
+    return [row_json(a) for a in await runs.pending_approvals(run_id)]
 
 
 async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
@@ -46,7 +52,7 @@ async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
 
 async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
     uid = user["user_id"]
-    run = await _owned_run(uid, run_id)
+    run = await owned_run(uid, run_id)
     if run["run_status"] == "closed":
         raise ApiError(Err.RUN_ALREADY_CLOSED, "Run 已关闭，不能启动新任务")  # RUN-005 / CANCEL-006
     # 并发上限（RUN-004）：读平台运行配置
@@ -109,7 +115,7 @@ async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
 
 
 async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
-    run = await _owned_run(user["user_id"], run_id)
+    run = await owned_run(user["user_id"], run_id)
     st = task_registry.get_by_run(run_id)
     if st and st.status == "running":
         await cancel_task(user, st.task_id)  # CANCEL-005：先取消 running task
@@ -161,7 +167,7 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
 
 async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     """聚合状态（30.7 恢复事实入口）。"""
-    run = await _owned_run(user["user_id"], run_id)
+    run = await owned_run(user["user_id"], run_id)
     await runs.expire_stale_approvals(run_id)
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     st = task_registry.get_by_run(run_id)
@@ -187,7 +193,7 @@ async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
     """会话级临时模型选择（MODEL-005：不生成配置版本）。"""
-    run = await _owned_run(user["user_id"], run_id)
+    run = await owned_run(user["user_id"], run_id)
     st = task_registry.get_by_run(run_id)
     label = req.llm_config_id or req.model_source
     if st:

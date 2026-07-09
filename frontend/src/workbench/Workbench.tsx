@@ -19,14 +19,17 @@ import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
+import { useApp } from "../lib/appState";
 
 type ConnState = "connecting" | "open" | "reconnecting";
 
-/** 对话工作台（isChat）：real 模式 = ensureRun + /state 恢复 + SSE 实时推进（30.3/30.4/30.7）。 */
+/** 对话工作台（isChat）：real 模式 = 按 run_id 恢复 或 ensureRun + /state + SSE（30.3/30.4/30.7）。
+ *  两个入口：/agent-teams/:instanceId/chat（ensureRun 复用 active run）与 /agent-runs/:runId（按 run 恢复）。 */
 export function Workbench() {
-  const { instanceId = "" } = useParams();
+  const { instanceId = "", runId: runIdParam } = useParams();
   const [searchParams] = useSearchParams();
-  const explicitRunId = searchParams.get("run_id");
+  const explicitRunId = runIdParam ?? searchParams.get("run_id");
+  const { setCurrentAgentId } = useApp();
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<"active" | "closed">("active");
@@ -50,6 +53,9 @@ export function Workbench() {
 
   const refresh = useCallback(async (rid: string) => {
     const d = (await api.getRunState(rid)) as Record<string, any>;
+    // 按 run 恢复入口：state 返回 instance，回填侧栏当前 Agent 使其与该 run 对齐
+    const instId = d.instance?.agent_team_instance_id;
+    if (instId) setCurrentAgentId(String(instId));
     setRunStatus(d.run?.run_status === "closed" ? "closed" : "active");
     if (d.active_task) {
       setTaskId(d.active_task.task_id);
@@ -63,11 +69,11 @@ export function Workbench() {
     const audit = await api.getAuditNodes(rid);
     seen.current = new Set(audit.map((n) => n.id));
     setNodes(audit);
-  }, []);
+  }, [setCurrentAgentId]);
 
   // 挂载：显式 run_id 优先恢复；否则 ensureRun 复用当前 Agent 的 active run。
   useEffect(() => {
-    if (API_MODE !== "real" || !instanceId) {
+    if (API_MODE !== "real" || (!instanceId && !explicitRunId)) {
       // mock 演示：直接用 demoState
       setMessages(demo.messages);
       setRca(demo.rca);

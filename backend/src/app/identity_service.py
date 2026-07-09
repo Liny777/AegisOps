@@ -33,3 +33,13 @@ async def me(user: dict[str, Any]) -> dict[str, Any]:
         "has_instances": len(active) > 0,
         "recent_instance_id": str(active[-1]["agent_team_instance_id"]) if active else None,
     }
+
+
+# ---- 管理台：用户与白名单（router 不直连 users repo，走本服务） ----
+async def list_users() -> list[dict[str, Any]]:
+    return [dict(r) for r in await users.list_users_with_whitelist()]
+
+
+async def add_whitelist(user_id: str, display_name: str, role: str, by: str) -> None:
+    await users.upsert_user(user_id, display_name or user_id, role)
+    await users.add_whitelist(user_id, by)
