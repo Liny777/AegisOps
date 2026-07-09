@@ -70,8 +70,9 @@ TVID=$(curl -s "${U[@]}" $BASE/templates/available | jq -r '.data[0].template_ve
 echo "template_version_id=$TVID"
 
 # 4.3 建实例（workspace ws_pay_abc 由 oModel mock 提供，已 ready）
+#     注意：实例响应字段是 instance_id（服务把 agent_team_instance_id 改名为 instance_id）
 IID=$(curl -s "${U[@]}" -d "{\"client_request_id\":\"$(crid)\",\"template_version_id\":\"$TVID\",\"name\":\"冒烟 AgentTeam\",\"workspace_id\":\"ws_pay_abc\"}" \
-  $BASE/agent-teams | jq -r '.data.instance.agent_team_instance_id')
+  $BASE/agent-teams | jq -r '.data.instance.instance_id')
 echo "instance=$IID"
 
 # 4.4 建 Run
@@ -109,16 +110,22 @@ echo "$ST" | jq '{task: .data.active_task.status, rca_revision: .data.rca.revisi
 
 - `4.1` `whitelisted=true`。
 - `4.5` 之后异步推进；`4.6` 拿到 `approval_request_id`。
-- `4.8` `task=completed`、`rca_revision=3`，`events` 事件链（顺序）大致为：
+- `4.8` `task=completed`、`rca_revision=3`。`events` 取自 `/state` 审计投影，顺序大致为（**B2 起**每个推理回合前多一对 `openops.model.call.*`）：
   ```
   agent_run.created → task.started → scope.resolved →
+  openops.model.call.started → openops.model.call.succeeded →
   openops.tool.call.started → openops.tool.call.succeeded → openops.rca.updated →   # 巡检
+  openops.model.call.started → openops.model.call.succeeded →
   openops.tool.call.started → openops.tool.call.succeeded → openops.rca.updated →   # 定界
-  openops.approval.required → openops.approval.approved →
-  openops.tool.call.succeeded → openops.rca.updated →                               # 恢复执行
+  openops.model.call.started → openops.model.call.succeeded →
+  openops.approval.required → approval.approved →
+  openops.tool.call.succeeded → openops.rca.updated →                              # 恢复执行
+  openops.model.call.started → openops.model.call.succeeded → openops.rca.updated → # 模型结论
   openops.task.completed
   ```
-- 拒绝路径（`decision":"rejected"`）：`approval.rejected → rca.updated(未执行) → task.completed`，且**不出现**恢复的 `tool.call.succeeded`。
+- 拒绝路径（`decision":"rejected"`）：`… → openops.approval.required → approval.rejected → openops.rca.updated(未执行) → openops.task.completed`，且**不出现**恢复的 `openops.tool.call.succeeded`。
+
+> **事件名口径**（别被前缀混淆）：`/state` 的 `recent_events` 来自审计表——**生命周期事件用裸名**（`agent_run.created`/`task.started`/`scope.resolved`/`approval.approved`/`approval.rejected`），**运行活动事件用 `openops.*` 前缀**（`openops.tool.call.*`/`openops.rca.updated`/`openops.model.call.*`/`openops.approval.required`/`openops.task.completed`）；SSE 流则统一 `openops.*`。前端 projection 两种都认。（GPT 冒烟在 HEAD `3568a85`＝B1 前，故其报告无 `model.call.*`，属正常。）
 
 （可选）SSE 实时看事件：`curl -N "${U[@]}" $BASE/agent-runs/$RID/events/stream`。
 
