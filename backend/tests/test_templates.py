@@ -130,3 +130,51 @@ def test_template_tools_enforcement(client, runtime_backend):
         json={"client_request_id": f"t{time.time_ns()}", "input_text": "定位"},
     ))
     _assert_recover_blocked(client, run["agent_run_id"], "TOOL_BLOCKED")
+
+
+def test_template_empty_tools_fail_closed(client, runtime_backend):
+    """B7-SEC-001：模板显式 default_tools=[] = 零平台工具——空集不得视为「无限制」（双 runtime）。"""
+    tid = _template_id(client)
+    draft = unwrap(_save_draft(client, tid, _content([])))
+    unwrap(_publish(client, str(draft["template_version_id"])))
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    unwrap(client.post(
+        f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+        json={"client_request_id": f"t{time.time_ns()}", "input_text": "定位"},
+    ))
+    _assert_recover_blocked(client, run["agent_run_id"], "TOOL_BLOCKED")
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    # 空模板下任何平台工具都不得成功执行；模板门先于标注热读，也不应产生无意义的 runtime_plan.updated
+    assert not any(e["event_type"] == "openops.tool.call.succeeded" for e in events)
+    assert not any(e["event_type"] == "openops.runtime_plan.updated" for e in events)
+
+
+def test_template_publish_revalidates_annotation(client):
+    """B7-TEST-001①：草稿期 allowed、发布前被 block 的 tool——发布重校验必须 400 拦下。"""
+    tid = _template_id(client)
+    draft = unwrap(_save_draft(client, tid, _content(["query_resource", "recover_execute"])))
+    catalog = unwrap(client.get("/api/openops/v1/admin/mcp-tools", headers=ADMIN_HEADERS))
+    rec = next(t for t in catalog if t["tool_name"] == "recover_execute")
+    unwrap(client.put(
+        f"/api/openops/v1/admin/mcp-tools/{rec['tool_catalog_id']}/annotation", headers=ADMIN_HEADERS,
+        json={"is_approval_required": True, "is_secret_required": False, "scope_mode": "required",
+              "appid_arg_path": "$.appid", "status": "blocked", "blocked_reason": "发布前冻结"},
+    ))
+    resp = _publish(client, str(draft["template_version_id"]))
+    assert resp.status_code == 400
+    assert "recover_execute" in resp.json()["error"]["message"]
+
+
+def test_template_write_endpoints_forbidden_for_user(client):
+    """B7-TEST-001②：模板写面三端点（存草稿/发布/禁用）普通用户一律 403。"""
+    tid = _template_id(client)
+    fake_ver = "00000000-0000-0000-0000-000000000000"
+    r1 = client.post(f"/api/openops/v1/admin/templates/{tid}/versions", headers=USER_HEADERS,
+                     json={"client_request_id": "u1", "content_json": _content(["query_resource"])})
+    r2 = client.post(f"/api/openops/v1/admin/template-versions/{fake_ver}:publish", headers=USER_HEADERS,
+                     json={"client_request_id": "u2"})
+    r3 = client.post(f"/api/openops/v1/admin/template-versions/{fake_ver}:disable", headers=USER_HEADERS,
+                     json={"client_request_id": "u3"})
+    assert r1.status_code == r2.status_code == r3.status_code == 403

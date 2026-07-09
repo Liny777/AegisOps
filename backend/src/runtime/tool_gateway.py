@@ -128,8 +128,9 @@ async def invoke(
     """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。"""
     headers: dict[str, str] = {}
     if source_type == "platform":
-        if st.template_tools and tool_name not in st.template_tools:
-            # B7·二：模板未绑定的平台工具不进 RuntimePlan（即使全局标注 allowed 也拦）
+        if st.template_tools is not None and tool_name not in st.template_tools:
+            # B7·二：模板未绑定的平台工具不进 RuntimePlan（即使全局标注 allowed 也拦）。
+            # 空集也拦（B7-SEC-001：模板显式零工具 ≠ 无限制；None 才是未装配模板信息）。
             raise await _blocked(st, run, tool_name, "TOOL_BLOCKED", f"工具 {tool_name} 未绑定到当前模板，运行时 fail-closed")
         ann = await _effective_annotation(st, run, tool_name)  # 热更新：每次边界取最新标注（28.7）
         reason = _validate_platform(ann, st, arguments)

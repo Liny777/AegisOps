@@ -43,7 +43,8 @@ async def _validate_content(content: dict[str, Any]) -> None:
         raise ApiError(Err.VALIDATION_FAILED, "main.default_tools 必须是工具名数组")
     if not isinstance(content.get("sub_agents", []), list):
         raise ApiError(Err.VALIDATION_FAILED, "sub_agents 必须是数组")
-    allowed = await mcp_tool_annotation_service.runtime_annotations()  # 仅 status=allowed 的平台 tool
+    anns = await mcp_tool_annotation_service.runtime_annotations()  # 全部已标注工具（含 blocked，运行时另拦）
+    allowed = {k for k, v in anns.items() if v.get("status") == "allowed"}  # 绑定校验只认 allowed（B7-TEST-001 暴露：曾误放行 blocked）
     bad = [t for t in tools if t not in allowed]
     if bad:
         raise ApiError(Err.VALIDATION_FAILED, f"以下平台 tool 未 allowed 标注，不可绑定：{', '.join(bad)}")

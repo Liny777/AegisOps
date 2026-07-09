@@ -179,8 +179,8 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         ann = anns.get(name)
         if ann is not None and ann.get("status") == "allowed":  # 标注裁剪（28.2）
             tools.append(FunctionTool(fn, name=name, is_read_only=readonly))
-        elif st.template_tools and name not in st.template_tools:
-            pruned.append((name, "TOOL_BLOCKED"))  # B7·二：模板未绑定
+        elif st.template_tools is not None and name not in st.template_tools:
+            pruned.append((name, "TOOL_BLOCKED"))  # B7·二：模板未绑定（空集=零平台工具，B7-SEC-001）
         else:
             pruned.append((name, "TOOL_NOT_ANNOTATED" if ann is None else "TOOL_BLOCKED"))
     return Toolkit(tools=tools), pruned
@@ -318,11 +318,12 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 # 恢复被拒绝/超时：保留「未执行」结论，不被模型最终文本覆盖（B2-RUNTIME-001）
                 msg = "任务结束：恢复动作未执行（按用户决策），保持观察"
             elif st.tool_blocked:
-                # 工具被运行时拦截（标注热更新/未标注裁剪）：同样不得采纳模型「已恢复」文本（B6-RT-001）
-                msg = "任务结束：恢复动作被运行时拦截（工具标注变更/未标注），未执行——请管理员复核标注"
-                if st.rca:
-                    st.rca = {**st.rca, "conclusion": "恢复动作被运行时拦截（工具标注变更/未标注），未执行；请管理员复核标注后重试。"}
-                    await emit(st, run, "openops.rca.updated", message="恢复动作被拦截，未执行", payload=st.rca)
+                # 工具被运行时拦截（标注热更新/未标注/模板未绑定）：同样不得采纳模型「已恢复」文本（B6-RT-001）。
+                # st.rca 可能为 None（如空模板全量剪枝，工具从未运行，B7-SEC-001）——结论必须照样落审计。
+                msg = "任务结束：恢复动作被运行时拦截（工具标注变更/未标注/模板未绑定），未执行——请管理员复核配置"
+                conclusion = "恢复动作被运行时拦截（工具标注变更/未标注/模板未绑定），未执行；请管理员复核配置后重试。"
+                st.rca = {**(st.rca or rca(1, "范围")), "conclusion": conclusion}
+                await emit(st, run, "openops.rca.updated", message="恢复动作被拦截，未执行", payload=st.rca)
             else:
                 # 已执行恢复（或本就无需 ASK）：采纳模型生成的结论（GLM 真实结论 / stub 脚本结论）
                 conclusion = _final_text(agent)
