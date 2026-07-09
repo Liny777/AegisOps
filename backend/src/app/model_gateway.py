@@ -9,9 +9,11 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
-from infra.repositories import model_assets
+from infra import egress
+from infra.repositories import model_assets, secrets
 
 DEFAULT_RUNTIME_MODEL = os.environ.get("OPENOPS_RUNTIME_MODEL", "glm-5.1")
 
@@ -35,17 +37,49 @@ def _spec(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _is_uuid(s: str) -> bool:
+    try:
+        uuid.UUID(s)
+        return True
+    except (ValueError, AttributeError):
+        return False
+
+
+async def _user_llm_spec(llm_config_id: str, user_id: str) -> dict[str, Any] | None:
+    """用户自定义 LLM 解析为 runtime spec（C2：修静默回退——选中用户 LLM 不再退回平台模型）。
+
+    携带 `secret_ref_id`（不解密），由 runtime 在构建边界瞬时 decrypt（SEC-001）；base_url 过 egress。
+    """
+    cfg = await secrets.get_llm_config(llm_config_id)
+    if cfg is None or cfg["user_id"] != user_id or cfg.get("status") != "active":
+        return None
+    egress.check_llm_egress(cfg["base_url"])  # 每次调用边界复校（28.4）
+    return {
+        "provider": "openai_compatible",
+        "model_id": cfg["model_name"],
+        "display_name": cfg["display_name"],
+        "base_url": _openai_base_url(cfg["base_url"]),
+        "user_secret_ref_id": str(cfg["secret_ref_id"]),  # 用户 Secret 引用（不解密）
+        "is_user_llm": True,
+    }
+
+
 async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str, Any] | None:
-    """在**该用户授权范围内**解析运行模型：选中值 → 平台默认 → 首个带 secret_env_var 的可用模型 → None(stub)。"""
+    """在**该用户授权范围内**解析运行模型。
+
+    优先级：选中平台模型（授权内）→ 选中的用户自定义 LLM → 平台默认 → 首个带 secret_env_var 的可用 → None(stub)。
+    C2：选中用户 LLM 时解析用户配置（不再静默回退平台模型）；用户 LLM 不可用（禁用/越权）时才回退默认。
+    """
     rows = await model_assets.list_available_for_user(user_id)
     by_id = {r["model_id"]: r for r in rows}
-    target = None
     if selected and selected in by_id:
-        target = by_id[selected]
-    elif DEFAULT_RUNTIME_MODEL in by_id:
-        target = by_id[DEFAULT_RUNTIME_MODEL]
-    else:
-        target = next((r for r in rows if r["secret_env_var"]), None)
+        return _spec(by_id[selected])
+    if selected and _is_uuid(selected):  # UUID 形状 → 可能是用户自定义 LLM 的 llm_config_id（平台 model_id 非 UUID）
+        user_spec = await _user_llm_spec(selected, user_id)
+        if user_spec is not None:
+            return user_spec
+        # 选中值既非平台授权模型、也非本人可用 LLM → 回退平台默认（不静默采纳无效选择）
+    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r["secret_env_var"]), None)
     if target is None or not target.get("secret_env_var"):
         return None  # 无可用真模型 → stub
     return _spec(target)

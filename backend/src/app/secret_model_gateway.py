@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.errors import ApiError, Err
-from infra import crypto
+from infra import crypto, egress
 from infra.db import row_json
 from infra.external import llm_provider_client
 from infra.repositories import secrets
@@ -21,12 +21,14 @@ async def list_secrets(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def create_llm_config(user: dict[str, Any], req: Any) -> dict[str, Any]:
-    api_key = None
-    if req.secret_ref_id:
-        s = await secrets.get_secret(req.secret_ref_id)
-        if s is None or s["user_id"] != user["user_id"] or s["status"] != "active":
-            raise ApiError(Err.SECRET_REQUIRED, "密钥不可用，请重新选择或创建")
-        api_key = crypto.decrypt(s["ciphertext"])  # 仅探测瞬时使用，不出网关
+    # SECRET_REQUIRED（修 schema 不一致：user_llm_config.secret_ref_id NOT NULL，缺 secret 不能建）
+    if not req.secret_ref_id:
+        raise ApiError(Err.SECRET_REQUIRED, "用户自定义 LLM 必须绑定一个已录入的密钥")
+    egress.check_llm_egress(req.base_url)  # SSRF 防护（13/28.4）：拦 localhost/metadata/内网基础设施
+    s = await secrets.get_secret(req.secret_ref_id)
+    if s is None or s["user_id"] != user["user_id"] or s["status"] != "active":
+        raise ApiError(Err.SECRET_REQUIRED, "密钥不可用，请重新选择或创建")
+    api_key = crypto.decrypt(s["ciphertext"])  # 仅探测瞬时使用，不出网关
     probe = await llm_provider_client.probe(req.base_url, req.model_name, api_key)
     if not probe["ok"] or not probe["supports_tool_calling"]:
         raise ApiError(Err.MODEL_PROBE_FAILED, "模型探测失败或不支持 tool calling，不能设为 active")

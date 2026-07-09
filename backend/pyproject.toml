@@ -9,6 +9,7 @@ dependencies = [
   "pydantic>=2.8.0",
   "psycopg[binary,pool]>=3.2.0",
   "httpx>=0.27.0",  # oModel real adapter（OPENOPS_OMODEL=real）与外部 HTTP 客户端
+  "cryptography>=42.0.0",  # Secret 应用层加密（Fernet + key 轮换，13 号 SEC-001）
 ]
 
 [project.optional-dependencies]

@@ -109,25 +109,44 @@ def _build_stub_model() -> Any:
     return StubRcaModel()
 
 
-def _build_model(st: TaskState) -> Any:
-    """有平台模型元数据 + 环境变量 API Key → 真 OpenAI 兼容模型（如 glm-5.1）；否则回退 stub。
+async def _build_model(st: TaskState) -> Any:
+    """构建运行模型：平台模型（env Key）或用户自定义 LLM（PG 用户 Secret，构建边界瞬时解密）；否则 stub。
 
-    API Key 只在此处从环境变量取，构建 credential 后即用即弃，绝不落 PG / 日志 / 事件 / 审计（SEC-001）。
+    API Key 只在此处取用、构建 credential 后即用即弃，绝不落 PG / 日志 / 事件 / 审计（SEC-001）。
     """
     spec = st.model_spec
-    if spec and spec.get("secret_env_var"):
+    if not spec:
+        return _build_stub_model()
+    api_key: str | None = None
+    if spec.get("is_user_llm"):  # 用户自定义 LLM（C2）：从 PG 用户 Secret 在构建边界瞬时解密
+        api_key = await _decrypt_user_secret(str(spec["user_secret_ref_id"]))
+    elif spec.get("secret_env_var"):  # 平台模型：从环境变量取 Key
         api_key = os.environ.get(spec["secret_env_var"])
-        if api_key:
-            from agentscope.credential import OpenAICredential
-            from agentscope.model import OpenAIChatModel
+    if api_key:
+        from agentscope.credential import OpenAICredential
+        from agentscope.model import OpenAIChatModel
 
-            return OpenAIChatModel(
-                credential=OpenAICredential(api_key=api_key),
-                model=spec["model_id"],
-                stream=False,
-                client_kwargs={"base_url": spec["base_url"]} if spec.get("base_url") else None,
-            )
+        return OpenAIChatModel(
+            credential=OpenAICredential(api_key=api_key),
+            model=spec["model_id"],
+            stream=False,
+            client_kwargs={"base_url": spec["base_url"]} if spec.get("base_url") else None,
+        )
     return _build_stub_model()
+
+
+async def _decrypt_user_secret(secret_ref_id: str) -> str | None:
+    """用户 LLM Secret 在模型构建边界瞬时解密（SEC-001：不落 PG/日志/事件/审计）。runtime→infra 合规。"""
+    from infra import crypto
+    from infra.repositories import secrets
+
+    row = await secrets.get_secret(secret_ref_id)
+    if row is None or row.get("status") != "active":
+        return None
+    try:
+        return crypto.decrypt(row["ciphertext"])
+    except ValueError:  # key 不匹配 / 密文损坏
+        return None
 
 
 def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
@@ -307,7 +326,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
-            model=_build_model(st),
+            model=await _build_model(st),
             toolkit=toolkit,
             state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context(st)),
         )

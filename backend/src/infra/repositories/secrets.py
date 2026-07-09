@@ -4,6 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from infra import crypto
 from infra.db import exec1, jsonb, q_all, q_one
 
 
@@ -16,9 +17,10 @@ async def create_secret(
         insert into user_secret
           (secret_ref_id, user_id, secret_name, secret_type, provider, ciphertext, nonce, key_version,
            fingerprint, status, created_by, last_updated_by)
-        values (%(s)s, %(u)s, %(n)s, %(t)s, %(p)s, %(c)s, '', 'v1', %(f)s, 'active', %(u)s, %(u)s)
+        values (%(s)s, %(u)s, %(n)s, %(t)s, %(p)s, %(c)s, '', %(kv)s, %(f)s, 'active', %(u)s, %(u)s)
         """,
-        {"s": sid, "u": user_id, "n": secret_name, "t": secret_type, "p": provider, "c": ciphertext, "f": fp},
+        {"s": sid, "u": user_id, "n": secret_name, "t": secret_type, "p": provider, "c": ciphertext,
+         "f": fp, "kv": crypto.current_key_version()},
     )
     return {"secret_ref_id": sid, "fingerprint": fp}
 

@@ -8,7 +8,7 @@ from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, sco
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
-from infra.repositories import agent_teams, audit, runs, runtime_config, templates
+from infra.repositories import agent_teams, audit, runs, runtime_config, secrets, templates
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
 from sandbox.executor import executor as sandbox_executor
@@ -279,6 +279,11 @@ async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str,
     if not req.llm_config_id and req.model_source:
         if not await model_asset_service.is_authorized(user["user_id"], req.model_source):
             raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该模型未对你授权，请联系管理员申请白名单")
+    # 用户自定义 LLM（C2：修静默回退——选中前校验归属+可用，避免选无效配置后跑成平台模型）
+    if req.llm_config_id:
+        cfg = await secrets.get_llm_config(req.llm_config_id)
+        if cfg is None or cfg["user_id"] != user["user_id"] or cfg.get("status") != "active":
+            raise ApiError(Err.SECRET_REQUIRED, "所选自定义 LLM 不可用（不存在/未激活/非本人），请重新选择")
     label = req.llm_config_id or req.model_source
     if st:
         st.selected_model = label
