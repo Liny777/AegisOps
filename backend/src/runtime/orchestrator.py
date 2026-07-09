@@ -1,6 +1,8 @@
 """Mock 编排器：把一次 Task 按「巡检→定界→RCA→ASK→恢复→结论」脚本化推进。
 
-真实 AgentScope 2.0.3 runtime（B7 块）替换本模块；事件语义/审计投影保持不变。
+真实 AgentScope 2.0.3 runtime（B1 块，见 runtime/agentscope_runtime.py）与本模块**同签名并存**，
+由环境变量 OPENOPS_RUNTIME 选择；本模块保留为 mock **test-double**（pytest/demo 可回退）。
+两条后端经 runtime.emit 共享发射，事件语义/审计投影一致。
 每步：先写 audit_event（事实源）再 publish SSE（体验）。敏感字段禁入事件（SEC-002）。
 """
 from __future__ import annotations
@@ -10,72 +12,12 @@ import os
 from typing import Any
 
 from infra.external import http_mcp_client
-from infra.repositories import audit, runs
-from runtime import events
+from infra.repositories import runs
+from runtime.emit import emit as _emit
+from runtime.rca_demo import rca as _rca
 from runtime.task_registry import TaskState
 
 DELAY_MS = int(os.environ.get("OPENOPS_ORCH_DELAY_MS", "900"))
-
-
-def _rca(revision: int, phase: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
-    base: dict[str, Any] = {
-        "revision": revision,
-        "title": "支付延迟突增",
-        "phaseLabel": phase,
-        "tiles": [
-            {"label": "症状", "value": "下单 P99 180ms→1.4s"},
-            {"label": "时间窗", "value": "10:02 起 · 持续 9min"},
-            {"label": "影响面", "value": "APP-A 支付下单 · 0.6% 错误"},
-            {"label": "当前阶段", "value": phase},
-        ],
-        "steps": [
-            {"num": 1, "label": "范围", "state": "done"},
-            {"num": 2, "label": "证据", "state": "done" if revision >= 2 else "active"},
-            {"num": 3, "label": "假设", "state": "done" if revision >= 2 else "waiting"},
-            {"num": 4, "label": "验证", "state": "active" if revision >= 2 else "waiting"},
-            {"num": 5, "label": "结论", "state": "done" if revision >= 3 else "waiting"},
-        ],
-        "currentQ": "Redis 连接饱和是慢查询导致，还是连接泄漏导致？",
-        "why": "两者恢复动作不同：慢查询→限流/优化，连接泄漏→重启释放。",
-        "facts": [
-            {"text": "10:02 P99 由 180ms 升至 1.4s，错误率 0.6%"},
-            {"text": "svc-payment-api → Redis active 连接打满（1000/1000）"},
-        ],
-        "unknowns": [{"text": "连接是否泄漏还是被慢查询长期占用"}],
-        "sources": [
-            {"name": "Prometheus", "status": "done", "tone": "good"},
-            {"name": "Loki", "status": "running" if revision < 2 else "done", "tone": "warning" if revision < 2 else "good"},
-            {"name": "oModel 拓扑", "status": "done", "tone": "good"},
-        ],
-        "hypotheses": [
-            {"text": "H1 Redis 连接泄漏（svc-a 未释放）", "tag": "支持", "tagTone": "good", "conf": 0.72 if revision < 3 else 0.9},
-            {"text": "H2 下游慢查询占用连接", "tag": "部分支持", "tagTone": "warning", "conf": 0.41},
-        ],
-        "actions": [
-            {"tier": "立即", "text": "重启 svc-payment-api 实例 svc-a 释放连接", "confirm": True, "impact": "3 实例",
-             "status": "待确认" if revision < 3 else "已执行", "statusTone": "warning" if revision < 3 else "good"},
-            {"tier": "短期", "text": "对 Redis 连接加 max-idle 与超时回收", "impact": "配置", "status": "建议", "statusTone": "neutral"},
-        ],
-        "conclusion": "根因倾向 H1（连接泄漏）：重启 svc-a 后确认连接回落即可定论。"
-        if revision < 3 else "已确认 H1：重启 svc-a 后连接数回落、P99 恢复 210ms，事件闭环。",
-    }
-    base.update(extra or {})
-    return base
-
-
-async def _emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -> None:
-    trace = str(run["audit_trace_id"])
-    await audit.insert_event(
-        audit_trace_id=trace, event_type=event_type, user_id=st.user_id,
-        run_id=st.run_id, instance_id=str(run["agent_team_instance_id"]), task_id=st.task_id,
-        action=kw.get("action", ""), decision=kw.get("decision"), reason_code=kw.get("reason_code"),
-        payload_redacted=kw.get("payload"), external_request_id=kw.get("external_request_id"),
-    )
-    events.publish(st.run_id, events.envelope(
-        st.run_id, event_type, task_id=st.task_id, message=kw.get("message", ""),
-        reason_code=kw.get("reason_code"), severity=kw.get("severity", "info"),
-        payload=kw.get("payload"), audit_trace_id=trace,
-    ))
 
 
 async def _sleep(st: TaskState) -> bool:
