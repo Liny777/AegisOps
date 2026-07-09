@@ -12,8 +12,8 @@
 | B2 | Model Gateway + GLM（平台模型元数据 + env Key 构建 `OpenAIChatModel`，无 Key 回退 stub；`model.call.*` 事件；脱敏失败） | `e4feef2` `6512d2b` `a3a9380` | docs/test/B2-* |
 | B3 | Scope Service + oModel 可切换 adapter（`OPENOPS_OMODEL`；30s TTL、分态 fail-closed、revision 回写） | `96d7702` | docs/test/B3-* |
 | B4 | Tool Gateway + 平台 HTTP MCP 受控调用链（标注/Scope/Secret/`X-OpenOps-*` header/审计；用户 MCP 隔离） | `0cd9898` | docs/test/B4-* |
-| B5 | CopilotKit/AG-UI 工作台接管（`POST /agent-runs/{id}/agui` AG-UI 标准事件流 + `@ag-ui/client` HttpAgent 适配器 + 流式对话；`VITE_OPENOPS_TRANSPORT` 可回退 SSE） | `fcef0f8` | — |
-| B6 | 资产对账 + 配置热更新 + 设置页写闭环（`derive_config_version` 不可变链结转绑定；reconcile：source=openops/checksum 补版本/schema_hash 变化标注不继承；Gateway 边界热更新 + `runtime_plan.updated`；设置页三 tab 写闭环 + `POST /assets:reconcile`） | 见 git log | — |
+| B5 | CopilotKit/AG-UI 工作台接管（`POST /agent-runs/{id}/agui` AG-UI 标准事件流 + `@ag-ui/client` HttpAgent 适配器 + 流式对话；`VITE_OPENOPS_TRANSPORT` 可回退 SSE。口径：**headless**——AG-UI 协议 + HttpAgent 客户端，UI 仍为本设计系统自定义组件（30.3/32 号拍板），非 CopilotKit 成品聊天组件，B5-OBS-001） | `fcef0f8` `deca093` | docs/test/B5-* |
+| B6 | 资产对账 + 配置热更新 + 设置页写闭环（`derive_config_version` 不可变链结转绑定；reconcile：source=openops/checksum 补版本/schema_hash 变化标注不继承；Gateway 边界热更新 + `runtime_plan.updated`；设置页三 tab 写闭环 + `POST /assets:reconcile`） | `c7f4118` | — |
 
 ## 待办（块序同 33 号）
 
@@ -40,3 +40,5 @@
 - AgentState 跨进程 PG 持久化（现 per-run 内存，B1 备注）。
 - `/me` 返回平铺结构（`data.user_id`），联调按当前实现读（B4-OBS-001）。
 - 前端 npm audit 2 项依赖提示，单独评估升级（B*-DEP-001）。
+- 前端主 chunk >500KB（Vite 提示），后续 code splitting（B5-FE-001）。
+- lifespan 收口直接遍历 `task_registry._by_run`，可提取为 `task_registry.drain()` 公有入口（B5-BE-001 修复的整洁化跟进）。
