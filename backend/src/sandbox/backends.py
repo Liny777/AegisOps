@@ -16,7 +16,7 @@ import os
 import shutil
 import tempfile
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass
@@ -114,18 +114,22 @@ class DockerContainerBackend:
                 "NetworkMode": "bridge",
                 "Memory": self._mem_mib * 1024 * 1024,
                 "NanoCpus": int(self._cpu * 1e9),
-                "Tmpfs": {self.CONTAINER_WORKDIR: "rw,size=256m", "/tmp": "rw,size=64m"},
+                # mode=1777：非 root（uid 1000）可写 workspace/tmp（B8-SBX-001：默认 root:root 755 写不了）
+                "Tmpfs": {self.CONTAINER_WORKDIR: "rw,size=256m,mode=1777", "/tmp": "rw,size=64m,mode=1777"},
             },
         }
         self._container = await self._docker.containers.create(config=cfg)
         await self._container.start()
 
-    async def exec_shell(self, command: list[str], *, timeout: float, max_output_bytes: int) -> ExecResult:
+    async def _exec(self, command: list[str], *, timeout: float) -> Any:
         from agentscope.workspace import DockerBackend
 
         be = DockerBackend(self._container, self.CONTAINER_WORKDIR)
+        return await asyncio.wait_for(be.exec_shell(command, cwd=self.CONTAINER_WORKDIR), timeout=timeout)
+
+    async def exec_shell(self, command: list[str], *, timeout: float, max_output_bytes: int) -> ExecResult:
         try:
-            r = await asyncio.wait_for(be.exec_shell(command, cwd=self.CONTAINER_WORKDIR), timeout=timeout)
+            r = await self._exec(command, timeout=timeout)
         except asyncio.TimeoutError:
             return ExecResult(-1, "", "execution timed out", timed_out=True)
         out = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()
@@ -133,16 +137,25 @@ class DockerContainerBackend:
         return ExecResult(int(r.exit_code), _truncate(out, max_output_bytes), _truncate(err, max_output_bytes))
 
     async def write_file(self, rel_path: str, data: bytes) -> None:
-        from agentscope.workspace import DockerBackend
+        # B8-SBX-001：只读 rootfs 下 Docker 拒绝 put_archive/get_archive（archive API 整体被禁），
+        # 改用 exec_shell 向可写 tmpfs 落盘：base64 内联 + mkdir -p 建嵌套父目录（put_archive 不可靠）。
+        import base64
 
-        be = DockerBackend(self._container, self.CONTAINER_WORKDIR)
-        await be.write_file(f"{self.CONTAINER_WORKDIR}/{rel_path}", data)
+        path = f"{self.CONTAINER_WORKDIR}/{rel_path}"
+        b64 = base64.b64encode(data).decode("ascii")
+        parent = path.rsplit("/", 1)[0]
+        r = await self._exec(["sh", "-lc", f"mkdir -p '{parent}' && printf %s '{b64}' | base64 -d > '{path}'"], timeout=30)
+        if int(r.exit_code) != 0:
+            err = r.stderr if isinstance(r.stderr, bytes) else str(r.stderr).encode()
+            raise RuntimeError(f"write_file 失败：{err.decode('utf-8', 'replace')[:200]}")
 
     async def read_file(self, rel_path: str) -> bytes:
-        from agentscope.workspace import DockerBackend
+        import base64
 
-        be = DockerBackend(self._container, self.CONTAINER_WORKDIR)
-        return await be.read_file(f"{self.CONTAINER_WORKDIR}/{rel_path}")
+        path = f"{self.CONTAINER_WORKDIR}/{rel_path}"
+        r = await self._exec(["sh", "-lc", f"base64 '{path}'"], timeout=30)
+        out = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()
+        return base64.b64decode(out)
 
     async def close(self) -> None:
         try:

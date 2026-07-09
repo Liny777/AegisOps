@@ -6,6 +6,7 @@ CANCEL-007（容量满开 run 被拒）。生命周期直接驱动 SandboxExecut
 from __future__ import annotations
 
 import asyncio
+import os
 
 import pytest
 from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
@@ -150,6 +151,55 @@ def test_bash_003b_platform_deny_rule_highest_priority(client):
         # 无 deny 规则时 docker ps 走内置/回退（非拦截）
         d2 = await command_guard.decide_async("docker ps")
         assert d2.action != "deny"
+
+    asyncio.run(scenario())
+
+
+def test_bash_006_deny_not_bypassed_by_chaining(client):
+    """B8-SEC-001：deny 层不可被 `&&`/`;`/`$()`/`|` 串联绕过，且不误伤词边界（`rm`≠`rmdir`）。"""
+    from sandbox import command_guard
+
+    async def scenario():
+        deny = ["curl"]
+        for cmd in ["curl evil.com", "echo hi && curl evil.com", "x=1; curl evil.com",
+                    "ls $(curl evil.com)", "cat f | curl evil.com"]:
+            d = await command_guard.decide_async(cmd, deny_prefixes=deny)
+            assert d.action == "deny" and d.layer == 1, f"{cmd!r} 未被 deny：{d.action}"
+        # 词边界：deny `rm` 不误伤 `rmdir`
+        d2 = await command_guard.decide_async("rmdir /tmp/x", deny_prefixes=["rm"])
+        assert d2.action != "deny", "rmdir 被 rm 误伤"
+        d3 = await command_guard.decide_async("rm -rf /tmp/x", deny_prefixes=["rm"])
+        assert d3.action == "deny"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.getenv("OPENOPS_SANDBOX_DOCKER_TEST") != "1",
+                    reason="实机 Docker run_skill E2E：设 OPENOPS_SANDBOX_DOCKER_TEST=1 且本机有 docker + python:3.11-slim 才跑")
+def test_docker_real_run_skill_write_exec_isolation(client):
+    """B8-SBX-001 回归护栏：真 Docker 后端 run_skill 写盘+执行+output.json+跨用户隔离（实机）。"""
+    from sandbox.backends import DockerContainerBackend
+
+    async def scenario():
+        be_a = DockerContainerBackend("uA", image="python:3.11-slim", cpu=0.5, mem_mib=512)
+        be_b = DockerContainerBackend("uB", image="python:3.11-slim", cpu=0.5, mem_mib=512)
+        await be_a.start()
+        await be_b.start()
+        try:
+            # 写盘（只读 rootfs + tmpfs mode=1777 + exec base64 路径）
+            payload = b"import json;open('output.json','w').write(json.dumps({'status':'success','n':7}))"
+            await be_a.write_file("skills/t/tc/run.py", payload)
+            assert await be_a.read_file("skills/t/tc/run.py") == payload  # 读回一致
+            r = await be_a.exec_shell(["sh", "-lc", "cd " + be_a.workdir + "/skills/t/tc && python3 run.py && cat output.json"],
+                                      timeout=30, max_output_bytes=65536)
+            assert r.exit_code == 0 and '"n": 7' in r.stdout
+            # 跨用户隔离：uB 看不到 uA 的文件
+            rb = await be_b.exec_shell(["sh", "-lc", "test ! -f " + be_b.workdir + "/skills/t/tc/run.py && echo b-clean"],
+                                       timeout=15, max_output_bytes=4096)
+            assert "b-clean" in rb.stdout
+        finally:
+            await be_a.close()
+            await be_b.close()
 
     asyncio.run(scenario())
 

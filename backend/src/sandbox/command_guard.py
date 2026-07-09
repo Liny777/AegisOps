@@ -40,15 +40,31 @@ class GuardDecision:
     layer: int
 
 
+# 命令串联/替换分隔符：拆成子段后逐段比对 deny（B8-SEC-001：deny 不可被 `&&`/`;`/`$()` 绕过）
+_CHAIN_SPLIT = re.compile(r"[;\n]|&&|\|\||\||\$\(|`|<\(|>\(")
+
+
+def _segments(command: str) -> list[str]:
+    """把一条命令按 shell 串联/替换算符拆成子命令段（含子 shell 里的命令），逐段做 deny 匹配。"""
+    return [s.strip() for s in _CHAIN_SPLIT.split(command) if s.strip()]
+
+
 def _matches_deny(command: str, deny_prefixes: list[str]) -> str | None:
-    cmd = command.strip()
-    for p in deny_prefixes:
-        p = p.strip()
-        if not p:
-            continue
-        base = p[:-2].strip() if p.endswith(":*") else p  # 前缀通配 `docker:*`
-        if cmd == base or cmd.startswith(base + " ") or cmd.startswith(base):
-            return p
+    """token 级 deny：对每个子命令段的首 token 词边界匹配（B8-SEC-001 串联绕过 + B8-OBS-002 前缀误伤）。
+
+    - 词边界：`rm` 命中 `rm -rf x` 但不误伤 `rmdir`（旧 startswith 会误命中）。
+    - 串联：`echo hi && curl x` 的每段都比对，`curl` deny 不再被降级为 ask。
+    """
+    for seg in _segments(command):
+        first = seg.split(None, 1)[0] if seg.split() else seg  # 段内首 token（可执行名）
+        for p in deny_prefixes:
+            p = p.strip()
+            if not p:
+                continue
+            base = p[:-2].strip() if p.endswith(":*") else p  # 前缀通配 `docker:*`
+            # 词边界匹配：段等于 base、或 base 后接空白（`rm ...`），不 startswith 裸拼接
+            if first == base or seg == base or seg.startswith(base + " ") or seg.startswith(base + "\t"):
+                return p
     return None
 
 
