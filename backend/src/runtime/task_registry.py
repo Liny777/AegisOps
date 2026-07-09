@@ -27,6 +27,7 @@ class TaskState:
     # 模板 default_tools（B7·二：RuntimePlan 只装配模板内工具）。
     # None=未经 start_task 装配（无模板信息）；set()（含空集）=模板集合上界——空模板即零平台工具（B7-SEC-001）。
     template_tools: set[str] | None = None
+    sandbox_cfg: dict[str, Any] | None = None  # 沙箱运行配置（容量/deny 前缀）；容器内 Bash 工具用（B8·补2）
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

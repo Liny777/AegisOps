@@ -82,11 +82,18 @@ def _build_stub_model() -> Any:
 
         async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kw):  # noqa: ANN001
             self._step += 1
+            # B8·补2：env 门控插入一步容器内诊断（只读→直接执行），证明 Bash 工具接进 agent 循环；
+            # 默认关不改现有 demo 序列（recover 仍是第 3 步）；真 GLM 无论此开关都可自主调该工具。
+            bash_on = os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1"
             if self._step in (1, 2):  # 巡检 + 定界
                 return ChatResponse(content=[ToolCallBlock(
                     type="tool_call", id=f"q{self._step}", name="query_resource",
                     input=json.dumps({"appid": "APP-A"}))], is_last=False)
-            if self._step == 3:  # 恢复动作（ask → 审批）
+            if bash_on and self._step == 3:  # 容器内只读诊断
+                return ChatResponse(content=[ToolCallBlock(
+                    type="tool_call", id="cmd", name="run_container_command",
+                    input=json.dumps({"command": "ls -la"}))], is_last=False)
+            if self._step == (4 if bash_on else 3):  # 恢复动作（ask → 审批）
                 return ChatResponse(content=[ToolCallBlock(
                     type="tool_call", id="rec", name="recover_execute",
                     input=json.dumps({"appid": "APP-A", "action": "restart"}))], is_last=False)
@@ -171,6 +178,18 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         await emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
         return ToolResponse(content=[TextBlock(type="text", text="recovered")])
 
+    async def run_container_command(command: str) -> Any:
+        """在你的隔离容器内执行一条 shell 命令做诊断/巡检（如查看日志、进程、磁盘）。只读命令直接执行，
+        写类命令需人工批准，危险命令（rm -rf /、chmod 777 等）会被拒绝。破坏面仅限你自己的容器。
+
+        Args:
+            command: 要执行的 shell 命令，例如 `ls -la` 或 `cat /var/log/app.log | tail -n 50`。
+        """
+        from runtime.sandbox_bash import run_container_command as _run_cmd  # 局部导入避免环
+
+        text = await _run_cmd(st, run, command)
+        return ToolResponse(content=[TextBlock(type="text", text=text)])
+
     fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)}
     anns = st.tool_annotations or {}
     tools = []
@@ -183,6 +202,9 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             pruned.append((name, "TOOL_BLOCKED"))  # B7·二：模板未绑定（空集=零平台工具，B7-SEC-001）
         else:
             pruned.append((name, "TOOL_NOT_ANNOTATED" if ann is None else "TOOL_BLOCKED"))
+    # 容器内受控 Bash 工具（B8·补2）：始终可用（会话容器就位），命令级四层裁决在 run_bash 内，
+    # 工具级 agentscope 权限设为 allow（tool 本身受控，逐命令再裁决）。
+    tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
     return Toolkit(tools=tools), pruned
 
 
@@ -204,6 +226,8 @@ def _permission_context(st: TaskState) -> Any:
             ask[name] = [_rule(name, PermissionBehavior.ASK)]
         else:
             allow[name] = [_rule(name, PermissionBehavior.ALLOW)]
+    # 容器内 Bash 工具（B8·补2）：tool 级 allow（受控工具），命令级四层裁决/审批在 run_bash 内做
+    allow["run_container_command"] = [_rule("run_container_command", PermissionBehavior.ALLOW)]
     return PermissionContext(allow_rules=allow, ask_rules=ask)
 
 

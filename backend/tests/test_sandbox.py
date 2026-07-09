@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 
 import pytest
-from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
+from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
 from sandbox.executor import executor as sandbox_executor
+from test_agui import _annotate_recover_no_ask
 
 _CFG = {"max_user_containers_per_host": 2, "user_container_idle_ttl_minutes": 15,
         "container_cpu_limit": 0.5, "container_memory_limit_mib": 2048}
@@ -172,6 +174,27 @@ def test_bash_006_deny_not_bypassed_by_chaining(client):
         assert d3.action == "deny"
 
     asyncio.run(scenario())
+
+
+def test_bash_007_agent_loop_drives_container_command(client, runtime_backend, monkeypatch):
+    """B8·补2：run_container_command 接进 agent 循环——任务边界由编排器/agentscope 驱动容器内命令
+    （双 runtime），产生 sandbox.command.executed 审计（证明非仅测试直调原语，编排器真引用）。"""
+    monkeypatch.setenv("OPENOPS_DEMO_SANDBOX_STEP", "1")  # 开 demo 诊断步
+    _annotate_recover_no_ask(client)  # 免审批，任务一次跑完到诊断步+恢复
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])  # 容器随 run 开启就位（会话期常驻）
+    unwrap(client.post(
+        f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+        json={"client_request_id": f"t{time.time_ns()}", "input_text": "排查支付延迟"},
+    ))
+    wait_until(lambda: unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/state",
+                                         headers=USER_HEADERS))["active_task"]["status"] in ("completed", "failed"),
+               timeout=10.0)
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    types = [e["event_type"] for e in events]
+    assert "openops.sandbox.command.executed" in types  # agent 循环驱动了容器内命令
+    cmd_ev = next(e for e in events if e["event_type"] == "openops.sandbox.command.executed")
+    assert cmd_ev["payload_redacted_json"]["command"] == "ls -la"
 
 
 @pytest.mark.skipif(os.getenv("OPENOPS_SANDBOX_DOCKER_TEST") != "1",

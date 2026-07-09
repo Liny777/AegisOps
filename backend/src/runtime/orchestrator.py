@@ -52,6 +52,13 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
+        # B8·补2：容器内只读诊断（证明 run_bash 接进编排循环）；env 门控默认关，不改现有 demo 序列
+        if os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1":
+            from runtime.sandbox_bash import run_container_command
+            await run_container_command(st, run, "ls -la")
+            if not await _sleep(st):
+                return await _finish_cancel(st, run)
+
         # 恢复动作（B4）：未标注/blocked → 直接 fail-closed（不 ASK，Gateway 拦）；
         # allowed 免审批 → 直接执行；allowed 需审批 → ASK
         ann = (st.tool_annotations or {}).get("recover_execute")

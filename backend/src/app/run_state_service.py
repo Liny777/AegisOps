@@ -112,6 +112,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     st.template_tools = set(((tpl_ver or {}).get("content_json") or {}).get("main", {}).get("default_tools", []))
     anns = await mcp_tool_annotation_service.runtime_annotations()
     st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
+    st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 
