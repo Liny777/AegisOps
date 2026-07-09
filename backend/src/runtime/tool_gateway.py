@@ -4,8 +4,9 @@
 `X-OpenOps-*` header 注入 → HTTP call → `openops.tool.call.*` 审计+SSE。任何一环不满足即
 fail-closed：发 `tool.blocked`（审计+SSE，带 reason_code）并抛 ToolBlocked。
 
-- 标注/ScopeContext 由 app 层在 start_task 时挂到 TaskState（st.tool_annotations / st.scope_ctx），
-  runtime 只消费不回读 DB（22 号分层：runtime 不 import app）。
+- ScopeContext 由 app 层在 start_task 时挂到 TaskState（st.scope_ctx）；标注以启动快照（st.tool_annotations）
+  为兜底，**每次工具边界回读 DB 取最新标注**（28.7 热更新，B6），读失败回退快照（ASSET-006 缓存兜底）。
+  分层铁律不变：runtime 只 import infra，不 import app。
 - **ASK 不在本模块**：是否 ASK 由标注 `is_approval_required` 决定、由两条 runtime 在调用前完成
   （agentscope=PermissionContext / mock=脚本）；invoke() 被调用即意味着已获批 —— 因此 Secret
   在这里才解出，天然满足「ASK 拒绝或超时不解密 Secret」（28.2 顺序）。

@@ -23,6 +23,7 @@
 - 模板版本「另存新版本/发布/禁用」写闭环、模板资产「绑定/解绑」写路径（按模板 content_json 过滤展示）。
 - 白名单页管理动作、审计 Trace 串联增强。
 - 覆盖 ADMIN-* 用例：普通用户 forbidden、管理员修改写审计、标注变化影响 Tool Gateway 运行时判断（已有）。
+- 28.7「模板升级 → 已有实例边界自动派生配置版本」（`config.version.derived`/`config.changed_notice`）——B6 只落了标注热读，此项归本块（B6-SCOPE-001）。
 - ⚠ 部署注意：升级到 B7·一 需在既有 PG 上执行两新表 DDL（`model_asset`/`model_access_grant`，schema.sql 幂等可直接重放）；旧 `platform_runtime_config` 的 `platform_model` 域已废弃不再读写。
 
 ## B8 Docker Sandbox + 用户 Skill 执行
@@ -43,5 +44,6 @@
 - AgentState 跨进程 PG 持久化（现 per-run 内存，B1 备注）。
 - `/me` 返回平铺结构（`data.user_id`），联调按当前实现读（B4-OBS-001）。
 - 前端 npm audit 2 项依赖提示，单独评估升级（B*-DEP-001）。
-- 前端主 chunk >500KB（Vite 提示），后续 code splitting（B5-FE-001）。
+- 前端主 chunk >500KB（Vite 提示），后续 code splitting（B5-FE-001/B6-FE-001）。
 - lifespan 收口直接遍历 `task_registry._by_run`，可提取为 `task_registry.drain()` 公有入口（B5-BE-001 修复的整洁化跟进）。
+- Tool Gateway 每工具边界一次标注 DB 读（读失败回退快照）；高频循环/多实例场景评估短 TTL 内存缓存（B6-PERF-001）。

@@ -144,6 +144,7 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
                 succeeded_msg="P99 / 错误率 / Redis 连接数已取回" if n == 1 else "svc-payment-api 依赖图已取回",
             )
         except ToolBlocked as e:  # tool.blocked 已发；把失败回给模型收口
+            st.tool_blocked = True  # B6-RT-001
             return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         st.rca = rca(1 if n == 1 else 2, "定界中" if n == 1 else "验证 H1")
         await emit(st, run, "openops.rca.updated",
@@ -164,6 +165,7 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
                 succeeded_msg="恢复动作已执行（execution 受控追踪）",
             )
         except ToolBlocked as e:
+            st.tool_blocked = True  # B6-RT-001：软处理拦截也要抑制「已恢复」结论
             return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         st.rca = rca(3, "已闭环")
         await emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
@@ -171,12 +173,15 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
 
     fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)}
     anns = st.tool_annotations or {}
-    tools = [
-        FunctionTool(fn, name=name, is_read_only=readonly)
-        for name, (fn, readonly) in fns.items()
-        if anns.get(name, {}).get("status") == "allowed"  # 标注裁剪（28.2）
-    ]
-    return Toolkit(tools=tools)
+    tools = []
+    pruned: list[tuple[str, str]] = []  # (tool_name, reason_code) —— 裁剪也要有审计（B6-RT-001③）
+    for name, (fn, readonly) in fns.items():
+        ann = anns.get(name)
+        if ann is not None and ann.get("status") == "allowed":  # 标注裁剪（28.2）
+            tools.append(FunctionTool(fn, name=name, is_read_only=readonly))
+        else:
+            pruned.append((name, "TOOL_NOT_ANNOTATED" if ann is None else "TOOL_BLOCKED"))
+    return Toolkit(tools=tools), pruned
 
 
 def _permission_context(st: TaskState) -> Any:
@@ -247,11 +252,17 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     from agentscope.state import AgentState
 
     try:
+        toolkit, pruned = _build_toolkit(st, run)
+        for name, reason in pruned:  # 裁剪审计对齐 mock（B6-RT-001③）：未标注/blocked 工具运行前即留痕
+            st.tool_blocked = True  # 任何工具被裁剪都不得宣称闭环（保守 fail-closed）
+            await emit(st, run, "openops.tool.blocked", severity="warning", action=name,
+                       message=f"工具 {name} 未进入运行工具集（{'未标注' if reason == 'TOOL_NOT_ANNOTATED' else '已拉黑'}），运行时 fail-closed",
+                       reason_code=reason, payload={"tool": name, "phase": "toolkit_build"})
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
             model=_build_model(st),
-            toolkit=_build_toolkit(st, run),
+            toolkit=toolkit,
             state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context(st)),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
@@ -301,16 +312,22 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
 
         if st.status == "running":
             st.status = "completed"
-            if not recovery_denied:
+            if recovery_denied:
+                # 恢复被拒绝/超时：保留「未执行」结论，不被模型最终文本覆盖（B2-RUNTIME-001）
+                msg = "任务结束：恢复动作未执行（按用户决策），保持观察"
+            elif st.tool_blocked:
+                # 工具被运行时拦截（标注热更新/未标注裁剪）：同样不得采纳模型「已恢复」文本（B6-RT-001）
+                msg = "任务结束：恢复动作被运行时拦截（工具标注变更/未标注），未执行——请管理员复核标注"
+                if st.rca:
+                    st.rca = {**st.rca, "conclusion": "恢复动作被运行时拦截（工具标注变更/未标注），未执行；请管理员复核标注后重试。"}
+                    await emit(st, run, "openops.rca.updated", message="恢复动作被拦截，未执行", payload=st.rca)
+            else:
                 # 已执行恢复（或本就无需 ASK）：采纳模型生成的结论（GLM 真实结论 / stub 脚本结论）
                 conclusion = _final_text(agent)
                 if conclusion and st.rca:
                     st.rca = {**st.rca, "conclusion": conclusion}
                     await emit(st, run, "openops.rca.updated", message="结论已更新（模型生成）", payload=st.rca)
                 msg = "任务完成：根因 H1，已按审批执行恢复"
-            else:
-                # 恢复被拒绝/超时：保留「未执行」结论，不被模型最终文本覆盖（B2-RUNTIME-001）
-                msg = "任务结束：恢复动作未执行（按用户决策），保持观察"
             await emit(st, run, "openops.task.completed", action="task", message=msg,
                        payload={"conclusion": st.rca.get("conclusion")} if st.rca else None)
     except asyncio.CancelledError:
