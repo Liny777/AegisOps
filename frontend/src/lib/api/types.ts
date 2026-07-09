@@ -25,6 +25,8 @@ export interface AgentInstance {
   status: "active" | "disabled" | "deleted";
   active_config_version: string;
   counts: string; // "2 Skill · 1 MCP"
+  desc?: string; // 新原型：卡片描述行
+  model?: string; // 新原型：模型提供商行
 }
 
 /* -------------------------- 对话工作台 -------------------------- */
@@ -92,7 +94,8 @@ export interface RcaAction {
 export interface RcaCardData {
   title: string;
   phaseLabel: string;
-  time: string;
+  time?: string;
+  revision?: number;
   tiles: RcaTile[];
   steps: RcaStep[];
   currentQ: string;
@@ -155,6 +158,26 @@ export interface WorkbenchState {
   skills: Skill[];
   models: ModelOption[];
   currentModel: string;
+  // real 模式运行态
+  runId?: string;
+  runStatus?: "active" | "closed";
+  taskId?: string;
+  taskStatus?: string; // running/completed/cancelled/failed
+  lastEventSeq?: number;
+}
+
+/** 后端 openops.* 事件 envelope（30.4）。 */
+export interface OpenOpsEvent {
+  event_id: string;
+  event_type: string;
+  agent_run_id: string;
+  task_id?: string | null;
+  sequence: number;
+  severity: string;
+  message: string;
+  reason_code?: string | null;
+  payload_redacted_json?: Record<string, unknown>;
+  occurred_at: string;
 }
 
 /* ---------------------------- 实例配置 ---------------------------- */

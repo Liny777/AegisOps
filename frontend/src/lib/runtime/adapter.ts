@@ -1,9 +1,9 @@
 /**
  * OpenOpsRuntimeAdapter —— 对话运行态适配器边界（对齐 30.4「CopilotKit 与 AG-UI 事件映射」）。
  *
- * 本 pass（mock）：对话工作台直接消费 `lib/api` 的 getWorkbenchState()（后端批量 /ag-ui + /state + demo）。
+ * 当前最小闭环：对话工作台通过 OpenOps REST 创建 Run/Task，通过 /state 恢复，通过 /events/stream 消费 SSE。
  * 后续（真实联调）：接入 CopilotKit v2 + AG-UI —— 参考 frontend-v2 的 Node CopilotKit-runtime sidecar
- *   （server/copilot-runtime.ts：HttpAgent → AgentScope /agui/run SSE、interrupt→tool-call 桥、消息持久化），
+ *   （server/copilot-runtime.ts：HttpAgent → OpenOps AG-UI 代理 SSE、interrupt→tool-call 桥、消息持久化），
  *   把标准事件（RUN_STARTED / TEXT_MESSAGE_* / TOOL_CALL_*）交给 <CopilotChat>，
  *   openops.* 自定义事件（scope/runtime_plan/tool.blocked/approval/model…）写入下方状态投影，
  *   断线/刷新以 GET /agent-runs/{id}/state 恢复。此文件即该 live adapter 的落点。

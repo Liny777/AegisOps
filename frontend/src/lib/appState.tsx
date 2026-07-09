@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { api, demoIdentity } from "./api";
+import { api } from "./api";
 import type { AgentInstance, Me } from "./api/types";
 
 interface AppCtx {
@@ -25,8 +25,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   const toggleRole = useCallback(() => {
-    demoIdentity.role = demoIdentity.role === "user" ? "platform_admin" : "user";
-    demoIdentity.user = demoIdentity.role === "platform_admin" ? "admin" : "0026demo01";
+    // demo：user ↔ admin 身份切换（角色事实在后端 DB）
+    setMe((m) => {
+      api.switchRole(!(m?.role === "platform_admin"));
+      return m;
+    });
     setTick((t) => t + 1);
   }, []);
 

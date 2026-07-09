@@ -1,0 +1,126 @@
+/** 后端 shape → 前端视图模型投影（/state、audit_event、approval_request、openops.* 事件）。 */
+import type {
+  ActivityGroup,
+  ActivityNode,
+  AgentInstance,
+  HitlCardData,
+  OpenOpsEvent,
+  RcaCardData,
+} from "./types";
+import type { Tone } from "../../theme/tokens";
+
+/* 事件类型 → 活动线节点外观 */
+const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = {
+  "agent_run.created": { icon: "player-play", tone: "neutral", title: "会话创建" },
+  "task.started": { icon: "bolt", tone: "neutral", title: "任务启动" },
+  "openops.task.started": { icon: "bolt", tone: "neutral", title: "任务启动" },
+  "scope.resolved": { icon: "target", tone: "good", title: "范围解析" },
+  "openops.scope.resolved": { icon: "target", tone: "good", title: "范围解析" },
+  "openops.tool.call.started": { icon: "tool", tone: "neutral", title: "工具调用" },
+  "openops.tool.call.succeeded": { icon: "circle-check", tone: "good", title: "工具完成" },
+  "openops.tool.blocked": { icon: "ban", tone: "danger", title: "工具被阻断" },
+  "openops.rca.updated": { icon: "report-search", tone: "neutral", title: "RCA 更新" },
+  "openops.approval.required": { icon: "shield-check", tone: "warning", title: "ASK · 等待批准" },
+  "approval.approved": { icon: "shield-check", tone: "good", title: "已批准" },
+  "openops.approval.approved": { icon: "shield-check", tone: "good", title: "已批准" },
+  "approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
+  "openops.approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
+  "openops.approval.timeout": { icon: "clock-x", tone: "warning", title: "批准超时" },
+  "openops.task.completed": { icon: "flag-check", tone: "good", title: "任务完成" },
+  "openops.task.cancelled": { icon: "player-stop", tone: "warning", title: "任务取消" },
+  "openops.run.closed": { icon: "lock", tone: "neutral", title: "会话关闭" },
+  "openops.model.selected": { icon: "cpu", tone: "neutral", title: "模型切换" },
+  "model.selected": { icon: "cpu", tone: "neutral", title: "模型切换" },
+  "run.closed": { icon: "lock", tone: "neutral", title: "会话关闭" },
+};
+
+function meta(t: string) {
+  return EVENT_META[t] ?? { icon: "info-circle", tone: "neutral" as Tone, title: t };
+}
+
+const hhmm = (iso?: string) => (iso ? iso.slice(11, 16) : "");
+
+/** audit_event 行 → 活动节点。 */
+export function auditToNode(e: Record<string, unknown>): ActivityNode {
+  const t = String(e.event_type ?? "");
+  const m = meta(t);
+  const p = (e.payload_redacted_json ?? {}) as Record<string, unknown>;
+  return {
+    id: String(e.audit_event_id ?? e.event_id ?? Math.random()),
+    title: m.title,
+    tool: t,
+    detail: String(p.summary ?? p.reason ?? e.reason_code ?? "") || String(e.action ?? ""),
+    time: hhmm(String(e.occurred_at ?? "")),
+    icon: m.icon,
+    tone: m.tone,
+  };
+}
+
+/** openops.* SSE 事件 → 活动节点。 */
+export function eventToNode(e: OpenOpsEvent): ActivityNode {
+  const m = meta(e.event_type);
+  return {
+    id: e.event_id,
+    title: m.title,
+    tool: e.event_type,
+    detail: e.message,
+    time: hhmm(e.occurred_at),
+    icon: m.icon,
+    tone: m.tone,
+  };
+}
+
+export function groupNodes(nodes: ActivityNode[], running: boolean): ActivityGroup[] {
+  const items = nodes.map((n, i) => ({
+    ...n,
+    running: running && i === nodes.length - 1,
+  }));
+  return [{ label: "时间线", items }];
+}
+
+/** approval_request 行 → HITL 卡数据。 */
+export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
+  const args = (a.arguments_redacted_json ?? {}) as Record<string, unknown>;
+  const expire = a.expire_at ? new Date(String(a.expire_at)) : null;
+  const remainMs = expire ? expire.getTime() - Date.now() : 0;
+  const mm = Math.max(0, Math.floor(remainMs / 60000));
+  const ss = Math.max(0, Math.floor((remainMs % 60000) / 1000));
+  return {
+    approval_request_id: String(a.approval_request_id),
+    title: "需要人工批准",
+    tool: String(a.tool_call_name ?? "tool"),
+    summary: "Agent 建议执行受控恢复动作，确认后才会解密凭证并调用工具。",
+    facts: [
+      { label: "工具", value: String(a.tool_call_name ?? "") },
+      { label: "目标", value: String(args.target ?? args.appid ?? "—") },
+      { label: "动作", value: String(args.action ?? "—") },
+      { label: "任务", value: String(a.task_id ?? "—") },
+    ],
+    countdown: `${mm}:${String(ss).padStart(2, "0")}`,
+    status: "pending",
+    tone: "warning",
+  };
+}
+
+/** 后端 rca payload（编排器产）→ RcaCardData（形状即为前端模型，补 time）。 */
+export function projectRca(p: Record<string, unknown> | null | undefined): RcaCardData | undefined {
+  if (!p || !p.title) return undefined;
+  return { ...(p as unknown as RcaCardData), time: hhmm(new Date().toISOString().replace("T", " ").slice(0, 16) + ":00") || undefined };
+}
+
+/** 后端实例行 → 前端 AgentInstance。 */
+export function projectInstance(r: Record<string, unknown>): AgentInstance {
+  return {
+    instance_id: String(r.instance_id ?? r.agent_team_instance_id),
+    name: String(r.instance_name ?? r.name ?? ""),
+    template: "感知快恢 Agent",
+    workspace_id: String(r.workspace_id ?? ""),
+    workspace_label: String(r.workspace_id ?? ""),
+    scope_revision: String(r.scope_revision ?? ""),
+    status: (r.status as AgentInstance["status"]) ?? "active",
+    active_config_version: String(r.active_config_version_id ?? "").slice(0, 8),
+    counts: "",
+    desc: "自动接管告警，执行诊断与恢复",
+    model: "千问 (平台提供)",
+  };
+}

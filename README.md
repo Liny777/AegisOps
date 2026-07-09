@@ -10,6 +10,12 @@
 
 ## 快速启动
 
+先启动 PostgreSQL：
+
+```bash
+docker compose up -d
+```
+
 后端：
 
 ```bash
@@ -20,6 +26,8 @@ pip install -e ".[test]"
 uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18081
 ```
 
+首次启动时 PostgreSQL 会通过 `backend/sql/openops_v1_core.sql` 建表；后端 lifespan 会幂等写入 demo 用户、白名单、感知快恢模板、平台 MCP 标注、沙箱容量配置和平台模型。
+
 前端：
 
 ```bash
@@ -28,12 +36,31 @@ npm install
 npm run dev
 ```
 
-默认前端使用 mock facade，可不依赖后端直接演示。切到真实后端时设置：
+默认前端使用 real facade，经 Vite 代理访问后端 `/api/openops/v1/...`。需要纯 UI 演示时可临时切到 mock：
 
 ```bash
-VITE_OPENOPS_API_MODE=real
+VITE_OPENOPS_API_MODE=mock
 VITE_OPENOPS_API_BASE=http://localhost:18081
 ```
+
+## 验证
+
+```bash
+cd backend
+pytest -q
+
+cd ../frontend
+npm run build
+```
+
+最小闭环：白名单用户进入初始化向导，创建 AgentTeam 后进入工作台，发送任务后通过 SSE 看到 `scope.resolved`、巡检/定界、RCA 更新和 ASK 卡，批准后任务完成；审计可在管理台或 run 审计页回放。
+
+## Demo 用户
+
+- 普通用户：`0026demo01`
+- 平台管理员：`admin`
+
+前端侧栏角色切换会修改 `X-OpenOps-Mock-User` 请求头；角色与白名单事实仍以 PG seed 数据为准。
 
 ## 设计边界
 

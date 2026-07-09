@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
 import type { ModelOption, Skill } from "../lib/api/types";
@@ -21,6 +21,10 @@ export function Composer({
   const [slashOpen, setSlashOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [model, setModel] = useState(currentModel);
+
+  useEffect(() => {
+    setModel(currentModel);
+  }, [currentModel]);
 
   const isSlash = /^\/(\S*)$/.test(text);
   const filteredSkills = useMemo(() => {

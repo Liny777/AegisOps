@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
-import { Icon, Button, Dot } from "../ui";
+import { Icon, Button, Dot, Pill } from "../ui";
 import { api } from "../lib/api";
 import type { AdminTableData, SandboxCfg, AuditNode } from "../lib/api/types";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
@@ -17,25 +17,34 @@ const TITLES: Record<string, string> = {
   audit: "审计与 Trace 回放",
 };
 
-/** 管理台（isAdminPage）：通用表 / 沙箱 / 审计 + 模板编辑模态 + Tool 标注抽屉。 */
+/** 管理台（isAdminPage·新原型）：通用表（资产含 Skill/MCP/模型 三 Tab）/ 可编辑沙箱 / 审计。 */
 export function AdminConsole() {
   const { page = "templates" } = useParams();
   const [table, setTable] = useState<AdminTableData | null>(null);
-  const [sandbox, setSandbox] = useState<SandboxCfg[]>([]);
   const [audit, setAudit] = useState<AuditNode[]>([]);
   const [tab, setTab] = useState(0);
   const [tplOpen, setTplOpen] = useState<string | null>(null);
   const [annotTool, setAnnotTool] = useState<string | null>(null);
 
   const isTable = ["templates", "mcp-tools", "assets", "users"].includes(page);
+  // 新原型：资产页三 Tab（Skill / MCP / 模型）
+  const assetTabs = [{ key: "skill", label: "Skill" }, { key: "mcp", label: "MCP" }, { key: "model", label: "模型" }];
+
+  const loadTable = useCallback(async (p: string, tabIdx: number) => {
+    if (p === "assets" && assetTabs[tabIdx]?.key === "model") {
+      setTable(await api.getAdminTable("models"));
+    } else {
+      setTable(await api.getAdminTable(p));
+    }
+  }, []);
 
   useEffect(() => {
     setTab(0);
-    if (isTable) api.getAdminTable(page).then(setTable);
-    else if (page === "sandbox") api.getSandboxCfg().then(setSandbox);
+    if (isTable) void loadTable(page, 0);
     else if (page === "audit") api.getAuditTimeline().then(setAudit);
-  }, [page, isTable]);
+  }, [page, isTable, loadTable]);
 
+  const tabs = page === "assets" ? assetTabs : table?.tabs;
   const gridCols = useMemo(() => (table ? table.cols.map((c) => c.width ?? "1fr").join(" ") : ""), [table]);
 
   const onCellAction = (key?: string, rowId?: string) => {
@@ -55,10 +64,14 @@ export function AdminConsole() {
         <div style={{ maxWidth: 1080, margin: "0 auto" }}>
           {isTable && table ? (
             <>
-              {table.tabs ? (
+              {tabs ? (
                 <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
-                  {table.tabs.map((tb, i) => (
-                    <span key={tb.key} onClick={() => setTab(i)} style={{ fontSize: 12.5, fontWeight: 600, padding: "6px 13px", borderRadius: radius.md, cursor: "pointer", border: `1px solid ${i === tab ? color.brand : color.border}`, color: i === tab ? color.brand : color.textNav, background: i === tab ? color.brandTintBg : "#fff" }}>{tb.label}</span>
+                  {tabs.map((tb, i) => (
+                    <span key={tb.key}
+                      onClick={() => { setTab(i); void loadTable(page, i); }}
+                      style={{ fontSize: 12.5, fontWeight: 600, padding: "6px 14px", borderRadius: radius.md, cursor: "pointer", color: i === tab ? "#fff" : color.textNav, background: i === tab ? color.brand : "#eceef2" }}>
+                      {tb.label}
+                    </span>
                   ))}
                 </div>
               ) : null}
@@ -87,27 +100,11 @@ export function AdminConsole() {
             </>
           ) : null}
 
-          {page === "sandbox" ? (
-            <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>可调配置</div>
-              <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 14 }}>修改需填写 reason 并写审计；影响新建容器与后续容量准入，已存在容器重建后生效。</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 20px" }}>
-                {sandbox.map((c) => (
-                  <div key={c.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${color.borderFaint}`, padding: "8px 0" }}>
-                    <div>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, fontFamily: "ui-monospace, monospace" }}>{c.key}</div>
-                      <div style={{ fontSize: 11, color: color.textSubtle }}>{c.desc}</div>
-                    </div>
-                    <span style={{ fontSize: 13, fontWeight: 700, color: color.brandStrong }}>{c.val}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
+          {page === "sandbox" ? <SandboxPanel /> : null}
 
           {page === "audit" ? (
             <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>回放时间线 · 支付延迟突增定界</div>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>回放时间线 · 最近事件</div>
               {audit.map((n, i) => (
                 <div key={i} style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 10, paddingBottom: 12 }}>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -126,8 +123,102 @@ export function AdminConsole() {
         </div>
       </div>
 
-      <TemplateEditorModal open={!!tplOpen} name={tplOpen === "tpl_sre_fast_recovery" ? "感知快恢 Agent" : "模板编辑器"} onClose={() => setTplOpen(null)} />
+      <TemplateEditorModal open={!!tplOpen} name="感知快恢 Agent" onClose={() => setTplOpen(null)} />
       <ToolAnnotationSlideIn open={!!annotTool} tool={annotTool ?? ""} onClose={() => setAnnotTool(null)} />
     </>
+  );
+}
+
+/** 新原型：沙箱可调配置——只读 → 编辑中 → reason 必填 → 确认生效（写审计 runtime_config.updated）。 */
+function SandboxPanel() {
+  const [cfg, setCfg] = useState<SandboxCfg[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(() => { api.getSandboxCfg().then(setCfg); }, []);
+  useEffect(load, [load]);
+
+  const startEdit = () => {
+    setDraft(Object.fromEntries(cfg.map((c) => [c.key, c.val])));
+    setEditing(true);
+    setSaved(false);
+    setErr("");
+  };
+  const cancel = () => { setEditing(false); setReason(""); setErr(""); };
+  const confirm = async () => {
+    if (!reason.trim()) {
+      setErr("请填写变更原因——配置修改必须写审计（runtime_config.updated）。");
+      return;
+    }
+    const updates: Record<string, unknown> = {};
+    for (const c of cfg) if (draft[c.key] !== c.val) updates[c.key] = draft[c.key];
+    try {
+      await api.saveSandboxCfg(updates, reason.trim());
+      setEditing(false);
+      setReason("");
+      setErr("");
+      setSaved(true);
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>可调配置</div>
+          <div style={{ fontSize: 12, color: color.textSubtle }}>修改需填写 reason 并写审计；影响新建容器与后续容量准入，已存在容器重建后生效。</div>
+        </div>
+        {!editing ? (
+          <Button variant="secondary" icon="pencil" onClick={startEdit} style={{ fontSize: 12.5, padding: "8px 15px" }}>编辑</Button>
+        ) : (
+          <Pill tone="warning">编辑中</Pill>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 20px" }}>
+        {cfg.map((c) => (
+          <div key={c.key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, borderBottom: `1px solid ${color.borderFaint}`, padding: "8px 0" }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, fontFamily: "ui-monospace, monospace" }}>{c.key}</div>
+              <div style={{ fontSize: 11, color: color.textSubtle }}>{c.desc}</div>
+            </div>
+            {editing ? (
+              <input
+                value={draft[c.key] ?? ""}
+                onChange={(e) => setDraft((d) => ({ ...d, [c.key]: e.target.value }))}
+                style={{ width: 110, height: 32, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 10px", fontSize: 13, fontWeight: 700, color: color.brandStrong, textAlign: "right", outline: "none" }}
+              />
+            ) : (
+              <span style={{ fontSize: 13, fontWeight: 700, color: color.brandStrong }}>{c.val}</span>
+            )}
+          </div>
+        ))}
+      </div>
+      {editing ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 16, paddingTop: 14, borderTop: `1px solid ${color.borderInner}` }}>
+            <input
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="变更原因（必填，写入审计 runtime_config.updated）"
+              style={{ flex: 1, height: 36, border: `1px solid #dfe2e8`, borderRadius: radius.md, padding: "0 12px", fontSize: 12.5, outline: "none" }}
+            />
+            <Button variant="secondary" onClick={cancel} style={{ fontSize: 12.5, padding: "9px 16px" }}>取消</Button>
+            <Button onClick={confirm} style={{ fontSize: 12.5, padding: "9px 18px" }}>确认生效</Button>
+          </div>
+          {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 8 }}>{err}</div> : null}
+        </>
+      ) : null}
+      {saved ? (
+        <div style={{ fontSize: 12, color: color.goodText, fontWeight: 600, marginTop: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+          <Icon name="circle-check" size={14} color={color.goodText} />配置已生效：影响新建容器与后续容量准入，已写入审计事件 runtime_config.updated。
+        </div>
+      ) : null}
+    </div>
   );
 }

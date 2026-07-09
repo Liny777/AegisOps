@@ -1,0 +1,37 @@
+"""Secret & Model Gateway：Secret 密文落库 + LLM 配置探测（MODEL-001/002，SEC-001）。"""
+from __future__ import annotations
+
+from typing import Any
+
+from domain.errors import ApiError, Err
+from infra import crypto
+from infra.db import row_json
+from infra.external import llm_provider_client
+from infra.repositories import secrets
+
+
+async def create_secret(user: dict[str, Any], req: Any) -> dict[str, Any]:
+    fp = crypto.fingerprint(req.secret_value)
+    cipher = crypto.encrypt(req.secret_value)
+    return await secrets.create_secret(user["user_id"], req.secret_name, req.secret_type, req.provider, cipher, fp)
+
+
+async def list_secrets(user: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row_json(r) for r in await secrets.list_secrets_masked(user["user_id"])]
+
+
+async def create_llm_config(user: dict[str, Any], req: Any) -> dict[str, Any]:
+    api_key = None
+    if req.secret_ref_id:
+        s = await secrets.get_secret(req.secret_ref_id)
+        if s is None or s["user_id"] != user["user_id"] or s["status"] != "active":
+            raise ApiError(Err.SECRET_REQUIRED, "密钥不可用，请重新选择或创建")
+        api_key = crypto.decrypt(s["ciphertext"])  # 仅探测瞬时使用，不出网关
+    probe = await llm_provider_client.probe(req.base_url, req.model_name, api_key)
+    if not probe["ok"] or not probe["supports_tool_calling"]:
+        raise ApiError(Err.MODEL_PROBE_FAILED, "模型探测失败或不支持 tool calling，不能设为 active")
+    return await secrets.create_llm_config(user["user_id"], req.model_dump(), probe)
+
+
+async def list_llm_configs(user: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row_json(r) for r in await secrets.list_llm_configs(user["user_id"])]

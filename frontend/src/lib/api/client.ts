@@ -1,14 +1,17 @@
-/** 真实后端 HTTP 客户端 —— 解析后端 envelope / error，注入 mock 鉴权头。 */
-import type { Role } from "./types";
+/** 真实后端 HTTP 客户端 —— 解析 envelope / error，注入 mock 登录头（B8 换真 IAM Cookie）。 */
 
 const BASE = import.meta.env.VITE_OPENOPS_API_BASE ?? "/api";
 
-/** demo 身份（对应后端 X-OpenOps-Mock-* 头），由侧栏 user/admin 切换驱动。 */
-export const demoIdentity: { role: Role; whitelisted: boolean; user: string } = {
-  role: "user",
-  whitelisted: true,
+/** demo 身份（角色/白名单事实在后端 PG；头只声明“我是谁”）。侧栏切换驱动。 */
+export const demoIdentity: { user: string; name: string } = {
   user: "0026demo01",
+  name: "林一",
 };
+
+export function setDemoUser(user: string, name: string): void {
+  demoIdentity.user = user;
+  demoIdentity.name = name;
+}
 
 export class ApiError extends Error {
   code: string;
@@ -28,9 +31,9 @@ export async function apiFetch<T = unknown>(
     method: opts.method ?? "GET",
     headers: {
       "Content-Type": "application/json",
-      "X-OpenOps-Mock-Role": demoIdentity.role,
-      "X-OpenOps-Mock-Whitelist": demoIdentity.whitelisted ? "true" : "false",
       "X-OpenOps-Mock-User": demoIdentity.user,
+      // HTTP 头仅限 ISO-8859-1：中文名须 URI 编码，后端 unquote
+      "X-OpenOps-Mock-Name": encodeURIComponent(demoIdentity.name),
     },
     body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
   });
@@ -41,3 +44,5 @@ export async function apiFetch<T = unknown>(
   }
   return (json as { data?: T }).data as T;
 }
+
+export const crid = (): string => "crid_" + Math.random().toString(36).slice(2, 10);
