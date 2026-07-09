@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app import runtime_adapter, scope_service
+from app import model_gateway, runtime_adapter, scope_service
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
@@ -92,6 +92,8 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         audit_trace_id=trace,
     ))
 
+    # 平台模型元数据（无 Key）挂到 TaskState；agentscope 后端据此建真模型或回退 stub（mock 后端忽略）
+    st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model)
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 

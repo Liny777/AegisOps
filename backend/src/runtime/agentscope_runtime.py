@@ -75,6 +75,27 @@ def _build_stub_model() -> Any:
     return StubRcaModel()
 
 
+def _build_model(st: TaskState) -> Any:
+    """有平台模型元数据 + 环境变量 API Key → 真 OpenAI 兼容模型（如 glm-5.1）；否则回退 stub。
+
+    API Key 只在此处从环境变量取，构建 credential 后即用即弃，绝不落 PG / 日志 / 事件 / 审计（SEC-001）。
+    """
+    spec = st.model_spec
+    if spec and spec.get("secret_env_var"):
+        api_key = os.environ.get(spec["secret_env_var"])
+        if api_key:
+            from agentscope.credential import OpenAICredential
+            from agentscope.model import OpenAIChatModel
+
+            return OpenAIChatModel(
+                credential=OpenAICredential(api_key=api_key),
+                model=spec["model_id"],
+                stream=False,
+                client_kwargs={"base_url": spec["base_url"]} if spec.get("base_url") else None,
+            )
+    return _build_stub_model()
+
+
 def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     """两工具包现有 http_mcp_client；工具内发 openops.tool.call.* + rca.updated（与 mock 同序）。"""
     from agentscope.message import TextBlock
@@ -83,6 +104,11 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     counter = {"query": 0}
 
     async def query_resource(appid: str) -> Any:
+        """查询指定应用的可观测数据（指标 P99/错误率、Redis 连接数、服务依赖拓扑），用于巡检与定界。
+
+        Args:
+            appid: 目标应用 ID，例如 APP-A。
+        """
         counter["query"] += 1
         n = counter["query"]
         await emit(st, run, "openops.tool.call.started",
@@ -99,6 +125,12 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         return ToolResponse(content=[TextBlock(type="text", text=r.get("result_summary", "ok"))])
 
     async def recover_execute(appid: str, action: str) -> Any:
+        """对指定应用执行恢复动作（如重启实例释放连接）。变更类操作，需人工批准后才会执行。
+
+        Args:
+            appid: 目标应用 ID。
+            action: 恢复动作，例如 restart。
+        """
         r = await http_mcp_client.call_tool("recover_execute", {"appid": appid, "action": action})
         await emit(st, run, "openops.tool.call.succeeded", message="恢复动作已执行（execution 受控追踪）",
                    action="recover_execute", external_request_id=r["request_id"],
@@ -172,7 +204,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
-            model=_build_stub_model(),
+            model=_build_model(st),
             toolkit=_build_toolkit(st, run),
             state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context()),
         )
