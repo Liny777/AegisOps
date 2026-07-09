@@ -61,6 +61,31 @@ def test_sec_010_user_llm_config_requires_secret_and_egress(client):
     assert r2.status_code == 400 and r2.json()["error"]["code"] == "MODEL_PROBE_FAILED"
 
 
+def test_ext_007_external_real_switches_fail_loud_without_endpoint(client, monkeypatch):
+    """C3：外部依赖 real 开关未配端点 → raise（不静默降级）；mock 默认路径不受影响。"""
+    from infra.external import http_mcp_client, mcp_registry_client, skill_hub_client
+
+    async def scenario():
+        # mock 默认：正常返回
+        assert (await http_mcp_client.call_tool("query_resource", {"appid": "A"}))["status"] == "ok"
+        assert (await skill_hub_client.download_skill_package("inspection", 2))["entrypoint"]
+        # real 但无 BASE_URL → fail loud
+        for env, fn in [
+            ("OPENOPS_MCP", lambda: http_mcp_client.call_tool("query_resource", {"appid": "A"})),
+            ("OPENOPS_MCPREGISTRY", lambda: mcp_registry_client.discover_tools("m")),
+            ("OPENOPS_SKILLHUB", lambda: skill_hub_client.list_skills("u")),
+        ]:
+            monkeypatch.setenv(env, "real")
+            try:
+                await fn()
+                assert False, f"{env}=real 无端点应 raise"
+            except RuntimeError as e:
+                assert "未联" in str(e) or "BASE_URL" in str(e)
+            monkeypatch.delenv(env)
+
+    asyncio.run(scenario())
+
+
 def test_sec_011_user_llm_select_no_silent_fallback(client):
     """C2：选中不存在/非本人的用户 LLM → SECRET_REQUIRED（不再静默回退平台模型）。"""
     instance = create_instance(client)

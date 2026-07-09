@@ -32,18 +32,32 @@ _MOCK_ENTRYPOINT = "python3 run.py"
 MOCK_INSPECTION_CHECKSUM = package_checksum(_MOCK_FILES)
 
 
+_MOCK_LIST = [
+    {
+        "skill_key": "inspection",
+        "display_name": "巡检 inspection",
+        "source": "openops",
+        "source_type": "platform",
+        "version_no": 2,
+        "checksum_sha256": MOCK_INSPECTION_CHECKSUM,
+        "status": "active",
+    }
+]
+
+
 async def list_skills(user_id: str) -> list[dict[str, Any]]:
-    return [
-        {
-            "skill_key": "inspection",
-            "display_name": "巡检 inspection",
-            "source": "openops",
-            "source_type": "platform",
-            "version_no": 2,
-            "checksum_sha256": MOCK_INSPECTION_CHECKSUM,
-            "status": "active",
-        }
-    ]
+    """对账用资产清单。OPENOPS_SKILLHUB=real 时经 29.3 GET /skills?source=openops 拉取（未联环境 raise）。"""
+    if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
+        base = os.getenv("OPENOPS_SKILLHUB_BASE_URL")
+        if not base:
+            raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（29.3 Skill Hub 未联）")
+        import httpx
+
+        async with httpx.AsyncClient(timeout=15) as cli:
+            r = await cli.get(f"{base}/skills", params={"source": "openops", "user_id": user_id})
+            r.raise_for_status()
+            return r.json().get("data", r.json())
+    return list(_MOCK_LIST)
 
 
 def _unzip(data: bytes) -> dict[str, bytes]:

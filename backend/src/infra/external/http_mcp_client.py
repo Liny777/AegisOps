@@ -1,10 +1,12 @@
-"""平台 HTTP MCP client（mock）：tools/call（EXT-005/006）。
+"""平台 HTTP MCP client：tools/call（EXT-005/006，28.2 出站契约）。
 
-headers 由 Tool Gateway 构建传入（平台=X-OpenOps-*，用户=空）；mock 记录 last_call 供测试断言
-header 注入口径，真实实现替换本模块时签名不变。
+`OPENOPS_MCP=mock(默认)|real`：real 经平台 MCP 网关 `OPENOPS_MCP_BASE_URL` 发 `POST /tools/{name}:call`，
+Tool Gateway 构建的 headers（平台=Cookie/X-EC2-IP/X-OpenOps-*/effective_appids；用户 MCP=空）原样透传。
+mock 记录 last_call 供测试断言 header 注入口径；两实现签名一致。
 """
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Any
 
@@ -14,6 +16,18 @@ last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 
 async def call_tool(
     tool_name: str, arguments: dict[str, Any], headers: dict[str, str] | None = None
 ) -> dict[str, Any]:
+    if os.getenv("OPENOPS_MCP", "mock").lower() == "real":
+        base = os.getenv("OPENOPS_MCP_BASE_URL")
+        if not base:
+            raise RuntimeError("OPENOPS_MCP=real 需配 OPENOPS_MCP_BASE_URL（平台 MCP 网关未联）")
+        import httpx
+
+        async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30"))) as cli:
+            r = await cli.post(f"{base}/tools/{tool_name}:call", json={"arguments": arguments},
+                               headers=headers or {})
+            r.raise_for_status()
+            return r.json()
+
     global last_call
     last_call = {"tool": tool_name, "arguments": dict(arguments), "headers": dict(headers or {})}
     rid = "req_" + uuid.uuid4().hex[:10]
