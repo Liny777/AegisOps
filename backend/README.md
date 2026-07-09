@@ -4,7 +4,7 @@ FastAPI 后端骨架，先提供 mock runtime 和 mock 外部依赖，用于前�
 
 ```bash
 pip install -e ".[test]"
-uvicorn openops_backend_new.main:app --reload --port 18081
+uvicorn main:app --app-dir src --reload --port 18081
 pytest -q
 ```
 

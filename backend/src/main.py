@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from .mock_store import store
+from mock_store import store
 
 
 class CreateWorkspaceRequest(BaseModel):

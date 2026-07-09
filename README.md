@@ -17,7 +17,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test]"
-uvicorn openops_backend_new.main:app --reload --host 0.0.0.0 --port 18081
+uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18081
 ```
 
 前端：
