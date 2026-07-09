@@ -52,9 +52,12 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
-        # B8·补2：容器内只读诊断（证明 run_bash 接进编排循环）；env 门控默认关，不改现有 demo 序列
+        # C1/B8·补2：容器内跑巡检 Skill（真 ZIP 投递）+ 只读诊断命令（证明 run_skill/run_bash 接进
+        # 编排循环）；env 门控默认关，不改现有 demo 序列
         if os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1":
             from runtime.sandbox_bash import run_container_command
+            from runtime.sandbox_skill import run_bound_skill
+            await run_bound_skill(st, run, "inspection")
             await run_container_command(st, run, "ls -la")
             if not await _sleep(st):
                 return await _finish_cancel(st, run)

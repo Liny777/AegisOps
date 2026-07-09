@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import os
 import time
@@ -23,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from domain.errors import ApiError, Err
+from domain.skill_package import package_checksum
 from sandbox.backends import SandboxBackend, create_backend
 
 _DEFAULT_IMAGE = "python:3.11-slim"
@@ -38,6 +38,10 @@ class SkillResult:
     stdout: str
     stderr: str
     result_json: dict[str, Any] | None = None  # 解析 output.json（若 Skill 写了）
+
+
+# 重导出（tests / 调用方用 executor.package_checksum；真定义在 domain.skill_package）
+__all__ = ["SkillResult", "SandboxExecutor", "executor", "package_checksum"]
 
 
 @dataclass
@@ -151,10 +155,8 @@ class SandboxExecutor:
         c = self._by_user.get(user_id)
         if c is None:
             raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
-        if expected_checksum:
-            digest = hashlib.sha256(b"".join(files[k] for k in sorted(files))).hexdigest()
-            if digest != expected_checksum:
-                raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝执行")
+        if expected_checksum and package_checksum(files) != expected_checksum:
+            raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝执行")
         rel_dir = f"skills/{task_id}/{tool_call_id}"
         for name, data in files.items():
             await c.backend.write_file(f"{rel_dir}/{name}", data)

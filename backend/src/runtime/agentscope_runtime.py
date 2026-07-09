@@ -84,16 +84,20 @@ def _build_stub_model() -> Any:
             self._step += 1
             # B8·补2：env 门控插入一步容器内诊断（只读→直接执行），证明 Bash 工具接进 agent 循环；
             # 默认关不改现有 demo 序列（recover 仍是第 3 步）；真 GLM 无论此开关都可自主调该工具。
-            bash_on = os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1"
+            sbx_on = os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1"
             if self._step in (1, 2):  # 巡检 + 定界
                 return ChatResponse(content=[ToolCallBlock(
                     type="tool_call", id=f"q{self._step}", name="query_resource",
                     input=json.dumps({"appid": "APP-A"}))], is_last=False)
-            if bash_on and self._step == 3:  # 容器内只读诊断
+            if sbx_on and self._step == 3:  # 容器内跑巡检 Skill（真 ZIP 投递 + 容器执行）
+                return ChatResponse(content=[ToolCallBlock(
+                    type="tool_call", id="sk", name="run_platform_skill",
+                    input=json.dumps({"skill_name": "inspection"}))], is_last=False)
+            if sbx_on and self._step == 4:  # 容器内只读诊断命令
                 return ChatResponse(content=[ToolCallBlock(
                     type="tool_call", id="cmd", name="run_container_command",
                     input=json.dumps({"command": "ls -la"}))], is_last=False)
-            if self._step == (4 if bash_on else 3):  # 恢复动作（ask → 审批）
+            if self._step == (5 if sbx_on else 3):  # 恢复动作（ask → 审批）
                 return ChatResponse(content=[ToolCallBlock(
                     type="tool_call", id="rec", name="recover_execute",
                     input=json.dumps({"appid": "APP-A", "action": "restart"}))], is_last=False)
@@ -190,6 +194,18 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         text = await _run_cmd(st, run, command)
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
+    async def run_platform_skill(skill_name: str) -> Any:
+        """执行一个已装配到当前实例的 Skill（平台默认或你绑定的用户 Skill）。Skill 在你的隔离容器内
+        经受控执行，返回结构化结果。未装配的 Skill 会被拒绝。
+
+        Args:
+            skill_name: Skill 名称，例如 `inspection`。
+        """
+        from runtime.sandbox_skill import run_bound_skill  # 局部导入避免环
+
+        text = await run_bound_skill(st, run, skill_name)
+        return ToolResponse(content=[TextBlock(type="text", text=text)])
+
     fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)}
     anns = st.tool_annotations or {}
     tools = []
@@ -205,6 +221,8 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 容器内受控 Bash 工具（B8·补2）：始终可用（会话容器就位），命令级四层裁决在 run_bash 内，
     # 工具级 agentscope 权限设为 allow（tool 本身受控，逐命令再裁决）。
     tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
+    # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
+    tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", is_read_only=False))
     return Toolkit(tools=tools), pruned
 
 
@@ -228,6 +246,8 @@ def _permission_context(st: TaskState) -> Any:
             allow[name] = [_rule(name, PermissionBehavior.ALLOW)]
     # 容器内 Bash 工具（B8·补2）：tool 级 allow（受控工具），命令级四层裁决/审批在 run_bash 内做
     allow["run_container_command"] = [_rule("run_container_command", PermissionBehavior.ALLOW)]
+    # Skill 工具（C1）：tool 级 allow，装配集校验/checksum 在 run_bound_skill 内做
+    allow["run_platform_skill"] = [_rule("run_platform_skill", PermissionBehavior.ALLOW)]
     return PermissionContext(allow_rules=allow, ask_rules=ask)
 
 

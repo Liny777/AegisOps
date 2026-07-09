@@ -59,21 +59,65 @@ def test_sbx_002_capacity_full_rejects_new_session(client):
 
 def test_skill_007_entrypoint_executes_in_container(client):
     """SKILL-007：脚本型 Skill 的 entrypoint 在容器内执行，回结构化 output.json + stdout。"""
-    import hashlib
+    from domain.skill_package import package_checksum
 
     async def scenario():
         await sandbox_executor.ensure_user_container("uS", "r1", _CFG)
         files = {"run.py": b"import json;print('inspect done');open('output.json','w').write(json.dumps({'status':'success','findings':3}))"}
-        checksum = hashlib.sha256(files["run.py"]).hexdigest()
         res = await sandbox_executor.run_skill(
             "uS", task_id="t1", tool_call_id="tc1", entrypoint="python3 run.py",
-            files=files, expected_checksum=checksum)
+            files=files, expected_checksum=package_checksum(files))  # 绑文件名的 checksum（B8-OBS-001）
         assert res.status == "success" and res.exit_code == 0
         assert "inspect done" in res.stdout
         assert res.result_json == {"status": "success", "findings": 3}
         await sandbox_executor.close_all()
 
     asyncio.run(scenario())
+
+
+def test_skill_009_agent_loop_drives_bound_skill(client, runtime_backend, monkeypatch):
+    """C1：run_platform_skill 接进 agent 循环——编排器/agentscope 驱动平台 Skill「inspection」经真 ZIP
+    投递（Skill Hub mock 可执行包）+ 容器内执行，产生 skill.call.succeeded 审计（双 runtime）。"""
+    monkeypatch.setenv("OPENOPS_DEMO_SANDBOX_STEP", "1")
+    _annotate_recover_no_ask(client)
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    unwrap(client.post(
+        f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+        json={"client_request_id": f"t{time.time_ns()}", "input_text": "跑一次巡检 Skill"},
+    ))
+    wait_until(lambda: unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/state",
+                                         headers=USER_HEADERS))["active_task"]["status"] in ("completed", "failed"),
+               timeout=10.0)
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    types = [e["event_type"] for e in events]
+    assert "openops.skill.call.started" in types and "openops.skill.call.succeeded" in types
+    done = next(e for e in events if e["event_type"] == "openops.skill.call.succeeded")
+    assert done["payload_redacted_json"]["skill"] == "inspection"
+    assert done["payload_redacted_json"]["result"]["status"] == "success"  # 容器内 run.py 写的 output.json
+
+
+def test_skill_010_unbound_skill_blocked(client):
+    """C1：未装配的 Skill fail-closed（skill.call.blocked / TOOL_BLOCKED）。"""
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_blk", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {"inspection": {"version_no": 2}}  # 只装配 inspection
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "no_such_skill")
+        assert "未在当前实例装配集" in txt and st.tool_blocked is True
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "openops.skill.call.blocked" for e in events)
 
 
 def test_skill_003_checksum_mismatch_rejected(client):

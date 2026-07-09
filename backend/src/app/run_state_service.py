@@ -113,8 +113,26 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     anns = await mcp_tool_annotation_service.runtime_annotations()
     st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
+    # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）
+    st.available_skills = await _resolve_available_skills(uid, str(inst["active_config_version_id"]))
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
+
+
+async def _resolve_available_skills(uid: str, config_version_id: str) -> dict[str, dict[str, Any]]:
+    """Agent 可执行的 Skill 集合：平台 active（模板层提供）∪ 本实例 main 绑定的用户 Skill。"""
+    from infra.repositories import assets
+
+    out: dict[str, dict[str, Any]] = {}
+    for s in await assets.list_skills(uid, include_platform=True):
+        if s.get("status") == "active" and s.get("skill_key"):
+            out[str(s["skill_key"])] = {"version_no": s.get("version_no"), "checksum": s.get("checksum_sha256"),
+                                        "source_type": s.get("source_type")}
+    for b in await agent_teams.list_binding_details(config_version_id):
+        if b.get("asset_type") == "skill" and b.get("skill_status") in ("enabled", "validated", "uploaded") and b.get("skill_display_name"):
+            out[str(b["skill_display_name"])] = {"version_no": b.get("skill_version_no"),
+                                                 "checksum": None, "source_type": "user"}
+    return out
 
 
 async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any], inst: dict[str, Any]) -> dict[str, Any]:
