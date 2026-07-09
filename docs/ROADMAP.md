@@ -1,54 +1,47 @@
 # OpenOps V1 后续开发块
 
-本仓库当前完成最小闭环：PG + OpenOps REST + SSE + mock runtime + mock 外部依赖。后续按块替换 mock 能力，每块都应独立开发、独立验收。
+> 权威计划在 Obsidian《33-OpenOps V1后续开发计划》（B0-B9，2026-07-09 重排：真 AgentScope 提前到 B1）。
+> 本文件是 repo 内的进度镜像，块编号与 33 号一致；如有出入以 33 号为准（B4-DOC-001 已对齐）。
 
-## B1 Scope Service + oModel 契约
+## 已完成
 
-- 接入真实 oModel workspace/status/resolve。
-- `effective_appids` 只从 oModel resolve 获取，OpenOps 不维护 workspace 到 APPID 映射。
-- 覆盖 SCOPE-* 用例：ready、syncing、empty scope、revision 回写、resolve fail-closed。
+| 块 | 内容 | 关键提交 | 冒烟 |
+|---|---|---|---|
+| B0 | 最小闭环收口与文档对齐（/agent-runs/:id 按 run 恢复、router→service 分层） | `bdd589b` | — |
+| B1 | 真 AgentScope 2.0.3 Runtime 骨架（stub model 复刻 RCA + 原生 permission ASK；mock 留 test-double，`OPENOPS_RUNTIME` 切换） | `249081f` | docs/test/B1-* |
+| B2 | Model Gateway + GLM（平台模型元数据 + env Key 构建 `OpenAIChatModel`，无 Key 回退 stub；`model.call.*` 事件；脱敏失败） | `e4feef2` `6512d2b` `a3a9380` | docs/test/B2-* |
+| B3 | Scope Service + oModel 可切换 adapter（`OPENOPS_OMODEL`；30s TTL、分态 fail-closed、revision 回写） | `96d7702` | docs/test/B3-* |
+| B4 | Tool Gateway + 平台 HTTP MCP 受控调用链（标注/Scope/Secret/`X-OpenOps-*` header/审计；用户 MCP 隔离） | `0cd9898` | docs/test/B4-* |
+| B5 | CopilotKit/AG-UI 工作台接管（`POST /agent-runs/{id}/agui` AG-UI 标准事件流 + `@ag-ui/client` HttpAgent 适配器 + 流式对话；`VITE_OPENOPS_TRANSPORT` 可回退 SSE） | `fcef0f8` | — |
 
-## B2 Tool Gateway + MCP Tool 标注运行时
+## 待办（块序同 33 号）
 
-- 把 mock MCP 调用替换为 Tool Gateway。
-- 平台 HTTP MCP 必须经过 `mcp_tool_annotation`、scope 校验、ASK、Secret、审计。
-- 覆盖 MCP-* 用例：未标注 block、appid 越界、恢复类 tool 走普通 MCP 链路。
+## B6 资产对账 + 配置热更新 + 用户设置页写闭环
 
-## B3 Secret 加密 + Model Gateway
+- 接入真实 Skill Hub / MCP Registry（source=openops、checksum、schema_hash 变化重新标注）。
+- 登录对账、配置页 refresh、后台 reconciler；RuntimePlan 边界热更新。
+- 用户设置页 main role append、实例级 LLM、用户 Skill/HTTP MCP 上传绑定解绑删除；`ASSET_IN_USE`。
 
-- 将当前占位加密替换为正式密钥管理与 key version。
-- 接入 OpenAI-compatible 模型探测、tool calling 校验、上下文预算和 streaming。
-- 覆盖 MODEL-* / SEC-* 用例：Secret 不回显、探测失败不可 active、上下文超限收口。
+## B7 管理台真能力补齐
 
-## B4 资产对账与 RuntimePlan 热更新
+- 模板版本保存/发布/禁用、MCP Tool 标注编辑、白名单、沙箱容量（reason 必填）、审计 Trace 串联。
+- 覆盖 ADMIN-* 用例：普通用户 forbidden、管理员修改写审计、标注变化影响 Tool Gateway 运行时判断。
 
-- 接入真实 Skill Hub / MCP Registry。
-- 完成登录对账、后台 reconciler、schema_hash 变化重新标注。
-- 覆盖 ASSET-* 用例：source=openops、历史绑定不原地改写、禁用后运行时 fail-closed。
+## B8 Docker Sandbox + 用户 Skill 执行
 
-## B5 管理台真 API 全量
+- 用户级容器、task 独立工作目录、资源限制、artifact 回传；执行前校验包 checksum。
+- 沙箱不注入 Cookie/Secret/`X-OpenOps-*`/`effective_appids` 明细；Runner 代理只经 Tool Gateway。
+- 覆盖 SKILL-* / SANDBOX-* 用例：超时、日志截断、Secret/Cookie 不进沙箱。
 
-- 完成模板版本发布、MCP Tool 标注编辑、资产治理、白名单、审计 Trace 查询。
-- 覆盖 ADMIN-* 用例：普通用户 forbidden、管理员修改写审计、沙箱容量配置生效。
+## B9 真实 W3/IAM + E2E + 发布准备
 
-## B6 Docker 沙箱执行器
+- 用公司 W3/IAM Cookie introspect 替换 `X-OpenOps-Mock-User`；保持白名单/管理员/owner 隔离语义。
+- Playwright E2E：准入、初始化、对话+GLM RCA、ASK、取消、关闭、设置页、管理台 forbidden/admin。
+- 发布检查：DDL、敏感信息、禁用功能入口、审计串联。
 
-- 实现用户级容器、task 独立工作目录、资源限制、artifact 回传。
-- 用户 Skill 必须进沙箱，用户 HTTP MCP 仍保持 V1 HTTP-only。
-- 覆盖 SKILL-* / SANDBOX-* 用例：checksum、超时、日志截断、Secret/Cookie 不进沙箱。
+## 附：已知跨块待办
 
-## B7 AgentScope 2.0.3 Runtime
-
-- 用真实 AgentScope session/team/toolkit/permission/event 替换 mock orchestrator。
-- 不修改 AgentScope，不修改 Redis StorageBase。
-- 保持 OpenOps PG 为配置、审批、审计事实源。
-
-## B8 真实 W3/IAM
-
-- 用公司 W3/IAM Cookie 替换 mock header。
-- 保持 `/me` 分流、白名单、平台管理员角色和 owner 隔离语义不变。
-
-## B9 Playwright E2E 与安全扫描
-
-- 增加浏览器端 E2E：初始化、工作台 SSE、ASK、取消、关闭、管理台。
-- 增加静态扫描：旧口径、敏感字段、禁用功能入口、前端路由守卫。
+- 真实 GLM Key 的 live 端到端（B2 runbook §9，待有 Key 环境执行）。
+- AgentState 跨进程 PG 持久化（现 per-run 内存，B1 备注）。
+- `/me` 返回平铺结构（`data.user_id`），联调按当前实现读（B4-OBS-001）。
+- 前端 npm audit 2 项依赖提示，单独评估升级（B*-DEP-001）。
