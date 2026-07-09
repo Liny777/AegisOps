@@ -159,5 +159,6 @@ async def invoke(
     await emit(st, run, "openops.tool.call.succeeded", action=tool_name,
                message=succeeded_msg or f"工具 {tool_name} 调用完成",
                external_request_id=result.get("request_id"),
-               payload={k: v for k, v in result.items() if k in ("result_summary", "execution_id", "status")})
+               payload={"tool": tool_name,  # 审计查询体验：成功事件也带 tool 名（B5-OBS-002）
+                        **{k: v for k, v in result.items() if k in ("result_summary", "execution_id", "status")}})
     return result

@@ -41,6 +41,18 @@ async def lifespan(_app: FastAPI):
     yield
     if reconciler:
         reconciler.cancel()
+    # 先收口 runtime 任务（取消 + 短等审计写完），再关池——避免关闭期 PoolClosed 噪声（B5-BE-001）
+    from runtime import task_registry
+
+    pending = [st.orchestrator for st in task_registry._by_run.values()
+               if st.orchestrator and not st.orchestrator.done()]
+    for t in pending:
+        t.cancel()
+    if pending:
+        try:
+            await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=3)
+        except asyncio.TimeoutError:  # pragma: no cover - 收口超时直接关池
+            pass
     await close_pool()
 
 
