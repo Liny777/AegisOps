@@ -66,7 +66,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     task_id = "tsk_" + uuid.uuid4().hex[:10]
 
     # Scope resolve（RUN-003：先范围后任务，fail-closed 由 scope_service 抛错）
-    scope = await scope_service.resolve_for_task(uid, inst, run_id, task_id)
+    scope = await scope_service.resolve_for_task(uid, inst, run_id, task_id, str(run["audit_trace_id"]))
 
     st = TaskState(task_id=task_id, run_id=run_id, user_id=uid,
                    instance_id=str(run["agent_team_instance_id"]), input_text=req.input_text)

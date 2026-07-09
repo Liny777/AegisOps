@@ -12,7 +12,9 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("OPENOPS_ORCH_DELAY_MS", "10")
 os.environ.setdefault("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
 
+from app import scope_service  # noqa: E402
 from infra import idempotency  # noqa: E402
+from infra.external import omodel_mock  # noqa: E402
 from main import app  # noqa: E402
 from runtime import events, task_registry  # noqa: E402
 
@@ -59,11 +61,15 @@ def client() -> TestClient:
     events.reset()
     task_registry.reset()
     idempotency.clear()
+    scope_service._reset_cache()
+    omodel_mock._reset()
     with TestClient(app) as c:
         yield c
     task_registry.reset()
     events.reset()
     idempotency.clear()
+    scope_service._reset_cache()
+    omodel_mock._reset()
 
 
 def unwrap(response):

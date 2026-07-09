@@ -8,6 +8,7 @@ dependencies = [
   "uvicorn[standard]>=0.30.0",
   "pydantic>=2.8.0",
   "psycopg[binary,pool]>=3.2.0",
+  "httpx>=0.27.0",  # oModel real adapter（OPENOPS_OMODEL=real）与外部 HTTP 客户端
 ]
 
 [project.optional-dependencies]
