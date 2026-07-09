@@ -20,6 +20,8 @@ class TaskState:
     rca: dict[str, Any] | None = None  # RCA 快照（/state 恢复用）
     selected_model: str | None = None
     model_spec: dict[str, Any] | None = None  # 平台模型元数据（无 API Key）；agentscope 后端据此建真模型/回退 stub
+    scope_ctx: dict[str, Any] | None = None  # ScopeContext（effective_appids/snapshot_id/revision）；Tool Gateway 校验用
+    tool_annotations: dict[str, dict[str, Any]] | None = None  # 平台工具标注（by tool_name）；Gateway/ASK 判定用
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

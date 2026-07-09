@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from app import model_gateway, runtime_adapter, scope_service
+from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, scope_service
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
@@ -94,6 +94,9 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
 
     # 平台模型元数据（无 Key）挂到 TaskState；agentscope 后端据此建真模型或回退 stub（mock 后端忽略）
     st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model)
+    # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4；runtime 不回读 DB）
+    st.scope_ctx = scope
+    st.tool_annotations = await mcp_tool_annotation_service.runtime_annotations()
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 

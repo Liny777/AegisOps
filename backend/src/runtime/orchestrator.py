@@ -2,7 +2,8 @@
 
 真实 AgentScope 2.0.3 runtime（B1 块，见 runtime/agentscope_runtime.py）与本模块**同签名并存**，
 由环境变量 OPENOPS_RUNTIME 选择；本模块保留为 mock **test-double**（pytest/demo 可回退）。
-两条后端经 runtime.emit 共享发射，事件语义/审计投影一致。
+两条后端经 runtime.emit 共享发射；工具调用统一走 runtime.tool_gateway（B4：标注/Scope/Secret/审计），
+是否 ASK 由标注 is_approval_required 决定。
 每步：先写 audit_event（事实源）再 publish SSE（体验）。敏感字段禁入事件（SEC-002）。
 """
 from __future__ import annotations
@@ -11,11 +12,12 @@ import asyncio
 import os
 from typing import Any
 
-from infra.external import http_mcp_client
 from infra.repositories import runs
+from runtime import tool_gateway
 from runtime.emit import emit as _emit
 from runtime.rca_demo import rca as _rca
 from runtime.task_registry import TaskState
+from runtime.tool_gateway import ToolBlocked
 
 DELAY_MS = int(os.environ.get("OPENOPS_ORCH_DELAY_MS", "900"))
 
@@ -32,30 +34,38 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
-        # 巡检：指标查询
-        await _emit(st, run, "openops.tool.call.started", message="巡检 · 指标查询", action="query_resource",
-                    payload={"tool": "query_resource", "appid": "APP-A"})
-        r1 = await http_mcp_client.call_tool("query_resource", {"appid": "APP-A"})
-        await _emit(st, run, "openops.tool.call.succeeded", message="P99 / 错误率 / Redis 连接数已取回",
-                    action="query_resource", external_request_id=r1["request_id"],
-                    payload={"summary": r1.get("result_summary", "")})
+        # 巡检：指标查询（Gateway：标注/APPID 校验 + header 注入 + tool.call.* 事件）
+        await tool_gateway.invoke(st, run, "query_resource", {"appid": "APP-A"},
+                                  started_msg="巡检 · 指标查询",
+                                  succeeded_msg="P99 / 错误率 / Redis 连接数已取回")
         st.rca = _rca(1, "定界中")
         await _emit(st, run, "openops.rca.updated", message="RCA 面板更新（定界中）", payload=st.rca)
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
         # 定界：拓扑依赖
-        await _emit(st, run, "openops.tool.call.started", message="定界 · 拓扑依赖", action="query_resource",
-                    payload={"tool": "query_resource", "appid": "APP-A", "view": "topo"})
-        r2 = await http_mcp_client.call_tool("query_resource", {"appid": "APP-A"})
-        await _emit(st, run, "openops.tool.call.succeeded", message="svc-payment-api → Redis / MySQL 依赖图",
-                    action="query_resource", external_request_id=r2["request_id"])
+        await tool_gateway.invoke(st, run, "query_resource", {"appid": "APP-A"},
+                                  started_msg="定界 · 拓扑依赖",
+                                  succeeded_msg="svc-payment-api → Redis / MySQL 依赖图")
         st.rca = _rca(2, "验证 H1")
         await _emit(st, run, "openops.rca.updated", message="假设排行更新（H1 领先）", payload=st.rca)
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
-        # ASK：恢复动作需人工批准（管理员标注 is_approval_required=true）
+        # 恢复动作（B4）：未标注/blocked → 直接 fail-closed（不 ASK，Gateway 拦）；
+        # allowed 免审批 → 直接执行；allowed 需审批 → ASK
+        ann = (st.tool_annotations or {}).get("recover_execute")
+        allowed = ann is not None and ann.get("status") == "allowed"
+        if not allowed or not ann.get("is_approval_required"):
+            await tool_gateway.invoke(st, run, "recover_execute", {"appid": "APP-A", "action": "restart"},
+                                      started_msg="执行恢复动作（标注免审批）",
+                                      succeeded_msg="恢复动作已执行（execution 受控追踪）")
+            st.rca = _rca(3, "已闭环")
+            await _emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
+            st.status = "completed"
+            return await _emit(st, run, "openops.task.completed", message="任务完成：根因 H1，已执行恢复", action="task")
+
+        # ASK：恢复动作需人工批准（标注 is_approval_required=true）
         appr = await runs.create_approval(
             st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "recover_execute",
             {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"},
@@ -78,10 +88,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             return await _finish_cancel(st, run)
 
         if st.approval_result == "approved":
-            r3 = await http_mcp_client.call_tool("recover_execute", {"appid": "APP-A", "action": "restart"})
-            await _emit(st, run, "openops.tool.call.succeeded", message="恢复动作已执行（execution 受控追踪）",
-                        action="recover_execute", external_request_id=r3["request_id"],
-                        payload={"execution_id": r3.get("execution_id", "")})
+            await tool_gateway.invoke(st, run, "recover_execute", {"appid": "APP-A", "action": "restart"},
+                                      started_msg="执行恢复动作（已批准）",
+                                      succeeded_msg="恢复动作已执行（execution 受控追踪）")
             st.rca = _rca(3, "已闭环")
             await _emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
             st.status = "completed"
@@ -96,6 +105,11 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             await _emit(st, run, "openops.rca.updated", message="恢复动作被拒绝，保持观察", payload=st.rca)
             st.status = "completed"
             await _emit(st, run, "openops.task.completed", message="任务结束：未执行恢复（用户拒绝）", action="task")
+    except ToolBlocked as e:
+        # Gateway fail-closed：tool.blocked 已发；任务按失败收口（reason_code 透传）
+        st.status = "failed"
+        await _emit(st, run, "openops.task.failed", severity="error", action="task",
+                    message=f"任务失败：{e.message}", reason_code=e.reason_code)
     except asyncio.CancelledError:
         await _finish_cancel(st, run)
         raise

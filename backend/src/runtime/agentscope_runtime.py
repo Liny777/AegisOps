@@ -23,11 +23,12 @@ import os
 import re
 from typing import Any
 
-from infra.external import http_mcp_client
+from runtime import tool_gateway
 from infra.repositories import runs
 from runtime.emit import emit
 from runtime.rca_demo import rca
 from runtime.task_registry import TaskState
+from runtime.tool_gateway import ToolBlocked
 
 log = logging.getLogger("openops.runtime")
 ASK_TIMEOUT_S = float(os.environ.get("OPENOPS_ASK_TIMEOUT_S", "300"))
@@ -119,7 +120,10 @@ def _build_model(st: TaskState) -> Any:
 
 
 def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
-    """两工具包现有 http_mcp_client；工具内发 openops.tool.call.* + rca.updated（与 mock 同序）。"""
+    """工具统一走 runtime.tool_gateway（B4：标注/APPID/Secret/header/审计）；RCA 卡更新留在工具内。
+
+    标注裁剪：仅注册标注 status=allowed 的工具；Gateway 内再做二次校验（纵深防御）。
+    """
     from agentscope.message import TextBlock
     from agentscope.tool import FunctionTool, Toolkit, ToolResponse
 
@@ -133,14 +137,14 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         """
         counter["query"] += 1
         n = counter["query"]
-        await emit(st, run, "openops.tool.call.started",
-                   message="巡检 · 指标查询" if n == 1 else "定界 · 拓扑依赖",
-                   action="query_resource", payload={"tool": "query_resource", "appid": appid})
-        r = await http_mcp_client.call_tool("query_resource", {"appid": appid})
-        await emit(st, run, "openops.tool.call.succeeded",
-                   message="P99 / 错误率 / Redis 连接数已取回" if n == 1 else "svc-payment-api 依赖图已取回",
-                   action="query_resource", external_request_id=r["request_id"],
-                   payload={"summary": r.get("result_summary", "")})
+        try:
+            r = await tool_gateway.invoke(
+                st, run, "query_resource", {"appid": appid},
+                started_msg="巡检 · 指标查询" if n == 1 else "定界 · 拓扑依赖",
+                succeeded_msg="P99 / 错误率 / Redis 连接数已取回" if n == 1 else "svc-payment-api 依赖图已取回",
+            )
+        except ToolBlocked as e:  # tool.blocked 已发；把失败回给模型收口
+            return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         st.rca = rca(1 if n == 1 else 2, "定界中" if n == 1 else "验证 H1")
         await emit(st, run, "openops.rca.updated",
                    message="RCA 面板更新（定界中）" if n == 1 else "假设排行更新（H1 领先）", payload=st.rca)
@@ -153,34 +157,47 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             appid: 目标应用 ID。
             action: 恢复动作，例如 restart。
         """
-        r = await http_mcp_client.call_tool("recover_execute", {"appid": appid, "action": action})
-        await emit(st, run, "openops.tool.call.succeeded", message="恢复动作已执行（execution 受控追踪）",
-                   action="recover_execute", external_request_id=r["request_id"],
-                   payload={"execution_id": r.get("execution_id", "")})
+        try:
+            r = await tool_gateway.invoke(
+                st, run, "recover_execute", {"appid": appid, "action": action},
+                started_msg="执行恢复动作（已批准）",
+                succeeded_msg="恢复动作已执行（execution 受控追踪）",
+            )
+        except ToolBlocked as e:
+            return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         st.rca = rca(3, "已闭环")
         await emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
         return ToolResponse(content=[TextBlock(type="text", text="recovered")])
 
-    return Toolkit(tools=[
-        FunctionTool(query_resource, name="query_resource", is_read_only=True),
-        FunctionTool(recover_execute, name="recover_execute"),
-    ])
+    fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)}
+    anns = st.tool_annotations or {}
+    tools = [
+        FunctionTool(fn, name=name, is_read_only=readonly)
+        for name, (fn, readonly) in fns.items()
+        if anns.get(name, {}).get("status") == "allowed"  # 标注裁剪（28.2）
+    ]
+    return Toolkit(tools=tools)
 
 
-def _permission_context() -> Any:
-    """查询工具 allow（自动执行）；恢复工具 ask（暂停→桥到 OpenOps 审批）。
-
-    对应 mcp_tool_annotation.is_approval_required；B4 由标注编译，B1 先固定两条规则。
+def _permission_context(st: TaskState) -> Any:
+    """由标注编译 permission（B4）：allowed+is_approval_required→ask（暂停→桥到 OpenOps 审批）；
+    allowed 免审批→allow（自动执行）。blocked/未标注的工具已在 Toolkit 裁剪，不给规则。
     """
     from agentscope.permission import PermissionBehavior, PermissionContext, PermissionRule
 
     def _rule(name: str, behavior: Any) -> Any:
         return PermissionRule(tool_name=name, rule_content=None, behavior=behavior, source="platform")
 
-    return PermissionContext(
-        allow_rules={"query_resource": [_rule("query_resource", PermissionBehavior.ALLOW)]},
-        ask_rules={"recover_execute": [_rule("recover_execute", PermissionBehavior.ASK)]},
-    )
+    allow: dict[str, list[Any]] = {}
+    ask: dict[str, list[Any]] = {}
+    for name, ann in (st.tool_annotations or {}).items():
+        if ann.get("status") != "allowed":
+            continue
+        if ann.get("is_approval_required"):
+            ask[name] = [_rule(name, PermissionBehavior.ASK)]
+        else:
+            allow[name] = [_rule(name, PermissionBehavior.ALLOW)]
+    return PermissionContext(allow_rules=allow, ask_rules=ask)
 
 
 async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> str:
@@ -234,7 +251,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
             model=_build_model(st),
             toolkit=_build_toolkit(st, run),
-            state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context()),
+            state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context(st)),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）
