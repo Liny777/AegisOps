@@ -16,6 +16,10 @@ test = [
   "pytest-asyncio>=0.24.0",
   "httpx>=0.27.0",
 ]
+# 真 AgentScope runtime（B1，OPENOPS_RUNTIME=agentscope 时需要）；pytest 默认走 mock 不装
+agentscope = [
+  "agentscope==2.0.3",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
