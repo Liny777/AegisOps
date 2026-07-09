@@ -18,7 +18,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 from typing import Any
 
 from infra.external import http_mcp_client
@@ -27,7 +29,27 @@ from runtime.emit import emit
 from runtime.rca_demo import rca
 from runtime.task_registry import TaskState
 
+log = logging.getLogger("openops.runtime")
 ASK_TIMEOUT_S = float(os.environ.get("OPENOPS_ASK_TIMEOUT_S", "300"))
+_SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{6,}|Bearer\s+[A-Za-z0-9._\-]+)")
+
+
+def _redact(msg: str) -> str:
+    """脱敏错误信息：抹掉 key/token 样式片段并截断（SEC-001，不外泄凭证）。"""
+    return _SECRET_RE.sub("[REDACTED]", msg)[:200]
+
+
+def _final_text(agent: Any) -> str | None:
+    """会话上下文里最后一条 assistant 文本 = 模型生成的结论。"""
+    try:
+        for m in reversed(agent.state.context):
+            if m.role == "assistant":
+                t = m.get_text_content()
+                if t:
+                    return t
+    except Exception:  # pragma: no cover
+        return None
+    return None
 
 
 def _require_agentscope() -> None:
@@ -196,7 +218,13 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     """真 AgentScope 驱动一次 Task：Agent(stub)+Toolkit+Permission；事件桥回 openops.*。"""
     _require_agentscope()
     from agentscope.agent import Agent
-    from agentscope.event import ConfirmResult, RequireUserConfirmEvent, UserConfirmResultEvent
+    from agentscope.event import (
+        ConfirmResult,
+        ModelCallEndEvent,
+        ModelCallStartEvent,
+        RequireUserConfirmEvent,
+        UserConfirmResultEvent,
+    )
     from agentscope.message import Msg, TextBlock
     from agentscope.state import AgentState
 
@@ -213,7 +241,13 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         while True:
             require_ev = None
             async for ev in agent.reply_stream(inputs):
-                if isinstance(ev, RequireUserConfirmEvent):
+                if isinstance(ev, ModelCallStartEvent):
+                    await emit(st, run, "openops.model.call.started", action="model_call",
+                               message=f"模型推理中（{ev.model_name}）", payload={"model": ev.model_name})
+                elif isinstance(ev, ModelCallEndEvent):
+                    await emit(st, run, "openops.model.call.succeeded", action="model_call", message="模型推理完成",
+                               payload={"input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
+                elif isinstance(ev, RequireUserConfirmEvent):
                     require_ev = ev
                     break  # 停止消费，去做审批握手，再以 UserConfirmResultEvent 恢复
             if st.status != "running":  # 外部 cancel
@@ -241,7 +275,19 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
 
         if st.status == "running":
             st.status = "completed"
-            await emit(st, run, "openops.task.completed", message="任务完成：根因 H1，已按审批推进", action="task")
+            conclusion = _final_text(agent)  # 模型生成的结论（GLM 真实结论 / stub 脚本结论）
+            if conclusion and st.rca:
+                st.rca = {**st.rca, "conclusion": conclusion}
+                await emit(st, run, "openops.rca.updated", message="结论已更新（模型生成）", payload=st.rca)
+            await emit(st, run, "openops.task.completed", action="task",
+                       message="任务完成：根因 H1，已按审批推进",
+                       payload={"conclusion": conclusion} if conclusion else None)
     except asyncio.CancelledError:
         await _finish_cancel(st, run)
         raise
+    except Exception as e:  # 模型/工具异常：脱敏错误 + 任务失败（不外泄凭证）
+        log.exception("agentscope run_task failed task=%s run=%s", st.task_id, st.run_id)
+        st.status = "failed"
+        await emit(st, run, "openops.model.call.failed", severity="error", action="model_call",
+                   message="模型调用失败", reason_code="MODEL_CALL_FAILED", payload={"error": _redact(str(e))})
+        await emit(st, run, "openops.task.failed", severity="error", message="任务失败，请重试或联系管理员", action="task")
