@@ -226,6 +226,13 @@ export interface SandboxCfg {
   desc: string;
   val: string;
 }
+export interface SandboxContainer {
+  user_id: string;
+  runtime_status: string; // active / idle
+  image_version: string;
+  active_run_count: number;
+  idle_seconds: number | null;
+}
 export interface AuditNode {
   event: string;
   detail: string;

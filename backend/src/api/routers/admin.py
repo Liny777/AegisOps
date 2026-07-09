@@ -12,12 +12,14 @@ from app import (
     mcp_tool_annotation_service,
     model_asset_service,
     runtime_config_service,
+    sandbox_admin_service,
     template_service,
 )
 from domain.schemas import (
     ModelGrantsRequest,
     ModelStatusRequest,
     RegisterModelAssetRequest,
+    SandboxDestroyRequest,
     SaveTemplateVersionRequest,
     TemplateVersionActionRequest,
     UpdateRuntimeConfigRequest,
@@ -85,6 +87,18 @@ async def sandbox(_admin: Admin):
 async def update_sandbox(req: UpdateRuntimeConfigRequest, admin: Admin):
     await runtime_config_service.update_sandbox(req.updates, req.reason, admin["user_id"])
     return ok({"saved": True})
+
+
+@router.get("/sandbox/containers")
+async def sandbox_containers(_admin: Admin):
+    """当前用户容器列表（B8-4：runtime_status / active_run_count / image / idle）。"""
+    return ok(await sandbox_admin_service.list_containers())
+
+
+@router.post("/sandbox/containers/{target_user_id}:destroy")
+async def destroy_sandbox_container(target_user_id: str, req: SandboxDestroyRequest, admin: Admin):
+    """强制销毁指定用户容器（中断运行中 run；写审计 + 推用户可见事件）。"""
+    return ok(await sandbox_admin_service.destroy_container(target_user_id, req.reason, admin["user_id"]))
 
 
 # ---- 模型资产与白名单授权（B7，30.6 五；替代旧 /models 端点） ----

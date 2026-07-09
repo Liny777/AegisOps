@@ -135,6 +135,11 @@ class UpdateRuntimeConfigRequest(BaseModel):
     reason: str = Field(min_length=1)  # 必填：写审计 runtime_config.updated
 
 
+class SandboxDestroyRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)  # 必填：销毁运行中容器需 reason（写审计+推用户可见事件）
+
+
 class WhitelistRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)

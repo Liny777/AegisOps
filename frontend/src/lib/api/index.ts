@@ -9,6 +9,7 @@ import type {
   Conversation,
   AdminTableData,
   SandboxCfg,
+  SandboxContainer,
   AuditNode,
   Template,
   Workspace,
@@ -64,6 +65,8 @@ export interface OpenOpsApi {
   getAdminTable(key: string): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
+  getSandboxContainers(): Promise<SandboxContainer[]>;
+  destroySandboxContainer(userId: string, reason: string): Promise<void>;
   getAuditTimeline(): Promise<AuditNode[]>;
   // admin B7b：模板版本写闭环（草稿/发布）
   getAdminTemplateDetail(templateId: string): Promise<{
@@ -460,6 +463,15 @@ const realApi: OpenOpsApi = {
       body: { client_request_id: crid(), updates, reason },
     });
   },
+  async getSandboxContainers() {
+    return apiFetch<SandboxContainer[]>("/openops/v1/admin/sandbox/containers");
+  },
+  async destroySandboxContainer(userId, reason) {
+    await apiFetch(`/openops/v1/admin/sandbox/containers/${encodeURIComponent(userId)}:destroy`, {
+      method: "POST",
+      body: { client_request_id: crid(), reason },
+    });
+  },
   async getAuditTimeline() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/audit/recent");
     return rows.slice(0, 20).map((e) => ({
@@ -536,6 +548,8 @@ const mockApi: OpenOpsApi = {
   getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
+  getSandboxContainers: () => delay([] as SandboxContainer[]),
+  destroySandboxContainer: () => delay(undefined as unknown as void),
   getAuditTimeline: () => delay(M.auditTimeline),
   getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
   saveTemplateDraft: () => delay({}),

@@ -205,3 +205,28 @@ def test_sbx_003_run_lifecycle_via_api_audits_container(client):
     unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}:close", headers=USER_HEADERS))
     c2 = sandbox_executor.get("0026demo01")
     assert c2 is not None and c2.status == "idle"  # 末 run 关闭 → idle（TTL>0 未回收）
+
+
+def test_admin_008_container_list_and_destroy(client):
+    """ADMIN-008（B8-4）：管理台列容器（含 active_run_count）+ 强制销毁写审计 + 用户可见事件。"""
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rows = unwrap(client.get("/api/openops/v1/admin/sandbox/containers", headers=ADMIN_HEADERS))
+    mine = next(r for r in rows if r["user_id"] == "0026demo01")
+    assert mine["runtime_status"] == "active" and mine["active_run_count"] == 1
+
+    unwrap(client.post("/api/openops/v1/admin/sandbox/containers/0026demo01:destroy", headers=ADMIN_HEADERS,
+                       json={"client_request_id": "d1", "reason": "变更冻结演练"}))
+    assert sandbox_executor.get("0026demo01") is None  # 容器已回收
+    ev = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    # 销毁审计走独立 trace（不挂 run trace），但用户可见事件推到其活跃 run 的 SSE 环
+    recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
+    assert any(e["event_type"] == "sandbox.container.destroyed" for e in recent)
+
+
+def test_admin_008b_container_endpoints_forbidden_for_user(client):
+    """B8-4：沙箱容器端点普通用户 403。"""
+    r1 = client.get("/api/openops/v1/admin/sandbox/containers", headers=USER_HEADERS)
+    r2 = client.post("/api/openops/v1/admin/sandbox/containers/x:destroy", headers=USER_HEADERS,
+                     json={"client_request_id": "u", "reason": "x"})
+    assert r1.status_code == 403 and r2.status_code == 403

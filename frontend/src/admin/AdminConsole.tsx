@@ -4,7 +4,7 @@ import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill } from "../ui";
 import { api } from "../lib/api";
-import type { AdminTableData, SandboxCfg, AuditNode } from "../lib/api/types";
+import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 
@@ -324,14 +324,29 @@ function ModelGrantsDialog({ target, onClose, onSaved }: {
 /** 新原型：沙箱可调配置——只读 → 编辑中 → reason 必填 → 确认生效（写审计 runtime_config.updated）。 */
 function SandboxPanel() {
   const [cfg, setCfg] = useState<SandboxCfg[]>([]);
+  const [containers, setContainers] = useState<SandboxContainer[]>([]);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [reason, setReason] = useState("");
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
 
-  const load = useCallback(() => { api.getSandboxCfg().then(setCfg); }, []);
+  const load = useCallback(() => {
+    api.getSandboxCfg().then(setCfg);
+    api.getSandboxContainers().then(setContainers).catch(() => setContainers([]));
+  }, []);
   useEffect(load, [load]);
+
+  const destroy = async (userId: string) => {
+    const why = window.prompt(`强制销毁用户 ${userId} 的沙箱容器会中断其当前任务。请填写原因：`);
+    if (!why || !why.trim()) return;
+    try {
+      await api.destroySandboxContainer(userId, why.trim());
+      load();
+    } catch (e) {
+      setErr((e as Error).message);
+    }
+  };
 
   const startEdit = () => {
     setDraft(Object.fromEntries(cfg.map((c) => [c.key, c.val])));
@@ -370,6 +385,32 @@ function SandboxPanel() {
           <Button variant="secondary" icon="pencil" onClick={startEdit} style={{ fontSize: 12.5, padding: "8px 15px" }}>编辑</Button>
         ) : (
           <Pill tone="warning">编辑中</Pill>
+        )}
+      </div>
+      <div style={{ marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: color.textNav }}>
+            用户容器（{containers.length} 个占用中 · 会话期常驻）
+          </div>
+          <button onClick={load} style={{ height: 28, padding: "0 11px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.sm, fontSize: 11.5, cursor: "pointer", color: color.textNav }}>刷新</button>
+        </div>
+        {containers.length === 0 ? (
+          <div style={{ fontSize: 12, color: color.textSubtle, padding: "10px 0" }}>当前无活跃用户容器（用户开启会话时按需创建）。</div>
+        ) : (
+          <div style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.7fr 1fr 0.7fr", gap: 8, padding: "7px 12px", background: color.neutralBg, fontSize: 11, fontWeight: 700, color: color.textSubtle }}>
+              <span>user_id</span><span>状态</span><span>活跃 run</span><span>镜像</span><span>操作</span>
+            </div>
+            {containers.map((c) => (
+              <div key={c.user_id} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.7fr 1fr 0.7fr", gap: 8, padding: "8px 12px", borderTop: `1px solid ${color.borderFaint}`, fontSize: 12, alignItems: "center" }}>
+                <span style={{ fontFamily: "ui-monospace, monospace" }}>{c.user_id}</span>
+                <Pill tone={c.runtime_status === "active" ? "good" : "neutral"}>{c.runtime_status}</Pill>
+                <span>{c.active_run_count}</span>
+                <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: color.textSubtle }}>{c.image_version}</span>
+                <button onClick={() => destroy(c.user_id)} style={{ height: 26, padding: "0 9px", border: "1px solid #f3d9d7", background: "#fff", borderRadius: radius.sm, fontSize: 11, cursor: "pointer", color: color.dangerText }}>销毁</button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 20px" }}>
