@@ -8,9 +8,10 @@ from infra.db import exec1, jsonb, q_all, q_one
 
 
 async def create_run(
-    user_id: str, instance_id: str, config_version_id: str, framework_session_id: str, audit_trace_id: str
+    user_id: str, instance_id: str, config_version_id: str, framework_session_id: str, audit_trace_id: str,
+    run_id: str | None = None,
 ) -> dict[str, Any]:
-    rid = str(uuid.uuid4())
+    rid = run_id or str(uuid.uuid4())  # 调用方可预定 id（B8：run 开启前先按此 id 做沙箱容量准入）
     await exec1(
         """
         insert into agent_run

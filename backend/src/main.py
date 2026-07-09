@@ -53,6 +53,10 @@ async def lifespan(_app: FastAPI):
             await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=3)
         except asyncio.TimeoutError:  # pragma: no cover - 收口超时直接关池
             pass
+    # 沙箱容器收口（B8）：回收全部用户容器（fake 删临时目录 / docker kill）
+    from sandbox.executor import executor as sandbox_executor
+
+    await sandbox_executor.close_all()
     await close_pool()
 
 

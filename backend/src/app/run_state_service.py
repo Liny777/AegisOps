@@ -11,6 +11,7 @@ from infra.db import row_json
 from infra.repositories import agent_teams, audit, runs, runtime_config, templates
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
+from sandbox.executor import executor as sandbox_executor
 
 
 async def owned_run(user_id: str, run_id: str) -> dict[str, Any]:
@@ -38,13 +39,22 @@ async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
         raise ApiError(Err.FORBIDDEN, "无权在该 AgentTeam 上创建 Run")  # RUN-002
     if inst["status"] != "active":
         raise ApiError(Err.CONFIG_VERSION_INVALID, "实例不可用（disabled）")
+    # 会话期常驻（B8）：run 开启边界做沙箱容量准入并确保用户容器（在写 run 前——满则 fail-closed 不建空 run）
+    cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+    run_id = str(uuid.uuid4())
+    await sandbox_executor.ensure_user_container(uid, run_id, cfg)  # SANDBOX_CAPACITY_FULL / SANDBOX_CONTAINER_FAILED
     run = await runs.create_run(
         uid, req.agent_team_instance_id, str(inst["active_config_version_id"]),
-        "agentscope-session-" + uuid.uuid4().hex[:8], str(uuid.uuid4()),
+        "agentscope-session-" + uuid.uuid4().hex[:8], str(uuid.uuid4()), run_id=run_id,
     )
     await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="agent_run.created", user_id=uid,
         run_id=str(run["agent_run_id"]), instance_id=req.agent_team_instance_id, action="create", actor_type="user",
+    )
+    await audit.insert_event(
+        audit_trace_id=str(run["audit_trace_id"]), event_type="sandbox.container.ready", user_id=uid,
+        run_id=str(run["agent_run_id"]), instance_id=req.agent_team_instance_id, action="ensure_container",
+        actor_type="system",
     )
     result = {"run": row_json(run)}
     return idempotency.put(uid, "create_run", req.client_request_id, result)
@@ -165,6 +175,10 @@ async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     if st and st.status == "running":
         await cancel_task(user, st.task_id)  # CANCEL-005：先取消 running task
     await runs.set_run_status(run_id, "closed")
+    # 会话期常驻（B8）：末个活跃 run 关闭后容器置 idle 交 TTL 回收
+    cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+    await sandbox_executor.release_user_container(user["user_id"], run_id)
+    await sandbox_executor.sweep_idle(cfg)
     await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="run.closed", user_id=user["user_id"],
         run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="close", actor_type="user",

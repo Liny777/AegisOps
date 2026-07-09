@@ -17,6 +17,7 @@ from infra import idempotency  # noqa: E402
 from infra.external import omodel_mock  # noqa: E402
 from main import app  # noqa: E402
 from runtime import events, task_registry  # noqa: E402
+from sandbox.executor import executor as sandbox_executor  # noqa: E402
 
 
 USER_HEADERS = {"X-OpenOps-Mock-User": "0026demo01", "X-OpenOps-Mock-Name": "LinYi"}
@@ -66,6 +67,7 @@ def client() -> TestClient:
     scope_service._reset_cache()
     omodel_mock._reset()
     asset_reconcile_service._reset()
+    sandbox_executor._by_user.clear()  # B8：每用例清沙箱容器注册表（fake 后端，进程内）
     with TestClient(app) as c:
         yield c
     task_registry.reset()

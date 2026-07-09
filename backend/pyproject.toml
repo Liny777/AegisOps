@@ -21,6 +21,10 @@ test = [
 agentscope = [
   "agentscope==2.0.3",
 ]
+# 真 Docker 沙箱后端（B8，OPENOPS_SANDBOX=docker 时需要）；默认 fake 后端不装
+sandbox = [
+  "aiodocker>=0.24.0",
+]
 
 [build-system]
 requires = ["setuptools>=68.0"]
