@@ -54,14 +54,18 @@ npm run dev                          # http://127.0.0.1:5175 ，/api 代理到 1
 - **Docker**：`docker-compose.yml` 把 DDL 挂进 `docker-entrypoint-initdb.d`，**PG 数据卷为空的首启**自动执行。
 - **pytest**：`tests/conftest.py` 的 `reset_database()` 每次重建。
 
-⚠️ **用原生 PG（不走 Docker）时必须先手动跑一次 DDL**，否则启动时 `seed()` 查不存在的表、后端起不来：
+⚠️ **用原生/远程 PG（不走 Docker）时必须先手动跑一次 DDL**，否则启动时 `seed()` 查不存在的表、后端起不来。用 `psql` 或任意 SQL 客户端（DBeaver/pgAdmin）对目标库执行一次：
 ```powershell
+# 本地库
 psql "postgresql://openops:openops@localhost:5432/openops" -f backend\sql\openops_v1_core.sql
+# 远程/共享库（内网部署场景）——把 URL 换成远程库，账号需有 CREATE 权限
+psql "postgresql://<用户>:<密码>@<远程主机>:5432/<库>" -f backend\sql\openops_v1_core.sql
 ```
+⚠️ 远程**共享** PG：给本项目**独立 database 或 schema**（DDL 无 schema 前缀、无 search_path 处理，表落连接默认 schema）；库里若有旧版表，`IF NOT EXISTS` 只补缺表**不改旧表列**，列有变更须清库重建（无迁移脚本）。**`pytest` 会 `TRUNCATE` 全表——测试库务必另开，别指向这个部署/共享库。**
 
 ### 2.3 连接配置
-环境变量 `OPENOPS_DATABASE_URL`，默认 `postgresql://openops:openops@localhost:5432/openops`。
-⚠️ 后端**不加载 .env 文件**，非默认值要在启动前注入：`$env:OPENOPS_DATABASE_URL="..."`。
+环境变量 `OPENOPS_DATABASE_URL`，默认 `postgresql://openops:openops@localhost:5432/openops`。**远程库**：`$env:OPENOPS_DATABASE_URL="postgresql://<用户>:<密码>@<远程主机>:5432/<库>"`。
+⚠️ 后端**不加载 .env 文件**且 `infra/db.py` 在 **import 时**即读该变量——非默认值须**先 `$env:` 注入、再起 uvicorn**。
 
 ### 2.4 重置数据库（改了 seed / 想重来）
 ```powershell
