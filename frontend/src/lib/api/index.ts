@@ -170,10 +170,13 @@ const realApi: OpenOpsApi = {
     });
   },
   async selectModel(runId, model) {
-    await apiFetch(`/openops/v1/agent-runs/${runId}:select-model`, {
-      method: "POST",
-      body: { client_request_id: crid(), model_source: model },
-    });
+    // 选择器 id：平台模型是 `platform:<model_id>`，用户自定义 LLM 是裸 llm_config_id(UUID)。
+    // 后端 select-model 要的是裸 model_id（走 model_source）或 llm_config_id——必须按前缀分流，
+    // 否则平台模型带 `platform:` 前缀发过去，is_authorized 查不到 → 403（MODEL_NOT_AUTHORIZED）。
+    const body = model.startsWith("platform:")
+      ? { client_request_id: crid(), model_source: model.slice("platform:".length) }
+      : { client_request_id: crid(), llm_config_id: model };
+    await apiFetch(`/openops/v1/agent-runs/${runId}:select-model`, { method: "POST", body });
   },
   async getAuditNodes(runId) {
     const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/audit/runs/${runId}`);

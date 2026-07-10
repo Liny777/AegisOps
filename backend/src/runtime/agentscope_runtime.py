@@ -280,6 +280,8 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
         {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"},
         str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
+    st.approval_ev.clear()  # 复用同一 asyncio.Event：等待前清位+清旧结果，避免上一次 ASK（如容器 Bash 审批）的
+    st.approval_result = None  # set 未清 → 本次 wait() 立即返回并读到陈旧决策（与 sandbox_bash 同规矩）
     st.approval_id = str(appr["approval_request_id"])
     await emit(st, run, "openops.approval.required", severity="warning",
                message="恢复动作待批准：重启 svc-a 释放连接",
