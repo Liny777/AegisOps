@@ -32,7 +32,27 @@ async def lifespan(_app: FastAPI):
     await seed.seed()
     # 后台资产对账（28.7）：OPENOPS_RECONCILE_INTERVAL_S > 0 时启用（默认关；登录/refresh 触发已覆盖 V1）
     import asyncio
+    import logging
     import os
+
+    # 启动横幅（诊断）：一眼确认当前 runtime 后端 + 关键 mock/real 开关，杜绝“以为切了 real、其实还是 mock”
+    _rt = os.environ.get("OPENOPS_RUNTIME", "mock").strip().lower()
+    _agentscope = ""
+    if _rt == "agentscope":
+        try:
+            import agentscope  # noqa: F401
+            _agentscope = f" (agentscope {getattr(agentscope, '__version__', '?')} 已装)"
+        except ModuleNotFoundError:
+            _agentscope = " (⚠ agentscope 未安装：提交任务会报错)"
+    _banner = (
+        f"runtime={_rt}{_agentscope}  model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
+        f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
+        f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
+        f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
+        f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
+    )
+    logging.getLogger("openops.startup").warning("[startup] %s", _banner)
+    print(f"[OpenOps][startup] {_banner}", flush=True)
 
     from app import asset_reconcile_service
 
