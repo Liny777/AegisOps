@@ -1,0 +1,44 @@
+@echo off
+REM ============================================================================
+REM OpenOps 后端启动（Windows 原生 cmd）——推荐在 Windows 上用这个，别用 bash。
+REM
+REM 为什么不用 run-backend.sh：若你的 `bash` 是 WSL（或某些 MSYS 模式），它 export 的
+REM 环境变量【不会】自动传给 Windows 的 python.exe（WSL 要 WSLENV 白名单才放行），结果
+REM OPENOPS_PG_* 丢失、后端静默回退 localhost:5432 → PoolTimeout。cmd 的 set + python.exe
+REM 是同一世界，环境变量干净传递，无此坑。
+REM
+REM 用法：复制本文件为 run-backend.bat，填入下面的真实值，然后在 backend\ 目录：
+REM   run-backend.bat            （或直接双击）
+REM ⚠ run-backend.bat 含明文密码，已在 .gitignore——切勿提交 git。
+REM
+REM cmd 的 set 规则（和 .sh 不同！）：
+REM   - 【不要】给值加引号：`set X=abc`（不是 `set X="abc"`），引号会变成值的一部分。
+REM   - `=` 后到行尾【全是值】，行尾【不要留空格】，否则空格进值里。
+REM   - 密码里若含 `%`，要写成 `%%`（cmd 里 % 是变量展开）；`@ : / # &` 等无需转义。
+REM ============================================================================
+cd /d "%~dp0"
+
+REM ==================== 必填：PG 连接 ====================
+set OPENOPS_PG_HOST=<主机，如 7.198.147.89>
+set OPENOPS_PG_PORT=5432
+set OPENOPS_PG_DB=<库名，如 wesee>
+set OPENOPS_PG_USER=<用户，如 observe_analysis>
+set OPENOPS_PG_PASSWORD=<密码；含 % 要写成 %%>
+set OPENOPS_PG_SCHEMA=<schema，如 observe_analysis>
+REM set OPENOPS_PG_SSLMODE=require
+
+REM ==================== 真 runtime + 模型（要切 real 时才设）====================
+set OPENOPS_RUNTIME=agentscope
+REM set OPENOPS_PLATFORM_GLM_API_KEY=<内网 GLM 网关 key>
+REM set OPENOPS_ENCRYPTION_KEY=<生产 Fernet key；调试可不设>
+
+REM ==================== venv 的 python ====================
+set PY=.venv\Scripts\python.exe
+if not exist "%PY%" (
+  echo [X] 找不到 %PY% —— 请先建 venv 并装依赖：python -m venv .venv 然后 %PY% -m pip install -e ".[test,agentscope]"
+  exit /b 1
+)
+
+echo 启动后端（端口 18082）... 打开 http://localhost:18082/health 应返回 {"status":"ok"}
+REM run.py 内部会在 Windows 上切 SelectorEventLoop（psycopg3 async 不支持 ProactorEventLoop）
+"%PY%" run.py
