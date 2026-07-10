@@ -103,6 +103,13 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         audit_trace_id=trace,
     ))
 
+    # 实例默认模型：active 配置 overlay 绑定的用户自定义 LLM 作为该实例默认（InitWizard custom 分支 / 30.5）。
+    # 会话级 select-model 在本 task 内直接改 st.selected_model 覆盖；无绑定则 None→平台默认（B7 ACL 解析）。
+    if not st.selected_model:
+        active_cv = await agent_teams.get_config_version(str(inst["active_config_version_id"]))
+        bound_llm = ((active_cv or {}).get("overlay_json") or {}).get("user_llm_config_id")
+        if bound_llm:
+            st.selected_model = str(bound_llm)
     # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
     st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
     # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4）

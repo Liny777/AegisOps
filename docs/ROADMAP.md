@@ -34,7 +34,7 @@
 - **Skill Hub 真包投递**：`run_skill` 执行原语已就位（fake 注入包字节验证）；真 ZIP 从 Skill Hub 经 29.3 `X-Checksum-SHA256` 下载的装配路径待集成。
 - 平台 deny 前缀规则 UI（管理台下发 `bash_deny_prefixes`）、artifact 回传落地、chunk 拆包沿用 ROADMAP 附注。
 
-> 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。
+> 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）、`OPENOPS_LLM_PROBE=mock|real`（用户自定义 LLM 探测：real 发真 `chat/completions` 验 tool-calling 能力，默认 mock 启发式）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。外部依赖接真开关（`OPENOPS_MCP`/`OPENOPS_MCPREGISTRY`/`OPENOPS_SKILLHUB`=mock\|real）见 `backend/docs/EXTERNAL-INTEGRATION.md`。
 
 ## B9 真实 W3/IAM + E2E + 发布准备
 

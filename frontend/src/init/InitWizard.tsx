@@ -5,6 +5,7 @@ import { Icon, Interactive, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import type { Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
+import { AddCustomModelDialog } from "../settings/AddCustomModelDialog";
 
 const STEPS = ["选择模板", "填写信息", "系统范围", "配置模型", "激活 Agent"];
 
@@ -18,6 +19,9 @@ export function InitWizard() {
   const [name, setName] = useState("");
   const [wsId, setWsId] = useState("");
   const [llm, setLlm] = useState<"platform" | "custom">("platform");
+  const [customLlmId, setCustomLlmId] = useState("");
+  const [customLlmLabel, setCustomLlmLabel] = useState("");
+  const [llmDialog, setLlmDialog] = useState(false);
   const [wsDialog, setWsDialog] = useState(false);
   const [activating, setActivating] = useState(false);
 
@@ -26,11 +30,13 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, []);
 
-  const canNext = [!!tplId, !!name.trim(), !!wsId, true, true][step];
+  // custom 分支须先创建一个自定义模型才能继续（否则是死路）
+  const canNext = [!!tplId, !!name.trim(), !!wsId, llm === "platform" || !!customLlmId, true][step];
 
   const activate = () => {
     setActivating(true);
-    api.createAgentTeam({ template_version_id: tplId, name, workspace_id: wsId }).then((r) => {
+    const overlay = llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId } : undefined;
+    api.createAgentTeam({ template_version_id: tplId, name, workspace_id: wsId, initial_overlay_json: overlay }).then((r) => {
       nav(`/agent-teams/${r.instance_id}/chat`);
     });
   };
@@ -65,7 +71,7 @@ export function InitWizard() {
           {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} /> : null}
           {step === 1 ? <StepName name={name} onName={setName} /> : null}
           {step === 2 ? <StepWorkspace workspaces={workspaces} wsId={wsId} onPick={setWsId} onCreate={() => setWsDialog(true)} /> : null}
-          {step === 3 ? <StepLlm llm={llm} onLlm={setLlm} /> : null}
+          {step === 3 ? <StepLlm llm={llm} onLlm={setLlm} customLabel={customLlmId ? customLlmLabel : ""} onAdd={() => setLlmDialog(true)} /> : null}
           {step === 4 ? <StepActivate name={name} activating={activating} /> : null}
         </div>
       </div>
@@ -84,6 +90,7 @@ export function InitWizard() {
       </div>
 
       <WorkspaceDialog open={wsDialog} onClose={() => setWsDialog(false)} onCreated={(id) => { setWsId(id); setWsDialog(false); }} />
+      <AddCustomModelDialog open={llmDialog} onClose={() => setLlmDialog(false)} onCreated={(id, label) => { setCustomLlmId(id); setCustomLlmLabel(label); setLlm("custom"); setLlmDialog(false); }} />
     </div>
   );
 }
@@ -181,7 +188,9 @@ function StepWorkspace({ workspaces, wsId, onPick, onCreate }: { workspaces: Wor
   );
 }
 
-function StepLlm({ llm, onLlm }: { llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void }) {
+function StepLlm({ llm, onLlm, customLabel, onAdd }: {
+  llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void; customLabel: string; onAdd: () => void;
+}) {
   return (
     <>
       <Title t="配置模型" d="默认使用平台模型即可启动；也可添加自己的 OpenAI 兼容模型（必须支持 tool calling）。" />
@@ -204,6 +213,26 @@ function StepLlm({ llm, onLlm }: { llm: "platform" | "custom"; onLlm: (v: "platf
           );
         })}
       </div>
+      {llm === "custom" ? (
+        <div style={{ marginTop: 12 }}>
+          {customLabel ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: radius.lg, background: color.goodBg, border: `1px solid ${color.goodBorder}` }}>
+              <Icon name="circle-check" size={17} color={color.good} />
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: color.goodText }}>已添加：{customLabel}</div>
+                <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 1 }}>探测通过，将作为该 Agent 的默认模型</div>
+              </div>
+              <Button variant="secondary" icon="pencil" onClick={onAdd}>更换</Button>
+            </div>
+          ) : (
+            <Interactive as="button" onClick={onAdd}
+              baseStyle={{ width: "100%", border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: color.brand, fontSize: 13, fontWeight: 600 }}
+              hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.04)" }}>
+              <Icon name="plus" size={16} color={color.brand} />添加自定义模型（base_url / model / API Key）
+            </Interactive>
+          )}
+        </div>
+      ) : null}
       <div style={{ marginTop: 16, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
         Secret 明文仅在创建时提交、加密存 user_secret，API 永不回显；探测失败的模型不能激活。
       </div>

@@ -52,6 +52,9 @@ export interface OpenOpsApi {
   getMcpLibrary(): Promise<AssetRow[]>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
+  // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
+  createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
+  createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string }): Promise<{ llm_config_id: string }>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
   uploadSkill(name: string): Promise<void>;
   registerMcp(name: string, endpoint: string): Promise<void>;
@@ -88,7 +91,7 @@ export interface OpenOpsApi {
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
   getAppTree(): Promise<AppTreeNode[]>;
-  createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string }): Promise<{ instance_id: string }>;
+  createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   // demo 身份
   switchRole(admin: boolean): void;
   demoState(): WorkbenchState; // mock 兜底静态（composer skills/models 等）
@@ -305,6 +308,23 @@ const realApi: OpenOpsApi = {
     }));
     return [...platform, ...mine];
   },
+  async createSecret(secretName, secretValue) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/secrets", {
+      method: "POST",
+      body: { client_request_id: crid(), secret_name: secretName, secret_type: "api_key", provider: "openai_compatible", secret_value: secretValue },
+    });
+    return { secret_ref_id: String(d.secret_ref_id), fingerprint: d.fingerprint ? String(d.fingerprint) : undefined };
+  },
+  async createLlmConfig(input) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/llm-configs", {
+      method: "POST",
+      body: {
+        client_request_id: crid(), display_name: input.display_name, provider: "openai_compatible",
+        base_url: input.base_url, model_name: input.model_name, secret_ref_id: input.secret_ref_id,
+      },
+    });
+    return { llm_config_id: String(d.llm_config_id) };
+  },
 
   async getAdminTable(key) {
     if (key === "templates") {
@@ -504,7 +524,10 @@ const realApi: OpenOpsApi = {
   async createAgentTeam(input) {
     const d = await apiFetch<{ instance: Record<string, unknown> }>("/openops/v1/agent-teams", {
       method: "POST",
-      body: { client_request_id: crid(), template_version_id: input.template_version_id, name: input.name, workspace_id: input.workspace_id },
+      body: {
+        client_request_id: crid(), template_version_id: input.template_version_id, name: input.name,
+        workspace_id: input.workspace_id, initial_overlay_json: input.initial_overlay_json ?? {},
+      },
     });
     return { instance_id: String(d.instance.instance_id) };
   },
@@ -545,6 +568,8 @@ const mockApi: OpenOpsApi = {
   reconcileAssets: () => delay({ skipped: true }),
   getConfigVersions: () => delay(M.mockConfigVersions),
   getModelConfigs: () => delay(M.mockModels),
+  createSecret: () => delay({ secret_ref_id: "sec_mock", fingerprint: "sk-…mock" }),
+  createLlmConfig: () => delay({ llm_config_id: "llm_mock_" + Math.random().toString(36).slice(2, 8) }),
   getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),

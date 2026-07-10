@@ -5,6 +5,7 @@ import { Icon, Interactive, Pill, Button, TextInput, Toggle } from "../ui";
 import { useApp } from "../lib/appState";
 import { api } from "../lib/api";
 import type { AgentInstance, AssetRow, ConfigVersionRow, ModelOption } from "../lib/api/types";
+import { AddCustomModelDialog } from "./AddCustomModelDialog";
 
 type Tab = "lib" | "prompt" | "model";
 type Filter = "all" | "on" | "off";
@@ -343,7 +344,13 @@ function PromptTab({ instanceId }: { instanceId: string }) {
 function ModelTab() {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [picked, setPicked] = useState<string>("");
-  useEffect(() => { api.getModelConfigs().then((m) => { setModels(m); setPicked(m.find((x) => x.current)?.llm_config_id ?? m[0]?.llm_config_id ?? ""); }); }, []);
+  const [dialog, setDialog] = useState(false);
+  const load = (selectId?: string) =>
+    api.getModelConfigs().then((m) => {
+      setModels(m);
+      setPicked(selectId ?? m.find((x) => x.current)?.llm_config_id ?? m[0]?.llm_config_id ?? "");
+    });
+  useEffect(() => { load(); }, []);
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "26px 30px 40px" }}>
       <div style={{ maxWidth: 720 }}>
@@ -368,13 +375,14 @@ function ModelTab() {
             );
           })}
         </div>
-        <button style={{ marginTop: 12, border: `1px dashed #c9cdd6`, background: "#fff", cursor: "pointer", color: color.brand, fontSize: 12.5, fontWeight: 600, padding: "9px 15px", borderRadius: radius.lg, display: "inline-flex", alignItems: "center", gap: 6 }}>
+        <button onClick={() => setDialog(true)} style={{ marginTop: 12, border: `1px dashed #c9cdd6`, background: "#fff", cursor: "pointer", color: color.brand, fontSize: 12.5, fontWeight: 600, padding: "9px 15px", borderRadius: radius.lg, display: "inline-flex", alignItems: "center", gap: 6 }}>
           <Icon name="plus" size={15} color={color.brand} />添加自定义模型（OpenAI 兼容）
         </button>
         <div style={{ marginTop: 16, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
           Secret 明文仅在创建时提交，保存后只显示脱敏指纹；探测失败的模型不能设为默认。对话输入框里的模型切换是会话级临时选择，不会修改这里的默认配置。
         </div>
       </div>
+      <AddCustomModelDialog open={dialog} onClose={() => setDialog(false)} onCreated={(id) => load(id)} />
     </div>
   );
 }
