@@ -115,7 +115,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 | 依赖 | 当前状态 | 切 real 怎么做 | 属哪块 |
 |---|---|---|---|
 | **oModel** | `omodel_client.py` 可切换；`omodel_mock.py` 默认；`omodel_real.py` 已备 HTTP 骨架（按 29.1，未联真实环境） | 对齐 `omodel_real.py` HTTP 形状 + `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL=<测试环境>` | B3 |
-| **Skill Hub** | mock 默认；**已备 real 变体**（`OPENOPS_SKILLHUB=real`，C3） | 配 `OPENOPS_SKILLHUB_BASE_URL`（未配 fail-loud）；真下载校验 `X-Checksum-SHA256`（⚠算法与 29.3 契约待对齐，见 34 号 §三 P2） | B6/C1 |
+| **Skill Hub** | mock 默认；**已备 real 变体**（`OPENOPS_SKILLHUB=real`，C3） | 配 `OPENOPS_SKILLHUB_BASE_URL`（未配 fail-loud）；真下载按 **ZIP 原始字节** sha256 校验 `X-Checksum-SHA256`（29.3 §2.5，C1-CHK-001 已对齐） | B6/C1 |
 | **MCP Registry** | mock 默认；**已备 real 变体**（`OPENOPS_MCPREGISTRY=real`，C3） | 配 `OPENOPS_MCPREGISTRY_BASE_URL`（`POST /mcps/proxy`，未配 fail-loud） | B6/C3 |
 | **平台 HTTP MCP** | mock 默认；**已备 real 变体**（`OPENOPS_MCP=real`，C3） | 配 `OPENOPS_MCP_BASE_URL`（Tool Gateway header 透传，28.2） | B4/C3 |
 | **用户自定义 LLM 探测** | mock 启发式；**已备 real**（`OPENOPS_LLM_PROBE=real`，C2/C3） | real 建 llm-config 时发真 `chat/completions` 验 tool-calling | — |

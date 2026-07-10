@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import os
 import zipfile
@@ -92,11 +93,14 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
         async with httpx.AsyncClient(timeout=30) as cli:
             r = await cli.get(f"{base}/skills/{skill_key}/versions/{version_no}/download")
             r.raise_for_status()
-            files = _unzip(r.content)
+            raw = r.content
             header_checksum = r.headers.get("X-Checksum-SHA256", "")
-        if header_checksum and package_checksum(files) != header_checksum:  # 传输完整性（29.3）
-            raise RuntimeError("Skill 包传输校验失败：X-Checksum-SHA256 与内容不符")
-        return {"files": files, "entrypoint": _entrypoint_from(files),
-                "checksum": header_checksum or package_checksum(files)}
+        # 传输完整性（29.3 §2.5）：X-Checksum-SHA256 = 下载 ZIP **原始字节**的 sha256，非解包内容。
+        if header_checksum and hashlib.sha256(raw).hexdigest() != header_checksum:
+            raise RuntimeError("Skill 包传输校验失败：X-Checksum-SHA256 与 ZIP 字节不符")
+        files = _unzip(raw)
+        # 返回给执行面的 checksum 用 package_checksum（绑文件名，executor.run_skill 内部再校验一致性）。
+        # 它与 Skill Hub 的 ZIP checksum 是两套算法、两个用途（传输 vs 执行面防篡改），勿混用。
+        return {"files": files, "entrypoint": _entrypoint_from(files), "checksum": package_checksum(files)}
 
     return {"files": dict(_MOCK_FILES), "entrypoint": _MOCK_ENTRYPOINT, "checksum": MOCK_INSPECTION_CHECKSUM}

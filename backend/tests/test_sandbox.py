@@ -136,6 +136,75 @@ def test_skill_003_checksum_mismatch_rejected(client):
     asyncio.run(scenario())
 
 
+async def test_skill_011_real_download_verifies_zip_bytes_checksum(monkeypatch):
+    """C1-CHK-001：real 下载按 **ZIP 原始字节** sha256 校验 `X-Checksum-SHA256`（29.3 §2.5），
+    返回给执行面的 checksum 用 package_checksum（两套算法：传输完整性 vs 执行面防篡改，勿混用）。"""
+    import hashlib
+    import io
+    import zipfile
+
+    import httpx
+
+    from domain.skill_package import package_checksum
+    from infra.external import skill_hub_client
+
+    src = {"SKILL.md": b"---\nentrypoint: python3 run.py\n---\n# x\n", "run.py": b"print(1)\n"}
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        for n, d in src.items():
+            z.writestr(n, d)
+    zip_bytes = buf.getvalue()
+
+    # 同事确认的 Skill Hub 侧算法（_sha256_file）：对 ZIP 文件字节 64KiB 分块流式 sha256。
+    # 分块与一次性等价（sha256 流式不变量）——证明生产代码 hashlib.sha256(r.content) 与之对齐。
+    def _sha256_file_bytes(data: bytes) -> str:
+        h = hashlib.sha256()
+        for i in range(0, len(data), 65536):
+            h.update(data[i:i + 65536])
+        return h.hexdigest()
+
+    zip_sha = _sha256_file_bytes(zip_bytes)
+    assert zip_sha == hashlib.sha256(zip_bytes).hexdigest()  # 分块 == 一次性
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "http://skillhub.local")
+
+    class _Resp:
+        def __init__(self, checksum):
+            self.content = zip_bytes
+            self.headers = {"X-Checksum-SHA256": checksum}
+
+        def raise_for_status(self):
+            pass
+
+    def _client_returning(checksum):
+        class _C:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, *a, **k):
+                return _Resp(checksum)
+
+        return _C
+
+    # 正确的 ZIP 字节 sha256 → 传输校验通过；返回 checksum = package_checksum（非 ZIP sha）
+    monkeypatch.setattr(httpx, "AsyncClient", _client_returning(zip_sha))
+    pkg = await skill_hub_client.download_skill_package("inspection", 2)
+    assert pkg["entrypoint"] == "python3 run.py"
+    assert pkg["checksum"] == package_checksum(pkg["files"]) and pkg["checksum"] != zip_sha
+
+    # 篡改 header（非 ZIP 字节 sha）→ 传输校验失败（旧代码用 package_checksum 比 header 会**永远**失败）
+    monkeypatch.setattr(httpx, "AsyncClient", _client_returning("deadbeef"))
+    with pytest.raises(RuntimeError, match="传输校验失败"):
+        await skill_hub_client.download_skill_package("inspection", 2)
+
+
 def test_skill_005_timeout_terminated(client):
     """SKILL-005：执行超时 → SKILL_TIMEOUT，进程被终止。"""
     from domain.errors import ApiError, Err
