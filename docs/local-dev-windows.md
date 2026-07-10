@@ -203,7 +203,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 5. `.env.example`（在**仓库根**）里 `OPENOPS_REDIS_URL` / `OPENOPS_ENV` / `OPENOPS_MOCK_EXTERNALS` 当前无代码读取、可无视；但同文件的 `OPENOPS_SECRET_KEY` 与 `OPENOPS_DATABASE_URL` 是**真被读取**的。
 6. 端口：后端 18082、前端 5175、PG 5432；前端 `vite.config.ts` 把 `/api` 代理到 18082。
 7. **沙箱 fake 后端在 Windows 上不可用**：`executor.py` 用 `sh -lc "… python3 run.py"`（`:163/:185`），Windows 无 `sh`→**优雅返回 exit 127（不 crash 服务）**，且 mock 包入口是 `python3`。核心 RCA 演示流**不碰沙箱**，故不影响初期调试；只有 agent 真调 `run_skill`/`run_bash`（需 `OPENOPS_RUNTIME=agentscope`+模型 或 `OPENOPS_DEMO_SANDBOX_STEP=1`）才触发。要真跑沙箱：用 WSL2/Linux，或 `OPENOPS_SANDBOX=docker`（Windows Docker Desktop 走命名管道 `npipe:////./pipe/docker_engine`，本代码默认连 unix socket、未处理 `DOCKER_HOST`，需自行适配）。
-8. **别强制 `uvicorn --loop selector`**：默认 `ProactorEventLoop` 支持子进程；换 selector loop 会让 `create_subprocess_exec` 抛 `NotImplementedError`。`uvicorn[standard]` 的 uvloop 是 Unix-only，Windows 自动回退 Proactor，无需干预。
+8. **Windows 事件循环:必须用 `SelectorEventLoop`**(已由 `backend/run.py` 处理,`run-backend.sh` 走它)。原因:psycopg3 的**异步连接池不支持 Windows 默认的 `ProactorEventLoop`**(报 `Psycopg cannot use the 'ProactorEventLoop'...`),必须在 uvicorn 建 loop 前 `asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())`。所以**别用 `uvicorn main:app` 直接起**(那样是 Proactor→连库失败),用 `python run.py`(或 `run-backend.sh`)。副作用:SelectorEventLoop 不支持子进程→沙箱 `run_skill/run_bash` 在 Windows 更加不可用,但本就(无 `sh`)不可用、mock 调试不碰,可接受。`conftest.py` 同款守护,Windows 上 pytest 也走 selector。
 9. **远程/共享 PG**：给本项目独立 database 或 schema（DDL 无 schema 前缀、无 search_path 处理）；`pytest` 会反复 `TRUNCATE` 全表，**测试库别指向部署/共享库**。
 
 ## 10. 验证闭环 & 自检

@@ -12,6 +12,12 @@ from fastapi.testclient import TestClient
 os.environ.setdefault("OPENOPS_ORCH_DELAY_MS", "10")
 os.environ.setdefault("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
 
+import asyncio  # noqa: E402
+import sys  # noqa: E402
+
+if sys.platform == "win32":  # Windows pytest：psycopg3 async 需 SelectorEventLoop（同 backend/run.py）
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 from app import asset_reconcile_service, scope_service  # noqa: E402
 from infra import idempotency  # noqa: E402
 from infra.external import omodel_mock  # noqa: E402
