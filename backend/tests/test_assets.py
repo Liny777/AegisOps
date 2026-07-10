@@ -48,7 +48,7 @@ def test_asset_bind_carries_forward_and_history_immutable(client):
 
     # 历史版本（cv1）的绑定行仍原样保留（未软删、未挪动）
     rows = _sql(
-        "select status, deleted_at from instance_asset_binding where config_version_id=%(cv)s",
+        "select status, deleted_at from sre_instance_asset_binding where config_version_id=%(cv)s",
         {"cv": cv1},
     )
     assert rows and all(r[0] == "active" and r[1] is None for r in rows)
@@ -81,7 +81,7 @@ def test_asset_unbind_derives_new_version(client):
     unwrap(client.delete(f"/api/openops/v1/asset-bindings/{binding_id}", headers=USER_HEADERS))
     assert _bindings(client, instance["instance_id"]) == []
     # 原绑定行仍在（历史版本，不原地改写）
-    rows = _sql("select deleted_at from instance_asset_binding where binding_id=%(b)s", {"b": binding_id})
+    rows = _sql("select deleted_at from sre_instance_asset_binding where binding_id=%(b)s", {"b": binding_id})
     assert rows and rows[0][0] is None
 
     unwrap(client.delete(f"/api/openops/v1/assets/skills/{s['skill_id']}", headers=USER_HEADERS))

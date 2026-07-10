@@ -1,4 +1,4 @@
-"""skill_asset(+version) / mcp_asset(+version) 仓储。"""
+"""sre_skill_asset(+version) / sre_mcp_asset(+version) 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -11,9 +11,9 @@ async def list_skills(owner: str | None, include_platform: bool = True) -> list[
     return await q_all(
         """
         select s.*, v.skill_version_id, v.version_no, v.checksum_sha256
-        from skill_asset s
+        from sre_skill_asset s
         left join lateral (
-          select * from skill_asset_version sv
+          select * from sre_skill_asset_version sv
           where sv.skill_id = s.skill_id and sv.deleted_at is null
           order by sv.version_no desc limit 1
         ) v on true
@@ -34,7 +34,7 @@ async def create_skill(
     by = owner or "system"
     await exec1(
         """
-        insert into skill_asset
+        insert into sre_skill_asset
           (skill_id, source, source_type, owner_user_id, display_name, skill_key, status, created_by, last_updated_by)
         values (%(s)s, 'openops', %(st)s, %(o)s, %(d)s, %(k)s, 'active', %(b)s, %(b)s)
         """,
@@ -42,7 +42,7 @@ async def create_skill(
     )
     await exec1(
         """
-        insert into skill_asset_version
+        insert into sre_skill_asset_version
           (skill_version_id, skill_id, version_no, manifest_json, checksum_sha256, status, created_by, last_updated_by)
         values (%(v)s, %(s)s, 1, %(m)s, %(c)s, 'active', %(b)s, %(b)s)
         """,
@@ -52,13 +52,13 @@ async def create_skill(
 
 
 async def get_skill(skill_id: str) -> dict[str, Any] | None:
-    return await q_one("select * from skill_asset where skill_id=%(s)s and deleted_at is null", {"s": skill_id})
+    return await q_one("select * from sre_skill_asset where skill_id=%(s)s and deleted_at is null", {"s": skill_id})
 
 
 async def get_skill_by_key(source_type: str, skill_key: str) -> dict[str, Any] | None:
     return await q_one(
         """
-        select * from skill_asset
+        select * from sre_skill_asset
         where source_type=%(st)s and skill_key=%(k)s and deleted_at is null
         order by creation_date desc limit 1
         """,
@@ -69,7 +69,7 @@ async def get_skill_by_key(source_type: str, skill_key: str) -> dict[str, Any] |
 async def latest_skill_version(skill_id: str) -> dict[str, Any] | None:
     return await q_one(
         """
-        select * from skill_asset_version
+        select * from sre_skill_asset_version
         where skill_id=%(s)s and deleted_at is null order by version_no desc limit 1
         """,
         {"s": skill_id},
@@ -82,7 +82,7 @@ async def add_skill_version(
     vid = str(uuid.uuid4())
     await exec1(
         """
-        insert into skill_asset_version
+        insert into sre_skill_asset_version
           (skill_version_id, skill_id, version_no, manifest_json, checksum_sha256, status, created_by, last_updated_by)
         values (%(v)s, %(s)s, %(n)s, %(m)s, %(c)s, 'active', %(b)s, %(b)s)
         """,
@@ -96,9 +96,9 @@ async def list_platform_mcps() -> list[dict[str, Any]]:
     return await q_all(
         """
         select m.*, v.mcp_version_id
-        from mcp_asset m
+        from sre_mcp_asset m
         join lateral (
-          select mcp_version_id from mcp_asset_version mv
+          select mcp_version_id from sre_mcp_asset_version mv
           where mv.mcp_id = m.mcp_id and mv.deleted_at is null
           order by mv.version_no desc limit 1
         ) v on true
@@ -109,7 +109,7 @@ async def list_platform_mcps() -> list[dict[str, Any]]:
 
 async def delete_skill(skill_id: str, by: str) -> int:
     return await exec1(
-        "update skill_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where skill_id=%(s)s and deleted_at is null",
+        "update sre_skill_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where skill_id=%(s)s and deleted_at is null",
         {"s": skill_id, "b": by},
     )
 
@@ -118,9 +118,9 @@ async def list_mcps(owner: str | None, include_platform: bool = True) -> list[di
     return await q_all(
         """
         select m.*, v.mcp_version_id, v.version_no
-        from mcp_asset m
+        from sre_mcp_asset m
         left join lateral (
-          select * from mcp_asset_version mv
+          select * from sre_mcp_asset_version mv
           where mv.mcp_id = m.mcp_id and mv.deleted_at is null
           order by mv.version_no desc limit 1
         ) v on true
@@ -141,7 +141,7 @@ async def create_mcp(
     by = owner or "system"
     await exec1(
         """
-        insert into mcp_asset
+        insert into sre_mcp_asset
           (mcp_id, source, source_type, owner_user_id, display_name, transport, endpoint_config_json,
            status, created_by, last_updated_by)
         values (%(m)s, 'openops', %(st)s, %(o)s, %(d)s, %(t)s, %(e)s, 'active', %(b)s, %(b)s)
@@ -151,7 +151,7 @@ async def create_mcp(
     )
     await exec1(
         """
-        insert into mcp_asset_version
+        insert into sre_mcp_asset_version
           (mcp_version_id, mcp_id, version_no, manifest_json, status, created_by, last_updated_by)
         values (%(v)s, %(m)s, 1, %(mf)s, 'active', %(b)s, %(b)s)
         """,
@@ -161,11 +161,11 @@ async def create_mcp(
 
 
 async def get_mcp(mcp_id: str) -> dict[str, Any] | None:
-    return await q_one("select * from mcp_asset where mcp_id=%(m)s and deleted_at is null", {"m": mcp_id})
+    return await q_one("select * from sre_mcp_asset where mcp_id=%(m)s and deleted_at is null", {"m": mcp_id})
 
 
 async def delete_mcp(mcp_id: str, by: str) -> int:
     return await exec1(
-        "update mcp_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where mcp_id=%(m)s and deleted_at is null",
+        "update sre_mcp_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where mcp_id=%(m)s and deleted_at is null",
         {"m": mcp_id, "b": by},
     )

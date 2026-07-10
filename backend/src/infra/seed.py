@@ -14,7 +14,7 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "container_memory_limit_mib": (2048, "新建容器内存限额"),
 }
 
-# 模型资产（B7：model_asset 表；替代旧 platform_runtime_config platform_model 域）
+# 模型资产（B7：sre_model_asset 表；替代旧 sre_platform_runtime_config platform_model 域）
 # (display_name, model_id, base_url, secret_env_var, access_scope, status)
 MODEL_ASSETS = [
     ("Qwen3.5-千问", "qwen3.5-instruct", None, None, "all", "active"),
@@ -44,7 +44,7 @@ TEMPLATE_CONTENT = {
 
 async def seed() -> None:
     # 已播种则跳过（以模板存在为标志）
-    if await q_one("select 1 ok from agent_team_template where template_key='sensai_fast_recovery'"):
+    if await q_one("select 1 ok from sre_agent_team_template where template_key='sensai_fast_recovery'"):
         return
 
     # 用户 + 白名单

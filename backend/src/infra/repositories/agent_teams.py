@@ -1,4 +1,4 @@
-"""agent_team_instance / agent_team_config_version / instance_asset_binding 仓储。"""
+"""sre_agent_team_instance / sre_agent_team_config_version / sre_instance_asset_binding 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -10,7 +10,7 @@ from infra.db import exec1, jsonb, q_all, q_one
 async def name_exists(owner: str, name: str) -> bool:
     row = await q_one(
         """
-        select 1 ok from agent_team_instance
+        select 1 ok from sre_agent_team_instance
         where owner_user_id=%(o)s and instance_name=%(n)s and deleted_at is null
         """,
         {"o": owner, "n": name},
@@ -30,7 +30,7 @@ async def create_instance(
     iid, cvid = str(uuid.uuid4()), str(uuid.uuid4())
     await exec1(
         """
-        insert into agent_team_instance
+        insert into sre_agent_team_instance
           (agent_team_instance_id, owner_user_id, template_id, template_version_id, instance_name,
            workspace_id, scope_revision, active_config_version_id, status, created_by, last_updated_by)
         values (%(i)s, %(o)s, %(t)s, %(tv)s, %(n)s, %(w)s, %(sr)s, %(cv)s, 'active', %(o)s, %(o)s)
@@ -40,7 +40,7 @@ async def create_instance(
     )
     await exec1(
         """
-        insert into agent_team_config_version
+        insert into sre_agent_team_config_version
           (config_version_id, agent_team_instance_id, template_version_id, version_no, schema_version,
            overlay_json, status, created_by, last_updated_by, change_reason)
         values (%(cv)s, %(i)s, %(tv)s, 1, 'v1', %(ov)s, 'active', %(o)s, %(o)s, 'initial')
@@ -52,7 +52,7 @@ async def create_instance(
 
 async def get_instance(instance_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from agent_team_instance where agent_team_instance_id=%(i)s and deleted_at is null",
+        "select * from sre_agent_team_instance where agent_team_instance_id=%(i)s and deleted_at is null",
         {"i": instance_id},
     )
 
@@ -60,7 +60,7 @@ async def get_instance(instance_id: str) -> dict[str, Any] | None:
 async def list_by_owner(owner: str) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from agent_team_instance
+        select * from sre_agent_team_instance
         where owner_user_id=%(o)s and deleted_at is null
         order by creation_date
         """,
@@ -71,7 +71,7 @@ async def list_by_owner(owner: str) -> list[dict[str, Any]]:
 async def set_status(instance_id: str, status: str, by: str) -> int:
     return await exec1(
         """
-        update agent_team_instance set status=%(s)s, last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_instance set status=%(s)s, last_updated_by=%(b)s, last_update_date=now()
         where agent_team_instance_id=%(i)s and deleted_at is null
         """,
         {"i": instance_id, "s": status, "b": by},
@@ -82,7 +82,7 @@ async def update_template_version(instance_id: str, template_version_id: str, by
     """模板升级派生后回写实例的模板版本指针（28.7）。"""
     return await exec1(
         """
-        update agent_team_instance set template_version_id=%(tv)s, last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_instance set template_version_id=%(tv)s, last_updated_by=%(b)s, last_update_date=now()
         where agent_team_instance_id=%(i)s and deleted_at is null
         """,
         {"i": instance_id, "tv": template_version_id, "b": by},
@@ -93,7 +93,7 @@ async def update_scope_revision(instance_id: str, scope_revision: str, by: str) 
     """回写实例 scope_revision（oModel 返回新版本时；28.6 scope.updated）。"""
     return await exec1(
         """
-        update agent_team_instance set scope_revision=%(sr)s, last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_instance set scope_revision=%(sr)s, last_updated_by=%(b)s, last_update_date=now()
         where agent_team_instance_id=%(i)s and deleted_at is null
         """,
         {"i": instance_id, "sr": scope_revision, "b": by},
@@ -103,7 +103,7 @@ async def update_scope_revision(instance_id: str, scope_revision: str, by: str) 
 async def soft_delete(instance_id: str, by: str) -> int:
     return await exec1(
         """
-        update agent_team_instance set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_instance set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
         where agent_team_instance_id=%(i)s and deleted_at is null
         """,
         {"i": instance_id, "b": by},
@@ -112,7 +112,7 @@ async def soft_delete(instance_id: str, by: str) -> int:
 
 async def get_config_version(config_version_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from agent_team_config_version where config_version_id=%(c)s and deleted_at is null",
+        "select * from sre_agent_team_config_version where config_version_id=%(c)s and deleted_at is null",
         {"c": config_version_id},
     )
 
@@ -120,7 +120,7 @@ async def get_config_version(config_version_id: str) -> dict[str, Any] | None:
 async def list_config_versions(instance_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from agent_team_config_version
+        select * from sre_agent_team_config_version
         where agent_team_instance_id=%(i)s and deleted_at is null
         order by version_no desc
         """,
@@ -134,7 +134,7 @@ async def create_config_version(
     """归档旧 active → 新 active（不可变版本链）。"""
     last = await q_one(
         """
-        select coalesce(max(version_no),0) v from agent_team_config_version
+        select coalesce(max(version_no),0) v from sre_agent_team_config_version
         where agent_team_instance_id=%(i)s
         """,
         {"i": instance_id},
@@ -142,14 +142,14 @@ async def create_config_version(
     cvid = str(uuid.uuid4())
     await exec1(
         """
-        update agent_team_config_version set status='archived', last_update_date=now(), last_updated_by=%(b)s
+        update sre_agent_team_config_version set status='archived', last_update_date=now(), last_updated_by=%(b)s
         where agent_team_instance_id=%(i)s and status='active'
         """,
         {"i": instance_id, "b": by},
     )
     await exec1(
         """
-        insert into agent_team_config_version
+        insert into sre_agent_team_config_version
           (config_version_id, agent_team_instance_id, template_version_id, version_no, schema_version,
            overlay_json, status, created_by, last_updated_by, change_reason)
         values (%(cv)s, %(i)s, %(tv)s, %(no)s, 'v1', %(ov)s, 'active', %(b)s, %(b)s, %(r)s)
@@ -159,7 +159,7 @@ async def create_config_version(
     )
     await exec1(
         """
-        update agent_team_instance set active_config_version_id=%(cv)s, last_update_date=now(), last_updated_by=%(b)s
+        update sre_agent_team_instance set active_config_version_id=%(cv)s, last_update_date=now(), last_updated_by=%(b)s
         where agent_team_instance_id=%(i)s
         """,
         {"cv": cvid, "i": instance_id, "b": by},
@@ -174,7 +174,7 @@ async def create_binding(
     bid = str(uuid.uuid4())
     await exec1(
         """
-        insert into instance_asset_binding
+        insert into sre_instance_asset_binding
           (binding_id, agent_team_instance_id, config_version_id, owner_user_id, agent_key, asset_type,
            skill_id, skill_version_id, mcp_id, mcp_version_id, status, created_by, last_updated_by)
         values (%(b)s, %(i)s, %(cv)s, %(o)s, 'main', %(t)s, %(s)s, %(sv)s, %(m)s, %(mv)s, 'active', %(o)s, %(o)s)
@@ -187,14 +187,14 @@ async def create_binding(
 
 async def get_binding(binding_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from instance_asset_binding where binding_id=%(b)s and deleted_at is null", {"b": binding_id}
+        "select * from sre_instance_asset_binding where binding_id=%(b)s and deleted_at is null", {"b": binding_id}
     )
 
 
 async def list_bindings(config_version_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from instance_asset_binding
+        select * from sre_instance_asset_binding
         where config_version_id=%(cv)s and deleted_at is null and status='active'
         """,
         {"cv": config_version_id},
@@ -216,11 +216,11 @@ async def list_binding_details(config_version_id: str) -> list[dict[str, Any]]:
           m.status as mcp_status,
           m.source_type as mcp_source_type,
           m.transport as mcp_transport
-        from instance_asset_binding b
-        left join skill_asset s on s.skill_id = b.skill_id and s.deleted_at is null
-        left join skill_asset_version sv on sv.skill_version_id = b.skill_version_id and sv.deleted_at is null
-        left join mcp_asset m on m.mcp_id = b.mcp_id and m.deleted_at is null
-        left join mcp_asset_version mv on mv.mcp_version_id = b.mcp_version_id and mv.deleted_at is null
+        from sre_instance_asset_binding b
+        left join sre_skill_asset s on s.skill_id = b.skill_id and s.deleted_at is null
+        left join sre_skill_asset_version sv on sv.skill_version_id = b.skill_version_id and sv.deleted_at is null
+        left join sre_mcp_asset m on m.mcp_id = b.mcp_id and m.deleted_at is null
+        left join sre_mcp_asset_version mv on mv.mcp_version_id = b.mcp_version_id and mv.deleted_at is null
         where b.config_version_id=%(cv)s and b.deleted_at is null and b.status='active'
         order by b.creation_date
         """,
@@ -231,7 +231,7 @@ async def list_binding_details(config_version_id: str) -> list[dict[str, Any]]:
 async def delete_binding(binding_id: str, by: str) -> int:
     return await exec1(
         """
-        update instance_asset_binding set deleted_at=now(), status='deleted',
+        update sre_instance_asset_binding set deleted_at=now(), status='deleted',
                last_updated_by=%(b)s, last_update_date=now()
         where binding_id=%(id)s and deleted_at is null
         """,
@@ -245,8 +245,8 @@ async def asset_in_use(asset_type: str, asset_id: str) -> bool:
     row = await q_one(
         f"""
         select 1 ok
-        from instance_asset_binding b
-        join agent_team_config_version cv on cv.config_version_id = b.config_version_id
+        from sre_instance_asset_binding b
+        join sre_agent_team_config_version cv on cv.config_version_id = b.config_version_id
         where b.{col}=%(a)s and b.deleted_at is null and b.status='active' and cv.status='active'
         limit 1
         """,

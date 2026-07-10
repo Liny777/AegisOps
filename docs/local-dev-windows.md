@@ -61,11 +61,23 @@ psql "postgresql://openops:openops@localhost:5432/openops" -f backend\sql\openop
 # 远程/共享库（内网部署场景）——把 URL 换成远程库，账号需有 CREATE 权限
 psql "postgresql://<用户>:<密码>@<远程主机>:5432/<库>" -f backend\sql\openops_v1_core.sql
 ```
-⚠️ 远程**共享** PG：给本项目**独立 database 或 schema**（DDL 无 schema 前缀、无 search_path 处理，表落连接默认 schema）；库里若有旧版表，`IF NOT EXISTS` 只补缺表**不改旧表列**，列有变更须清库重建（无迁移脚本）。**`pytest` 会 `TRUNCATE` 全表——测试库务必另开，别指向这个部署/共享库。**
+⚠️ 远程**共享** PG（本项目走独立 schema，**表名带 `sre_` 前缀**避免撞名）：建表时要把 **search_path 设到你的 schema**，表才落对地方——GUI 工作台里选中该 schema 再执行 DDL 全文，或 psql 用带 options 的连接串：
+```powershell
+psql "host=<主机> port=5432 dbname=<库> user=<用户> password=<密码> options=-csearch_path=<schema>" -f backend\sql\openops_v1_core.sql
+```
+这个 `<schema>` **必须和后端 `OPENOPS_PG_SCHEMA` 一致**。`IF NOT EXISTS` 只补缺表**不改旧表列**（列变更须清库重建）。**`pytest` 会 `TRUNCATE` 全表——测试库务必另开，别指向部署/共享库。**
 
-### 2.3 连接配置
-环境变量 `OPENOPS_DATABASE_URL`，默认 `postgresql://openops:openops@localhost:5432/openops`。**远程库**：`$env:OPENOPS_DATABASE_URL="postgresql://<用户>:<密码>@<远程主机>:5432/<库>"`。
-⚠️ 后端**不加载 .env 文件**且 `infra/db.py` 在 **import 时**即读该变量——非默认值须**先 `$env:` 注入、再起 uvicorn**。
+### 2.3 连接配置（离散 `OPENOPS_PG_*` 首选）
+后端连库两种写法：**设了 `OPENOPS_PG_HOST` 就走离散变量**（keyword 格式，密码/特殊字符**免 URL 转义**）；否则回退整串 `OPENOPS_DATABASE_URL`。
+
+| 变量 | 说明 |
+|---|---|
+| `OPENOPS_PG_HOST` / `PORT`(默认 5432) / `DB` / `USER` / `PASSWORD` | 连接四要素 + 密码（特殊字符无需转义） |
+| `OPENOPS_PG_SCHEMA` | 表落此 schema（经 `search_path`）；留空=账号默认。**须与建表时的 schema 一致**；表名带 `sre_` 前缀 |
+| `OPENOPS_PG_SSLMODE` | 公司库要 SSL 时设 `require` |
+| `OPENOPS_DATABASE_URL` | 或整串回退（未设 `OPENOPS_PG_HOST` 时才用） |
+
+⚠️ 后端**不加载 .env**、`infra/db.py` 在 **import 时**即读——先设、再起 uvicorn（推荐用启动脚本，见 §2.5，已带 `OPENOPS_PG_*` 模板）。
 
 ### 2.4 重置数据库（改了 seed / 想重来）
 ```powershell
@@ -77,7 +89,7 @@ docker compose up -d        # 重新首启 → 重建表 + 重新 seed
 ### 2.5 配置方式：后端不读 .env，用启动脚本（重要）
 后端**没有 dotenv/pydantic-settings，不加载任何 `.env` 文件**——把 `.env.example` 改名成 `.env` 放哪都**不会生效**（`.env.example` 仅是变量名参考清单）。配置 = 把变量设成**真进程环境变量**，两种方式：
 
-- **临时**：起后端前 `$env:OPENOPS_DATABASE_URL="..."`（`infra/db.py` 在 import 时即读，须先设再起 uvicorn）。
+- **临时**：起后端前 `$env:OPENOPS_PG_HOST="..."`（及 `PG_PORT/PG_DB/PG_USER/PG_PASSWORD/PG_SCHEMA`；或整串 `$env:OPENOPS_DATABASE_URL="..."`）。`infra/db.py` 在 import 时即读，须先设再起 uvicorn。
 - **推荐（免每次手敲）**：用启动脚本。仓库已带模板：
   - 后端 `backend/run-backend.ps1.example` → **复制为 `backend/run-backend.ps1`，填入真连接串**，然后 `cd backend; .\run-backend.ps1`（设 env + 起 uvicorn 18082）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
   - 前端 `frontend/run-frontend.ps1`（无密钥、可直接跑）→ `cd frontend; .\run-frontend.ps1`（起 vite dev 5175，代理 `/api`→18082）。

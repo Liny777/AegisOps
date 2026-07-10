@@ -1,4 +1,4 @@
-"""user_secret / user_llm_config 仓储。Secret 永不返回明文（SEC-001）。"""
+"""sre_user_secret / sre_user_llm_config 仓储。Secret 永不返回明文（SEC-001）。"""
 from __future__ import annotations
 
 import uuid
@@ -14,7 +14,7 @@ async def create_secret(
     sid = str(uuid.uuid4())
     await exec1(
         """
-        insert into user_secret
+        insert into sre_user_secret
           (secret_ref_id, user_id, secret_name, secret_type, provider, ciphertext, nonce, key_version,
            fingerprint, status, created_by, last_updated_by)
         values (%(s)s, %(u)s, %(n)s, %(t)s, %(p)s, %(c)s, '', %(kv)s, %(f)s, 'active', %(u)s, %(u)s)
@@ -29,7 +29,7 @@ async def list_secrets_masked(user_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
         select secret_ref_id, secret_name, secret_type, provider, fingerprint, status, creation_date
-        from user_secret where user_id=%(u)s and deleted_at is null order by creation_date
+        from sre_user_secret where user_id=%(u)s and deleted_at is null order by creation_date
         """,
         {"u": user_id},
     )
@@ -37,7 +37,7 @@ async def list_secrets_masked(user_id: str) -> list[dict[str, Any]]:
 
 async def get_secret(secret_ref_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from user_secret where secret_ref_id=%(s)s and deleted_at is null", {"s": secret_ref_id}
+        "select * from sre_user_secret where secret_ref_id=%(s)s and deleted_at is null", {"s": secret_ref_id}
     )
 
 
@@ -45,7 +45,7 @@ async def create_llm_config(user_id: str, req: dict[str, Any], probe: dict[str, 
     lid = str(uuid.uuid4())
     await exec1(
         """
-        insert into user_llm_config
+        insert into sre_user_llm_config
           (llm_config_id, user_id, display_name, provider, base_url, model_name, secret_ref_id,
            context_window_tokens, max_output_tokens, timeout_ms, max_retries,
            supports_tool_calling, supports_streaming, extra_params_json, status, created_by, last_updated_by)
@@ -66,7 +66,7 @@ async def list_llm_configs(user_id: str) -> list[dict[str, Any]]:
         """
         select llm_config_id, display_name, provider, base_url, model_name, secret_ref_id,
                context_window_tokens, max_output_tokens, supports_tool_calling, status, creation_date
-        from user_llm_config where user_id=%(u)s and deleted_at is null order by creation_date
+        from sre_user_llm_config where user_id=%(u)s and deleted_at is null order by creation_date
         """,
         {"u": user_id},
     )
@@ -74,5 +74,5 @@ async def list_llm_configs(user_id: str) -> list[dict[str, Any]]:
 
 async def get_llm_config(llm_config_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from user_llm_config where llm_config_id=%(l)s and deleted_at is null", {"l": llm_config_id}
+        "select * from sre_user_llm_config where llm_config_id=%(l)s and deleted_at is null", {"l": llm_config_id}
     )

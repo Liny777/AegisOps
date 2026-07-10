@@ -1,4 +1,4 @@
-"""audit_event 仓储（企业审计事实源；30 天 expire_at）。"""
+"""sre_audit_event 仓储（企业审计事实源；30 天 expire_at）。"""
 from __future__ import annotations
 
 import uuid
@@ -25,7 +25,7 @@ async def insert_event(
     eid = str(uuid.uuid4())
     await exec1(
         """
-        insert into audit_event
+        insert into sre_audit_event
           (audit_event_id, audit_trace_id, event_type, occurred_at, actor_type, user_id,
            agent_team_instance_id, agent_run_id, task_id, action, decision, reason_code,
            external_request_id, payload_redacted_json, created_by, last_updated_by, expire_at)
@@ -43,7 +43,7 @@ async def insert_event(
 async def list_by_run(run_id: str, limit: int = 200) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from audit_event where agent_run_id=%(r)s
+        select * from sre_audit_event where agent_run_id=%(r)s
         order by occurred_at asc limit %(l)s
         """,
         {"r": run_id, "l": limit},
@@ -52,11 +52,11 @@ async def list_by_run(run_id: str, limit: int = 200) -> list[dict[str, Any]]:
 
 async def list_recent(limit: int = 100) -> list[dict[str, Any]]:
     return await q_all(
-        "select * from audit_event order by occurred_at desc limit %(l)s", {"l": limit}
+        "select * from sre_audit_event order by occurred_at desc limit %(l)s", {"l": limit}
     )
 
 
 async def list_by_trace(audit_trace_id: str) -> list[dict[str, Any]]:
     return await q_all(
-        "select * from audit_event where audit_trace_id=%(t)s order by occurred_at asc", {"t": audit_trace_id}
+        "select * from sre_audit_event where audit_trace_id=%(t)s order by occurred_at asc", {"t": audit_trace_id}
     )

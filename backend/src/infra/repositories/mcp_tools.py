@@ -1,4 +1,4 @@
-"""mcp_tool_catalog / mcp_tool_annotation 仓储。"""
+"""sre_mcp_tool_catalog / sre_mcp_tool_annotation 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -12,7 +12,7 @@ async def upsert_catalog_tool(
 ) -> str:
     row = await q_one(
         """
-        select tool_catalog_id from mcp_tool_catalog
+        select tool_catalog_id from sre_mcp_tool_catalog
         where mcp_version_id=%(v)s and tool_name=%(n)s and deleted_at is null
         """,
         {"v": mcp_version_id, "n": tool_name},
@@ -22,7 +22,7 @@ async def upsert_catalog_tool(
     tcid = str(uuid.uuid4())
     await exec1(
         """
-        insert into mcp_tool_catalog
+        insert into sre_mcp_tool_catalog
           (tool_catalog_id, mcp_version_id, tool_name, description, input_schema_json, schema_hash,
            discovered_at, status, created_by, last_updated_by)
         values (%(t)s, %(v)s, %(n)s, %(d)s, %(s)s, %(h)s, now(), 'active', 'system', 'system')
@@ -39,10 +39,10 @@ async def list_catalog_with_annotation() -> list[dict[str, Any]]:
                m.display_name mcp_display_name,
                a.annotation_id, a.is_approval_required, a.is_secret_required,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
-        from mcp_tool_catalog c
-        join mcp_asset_version v on v.mcp_version_id = c.mcp_version_id
-        join mcp_asset m on m.mcp_id = v.mcp_id
-        left join mcp_tool_annotation a
+        from sre_mcp_tool_catalog c
+        join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id
+        join sre_mcp_asset m on m.mcp_id = v.mcp_id
+        left join sre_mcp_tool_annotation a
           on a.tool_catalog_id = c.tool_catalog_id and a.deleted_at is null
         where c.deleted_at is null
         order by m.display_name, c.tool_name
@@ -53,8 +53,8 @@ async def list_catalog_with_annotation() -> list[dict[str, Any]]:
 async def get_annotation_by_tool_name(tool_name: str) -> dict[str, Any] | None:
     return await q_one(
         """
-        select a.*, c.tool_name from mcp_tool_annotation a
-        join mcp_tool_catalog c on c.tool_catalog_id = a.tool_catalog_id
+        select a.*, c.tool_name from sre_mcp_tool_annotation a
+        join sre_mcp_tool_catalog c on c.tool_catalog_id = a.tool_catalog_id
         where c.tool_name=%(n)s and a.deleted_at is null and c.deleted_at is null
         limit 1
         """,
@@ -73,8 +73,8 @@ async def get_runtime_annotation(tool_name: str) -> dict[str, Any] | None:
         select c.tool_catalog_id, c.tool_name, c.schema_hash,
                a.annotation_id, a.is_approval_required, a.is_secret_required,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
-        from mcp_tool_catalog c
-        left join mcp_tool_annotation a
+        from sre_mcp_tool_catalog c
+        left join sre_mcp_tool_annotation a
           on a.tool_catalog_id = c.tool_catalog_id and a.deleted_at is null
         where c.tool_name=%(n)s and c.deleted_at is null
         order by c.discovered_at desc limit 1
@@ -93,7 +93,7 @@ async def sync_catalog_tool(
     """
     row = await q_one(
         """
-        select tool_catalog_id, schema_hash from mcp_tool_catalog
+        select tool_catalog_id, schema_hash from sre_mcp_tool_catalog
         where mcp_version_id=%(v)s and tool_name=%(n)s and deleted_at is null
         """,
         {"v": mcp_version_id, "n": tool_name},
@@ -101,7 +101,7 @@ async def sync_catalog_tool(
     if row is None:
         await exec1(
             """
-            insert into mcp_tool_catalog
+            insert into sre_mcp_tool_catalog
               (tool_catalog_id, mcp_version_id, tool_name, description, input_schema_json, schema_hash,
                discovered_at, status, created_by, last_updated_by)
             values (%(t)s, %(v)s, %(n)s, %(d)s, %(s)s, %(h)s, now(), 'active', 'system', 'system')
@@ -115,7 +115,7 @@ async def sync_catalog_tool(
     # schema 变化：更新目录行 + 软删该行标注（不继承 → 未标注 fail-closed，待管理员重标）
     await exec1(
         """
-        update mcp_tool_catalog set description=%(d)s, input_schema_json=%(s)s, schema_hash=%(h)s,
+        update sre_mcp_tool_catalog set description=%(d)s, input_schema_json=%(s)s, schema_hash=%(h)s,
                discovered_at=now(), last_updated_by='system', last_update_date=now()
         where tool_catalog_id=%(t)s
         """,
@@ -123,7 +123,7 @@ async def sync_catalog_tool(
     )
     await exec1(
         """
-        update mcp_tool_annotation set deleted_at=now(), last_updated_by='system', last_update_date=now()
+        update sre_mcp_tool_annotation set deleted_at=now(), last_updated_by='system', last_update_date=now()
         where tool_catalog_id=%(t)s and deleted_at is null
         """,
         {"t": row["tool_catalog_id"]},
@@ -133,7 +133,7 @@ async def sync_catalog_tool(
 
 async def get_tool_by_name(tool_name: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from mcp_tool_catalog where tool_name=%(n)s and deleted_at is null limit 1", {"n": tool_name}
+        "select * from sre_mcp_tool_catalog where tool_name=%(n)s and deleted_at is null limit 1", {"n": tool_name}
     )
 
 
@@ -142,13 +142,13 @@ async def save_annotation(
     scope_mode: str, appid_arg_path: str | None, status: str, blocked_reason: str | None, by: str,
 ) -> None:
     row = await q_one(
-        "select annotation_id from mcp_tool_annotation where tool_catalog_id=%(t)s and deleted_at is null",
+        "select annotation_id from sre_mcp_tool_annotation where tool_catalog_id=%(t)s and deleted_at is null",
         {"t": tool_catalog_id},
     )
     if row:
         await exec1(
             """
-            update mcp_tool_annotation
+            update sre_mcp_tool_annotation
             set is_approval_required=%(a)s, is_secret_required=%(s)s, scope_mode=%(m)s,
                 appid_arg_path=%(p)s, status=%(st)s, blocked_reason=%(r)s,
                 annotated_by=%(b)s, annotated_at=now(), last_updated_by=%(b)s, last_update_date=now()
@@ -160,7 +160,7 @@ async def save_annotation(
     else:
         await exec1(
             """
-            insert into mcp_tool_annotation
+            insert into sre_mcp_tool_annotation
               (annotation_id, tool_catalog_id, is_approval_required, is_secret_required, scope_mode,
                appid_arg_path, status, blocked_reason, annotated_by, annotated_at, created_by, last_updated_by)
             values (%(id)s, %(t)s, %(a)s, %(s)s, %(m)s, %(p)s, %(st)s, %(r)s, %(b)s, now(), %(b)s, %(b)s)

@@ -9,10 +9,10 @@ DDL = Path(__file__).resolve().parents[1] / "sql" / "openops_v1_core.sql"
 def test_ddl_001_has_core_tables_plus_runtime_config():
     ddl = DDL.read_text(encoding="utf-8")
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 22  # 21 业务核心表 + platform_runtime_config（B7 增 model_asset/model_access_grant）
-    assert "platform_runtime_config" in tables
-    assert "model_asset" in tables
-    assert "model_access_grant" in tables
+    assert len(tables) == 22  # 21 业务核心表 + sre_platform_runtime_config（B7 增 sre_model_asset/sre_model_access_grant）
+    assert "sre_platform_runtime_config" in tables
+    assert "sre_model_asset" in tables
+    assert "sre_model_access_grant" in tables
     assert "user_entitlement_cache" not in tables
 
 
@@ -34,7 +34,7 @@ def test_ddl_003_no_old_policy_or_scope_columns():
 
 def test_ddl_004_contains_runtime_config_and_approval_projection_fields():
     ddl = DDL.read_text(encoding="utf-8")
-    assert "platform_runtime_config" in ddl
+    assert "sre_platform_runtime_config" in ddl
     assert "reply_id" in ddl
     assert "tool_call_id" in ddl
     assert "suggested_rules_redacted_json" in ddl

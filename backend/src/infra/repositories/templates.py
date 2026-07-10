@@ -1,4 +1,4 @@
-"""agent_team_template / _version 仓储。"""
+"""sre_agent_team_template / _version 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -9,19 +9,19 @@ from infra.db import exec1, jsonb, q_all, q_one
 
 async def list_templates(status: str | None = None) -> list[dict[str, Any]]:
     where = "deleted_at is null" + (" and status=%(s)s" if status else "")
-    return await q_all(f"select * from agent_team_template where {where} order by creation_date", {"s": status})
+    return await q_all(f"select * from sre_agent_team_template where {where} order by creation_date", {"s": status})
 
 
 async def get_version(template_version_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from agent_team_template_version where template_version_id=%(v)s and deleted_at is null",
+        "select * from sre_agent_team_template_version where template_version_id=%(v)s and deleted_at is null",
         {"v": template_version_id},
     )
 
 
 async def get_template(template_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from agent_team_template where template_id=%(t)s and deleted_at is null", {"t": template_id}
+        "select * from sre_agent_team_template where template_id=%(t)s and deleted_at is null", {"t": template_id}
     )
 
 
@@ -29,7 +29,7 @@ async def get_draft(template_id: str) -> dict[str, Any] | None:
     """当前草稿版本（每模板同时至多一个 draft，save 为 upsert 语义）。"""
     return await q_one(
         """
-        select * from agent_team_template_version
+        select * from sre_agent_team_template_version
         where template_id=%(t)s and status='draft' and deleted_at is null
         order by version_no desc limit 1
         """,
@@ -43,7 +43,7 @@ async def save_draft(template_id: str, content_json: dict[str, Any], by: str) ->
     if draft is not None:
         await exec1(
             """
-            update agent_team_template_version
+            update sre_agent_team_template_version
             set content_json=%(c)s, last_updated_by=%(b)s, last_update_date=now()
             where template_version_id=%(v)s
             """,
@@ -51,13 +51,13 @@ async def save_draft(template_id: str, content_json: dict[str, Any], by: str) ->
         )
         return (await get_version(str(draft["template_version_id"])))  # type: ignore[return-value]
     last = await q_one(
-        "select coalesce(max(version_no),0) v from agent_team_template_version where template_id=%(t)s",
+        "select coalesce(max(version_no),0) v from sre_agent_team_template_version where template_id=%(t)s",
         {"t": template_id},
     )
     vid = str(uuid.uuid4())
     await exec1(
         """
-        insert into agent_team_template_version
+        insert into sre_agent_team_template_version
           (template_version_id, template_id, version_no, schema_version, content_json, status, created_by, last_updated_by)
         values (%(v)s, %(t)s, %(no)s, 'v1', %(c)s, 'draft', %(b)s, %(b)s)
         """,
@@ -73,14 +73,14 @@ async def publish_version(template_version_id: str, by: str) -> dict[str, Any]:
     tid = str(ver["template_id"])
     await exec1(
         """
-        update agent_team_template_version set status='archived', last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_template_version set status='archived', last_updated_by=%(b)s, last_update_date=now()
         where template_id=%(t)s and status='active'
         """,
         {"t": tid, "b": by},
     )
     await exec1(
         """
-        update agent_team_template_version
+        update sre_agent_team_template_version
         set status='active', published_by=%(b)s, published_at=now(), last_updated_by=%(b)s, last_update_date=now()
         where template_version_id=%(v)s
         """,
@@ -88,7 +88,7 @@ async def publish_version(template_version_id: str, by: str) -> dict[str, Any]:
     )
     await exec1(
         """
-        update agent_team_template set active_template_version_id=%(v)s, last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_template set active_template_version_id=%(v)s, last_updated_by=%(b)s, last_update_date=now()
         where template_id=%(t)s
         """,
         {"v": template_version_id, "t": tid, "b": by},
@@ -102,14 +102,14 @@ async def disable_version(template_version_id: str, by: str) -> None:
     assert ver is not None
     await exec1(
         """
-        update agent_team_template_version set status='disabled', last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_template_version set status='disabled', last_updated_by=%(b)s, last_update_date=now()
         where template_version_id=%(v)s
         """,
         {"v": template_version_id, "b": by},
     )
     await exec1(
         """
-        update agent_team_template set active_template_version_id=null, last_updated_by=%(b)s, last_update_date=now()
+        update sre_agent_team_template set active_template_version_id=null, last_updated_by=%(b)s, last_update_date=now()
         where template_id=%(t)s and active_template_version_id=%(v)s
         """,
         {"t": str(ver["template_id"]), "v": template_version_id, "b": by},
@@ -119,7 +119,7 @@ async def disable_version(template_version_id: str, by: str) -> None:
 async def list_versions(template_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from agent_team_template_version
+        select * from sre_agent_team_template_version
         where template_id=%(t)s and deleted_at is null order by version_no desc
         """,
         {"t": template_id},
@@ -132,7 +132,7 @@ async def create_template_with_version(
     tid, vid = str(uuid.uuid4()), str(uuid.uuid4())
     await exec1(
         """
-        insert into agent_team_template
+        insert into sre_agent_team_template
           (template_id, template_key, display_name, description, status, active_template_version_id, created_by, last_updated_by)
         values (%(t)s, %(k)s, %(d)s, %(desc)s, 'active', %(v)s, %(b)s, %(b)s)
         """,
@@ -140,7 +140,7 @@ async def create_template_with_version(
     )
     await exec1(
         """
-        insert into agent_team_template_version
+        insert into sre_agent_team_template_version
           (template_version_id, template_id, version_no, schema_version, content_json, status,
            published_by, published_at, created_by, last_updated_by)
         values (%(v)s, %(t)s, 1, 'v1', %(c)s, 'active', %(b)s, now(), %(b)s, %(b)s)

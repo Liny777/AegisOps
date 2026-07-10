@@ -1,4 +1,4 @@
-"""agent_run / scope_snapshot / approval_request 仓储。"""
+"""sre_agent_run / sre_scope_snapshot / sre_approval_request 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -14,7 +14,7 @@ async def create_run(
     rid = run_id or str(uuid.uuid4())  # 调用方可预定 id（B8：run 开启前先按此 id 做沙箱容量准入）
     await exec1(
         """
-        insert into agent_run
+        insert into sre_agent_run
           (agent_run_id, user_id, agent_team_instance_id, config_version_id, framework_session_id,
            audit_trace_id, run_status, started_at, created_by, last_updated_by)
         values (%(r)s, %(u)s, %(i)s, %(cv)s, %(f)s, %(tr)s, 'active', now(), %(u)s, %(u)s)
@@ -26,20 +26,20 @@ async def create_run(
 
 async def get_run(run_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from agent_run where agent_run_id=%(r)s and deleted_at is null", {"r": run_id}
+        "select * from sre_agent_run where agent_run_id=%(r)s and deleted_at is null", {"r": run_id}
     )
 
 
 async def list_runs_by_user(user_id: str) -> list[dict[str, Any]]:
     return await q_all(
-        "select * from agent_run where user_id=%(u)s and deleted_at is null order by started_at desc", {"u": user_id}
+        "select * from sre_agent_run where user_id=%(u)s and deleted_at is null order by started_at desc", {"u": user_id}
     )
 
 
 async def set_run_status(run_id: str, status: str, reason_code: str | None = None) -> int:
     return await exec1(
         """
-        update agent_run
+        update sre_agent_run
         set run_status=%(s)s, status_reason_code=%(rc)s,
             ended_at = case when %(s)s='closed' then now() else ended_at end,
             last_update_date=now()
@@ -56,7 +56,7 @@ async def insert_scope_snapshot(
     sid = str(uuid.uuid4())
     await exec1(
         """
-        insert into scope_snapshot
+        insert into sre_scope_snapshot
           (scope_snapshot_id, user_id, agent_team_instance_id, agent_run_id, task_id, workspace_id,
            scope_revision, effective_appids_snapshot, omodel_request_id, compute_reason, computed_at, created_by, last_updated_by)
         values (%(s)s, %(u)s, %(i)s, %(r)s, %(t)s, %(w)s, %(sr)s, %(a)s, %(orq)s, %(cr)s, now(), %(u)s, %(u)s)
@@ -75,7 +75,7 @@ async def create_approval(
     aid = str(uuid.uuid4())
     await exec1(
         """
-        insert into approval_request
+        insert into sre_approval_request
           (approval_request_id, user_id, agent_team_instance_id, agent_run_id, framework_session_id,
            reply_id, tool_call_id, task_id, tool_call_name,
            arguments_redacted_json, suggested_rules_redacted_json, decision, audit_trace_id,
@@ -95,14 +95,14 @@ async def create_approval(
 
 async def get_approval(approval_id: str) -> dict[str, Any] | None:
     return await q_one(
-        "select * from approval_request where approval_request_id=%(a)s", {"a": approval_id}
+        "select * from sre_approval_request where approval_request_id=%(a)s", {"a": approval_id}
     )
 
 
 async def pending_approvals(run_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select * from approval_request
+        select * from sre_approval_request
         where agent_run_id=%(r)s and decision='pending'
         order by creation_date
         """,
@@ -113,7 +113,7 @@ async def pending_approvals(run_id: str) -> list[dict[str, Any]]:
 async def decide_approval(approval_id: str, decision: str, decided_by: str) -> int:
     return await exec1(
         """
-        update approval_request
+        update sre_approval_request
         set decision=%(d)s, decided_by=%(b)s, decided_at=now(), last_updated_by=%(b)s, last_update_date=now()
         where approval_request_id=%(a)s and decision='pending'
         """,
@@ -125,7 +125,7 @@ async def expire_stale_approvals(run_id: str) -> int:
     """ASK 超时（ASK-004）：pending 且过期 → timeout。"""
     return await exec1(
         """
-        update approval_request set decision='timeout', last_update_date=now(), last_updated_by='system'
+        update sre_approval_request set decision='timeout', last_update_date=now(), last_updated_by='system'
         where agent_run_id=%(r)s and decision='pending' and expire_at is not null and expire_at < now()
         """,
         {"r": run_id},
