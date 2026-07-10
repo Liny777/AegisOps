@@ -39,6 +39,7 @@ class _FakeClient:
 def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
     monkeypatch.setenv("OPENOPS_MCP", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_COOKIE", "sid=abc123")
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
@@ -50,7 +51,24 @@ def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
     assert cap["json"] == {"url": "http://mcpgw/x", "method": "tools/call",
                            "params": {"name": "query_alarm_list", "arguments": {"project_id": "APP-REAL-1"}}}
     assert cap["headers"]["X-OpenOps-Effective-Appids"] == "APP-REAL-1"  # 28.2 头原样透传
+    assert cap["headers"]["Cookie"] == "sid=abc123"  # console 鉴权 cookie 注入
     assert r["result_summary"] == "告警3条：A/B/C"  # fastmcp structuredContent.result 抽取
+
+
+def test_console_discovery_sends_cookie(monkeypatch):
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_COOKIE", "sid=xyz")
+    import httpx
+
+    class _Srv(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            _FakeClient.captured = {"url": url, "json": json, "headers": headers}
+            return _Resp({"code": 0, "data": {"items": [], "total": 0}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Srv)
+    asyncio.run(mcp_registry_client.list_servers())
+    assert _FakeClient.captured["headers"].get("Cookie") == "sid=xyz"
 
 
 def test_dynamic_specs_scope_from_project_id(monkeypatch):

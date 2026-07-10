@@ -42,10 +42,14 @@ async def call_tool(
             if not base:
                 raise RuntimeError("动态 MCP 调用需 OPENOPS_MCPREGISTRY_BASE_URL（经 console proxy 路由 tools/call）")
             url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
+            hdrs = dict(headers or {})  # console 需用户 Cookie 鉴权（同发现路径）；真 IAM 网关透传时不覆盖
+            cookie = os.getenv("OPENOPS_MCPREGISTRY_COOKIE")
+            if cookie and "Cookie" not in hdrs:
+                hdrs["Cookie"] = cookie
             async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30"))) as cli:
                 r = await cli.post(url, json={"url": server_url, "method": "tools/call",
                                               "params": {"name": tool_name, "arguments": arguments}},
-                                   headers=headers or {})
+                                   headers=hdrs)
                 r.raise_for_status()
                 body = r.json()
             if int(body.get("code", -1)) != 0:  # 29.3 业务信封

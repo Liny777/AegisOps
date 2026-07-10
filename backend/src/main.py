@@ -50,7 +50,9 @@ async def lifespan(_app: FastAPI):
         f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  "
         f"scope_override={os.environ.get('OPENOPS_SCOPE_OVERRIDE_APPIDS') or 'off'}  "
         f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
-        f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
+        f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  "
+        f"mcp_cookie={'SET' if os.environ.get('OPENOPS_MCPREGISTRY_COOKIE') else 'unset'}  "
+        f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
     )
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)

@@ -29,6 +29,13 @@ def _schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def _console_headers() -> dict[str, str]:
+    """console（mcps/list/query、mcps/proxy）需带用户 Cookie 鉴权：从 OPENOPS_MCPREGISTRY_COOKIE 注入。
+    联调用（本地无 IAM 登录）；生产由真 IAM 网关透传用户 cookie。未设=不带（会 401，需配）。cookie 是会话态，会过期。"""
+    cookie = os.getenv("OPENOPS_MCPREGISTRY_COOKIE")
+    return {"Cookie": cookie} if cookie else {}
+
+
 async def list_servers() -> list[dict[str, Any]]:
     """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
     real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。"""
@@ -43,7 +50,8 @@ async def list_servers() -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=15) as cli:
             page, page_size = 1, 50
             while True:
-                r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"})
+                r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"},
+                                   headers=_console_headers())
                 r.raise_for_status()
                 body = r.json()
                 if int(body.get("code", -1)) != 0:
@@ -75,7 +83,8 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
 
         url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
         async with httpx.AsyncClient(timeout=15) as cli:
-            r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}})
+            r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
+                               headers=_console_headers())
             r.raise_for_status()
             body = r.json()
         if int(body.get("code", -1)) != 0:  # 29.3 业务信封 {code:0, message, data}
