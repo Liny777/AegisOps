@@ -47,7 +47,9 @@ async def lifespan(_app: FastAPI):
     _banner = (
         f"runtime={_rt}{_agentscope}  model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
         f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
-        f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
+        f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  "
+        f"scope_override={os.environ.get('OPENOPS_SCOPE_OVERRIDE_APPIDS') or 'off'}  "
+        f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
         f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
     )

@@ -39,6 +39,13 @@ async def _blocked(run_id: str, task_id: str, instance_id: str, trace: str,
     ))
 
 
+def _scope_override() -> list[str] | None:
+    """联调测试缝：设 OPENOPS_SCOPE_OVERRIDE_APPIDS（逗号分隔）就用它当 effective_appids、跳过 oModel——
+    oModel 服务未就绪时也能拿真 appid 联调真 MCP。空/未设=不覆盖，照常走 oModel。仅测试/联调用。"""
+    raw = os.environ.get("OPENOPS_SCOPE_OVERRIDE_APPIDS", "").strip()
+    return [a.strip() for a in raw.split(",") if a.strip()] or None
+
+
 async def resolve_for_task(
     user_id: str, instance: dict[str, Any], run_id: str, task_id: str, audit_trace_id: str
 ) -> dict[str, Any]:
@@ -54,7 +61,12 @@ async def resolve_for_task(
         ctx["cache_hit"] = True
         return ctx  # 复用 ScopeContext + scope_snapshot_id（28.6：不重解、不重写快照）
 
-    res = await omodel_client.resolve_scope(ws_id, instance_rev, user_id)
+    override = _scope_override()
+    if override is not None:  # 联调缝：跳过 oModel，用真 appid 当 scope（omodel_request_id 打标记，审计可辨）
+        res: dict[str, Any] = {"status": "ok", "effective_appids": override,
+                               "scope_revision": instance_rev, "omodel_request_id": "scope-override"}
+    else:
+        res = await omodel_client.resolve_scope(ws_id, instance_rev, user_id)
     status = res["status"]
     if status == "syncing":
         await _blocked(run_id, task_id, instance_id, audit_trace_id, user_id, "WORKSPACE_NOT_READY", "workspace 未就绪")

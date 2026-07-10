@@ -76,3 +76,16 @@ def test_scope_006_ttl_cache_reuse_survives_backend_change(client):
     # 同实例第二个 Run 在 30s TTL 内命中缓存、不重解 → 仍成功（非空 appids）
     run2 = create_run(client, instance["instance_id"])
     assert unwrap(_start_task(client, run2["agent_run_id"], "第二次"))["status"] == "running"
+
+
+def test_scope_007_override_bypasses_omodel(client, monkeypatch):
+    """联调缝 OPENOPS_SCOPE_OVERRIDE_APPIDS：即便 oModel failed，也用覆盖 appid 解析成功（跳过 oModel）。
+
+    验证方式——把 mock oModel 置成 failed（正常会 SCOPE_RESOLVE_FAILED 阻断），设覆盖后 task 仍 running，
+    即证明 scope 走的是覆盖 appid、根本没调 oModel。
+    """
+    monkeypatch.setenv("OPENOPS_SCOPE_OVERRIDE_APPIDS", "APP-REAL-1, APP-REAL-2")
+    instance = create_instance(client)
+    omodel_mock._set_scope("ws_pay_abc", sync_status="failed")
+    run = create_run(client, instance["instance_id"])
+    assert unwrap(_start_task(client, run["agent_run_id"]))["status"] == "running"
