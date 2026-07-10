@@ -47,7 +47,7 @@ npm run dev                          # http://127.0.0.1:5175 ，/api 代理到 1
 ## 2. 建表
 
 ### 2.1 DDL 文件
-`backend/sql/openops_v1_core.sql` —— 20 张表，由 Obsidian 19 号建表语句生成。**无外键、无触发器、无需任何 PG 扩展**（UUID 应用层生成），任意原生 PostgreSQL 直接建。
+`backend/sql/openops_v1_core.sql` —— **22 张表**（B7 增 `model_asset`+`model_access_grant`），由 Obsidian 19 号建表语句生成。`CREATE TABLE IF NOT EXISTS` 幂等、**无外键、无触发器、无需任何 PG 扩展**（UUID 应用层生成），任意原生 PostgreSQL 直接建。⚠远程/共享库：DDL **不带 schema 前缀、无 search_path 处理**，表落连接默认 schema——共享 PG 给本项目**独立 database 或 schema**；库里若有旧版表，`IF NOT EXISTS` 只补缺表**不改旧表列**，列有变更须清库重建（无迁移脚本）。
 
 ### 2.2 建表怎么执行（重要）
 应用启动**不会自动建表**。建表只在两处发生：
@@ -96,7 +96,11 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 | `OPENOPS_OMODEL_BASE_URL` | 空 | `OPENOPS_OMODEL=real` | oModel 测试环境地址；空则 fail-closed |
 | `OPENOPS_OMODEL_TIMEOUT_S` | `8` | 可选 | oModel 超时秒数 |
 | `OPENOPS_PLATFORM_GLM_API_KEY` | 空 | 接真 GLM 模型（B2） | 只从环境读，禁入 PG/日志 |
-| `OPENOPS_SECRET_KEY` | `change-me` | 用户 Secret 加密（`infra/crypto.py`） | 本地默认可用；**生产必须改且不可丢**（丢了密文解不开） |
+| `OPENOPS_LLM_PROBE` | `mock` | 联调用户自定义 LLM | `mock`（启发式，不打网）\| `real`（建 llm-config 时发真 `chat/completions` 验 tool-calling） |
+| `OPENOPS_SANDBOX` | `fake` | 接真 Docker 沙箱（B8） | `fake`（tempdir+subprocess，默认）\| `docker`（需 `.[sandbox]`+Docker Desktop）；本地调试 fake 够用 |
+| `OPENOPS_MCP` / `OPENOPS_MCPREGISTRY` / `OPENOPS_SKILLHUB` | `mock` | 联调对应外部服务（C3） | `=real` 时须配同名 `*_BASE_URL`，否则 fail-loud（不静默降级） |
+| `OPENOPS_ENCRYPTION_KEY` | 空→dev 派生 | 用户 Secret 加密（C2，`infra/crypto.py`） | **生产 Secret 主 key**（Fernet，`Fernet.generate_key()` 生成）；`_OLD` 逗号分隔旧 key 供轮换；**丢了密文解不开** |
+| `OPENOPS_SECRET_KEY` | `change-me` | 未配 `OPENOPS_ENCRYPTION_KEY` 时的 dev 回退源 | 本地默认可用（从它派生确定性 Fernet key，warn 提示）；**生产必配 `OPENOPS_ENCRYPTION_KEY`** |
 | `VITE_OPENOPS_API_MODE`（前端） | `real` | 纯 UI 演示时 | `real`=真打后端；`mock`=用 `mockData` 纯前端跑，**不需要后端** |
 | `VITE_OPENOPS_API_BASE`（前端） | `/api`（走 vite 代理） | 前端指向非默认后端 | 后端 base 地址 |
 | ~~`OPENOPS_REDIS_URL`~~ | — | ❌ 从不读取 | `.env.example` 遗留占位，无视 |
@@ -111,11 +115,14 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 | 依赖 | 当前状态 | 切 real 怎么做 | 属哪块 |
 |---|---|---|---|
 | **oModel** | `omodel_client.py` 可切换；`omodel_mock.py` 默认；`omodel_real.py` 已备 HTTP 骨架（按 29.1，未联真实环境） | 对齐 `omodel_real.py` HTTP 形状 + `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL=<测试环境>` | B3 |
-| **Skill Hub** | 纯 mock（`skill_hub_client.py` 硬编码），无 real 变体、无 cookie 管道 | 见 §7：先建可切换 adapter + 测试 cookie 环境变量 | B6 |
-| **MCP Registry** | 纯 mock（`mcp_registry_client.py` 硬编码 `_TOOLS`） | 同上（§7） | B6 |
+| **Skill Hub** | mock 默认；**已备 real 变体**（`OPENOPS_SKILLHUB=real`，C3） | 配 `OPENOPS_SKILLHUB_BASE_URL`（未配 fail-loud）；真下载校验 `X-Checksum-SHA256`（⚠算法与 29.3 契约待对齐，见 34 号 §三 P2） | B6/C1 |
+| **MCP Registry** | mock 默认；**已备 real 变体**（`OPENOPS_MCPREGISTRY=real`，C3） | 配 `OPENOPS_MCPREGISTRY_BASE_URL`（`POST /mcps/proxy`，未配 fail-loud） | B6/C3 |
+| **平台 HTTP MCP** | mock 默认；**已备 real 变体**（`OPENOPS_MCP=real`，C3） | 配 `OPENOPS_MCP_BASE_URL`（Tool Gateway header 透传，28.2） | B4/C3 |
+| **用户自定义 LLM 探测** | mock 启发式；**已备 real**（`OPENOPS_LLM_PROBE=real`，C2/C3） | real 建 llm-config 时发真 `chat/completions` 验 tool-calling | — |
 | **IAM** | `X-OpenOps-Mock-User` 头 | 真 W3/IAM introspect | B9 |
 | **Runtime** | `OPENOPS_RUNTIME=mock`（脚本化编排 `orchestrator.py`） | `=agentscope`（真 Agent，须 `pip install -e ".[test,agentscope]"`；仍**不需 Redis**） | B1 |
 | **平台模型** | mock，不调真 LLM | 配 `OPENOPS_PLATFORM_GLM_API_KEY` + Model Gateway | B2 |
+| **沙箱** | `OPENOPS_SANDBOX=fake`（tempdir+subprocess） | `=docker`（须 `.[sandbox]`+Docker Desktop；⚠Windows 走命名管道，见 §9.7） | B8 |
 
 ### 5.1 oModel（同事在开发时怎么验证）
 `omodel_client.py` 是分发器（照它的 `_impl()` 模式给其他依赖加 real 分支）。现在用 mock 验证全链路：初始化建 workspace、Scope resolve、空范围 fail-closed、平台 MCP 按 `effective_appids` 过滤（对应 `31-OpenOps V1测试用例` 的 EXT-001/002、SCOPE-*）。**不要等同事**：按 mock 契约做完自己这侧；同事 ready 后按真实接口对齐 `omodel_real.py` 的 HTTP 形状（29.2 差距重点：`resolve→effective_appids`、per-user 过滤、`scope_revision`），切 env 即可。
@@ -163,12 +170,15 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 
 ## 9. Windows 常见坑
 
-1. **别拷 mac 的 `backend/.venv`**（含 mac 二进制），Windows 必须 `python -m venv .venv` 重建。
+1. **别拷 mac 的 `backend/.venv` 和 `frontend/node_modules`**（都含平台原生二进制：venv 是 mac 解释器、node_modules 有 esbuild/rollup 的 darwin 产物）。Windows 必须各自 `python -m venv .venv` 与 `npm install` 重建（内网无外网则走内部 PyPI/npm 镜像或预下载 wheel/tarball）。
 2. 激活命令：`.venv\Scripts\Activate.ps1`（PowerShell），不是 `source .venv/bin/activate`。
 3. **应用不自动建表**：原生 PG 要先手动跑 DDL（§2.2）。
 4. **后端不读 .env**：env 要手动 `$env:` 注入，否则全走默认（默认够本地用）。
 5. `.env.example`（在**仓库根**）里 `OPENOPS_REDIS_URL` / `OPENOPS_ENV` / `OPENOPS_MOCK_EXTERNALS` 当前无代码读取、可无视；但同文件的 `OPENOPS_SECRET_KEY` 与 `OPENOPS_DATABASE_URL` 是**真被读取**的。
 6. 端口：后端 18081、前端 5175、PG 5432；前端 `vite.config.ts` 把 `/api` 代理到 18081。
+7. **沙箱 fake 后端在 Windows 上不可用**：`executor.py` 用 `sh -lc "… python3 run.py"`（`:163/:185`），Windows 无 `sh`→**优雅返回 exit 127（不 crash 服务）**，且 mock 包入口是 `python3`。核心 RCA 演示流**不碰沙箱**，故不影响初期调试；只有 agent 真调 `run_skill`/`run_bash`（需 `OPENOPS_RUNTIME=agentscope`+模型 或 `OPENOPS_DEMO_SANDBOX_STEP=1`）才触发。要真跑沙箱：用 WSL2/Linux，或 `OPENOPS_SANDBOX=docker`（Windows Docker Desktop 走命名管道 `npipe:////./pipe/docker_engine`，本代码默认连 unix socket、未处理 `DOCKER_HOST`，需自行适配）。
+8. **别强制 `uvicorn --loop selector`**：默认 `ProactorEventLoop` 支持子进程；换 selector loop 会让 `create_subprocess_exec` 抛 `NotImplementedError`。`uvicorn[standard]` 的 uvloop 是 Unix-only，Windows 自动回退 Proactor，无需干预。
+9. **远程/共享 PG**：给本项目独立 database 或 schema（DDL 无 schema 前缀、无 search_path 处理）；`pytest` 会反复 `TRUNCATE` 全表，**测试库别指向部署/共享库**。
 
 ## 10. 验证闭环 & 自检
 
