@@ -208,8 +208,16 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
     props: dict[str, Any] = schema.get("properties") or {}
     required = set(schema.get("required") or [])
 
+    appid_field = (spec.get("appid_arg_path") or "").removeprefix("$.")
+
     async def _handler(**kwargs: Any) -> Any:
         args = {k: v for k, v in kwargs.items() if k in props and v not in (None, "", [], {})}
+        # 联调便利：appid（如 project_id）受 scope 约束（拍板 i），但 GLM 常忘传/传空；当 scope 恰好 1 个 appid
+        # 时自动补上（填的就是被允许的那个，不削弱 scope）。多 appid（真 oModel）时不补，交给模型自己选。
+        if appid_field and not args.get(appid_field):
+            allowed = (st.scope_ctx or {}).get("effective_appids", [])
+            if len(allowed) == 1:
+                args[appid_field] = allowed[0]
         try:
             r = await tool_gateway.invoke(st, run, name, args, server_url=server_url,
                                           started_msg=f"调用 {name}", succeeded_msg=f"{name} 返回")

@@ -98,3 +98,28 @@ def test_dynamic_specs_scope_from_project_id(monkeypatch):
 def test_dynamic_specs_empty_when_mock(monkeypatch):
     monkeypatch.delenv("OPENOPS_MCPREGISTRY", raising=False)
     assert asyncio.run(ar._dynamic_mcp_specs()) == []
+
+
+def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
+    import pytest
+
+    pytest.importorskip("agentscope")  # _make_dynamic_tool 需 agentscope（.venv 才有）
+    from runtime import tool_gateway
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.scope_ctx = {"effective_appids": ["APP-REAL-1"]}
+    cap: dict = {}
+
+    async def _fake_invoke(st_, run_, name, args, **kw):
+        cap["args"], cap["server_url"] = args, kw.get("server_url")
+        return {"result_summary": "ok"}
+
+    monkeypatch.setattr(tool_gateway, "invoke", _fake_invoke)
+    spec = {"name": "query_alarm_list", "description": "d", "server_url": "http://s",
+            "readonly": True, "scope_mode": "required", "appid_arg_path": "$.project_id",
+            "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}}}
+    ft = ar._make_dynamic_tool(st, {}, spec)
+    asyncio.run(ft._func())  # 不传 project_id → scope 唯一 appid 自动补上
+    assert cap["args"] == {"project_id": "APP-REAL-1"}
+    assert cap["server_url"] == "http://s"

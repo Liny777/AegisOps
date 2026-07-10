@@ -142,7 +142,10 @@ async def invoke(
             why = (ann or {}).get("blocked_reason") or "管理员已禁用"
             raise await _blocked(st, run, tool_name, reason, f"平台工具 {tool_name} 已被禁用：{why}")
         if reason == "APPID_OUT_OF_SCOPE":
-            raise await _blocked(st, run, tool_name, reason, f"APPID 超出当前有效范围，拒绝调用 {tool_name}")
+            bad = _extract_appid(arguments, (ann or {}).get("appid_arg_path"))
+            allowed = (st.scope_ctx or {}).get("effective_appids", [])
+            raise await _blocked(st, run, tool_name, reason,
+                                 f"APPID 超出有效范围，拒绝调用 {tool_name}（工具传入 appid={bad!r}，当前 scope={allowed}）")
         assert ann is not None
         # Secret：仅在此处（已过 ASK）解出，注入后即弃；不进事件/审计/日志（28.2）
         if ann.get("is_secret_required"):
