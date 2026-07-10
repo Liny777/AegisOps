@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# OpenOps 后端启动脚本（Windows Git Bash / WSL / macOS / Linux 通用）。
+#
+# 用法：复制本文件为 run-backend.sh，填入 PG 连接信息，然后在 backend/ 目录执行：
+#   bash run-backend.sh              # 最省事，不用改权限
+#   # 或： chmod +x run-backend.sh && ./run-backend.sh
+# ⚠ run-backend.sh 含明文密码，已在 .gitignore——切勿提交 git。
+#
+# 首次准备（各做一次）：
+#   python -m venv .venv
+#   # 装依赖（用 venv 里的 python）：
+#   #   Windows Git Bash: .venv/Scripts/python.exe -m pip install -e ".[test]"
+#   #   WSL/macOS/Linux : .venv/bin/python        -m pip install -e ".[test]"
+#   # 建表：在 PG 工作台里 `SET search_path TO <你的schema>;` 再执行 sql/openops_v1_core.sql
+#   #       （表名带 sre_ 前缀，落到该 schema；须与下面 OPENOPS_PG_SCHEMA 一致）
+
+set -euo pipefail
+cd "$(dirname "$0")"          # 切到 backend/（脚本所在目录）
+
+# ==================== 必填：PG 连接（离散变量，密码/特殊字符免转义） ====================
+export OPENOPS_PG_HOST="<主机，如 7.198.147.89>"
+export OPENOPS_PG_PORT="5432"
+export OPENOPS_PG_DB="<库名，如 wesee>"
+export OPENOPS_PG_USER="<用户，如 observe_analysis>"
+export OPENOPS_PG_PASSWORD="<密码>"                       # keyword 格式，@ : / # 等无需转义
+export OPENOPS_PG_SCHEMA="<schema，如 observe_analysis>"  # 表落此 schema（search_path）；留空=账号默认
+# export OPENOPS_PG_SSLMODE="require"                     # 公司库要 SSL 时取消注释
+
+# ==================== 可选 ====================
+# export OPENOPS_ENCRYPTION_KEY="<生产 Fernet key>"       # 调试可不配（走 dev 派生 key，仅告警）
+# 其余全默认走 mock/fake，无需设。切真开关见 docs/EXTERNAL-INTEGRATION.md
+
+# venv 的 python：Windows Git Bash 是 .venv/Scripts/python.exe；WSL/macOS/Linux 是 .venv/bin/python
+if [ -x ".venv/Scripts/python.exe" ]; then
+  PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+  PY=".venv/bin/python"
+else
+  echo "❌ 找不到 .venv，请先建：python -m venv .venv 并装依赖（见文件顶部注释）" >&2
+  exit 1
+fi
+
+echo '启动后端（端口 18082）… 打开 http://localhost:18082/health 应返回 {"status":"ok"}'
+exec "$PY" -m uvicorn main:app --app-dir src --port 18082

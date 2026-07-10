@@ -2,7 +2,8 @@
 .env
 .env.*
 !.env.example
-# 本地启动脚本（含明文 PG 连接串/密码）——复制自 run-backend.ps1.example 后填写，勿提交
+# 本地启动脚本（含明文 PG 连接串/密码）——复制自 run-backend.sh.example 后填写，勿提交
+run-backend.sh
 run-backend.ps1
 
 # ---- Python (backend) ----

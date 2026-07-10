@@ -91,9 +91,10 @@ docker compose up -d        # 重新首启 → 重建表 + 重新 seed
 
 - **临时**：起后端前 `$env:OPENOPS_PG_HOST="..."`（及 `PG_PORT/PG_DB/PG_USER/PG_PASSWORD/PG_SCHEMA`；或整串 `$env:OPENOPS_DATABASE_URL="..."`）。`infra/db.py` 在 import 时即读，须先设再起 uvicorn。
 - **推荐（免每次手敲）**：用启动脚本。仓库已带模板：
-  - 后端 `backend/run-backend.ps1.example` → **复制为 `backend/run-backend.ps1`，填入真连接串**，然后 `cd backend; .\run-backend.ps1`（设 env + 起 uvicorn 18082）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
-  - 前端 `frontend/run-frontend.ps1`（无密钥、可直接跑）→ `cd frontend; .\run-frontend.ps1`（起 vite dev 5175，代理 `/api`→18082）。
-  - 若 PowerShell 拦截脚本执行：本会话放行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`。
+  - **Windows 用 Git Bash / WSL 跑 `.sh`**（`.ps1` 双击/在 cmd 里会弹「用什么打开」而非执行——.ps1 默认不双击运行）：
+  - 后端 `backend/run-backend.sh.example` → **复制为 `backend/run-backend.sh`，填入真连接串**，然后 `cd backend && bash run-backend.sh`（设 env + 起 uvicorn 18082；脚本自动识别 venv 是 `Scripts/python.exe`(Git Bash) 还是 `bin/python`(WSL/mac)）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
+  - 前端 `frontend/run-frontend.sh`（无密钥、可直接跑）→ `cd frontend && bash run-frontend.sh`（起 vite dev 5175，代理 `/api`→18082）。
+  - 没有 Git Bash？临时法：在 **PowerShell**（非 cmd、非双击）里 `$env:OPENOPS_PG_HOST="..."; ...; .venv\Scripts\python.exe -m uvicorn main:app --app-dir src --port 18082`。
 
 ## 3. 本地鉴权（无真 IAM）
 
