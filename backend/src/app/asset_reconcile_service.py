@@ -67,7 +67,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
 
         # ---- MCP Registry：平台 MCP tools/list → schema_hash 对账（ASSET-005） ----
         for m in await assets.list_platform_mcps():
-            for t in await mcp_registry_client.discover_tools(m["display_name"]):
+            server_url = (m.get("endpoint_config_json") or {}).get("endpoint", "")  # 29.3 proxy 必填 url（mock 忽略）
+            for t in await mcp_registry_client.discover_tools(server_url):
                 res = await mcp_tools.sync_catalog_tool(
                     str(m["mcp_version_id"]), t["tool_name"], t["description"],
                     t["input_schema"], t["schema_hash"],

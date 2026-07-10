@@ -1,6 +1,6 @@
 /**
  * OpenOps 前端 API facade —— VITE_OPENOPS_API_MODE 切 real（默认，真打后端）/ mock（纯 UI 演示）。
- * real：后端 FastAPI（PG+SSE，vite 代理 /api → 18081）；投影见 projection.ts。
+ * real：后端 FastAPI（PG+SSE，vite 代理 /api → 18082）；投影见 projection.ts。
  */
 import type {
   Me,

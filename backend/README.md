@@ -10,7 +10,7 @@ docker compose up -d
 
 cd backend
 pip install -e ".[test]"
-uvicorn main:app --app-dir src --reload --port 18081
+uvicorn main:app --app-dir src --reload --port 18082
 ```
 
 后端启动时会连接 `OPENOPS_DATABASE_URL`，执行幂等 seed：demo 用户、白名单、感知快恢模板、平台 Skill/MCP、MCP Tool 标注、沙箱容量配置、平台模型。

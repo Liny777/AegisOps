@@ -50,7 +50,7 @@ python -c "import agentscope; print('agentscope', agentscope.__version__)"   # �
 export OPENOPS_DATABASE_URL="postgresql://openops:openops@localhost:5432/openops"
 export OPENOPS_RUNTIME=agentscope        # ★ 选真 AgentScope 后端（默认是 mock）
 export OPENOPS_ORCH_DELAY_MS=200         # 可选：加快演示（mock 用；agentscope 步进由 stub 控制）
-uvicorn main:app --app-dir src --port 18081
+uvicorn main:app --app-dir src --port 18082
 ```
 启动日志应无异常；后端会幂等 seed（demo 用户 `0026demo01`、白名单、模板、Skill/MCP、标注、模型等）。
 另开一个终端做下面的 API 流程。
@@ -58,7 +58,7 @@ uvicorn main:app --app-dir src --port 18081
 ## 4. 走一遍闭环（curl）
 
 ```bash
-BASE=http://localhost:18081/api/openops/v1
+BASE=http://localhost:18082/api/openops/v1
 U=(-H "X-OpenOps-Mock-User: 0026demo01" -H "X-OpenOps-Mock-Name: LinYi" -H "Content-Type: application/json")
 crid() { echo "crid_$(date +%s%N)"; }
 
@@ -134,7 +134,7 @@ echo "$ST" | jq '{task: .data.active_task.status, rca_revision: .data.rca.revisi
 ```bash
 # Ctrl-C 停后端，改回默认 mock 再起
 export OPENOPS_RUNTIME=mock
-uvicorn main:app --app-dir src --port 18081
+uvicorn main:app --app-dir src --port 18082
 ```
 重跑第 4 节。**期望**：`events` 事件类型序列与 agentscope 后端**同形**（消息文案可略有差异，事件类型/顺序/审计链一致）。这验证「换 runtime 后端、plumbing 不变」。
 
@@ -163,7 +163,7 @@ B2 已把 stub model 换成「有 Key 用真 GLM、无 Key 回退 stub」。要�
 # 在第 3 步启动后端前，额外 export GLM 的 API Key（仅环境变量，绝不落库/日志）
 export OPENOPS_PLATFORM_GLM_API_KEY="<你的智谱 GLM API Key>"
 export OPENOPS_RUNTIME=agentscope
-uvicorn main:app --app-dir src --port 18081
+uvicorn main:app --app-dir src --port 18082
 ```
 然后照第 4 节走一遍。**与 stub 的差别**：
 - `events` 里出现 `openops.model.call.started`/`succeeded`，且 `model.call.started` 的 payload `model` 为 **`glm-5.1`**（stub 时是 `stub-rca`）—— 用这个判断真模型是否在驱动。

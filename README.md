@@ -23,7 +23,7 @@ cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[test]"
-uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18081
+uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18082
 ```
 
 首次启动时 PostgreSQL 会通过 `backend/sql/openops_v1_core.sql` 建表；后端 lifespan 会幂等写入 demo 用户、白名单、感知快恢模板、平台 MCP 标注、沙箱容量配置和平台模型。
@@ -40,7 +40,7 @@ npm run dev
 
 ```bash
 VITE_OPENOPS_API_MODE=mock
-VITE_OPENOPS_API_BASE=http://localhost:18081
+VITE_OPENOPS_API_BASE=http://localhost:18082
 ```
 
 ## 验证

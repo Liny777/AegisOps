@@ -31,16 +31,16 @@ cd backend
 python -m venv .venv                 # 不要拷 mac 的 .venv，必须在 Windows 重建
 .venv\Scripts\Activate.ps1
 pip install -e ".[test]"             # 默认 mock 运行时，不装 agentscope / redis
-uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18081
+uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18082
 ```
 启动时会连 PG 并**幂等灌种子**（demo 用户 / 白名单 / 模板 / 审批好的工具 / 模型 / 沙箱配置）。
-验证：浏览器打开 `http://localhost:18081/health` → `{"status":"ok"}`。
+验证：浏览器打开 `http://localhost:18082/health` → `{"status":"ok"}`。
 
 ### 1.3 起前端
 ```powershell
 cd frontend
 npm install
-npm run dev                          # http://127.0.0.1:5175 ，/api 代理到 18081
+npm run dev                          # http://127.0.0.1:5175 ，/api 代理到 18082
 ```
 侧栏可在 `0026demo01`(普通用户) / `admin`(管理员) 间切角色。
 
@@ -82,7 +82,7 @@ Seed 预置且已白名单的账号：`0026demo01`（林一，普通 user）、`
 
 直接调 API 示例：
 ```powershell
-curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
+curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 ```
 前端自动注入这两个头（`frontend/src/lib/api/client.ts`），侧栏切角色（`appState.tsx` 的 `switchRole`）。真实 W3/IAM introspect 替换属 **B9**。
 
@@ -114,7 +114,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 
 | 依赖 | 当前状态 | 切 real 怎么做 | 属哪块 |
 |---|---|---|---|
-| **oModel** | `omodel_client.py` 可切换；`omodel_mock.py` 默认；`omodel_real.py` 已备 HTTP 骨架（按 29.1，未联真实环境） | 对齐 `omodel_real.py` HTTP 形状 + `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL=<测试环境>` | B3 |
+| **oModel** | `omodel_client.py` 可切换；`omodel_mock.py` 默认；`omodel_real.py` **已按 29.5 对齐**（resolve 用端点4「列出工作空间关联项目」；⚠workspace 级发现集非 per-user 授权，见 `backend/docs/EXTERNAL-INTEGRATION.md` 安全口径） | 配 `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL=<host root>` | B3 |
 | **Skill Hub** | mock 默认；**已备 real 变体**（`OPENOPS_SKILLHUB=real`，C3） | 配 `OPENOPS_SKILLHUB_BASE_URL`（未配 fail-loud）；真下载按 **ZIP 原始字节** sha256 校验 `X-Checksum-SHA256`（29.3 §2.5，C1-CHK-001 已对齐） | B6/C1 |
 | **MCP Registry** | mock 默认；**已备 real 变体**（`OPENOPS_MCPREGISTRY=real`，C3） | 配 `OPENOPS_MCPREGISTRY_BASE_URL`（`POST /mcps/proxy`，未配 fail-loud） | B6/C3 |
 | **平台 HTTP MCP** | mock 默认；**已备 real 变体**（`OPENOPS_MCP=real`，C3） | 配 `OPENOPS_MCP_BASE_URL`（Tool Gateway header 透传，28.2） | B4/C3 |
@@ -124,8 +124,8 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 | **平台模型** | mock，不调真 LLM | 配 `OPENOPS_PLATFORM_GLM_API_KEY` + Model Gateway | B2 |
 | **沙箱** | `OPENOPS_SANDBOX=fake`（tempdir+subprocess） | `=docker`（须 `.[sandbox]`+Docker Desktop；⚠Windows 走命名管道，见 §9.7） | B8 |
 
-### 5.1 oModel（同事在开发时怎么验证）
-`omodel_client.py` 是分发器（照它的 `_impl()` 模式给其他依赖加 real 分支）。现在用 mock 验证全链路：初始化建 workspace、Scope resolve、空范围 fail-closed、平台 MCP 按 `effective_appids` 过滤（对应 `31-OpenOps V1测试用例` 的 EXT-001/002、SCOPE-*）。**不要等同事**：按 mock 契约做完自己这侧；同事 ready 后按真实接口对齐 `omodel_real.py` 的 HTTP 形状（29.2 差距重点：`resolve→effective_appids`、per-user 过滤、`scope_revision`），切 env 即可。
+### 5.1 oModel（real 已对齐 29.5）
+`omodel_client.py` 是分发器（`_impl()` 模式，其他依赖同款）。mock 验证全链路：初始化建 workspace、Scope resolve、空范围 fail-closed、平台 MCP 按 `effective_appids` 过滤（`31` EXT-001/002、SCOPE-*）。**real 已按 29.5 对齐**（`omodel_real`：resolve=端点4、get/list/create=WorkspaceMetadata 映射），切 `OPENOPS_OMODEL=real`+`OPENOPS_OMODEL_BASE_URL` 即联真；**剩 per-user 过滤 + Cookie 鉴权待 umodel P0**（29.6，见 EXTERNAL-INTEGRATION.md 安全口径）。
 
 ## 6. 为什么没有 Redis
 
@@ -135,14 +135,13 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 - agentscope 2.0.3：redis 是 optional extra（`[storage]`），核心 `agentscope.agent.Agent` 层不牵；**实际 B1 runtime 用 Agent 直连、不走 `create_app(storage=RedisStorage)`，不需要 Redis**（见 `docs/B1-agentscope-live-smoke.md`；注意：这与 33 号计划里"B1 用 RedisStorage"的措辞不一致，以实现为准）。
 - 结论：**本地不装 Redis**。只有将来接 agentscope app-server 层（`create_app` / 内置 AG-UI）才需要，那时 Windows 上用 Docker `redis:7-alpine` / Memurai / WSL2。
 
-## 7. 用测试环境 cookie 联调 Skill Hub / MCP Registry（做 B6 时）
+## 7. 联调 Skill Hub / MCP Registry（real 已按 29.3 对齐）
 
-现在两者是纯 mock、无 cookie 管道，本地开发**不需要 cookie**。当你要连测试环境真服务联调，照 oModel 的可切换 adapter 模式做（别硬连）：
+两者的 real 变体**已内联在 `skill_hub_client.py` / `mcp_registry_client.py`**（C3 加开关、本轮按 29.3 对齐 URL/信封/字段），本地开发默认 mock、**不需要 cookie**。联真：
 
-1. 新增 `skill_hub_real.py` / `mcp_registry_real.py`（httpx 调 29.3 端点，前缀 `/obsv/agent/management`）。
-2. 在 `skill_hub_client.py` / `mcp_registry_client.py` 加 `_impl()` 分发（照 `omodel_client.py`）：`OPENOPS_SKILLHUB=mock|real`、`OPENOPS_MCPREG=mock|real`。
-3. 测试环境地址 + cookie 从环境变量读：如 `OPENOPS_SKILLHUB_BASE_URL`、`OPENOPS_SKILLHUB_COOKIE`（`29.4` §三.4 已确认：透传用户 IAM Cookie 即可，无需额外服务间凭据）。
-4. ⚠️ cookie 是敏感凭据且有有效期：**只放环境变量，禁入代码 / 日志 / PG / 前端**（33 号每块都要求敏感信息搜索）。
+1. 切 `OPENOPS_SKILLHUB=real` + `OPENOPS_SKILLHUB_BASE_URL=<host root>`；`OPENOPS_MCPREGISTRY=real` + `OPENOPS_MCPREGISTRY_BASE_URL=<host root>`（未配 fail-loud）。client 自动拼 `/obsv/agent/management/...` 前缀。
+2. 29.3 list/download/proxy 读端点**无需鉴权**（29.4 §三.4）；未来写端点（upload 等）才需透传用户 IAM Cookie。
+3. ⚠️ Cookie/凭据是敏感项：**只放环境变量，禁入代码 / 日志 / PG / 前端**（每块敏感信息搜索）。契约细节 + 联调待办见 `backend/docs/EXTERNAL-INTEGRATION.md`。
 
 ## 8. 种子数据 & 模板 / 工具审批
 
@@ -175,7 +174,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18081/api/openops/v1/me
 3. **应用不自动建表**：原生 PG 要先手动跑 DDL（§2.2）。
 4. **后端不读 .env**：env 要手动 `$env:` 注入，否则全走默认（默认够本地用）。
 5. `.env.example`（在**仓库根**）里 `OPENOPS_REDIS_URL` / `OPENOPS_ENV` / `OPENOPS_MOCK_EXTERNALS` 当前无代码读取、可无视；但同文件的 `OPENOPS_SECRET_KEY` 与 `OPENOPS_DATABASE_URL` 是**真被读取**的。
-6. 端口：后端 18081、前端 5175、PG 5432；前端 `vite.config.ts` 把 `/api` 代理到 18081。
+6. 端口：后端 18082、前端 5175、PG 5432；前端 `vite.config.ts` 把 `/api` 代理到 18082。
 7. **沙箱 fake 后端在 Windows 上不可用**：`executor.py` 用 `sh -lc "… python3 run.py"`（`:163/:185`），Windows 无 `sh`→**优雅返回 exit 127（不 crash 服务）**，且 mock 包入口是 `python3`。核心 RCA 演示流**不碰沙箱**，故不影响初期调试；只有 agent 真调 `run_skill`/`run_bash`（需 `OPENOPS_RUNTIME=agentscope`+模型 或 `OPENOPS_DEMO_SANDBOX_STEP=1`）才触发。要真跑沙箱：用 WSL2/Linux，或 `OPENOPS_SANDBOX=docker`（Windows Docker Desktop 走命名管道 `npipe:////./pipe/docker_engine`，本代码默认连 unix socket、未处理 `DOCKER_HOST`，需自行适配）。
 8. **别强制 `uvicorn --loop selector`**：默认 `ProactorEventLoop` 支持子进程；换 selector loop 会让 `create_subprocess_exec` 抛 `NotImplementedError`。`uvicorn[standard]` 的 uvloop 是 Unix-only，Windows 自动回退 Proactor，无需干预。
 9. **远程/共享 PG**：给本项目独立 database 或 schema（DDL 无 schema 前缀、无 search_path 处理）；`pytest` 会反复 `TRUNCATE` 全表，**测试库别指向部署/共享库**。

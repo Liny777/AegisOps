@@ -1,6 +1,6 @@
 """OpenOps V1 Backend —— 只做装配（22 号：main 不写业务）。
 
-启动：uvicorn main:app --app-dir src --reload --port 18081
+启动：uvicorn main:app --app-dir src --reload --port 18082
 依赖：docker compose up -d（PG 5432，首次启动自动建表）
 """
 from __future__ import annotations

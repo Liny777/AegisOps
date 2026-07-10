@@ -23,8 +23,10 @@ async def call_tool(
         import httpx
 
         async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30"))) as cli:
-            r = await cli.post(f"{base}/tools/{tool_name}:call", json={"arguments": arguments},
-                               headers=headers or {})
+            # 28.2 出站契约：body 同时含 tool_name + arguments（平台上下文走 header，不作 body 主事实源）。
+            # ⚠URL 路由 28.2 未 pin（网关直连 vs registry proxy）——保留可配默认，待联调确认。
+            r = await cli.post(f"{base.rstrip('/')}/tools/{tool_name}:call",
+                               json={"tool_name": tool_name, "arguments": arguments}, headers=headers or {})
             r.raise_for_status()
             return r.json()
 

@@ -45,7 +45,7 @@ def _extract_appid(arguments: dict[str, Any], path: str | None) -> str | None:
 
 
 def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
-    """28.2 平台 MCP 上下文 header（Cookie/X-EC2-IP 由真实网关透传，mock 不造假值）。"""
+    """28.2 平台 MCP 出站上下文 header（Cookie/X-EC2-IP 由真实网关透传，mock 不造假值）。"""
     scope = st.scope_ctx or {}
     return {
         "X-OpenOps-User-Id": st.user_id,
@@ -55,6 +55,7 @@ def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
         "X-OpenOps-Config-Version": str(run.get("config_version_id", "")),
         "X-OpenOps-Effective-Appids": ",".join(scope.get("effective_appids", [])),
         "X-OpenOps-Scope-Snapshot-Id": str(scope.get("scope_snapshot_id", "")),
+        "X-OpenOps-Audit-Trace-Id": str(run.get("audit_trace_id", "")),  # 28.2：回放 Trace 串联
     }
 
 
@@ -149,6 +150,9 @@ async def invoke(
                 raise await _blocked(st, run, tool_name, "SECRET_REQUIRED", f"{tool_name} 需要凭证但未配置")
             headers["Authorization"] = f"Bearer {token}"
         headers.update(_platform_headers(st, run))
+        # 28.2：恢复类/ASK tool 批准后透传 approval id（可空）——仅当本 tool 需 ASK（避免带上无关审批）
+        if ann.get("is_approval_required") and st.approval_id:
+            headers["X-OpenOps-Approval-Request-Id"] = str(st.approval_id)
     # 用户分支：不注入 X-OpenOps-*、无 Cookie、不做 scope 校验（用户自担责任，仅审计）
 
     await emit(st, run, "openops.tool.call.started", action=tool_name,

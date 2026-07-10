@@ -1,10 +1,11 @@
 """Skill Hub client：source=openops 资产拉取 + Skill 包投递（29.3 契约面，ASSET-001 / SKILL-*）。
 
-- `list_skills`：对账用资产清单（mock 硬编码；真 Skill Hub 见 29.3 `GET /skills`）。
+- `list_skills`：对账用资产清单。real 经 29.3 `POST /obsv/agent/management/skills/list/query`
+  取分页 `{code,message,data:{items}}`，解包 + 字段映射为 OpenOps 词汇（29.4）。
 - `download_skill_package`：真 ZIP 投递（C1）。`OPENOPS_SKILLHUB=mock(默认)|real` 切换；
   mock 合成**可执行**的真包（SKILL.md frontmatter + entrypoint 脚本），供 run_skill 端到端；
-  real 变体经 29.3 `GET /skills/{id}/versions/{v}/download` 取 ZIP，按响应头 `X-Checksum-SHA256`
-  校验（未联真环境时 raise，由调用方收口）。
+  real 经 29.3 `GET /obsv/agent/management/skills/download?skill_id=` 取 ZIP，按响应头 `X-Checksum-SHA256`
+  （ZIP 原始字节 sha256，C1-CHK-001）校验传输完整性（未联真环境时 raise，由调用方收口）。
 """
 from __future__ import annotations
 
@@ -46,18 +47,54 @@ _MOCK_LIST = [
 ]
 
 
+def _unwrap_data(body: dict[str, Any]) -> dict[str, Any]:
+    """29.3 业务信封 `{code:0, message, data}`（code 是业务状态，与 HTTP 状态分离）：code!=0 raise，返回 data。"""
+    if int(body.get("code", -1)) != 0:
+        raise RuntimeError(f"Skill Hub 返回业务错误：code={body.get('code')} {body.get('message', '')}")
+    return body.get("data") or {}
+
+
+def _semver_to_int(semver: str | None) -> int:
+    """latest_version(semver) → version_no(int) 排序值（29.4）。V1 仅供形状一致；精确 pin 待 repo 穿透 semver。"""
+    if not semver:
+        return 1
+    parts = (str(semver).split(".") + ["0", "0", "0"])[:3]
+    try:
+        nums = [int("".join(ch for ch in p if ch.isdigit()) or "0") for p in parts]
+        return nums[0] * 10000 + nums[1] * 100 + nums[2]
+    except Exception:
+        return 1
+
+
+def _map_skill(it: dict[str, Any]) -> dict[str, Any]:
+    """29.3 skill item → OpenOps 词汇（29.4：skill_id→skill_key、name→display_name、is_system→source_type、
+    created_by→owner_user_id、latest_version→version_no）。返回键与 mock/_MOCK_LIST 一致，供 reconcile 消费。"""
+    return {
+        "skill_key": it.get("skill_id"),
+        "display_name": it.get("name"),
+        "source": it.get("source"),
+        "source_type": "platform" if bool(it.get("is_system")) else "user",
+        "owner_user_id": it.get("created_by"),
+        "version_no": _semver_to_int(it.get("latest_version")),
+        "checksum_sha256": it.get("checksum_sha256"),
+        "status": it.get("status", "active"),
+    }
+
+
 async def list_skills(user_id: str) -> list[dict[str, Any]]:
-    """对账用资产清单。OPENOPS_SKILLHUB=real 时经 29.3 GET /skills?source=openops 拉取（未联环境 raise）。"""
+    """对账用资产清单（source=openops）。real 经 29.3 `POST /skills/list/query` 拉取 + 信封解包 + 字段映射（未联环境 raise）。"""
     if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
         base = os.getenv("OPENOPS_SKILLHUB_BASE_URL")
         if not base:
             raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（29.3 Skill Hub 未联）")
         import httpx
 
+        url = f"{base.rstrip('/')}/obsv/agent/management/skills/list/query"
         async with httpx.AsyncClient(timeout=15) as cli:
-            r = await cli.get(f"{base}/skills", params={"source": "openops", "user_id": user_id})
+            r = await cli.post(url, json={"page": 1, "page_size": 200, "source": "openops"})
             r.raise_for_status()
-            return r.json().get("data", r.json())
+            items = _unwrap_data(r.json()).get("items", [])  # 分页对象 data.items，非裸 list
+        return [_map_skill(it) for it in items]
     return list(_MOCK_LIST)
 
 
@@ -91,7 +128,10 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
         import httpx
 
         async with httpx.AsyncClient(timeout=30) as cli:
-            r = await cli.get(f"{base}/skills/{skill_key}/versions/{version_no}/download")
+            # 29.3 §2.5：flat `GET /skills/download?skill_id=&version=`。V1 省略 version → 下载 latest
+            # （OpenOps 存 version_no(int) 无 semver，精确 pin 待 repo 穿透；latest + ZIP 字节 checksum 校验漂移即 fail-closed）。
+            r = await cli.get(f"{base.rstrip('/')}/obsv/agent/management/skills/download",
+                              params={"skill_id": skill_key})
             r.raise_for_status()
             raw = r.content
             header_checksum = r.headers.get("X-Checksum-SHA256", "")
