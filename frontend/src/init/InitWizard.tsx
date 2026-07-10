@@ -24,6 +24,7 @@ export function InitWizard() {
   const [llmDialog, setLlmDialog] = useState(false);
   const [wsDialog, setWsDialog] = useState(false);
   const [activating, setActivating] = useState(false);
+  const [err, setErr] = useState("");
 
   useEffect(() => {
     api.getTemplates().then((t) => { setTemplates(t); setTplId(t[0]?.template_version_id ?? ""); });
@@ -35,10 +36,17 @@ export function InitWizard() {
 
   const activate = () => {
     setActivating(true);
+    setErr("");
     const overlay = llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId } : undefined;
-    api.createAgentTeam({ template_version_id: tplId, name, workspace_id: wsId, initial_overlay_json: overlay }).then((r) => {
-      nav(`/agent-teams/${r.instance_id}/chat`);
-    });
+    api.createAgentTeam({ template_version_id: tplId, name, workspace_id: wsId, initial_overlay_json: overlay })
+      .then((r) => {
+        nav(`/agent-teams/${r.instance_id}/chat`);
+      })
+      .catch((e: unknown) => {
+        // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如“同名实例已存在”）
+        setActivating(false);
+        setErr(e instanceof Error ? e.message : "激活失败，请重试");
+      });
   };
 
   return (
@@ -81,6 +89,12 @@ export function InitWizard() {
         <div style={{ maxWidth: 680, margin: "0 auto", width: "100%", display: "flex", gap: 10 }}>
           {step > 0 ? <Button variant="secondary" icon="arrow-left" onClick={() => setStep((s) => s - 1)}>上一步</Button> : null}
           <div style={{ flex: 1 }} />
+          {err ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, color: color.dangerText, fontSize: 12.5, fontWeight: 600, maxWidth: 380 }}>
+              <Icon name="alert-triangle" size={15} color={color.dangerText} />
+              <span>{err}</span>
+            </div>
+          ) : null}
           {step < 4 ? (
             <Button icon="arrow-right" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>下一步</Button>
           ) : (
