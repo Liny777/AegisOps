@@ -5,6 +5,7 @@ Router 不得直接 import 本模块（22 号分层铁律）；只有 repositori
 from __future__ import annotations
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -53,10 +54,29 @@ def _new_pool() -> AsyncConnectionPool:
 pool = _new_pool()
 
 
+_log = logging.getLogger("openops.db")
+
+
+def _log_target() -> None:
+    """启动即打印真实连库目标（host/db/user，不含密码）——`OPENOPS_PG_*` 没进进程时会静默回退
+    localhost 默认串，届时这行会显示 host=localhost，一眼看穿（而非只见 30s PoolTimeout）。"""
+    try:
+        from psycopg.conninfo import conninfo_to_dict
+
+        d = conninfo_to_dict(DATABASE_URL)
+        msg = (f"[db] connecting host={d.get('host')} port={d.get('port')} "
+               f"dbname={d.get('dbname')} user={d.get('user')}")
+    except Exception:  # noqa: BLE001 —— 诊断日志不得影响启动
+        msg = "[db] connecting (conninfo 解析失败)"
+    _log.warning(msg)
+    print(f"[OpenOps]{msg}", flush=True)
+
+
 async def open_pool() -> None:
     global pool
     if getattr(pool, "closed", False):
         pool = _new_pool()
+    _log_target()
     await pool.open()
     await pool.wait()
 
