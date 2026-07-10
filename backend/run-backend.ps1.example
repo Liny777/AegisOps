@@ -1,0 +1,27 @@
+# OpenOps 后端启动脚本（内网 Windows）。
+#
+# 用法：复制本文件为 run-backend.ps1，填入真连接串，然后在 backend/ 目录执行：  .\run-backend.ps1
+# ⚠ run-backend.ps1 含明文密码，已在 .gitignore——切勿提交 git。
+#
+# 首次准备（各做一次）：
+#   1) 建虚拟环境 + 装依赖：
+#        python -m venv .venv
+#        .\.venv\Scripts\Activate.ps1
+#        pip install -e ".[test]"            # 默认 mock/fake，不装 agentscope/redis
+#   2) 建表（对同一个库跑一次 DDL；账号需 CREATE 权限；远程/共享库先建独立 database 或 schema）：
+#        psql "<把下面的连接串填进来>" -f sql\openops_v1_core.sql
+
+Set-Location $PSScriptRoot   # 切到 backend/（脚本所在目录）
+
+# ==================== 必填：PG 连接串 ====================
+# 密码含特殊字符（@ : / # % 等）→ 用 keyword 写法免转义：
+#   $env:OPENOPS_DATABASE_URL = "host=<主机> port=<端口> dbname=<库> user=<用户> password=<密码>"
+# 公司库要 SSL → URL 尾加 ?sslmode=require ；keyword 写法加 sslmode=require
+$env:OPENOPS_DATABASE_URL = "postgresql://<用户>:<密码>@<主机>:<端口>/<库名>"
+
+# ==================== 可选 ====================
+# $env:OPENOPS_ENCRYPTION_KEY = "<生产 Fernet key>"   # 调试可不配（走 dev 派生 key，仅告警）
+# 其余全默认走 mock/fake，无需设。切真开关见 backend\docs\EXTERNAL-INTEGRATION.md
+
+Write-Host "启动后端（端口 18082）… 打开 http://localhost:18082/health 应返回 {status: ok}" -ForegroundColor Cyan
+& .\.venv\Scripts\python.exe -m uvicorn main:app --app-dir src --port 18082

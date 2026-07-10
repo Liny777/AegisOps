@@ -72,6 +72,16 @@ psql "postgresql://<用户>:<密码>@<远程主机>:5432/<库>" -f backend\sql\o
 docker compose down -v      # 删数据卷
 docker compose up -d        # 重新首启 → 重建表 + 重新 seed
 ```
+（远程库无 Docker 卷可删：改用 `DROP SCHEMA ... CASCADE` 或删库重建后再跑 §2.2 的 DDL。）
+
+### 2.5 配置方式：后端不读 .env，用启动脚本（重要）
+后端**没有 dotenv/pydantic-settings，不加载任何 `.env` 文件**——把 `.env.example` 改名成 `.env` 放哪都**不会生效**（`.env.example` 仅是变量名参考清单）。配置 = 把变量设成**真进程环境变量**，两种方式：
+
+- **临时**：起后端前 `$env:OPENOPS_DATABASE_URL="..."`（`infra/db.py` 在 import 时即读，须先设再起 uvicorn）。
+- **推荐（免每次手敲）**：用启动脚本。仓库已带模板：
+  - 后端 `backend/run-backend.ps1.example` → **复制为 `backend/run-backend.ps1`，填入真连接串**，然后 `cd backend; .\run-backend.ps1`（设 env + 起 uvicorn 18082）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
+  - 前端 `frontend/run-frontend.ps1`（无密钥、可直接跑）→ `cd frontend; .\run-frontend.ps1`（起 vite dev 5175，代理 `/api`→18082）。
+  - 若 PowerShell 拦截脚本执行：本会话放行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`。
 
 ## 3. 本地鉴权（无真 IAM）
 
