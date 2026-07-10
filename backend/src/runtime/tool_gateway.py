@@ -125,6 +125,7 @@ async def invoke(
     source_type: str = "platform",
     started_msg: str | None = None,
     succeeded_msg: str | None = None,
+    server_url: str | None = None,
 ) -> dict[str, Any]:
     """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。"""
     headers: dict[str, str] = {}
@@ -159,7 +160,7 @@ async def invoke(
                message=started_msg or f"调用工具 {tool_name}",
                payload={"tool": tool_name, "source_type": source_type})
     try:
-        result = await http_mcp_client.call_tool(tool_name, arguments, headers=headers)
+        result = await http_mcp_client.call_tool(tool_name, arguments, headers=headers, server_url=server_url)
     except Exception as e:
         await emit(st, run, "openops.tool.call.failed", severity="error", action=tool_name,
                    message=f"工具 {tool_name} 调用失败", reason_code="TOOL_CALL_FAILED",

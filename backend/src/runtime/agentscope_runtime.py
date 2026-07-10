@@ -149,10 +149,93 @@ async def _decrypt_user_secret(secret_ref_id: str) -> str | None:
         return None
 
 
-def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
+_JSON_PY: dict[str, Any] = {"string": str, "integer": int, "number": float, "boolean": bool, "object": dict}
+
+
+def _py_annotation(prop: dict[str, Any]) -> Any:
+    """JSON schema 属性 → Python 注解（供 agentscope 从函数签名抽 tool schema）。"""
+    if prop.get("type") == "array":
+        item = (prop.get("items") or {}).get("type", "string")
+        return list[_JSON_PY.get(item, str)]  # type: ignore[misc]
+    return _JSON_PY.get(prop.get("type"), str)
+
+
+async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
+    """OPENOPS_MCPREGISTRY=real 时，从注册表发现所有 server 的工具 → 动态工具 spec（含 server_url/只读/scope）。
+    mock 或发现失败 → 空（不拖垮 demo 工具）。appid 约定（拍板 i）：inputSchema 有 project_id/appid → 该字段受 scope 约束。"""
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real":
+        return []
+    from infra.external import mcp_registry_client
+
+    try:
+        servers = await mcp_registry_client.list_servers()
+    except Exception as e:  # noqa: BLE001 —— 发现失败不拖垮整个 run
+        log.warning("MCP 注册表 list_servers 失败：%s", _redact(str(e)))
+        return []
+    specs: list[dict[str, Any]] = []
+    for srv in servers:
+        surl = srv.get("server_url")
+        if not surl:
+            continue
+        try:
+            tools = await mcp_registry_client.discover_tools(surl)
+        except Exception as e:  # noqa: BLE001
+            log.warning("发现 MCP 工具失败 server=%s：%s", srv.get("server_id"), _redact(str(e)))
+            continue
+        for t in tools:
+            schema = t.get("input_schema") or {}
+            props = schema.get("properties") or {}
+            appid_prop = next((p for p in ("project_id", "appid", "app_id") if p in props), None)
+            specs.append({
+                "name": t["tool_name"], "description": t.get("description", ""),
+                "input_schema": schema, "server_url": surl, "readonly": bool(t.get("readonly")),
+                "scope_mode": "required" if appid_prop else "none",
+                "appid_arg_path": f"$.{appid_prop}" if appid_prop else None,
+            })
+    return specs
+
+
+def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any]) -> Any:
+    """发现到的 MCP 工具 → agentscope FunctionTool：调用穿过 Tool Gateway（scope/审批/审计/28.2 头），
+    按 server_url 经 console proxy 路由。用 __signature__ 让 agentscope 从中抽出参数 schema。"""
+    import inspect
+
+    from agentscope.message import TextBlock
+    from agentscope.tool import FunctionTool, ToolResponse
+
+    name, server_url = spec["name"], spec["server_url"]
+    schema = spec.get("input_schema") or {}
+    props: dict[str, Any] = schema.get("properties") or {}
+    required = set(schema.get("required") or [])
+
+    async def _handler(**kwargs: Any) -> Any:
+        args = {k: v for k, v in kwargs.items() if k in props and v not in (None, "", [], {})}
+        try:
+            r = await tool_gateway.invoke(st, run, name, args, server_url=server_url,
+                                          started_msg=f"调用 {name}", succeeded_msg=f"{name} 返回")
+        except ToolBlocked as e:
+            st.tool_blocked = True
+            return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
+        return ToolResponse(content=[TextBlock(type="text", text=str(r.get("result_summary", "ok")))])
+
+    params, doc = [], [spec.get("description", name), "", "Args:"]
+    for pname, prop in props.items():
+        default = prop.get("default", inspect.Parameter.empty if pname in required else "")
+        params.append(inspect.Parameter(pname, inspect.Parameter.KEYWORD_ONLY,
+                                        default=default, annotation=_py_annotation(prop)))
+        doc.append(f"    {pname}: {prop.get('description', '')}")
+    _handler.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+    _handler.__doc__ = "\n".join(doc)
+    _handler.__name__ = name
+    return FunctionTool(_handler, name=name, description=spec.get("description", name),
+                        is_read_only=bool(spec.get("readonly")))
+
+
+async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     """工具统一走 runtime.tool_gateway（B4：标注/APPID/Secret/header/审计）；RCA 卡更新留在工具内。
 
     标注裁剪：仅注册标注 status=allowed 的工具；Gateway 内再做二次校验（纵深防御）。
+    动态 MCP（OPENOPS_MCPREGISTRY=real）：注册表发现的 server 工具也在此装配，同样穿 Gateway。
     """
     from agentscope.message import TextBlock
     from agentscope.tool import FunctionTool, Toolkit, ToolResponse
@@ -242,6 +325,17 @@ def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
     # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
     tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", is_read_only=False))
+    # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
+    # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
+    st.tool_annotations = dict(st.tool_annotations or {})
+    for spec in await _dynamic_mcp_specs():
+        st.tool_annotations[spec["name"]] = {
+            "is_approval_required": not spec["readonly"], "is_secret_required": False,
+            "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",
+        }
+        if isinstance(st.template_tools, set):  # 让动态工具过模板集校验（B7·二：否则会被 TOOL_BLOCKED）
+            st.template_tools.add(spec["name"])
+        tools.append(_make_dynamic_tool(st, run, spec))
     return Toolkit(tools=tools), pruned
 
 
@@ -319,7 +413,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     from agentscope.state import AgentState
 
     try:
-        toolkit, pruned = _build_toolkit(st, run)
+        toolkit, pruned = await _build_toolkit(st, run)
         for name, reason in pruned:  # 裁剪审计对齐 mock（B6-RT-001③）：未标注/blocked 工具运行前即留痕
             st.tool_blocked = True  # 任何工具被裁剪都不得宣称闭环（保守 fail-closed）
             await emit(st, run, "openops.tool.blocked", severity="warning", action=name,

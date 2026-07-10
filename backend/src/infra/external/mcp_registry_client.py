@@ -29,6 +29,38 @@ def _schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
 
 
+async def list_servers() -> list[dict[str, Any]]:
+    """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
+    real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。"""
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
+        if not base:
+            raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
+        import httpx
+
+        url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
+        out: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=15) as cli:
+            page, page_size = 1, 50
+            while True:
+                r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"})
+                r.raise_for_status()
+                body = r.json()
+                if int(body.get("code", -1)) != 0:
+                    raise RuntimeError(f"mcps/list/query 业务错误：code={body.get('code')} {body.get('message', '')}")
+                data = body.get("data") or {}
+                items = data.get("items") or []
+                for it in items:
+                    if str(it.get("status")) == "active" and it.get("server_url"):
+                        out.append({"server_id": it.get("server_id"), "server_name": it.get("server_name"),
+                                    "server_url": it.get("server_url"), "description": it.get("description", "")})
+                if not items or page * page_size >= int(data.get("total", 0)):
+                    break
+                page += 1
+        return out
+    return [{"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "mock"}]
+
+
 async def discover_tools(server_url: str) -> list[dict[str, Any]]:
     """平台 MCP `tools/list`（29.3 §4.1 Proxy）。real 经 `POST /obsv/agent/management/mcps/proxy` 转发到目标 MCP server。
 
@@ -52,5 +84,6 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         tools = (((body.get("data") or {}).get("result")) or {}).get("tools", [])
         return [{"tool_name": t.get("name"), "description": t.get("description", ""),
                  "input_schema": t.get("inputSchema", {}),
+                 "readonly": bool((t.get("annotations") or {}).get("readOnlyHint", False)),
                  "schema_hash": _schema_hash(t.get("inputSchema", {}))} for t in tools]
-    return [{**t, "schema_hash": _schema_hash(t["input_schema"])} for t in _TOOLS]
+    return [{**t, "readonly": t.get("readonly", False), "schema_hash": _schema_hash(t["input_schema"])} for t in _TOOLS]
