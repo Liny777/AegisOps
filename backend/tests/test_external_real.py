@@ -149,19 +149,34 @@ async def test_ext_omodel_cookie_and_outbound_hardening(monkeypatch):
 
 async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     """create body：app_ids → config.workspace_ui.scopes[].projectId。"""
+    import pytest as _pytest
+
     from infra.external import omodel_real
 
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
     md = {"id": "ws-new", "name": "新域", "status": "active",
-          "config": {"workspace_ui": {"scopes": [{"projectId": "APP-A"}]}}}
+          "config": {"workspace_ui": {"scopes": ["APP-A", "APP-B"]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
 
-    ws = await omodel_real.create_workspace("新域", ["APP-A"])
+    ws = await omodel_real.create_workspace("新域", ["APP-A", "APP-B"])
     body = cap[0][2]["json"]
     assert body["name"] == "新域"
-    assert body["config"]["workspace_ui"]["scopes"] == [{"projectId": "APP-A"}]
-    assert ws["workspace_id"] == "ws-new" and ws["app_ids"] == ["APP-A"]
+    # 29.7 样例最大兼容面：scopes=string[] 旧格式 + labels/config 的 projectId=首个 appid
+    assert body["config"]["workspace_ui"] == {"scopes": ["APP-A", "APP-B"], "projectId": "APP-A"}
+    assert body["labels"] == {"projectId": "APP-A"}  # 未设 OPENOPS_OMODEL_TENANT_ID 不带 tenantId
+    assert ws["workspace_id"] == "ws-new" and ws["app_ids"] == ["APP-A", "APP-B"]
+
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "huawei")
+    cap2 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
+    await omodel_real.create_workspace("新域", ["APP-A"])
+    assert cap2[0][2]["json"]["labels"] == {"projectId": "APP-A", "tenantId": "huawei"}
+
+    # 400 必须透出响应体（umodel 错误信封 message 是唯一定位线索；内网 400 教训）
+    _install(monkeypatch, lambda m, u, k: _Resp(400, None, text='{"code":"INVALID_ARGUMENT","message":"missing x"}'))
+    with _pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
+        await omodel_real.create_workspace("新域", ["APP-A"])
 
 
 # ============================ Skill Hub（29.3） ============================

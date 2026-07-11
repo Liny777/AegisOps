@@ -26,7 +26,13 @@ async def list_workspaces() -> list[dict[str, Any]]:
 
 
 async def create_workspace(name: str, app_ids: list[str]) -> dict[str, Any]:
-    return await omodel_client.create_workspace(name, app_ids)
+    """失败包成 ApiError 带上游原因（umodel 400 的信封 message 是唯一定位线索），前端对话框直接显示。"""
+    try:
+        return await omodel_client.create_workspace(name, app_ids)
+    except ApiError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise ApiError(Err.INTERNAL_ERROR, f"创建系统范围失败：{str(e)[:300]}", retryable=True) from e
 
 
 async def status(workspace_id: str) -> dict[str, Any]:

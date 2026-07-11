@@ -141,9 +141,25 @@ async def create_workspace(name: str, app_ids: list[str]) -> dict[str, Any]:
         raise RuntimeError("OPENOPS_OMODEL=real 但未配置 OPENOPS_OMODEL_BASE_URL")
     import httpx
 
-    # app_ids → 29.5 项目级 scopes（P1-1 粒度落差：OpenOps 的 appid 直接当 projectId，待 umodel 明确展开口径）
-    body = {"name": name, "config": {"workspace_ui": {"scopes": [{"projectId": a} for a in app_ids]}}}
+    # 请求体按 29.7 curl 样例的最大兼容面组装（内网 400 教训）：
+    # - scopes 用 string[] 旧格式（新旧两格式并存期，已部署 beta 可能还不认 object[]）；
+    # - 带 labels.projectId + config.workspace_ui.projectId=首个 appid（样例恒带，t_omodel_workspace 的 project_id 来源）；
+    # - labels.tenantId 走 OPENOPS_OMODEL_TENANT_ID（部署校验要求时配，如 huawei）。
+    primary = app_ids[0] if app_ids else ""
+    ui: dict[str, Any] = {"scopes": list(app_ids)}
+    labels: dict[str, str] = {}
+    if primary:
+        ui["projectId"] = primary
+        labels["projectId"] = primary
+    tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
+    if tenant:
+        labels["tenantId"] = tenant
+    body: dict[str, Any] = {"name": name, "config": {"workspace_ui": ui}}
+    if labels:
+        body["labels"] = labels
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:
         r = await c.post(_prefix(), json=body)
-        r.raise_for_status()  # 409 ALREADY_EXISTS / 400 INVALID_ARGUMENT 直接抛（调用方收口）
+        if r.status_code >= 400:
+            # umodel 错误信封 {code,message} 在响应体里——400 INVALID_ARGUMENT 必须透出原因（吞掉没法定位）
+            raise RuntimeError(f"umodel 创建 workspace HTTP {r.status_code}：{(r.text or '')[:300]}")
         return _map_metadata(r.json())
