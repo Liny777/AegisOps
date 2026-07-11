@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { Icon, Interactive, Pill, Button, TextInput, Toggle } from "../ui";
-import { useApp } from "../lib/appState";
+import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { api } from "../lib/api";
 import type { AgentInstance, AssetRow, ConfigVersionRow, ModelOption } from "../lib/api/types";
 import { AddCustomModelDialog } from "./AddCustomModelDialog";
@@ -13,6 +13,8 @@ type Filter = "all" | "on" | "off";
 /** 实例配置（isSettings·新原型）：「我的感知快恢 Agent 清单」管理页 → per-agent 配置。 */
 export function SettingsPage() {
   const nav = useNavigate();
+  const { instanceId } = useParams();
+  useSyncCurrentAgent(instanceId);  // 直链/新建实例进入：全局列表缺它则重拉
   const { agents, refresh } = useApp();
   const [detailId, setDetailId] = useState<string | null>(null);
   const detail = agents.find((a) => a.instance_id === detailId) ?? null;

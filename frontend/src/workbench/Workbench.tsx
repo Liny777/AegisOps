@@ -20,7 +20,7 @@ import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
-import { useApp } from "../lib/appState";
+import { useApp, useSyncCurrentAgent } from "../lib/appState";
 
 type ConnState = "connecting" | "open" | "reconnecting";
 
@@ -31,6 +31,7 @@ export function Workbench() {
   const [searchParams] = useSearchParams();
   const explicitRunId = runIdParam ?? searchParams.get("run_id");
   const { setCurrentAgentId } = useApp();
+  useSyncCurrentAgent(instanceId);  // 新建实例 SPA 导航进来：侧栏列表缺它则重拉（实测 777 bug）
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<"active" | "closed">("active");
