@@ -120,6 +120,11 @@ def check_omodel() -> None:
                   "[check-net]   → 拿真 API 根：浏览器开 OModel 页面 → F12 → Network → 随便点个操作，\n"
                   "[check-net]     看它请求的 /api/v1/workspaces 完整 URL，去掉 /api/v1/... 即 API 根；或问同事。")
             return
+        if r.status_code in (401, 403):
+            print(f"[check-net]   ❌ GET /api/v1/workspaces → HTTP {r.status_code}——该部署要登录态。\n"
+                  "[check-net]   → 浏览器开 OModel 页面 → F12 → Network → 任一 /api/v1 请求 → Request Headers\n"
+                  "[check-net]     → 复制整个 Cookie 值 → export OPENOPS_OMODEL_COOKIE='<值>'（含分号务必加引号）")
+            return
         print(f"[check-net]   GET /api/v1/workspaces → HTTP {r.status_code}", end="")
         items = (r.json() or {}).get("items", []) if r.status_code == 200 else []
         print(f"；workspaces={len(items)}" + (f"（如 {items[0].get('id')}）" if items else "（空，向导里创建即可）"))
