@@ -108,17 +108,17 @@ def check_omodel() -> None:
     kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
     try:
         r = httpx.get(f"{base}/healthz", **kw)
-        if _looks_html(r):
-            print(f"[check-net]   ❌ GET /healthz 返回的是网页（HTTP {r.status_code}，HTML）——"
-                  "这个地址是 OModel Explorer **前端页面**，不是 umodel-server API 根。\n"
-                  "[check-net]   → 拿真 API 地址两个办法：a) 问同事 umodel-server 后端 host:port；\n"
-                  "[check-net]     b) 浏览器打开该页面 → F12 → Network → 随便点个操作，看它请求的\n"
-                  "[check-net]        /api/v1/workspaces 完整 URL，去掉 /api/v1/... 就是 API 根。")
-            return
-        print(f"[check-net]   GET /healthz → HTTP {r.status_code}；{r.text[:200]}")
+        if _looks_html(r) or r.status_code >= 400:
+            # 网关可能只路由 /api/v1/*（healthz 不暴露）——降为提示，决定性检查是下面的 workspaces
+            print(f"[check-net]   （/healthz HTTP {r.status_code}"
+                  f"{'·HTML' if _looks_html(r) else ''}——网关未暴露 healthz 属正常，以 /api/v1 为准）")
+        else:
+            print(f"[check-net]   GET /healthz → HTTP {r.status_code}；{r.text[:200]}")
         r = httpx.get(f"{base}/api/v1/workspaces", **kw)
         if _looks_html(r):
-            print(f"[check-net]   ❌ /api/v1/workspaces 返回网页（HTTP {r.status_code}）——同上，API 根不对")
+            print(f"[check-net]   ❌ /api/v1/workspaces 返回的是网页（HTTP {r.status_code}）——地址不是 API 根。\n"
+                  "[check-net]   → 拿真 API 根：浏览器开 OModel 页面 → F12 → Network → 随便点个操作，\n"
+                  "[check-net]     看它请求的 /api/v1/workspaces 完整 URL，去掉 /api/v1/... 即 API 根；或问同事。")
             return
         print(f"[check-net]   GET /api/v1/workspaces → HTTP {r.status_code}", end="")
         items = (r.json() or {}).get("items", []) if r.status_code == 200 else []
