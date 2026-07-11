@@ -44,6 +44,13 @@ def http_trust_env() -> bool:
     return os.getenv("OPENOPS_HTTP_TRUST_ENV") == "1"
 
 
+def raise_with_body(r: Any) -> None:
+    """raise_for_status 但带响应体前 300 字——console 的 502/504 页面里往往写着网关侧原因，
+    吞掉 body 只剩状态码没法定位（如 proxy 转发不到目标 MCP server vs 请求体形状不符）。"""
+    if r.status_code >= 400:
+        raise RuntimeError(f"console HTTP {r.status_code}：{r.text[:300]}")
+
+
 def console_tls_verify() -> bool | str:
     """console 是 https 内网证书：Python httpx 用 certifi CA（无公司内部 CA）会
     CERTIFICATE_VERIFY_FAILED（Windows curl 用系统证书库所以通）。三档：
@@ -71,7 +78,7 @@ async def list_servers() -> list[dict[str, Any]]:
             while True:
                 r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"},
                                    headers=_console_headers())
-                r.raise_for_status()
+                raise_with_body(r)
                 body = r.json()
                 if int(body.get("code", -1)) != 0:
                     raise RuntimeError(f"mcps/list/query 业务错误：code={body.get('code')} {body.get('message', '')}")
@@ -112,7 +119,7 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
                                headers=_console_headers())
-            r.raise_for_status()
+            raise_with_body(r)
             body = r.json()
         if int(body.get("code", -1)) != 0:  # 29.3 业务信封 {code:0, message, data}
             raise RuntimeError(f"MCP Registry proxy 业务错误：code={body.get('code')} {body.get('message', '')}")

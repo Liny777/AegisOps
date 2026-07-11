@@ -10,7 +10,7 @@ import os
 import uuid
 from typing import Any
 
-from infra.external.mcp_registry_client import console_tls_verify, http_trust_env  # 内网证书 TLS 三档（CA 文件/insecure/默认）
+from infra.external.mcp_registry_client import console_tls_verify, http_trust_env, raise_with_body  # 内网证书 TLS 三档（CA 文件/insecure/默认）
 
 last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 {tool, arguments, headers}
 
@@ -52,7 +52,7 @@ async def call_tool(
                 r = await cli.post(url, json={"url": server_url, "method": "tools/call",
                                               "params": {"name": tool_name, "arguments": arguments}},
                                    headers=hdrs)
-                r.raise_for_status()
+                raise_with_body(r)
                 body = r.json()
             if int(body.get("code", -1)) != 0:  # 29.3 业务信封
                 raise RuntimeError(f"MCP proxy tools/call 业务错误：code={body.get('code')} {body.get('message', '')}")
@@ -67,7 +67,7 @@ async def call_tool(
         async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")), verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             r = await cli.post(f"{base.rstrip('/')}/tools/{tool_name}:call",
                                json={"tool_name": tool_name, "arguments": arguments}, headers=headers or {})
-            r.raise_for_status()
+            raise_with_body(r)
             return r.json()
 
     global last_call
