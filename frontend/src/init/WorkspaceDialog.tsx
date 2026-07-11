@@ -17,7 +17,8 @@ export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; o
 
   useEffect(() => {
     if (!open) return;
-    setName(""); setQ(""); setSelected(new Set()); setErr("");
+    // busy 必须一并复位：组件常驻不卸载，上次创建成功后 busy 遗留 true → 重开按钮永远转圈（实测踩坑）
+    setName(""); setQ(""); setSelected(new Set()); setErr(""); setBusy(false);
     setLoading(true);
     api.getScopeApps()
       .then((a) => setApps(a))

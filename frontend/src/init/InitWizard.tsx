@@ -103,7 +103,12 @@ export function InitWizard() {
         </div>
       </div>
 
-      <WorkspaceDialog open={wsDialog} onClose={() => setWsDialog(false)} onCreated={(id) => { setWsId(id); setWsDialog(false); }} />
+      <WorkspaceDialog open={wsDialog} onClose={() => setWsDialog(false)}
+        onCreated={(id) => {
+          // 创建成功：选中新范围 + 重拉列表（否则第三步列表还是旧的，看不到刚建的 workspace）
+          setWsId(id); setWsDialog(false);
+          api.getWorkspaces().then(setWorkspaces);
+        }} />
       <AddCustomModelDialog open={llmDialog} onClose={() => setLlmDialog(false)} onCreated={(id, label) => { setCustomLlmId(id); setCustomLlmLabel(label); setLlm("custom"); setLlmDialog(false); }} />
     </div>
   );
