@@ -100,6 +100,23 @@ def test_dynamic_specs_empty_when_mock(monkeypatch):
     assert asyncio.run(ar._dynamic_mcp_specs()) == []
 
 
+def test_discover_tools_real_mode_placeholder_endpoint_skips_proxy(monkeypatch):
+    """real 模式下占位 endpoint（seed 的 http://mock）不得发给 console proxy（否则网关连 http://mock → 504）。"""
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
+    import httpx
+
+    class _Boom:
+        def __init__(self, *a, **k) -> None:
+            raise AssertionError("占位 endpoint 不应发起任何网络调用")
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Boom)
+    for url in ("http://mock", ""):
+        tools = asyncio.run(mcp_registry_client.discover_tools(url))
+        assert {t["tool_name"] for t in tools} == {"query_resource", "recover_execute"}  # 内置 demo 工具
+        assert all("schema_hash" in t and "readonly" in t for t in tools)
+
+
 def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     import pytest
 

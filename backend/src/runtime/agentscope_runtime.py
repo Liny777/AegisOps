@@ -116,22 +116,30 @@ async def _build_model(st: TaskState) -> Any:
     """
     spec = st.model_spec
     if not spec:
+        print("[OpenOps][model] fallback to stub（无可用模型 spec）", flush=True)
         return _build_stub_model()
     api_key: str | None = None
+    key_src = "-"
     if spec.get("is_user_llm"):  # 用户自定义 LLM（C2）：从 PG 用户 Secret 在构建边界瞬时解密
         api_key = await _decrypt_user_secret(str(spec["user_secret_ref_id"]))
+        key_src = "user-secret"
     elif spec.get("secret_env_var"):  # 平台模型：从环境变量取 Key
         api_key = os.environ.get(spec["secret_env_var"])
+        key_src = f"env:{spec['secret_env_var']}"
     if api_key:
         from agentscope.credential import OpenAICredential
         from agentscope.model import OpenAIChatModel
 
+        # 构建目标一眼可见（同 [db]/[startup] 模式；不含 key 值）——DB base_url 错时这行即诊断
+        print(f"[OpenOps][model] building {spec['model_id']} "
+              f"base_url={spec.get('base_url') or 'default(api.openai.com)'} key={key_src}", flush=True)
         return OpenAIChatModel(
             credential=OpenAICredential(api_key=api_key),
             model=spec["model_id"],
             stream=False,
             client_kwargs={"base_url": spec["base_url"]} if spec.get("base_url") else None,
         )
+    print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）", flush=True)
     return _build_stub_model()
 
 

@@ -76,6 +76,14 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
     OpenOps 侧自算 schema_hash（29.3 分工：Registry 不做发现，OpenOps 落 catalog）。
     """
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        # 占位 endpoint 防呆：seed 的 demo MCP 资产 endpoint 是 "http://mock"，真发给 console proxy
+        # 会让网关去连 http://mock → 504（reconcile 登录触发即中招）。占位符直接走内置工具。
+        from urllib.parse import urlparse
+
+        # 只认已知占位（空 / host=mock）；其它 URL 照走 real 校验链（无 BASE_URL 仍 fail-loud，EXT-007）
+        if not server_url or urlparse(server_url).hostname == "mock":
+            return [{**t, "readonly": t.get("readonly", False), "schema_hash": _schema_hash(t["input_schema"])}
+                    for t in _TOOLS]
         base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
         if not base:
             raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")

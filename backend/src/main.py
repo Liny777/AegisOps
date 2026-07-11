@@ -44,6 +44,8 @@ async def lifespan(_app: FastAPI):
             _agentscope = f" (agentscope {getattr(agentscope, '__version__', '?')} 已装)"
         except ModuleNotFoundError:
             _agentscope = " (⚠ agentscope 未安装：提交任务会报错)"
+    _cookie = os.environ.get("OPENOPS_MCPREGISTRY_COOKIE", "")
+    _cookie_disp = f"SET(len={len(_cookie)})" if _cookie else "unset"  # cookie 含 `;`，引号不当会截断——长度识破
     _banner = (
         f"runtime={_rt}{_agentscope}  model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
         f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
@@ -51,7 +53,7 @@ async def lifespan(_app: FastAPI):
         f"scope_override={os.environ.get('OPENOPS_SCOPE_OVERRIDE_APPIDS') or 'off'}  "
         f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
         f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  "
-        f"mcp_cookie={'SET' if os.environ.get('OPENOPS_MCPREGISTRY_COOKIE') else 'unset'}  "
+        f"mcp_cookie={_cookie_disp}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
     )
