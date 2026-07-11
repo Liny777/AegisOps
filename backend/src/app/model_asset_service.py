@@ -7,12 +7,17 @@
 """
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any
 
 from domain.errors import ApiError, Err
 from infra.db import row_json
 from infra.repositories import audit, model_assets
+
+# secret_env_var 是环境变量名（非 Key 本身）：大写惯例。实测有管理员把真实 Key 填进来 → 明文落库
+# + 日志泄漏（SEC-001），入口处直接拒绝。
+_ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
 
 
 async def admin_list() -> list[dict[str, Any]]:
@@ -22,6 +27,11 @@ async def admin_list() -> list[dict[str, Any]]:
 async def register(req: Any, by: str) -> dict[str, Any]:
     if await model_assets.get_by_model_id(req.model_id):
         raise ApiError(Err.VALIDATION_FAILED, f"model_id 已存在：{req.model_id}")
+    if req.secret_env_var and not _ENV_VAR_RE.match(req.secret_env_var):
+        raise ApiError(Err.VALIDATION_FAILED,
+                       "「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）"
+                       "——看起来填入了 API Key 本身：真实 Key 绝不落库，请把 Key 配到后端进程环境变量"
+                       "（run-backend 里 export），此处只填变量名")
     row = await model_assets.create(
         req.display_name, req.protocol, req.model_id, req.base_url,
         req.secret_env_var, req.access_scope, "active", by,

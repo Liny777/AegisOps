@@ -243,7 +243,11 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
           {input("display_name", "展示名，如：交易大模型-TX")}
           {input("model_id", "model_id，如：tx-llm-v2", true)}
           {input("base_url", "OpenAI 兼容 endpoint（可空，用平台网关时）", true)}
-          {input("secret_env_var", "API Key 环境变量名（Key 本身不落库）", true)}
+          {input("secret_env_var", "API Key 环境变量名，如 OPENOPS_PLATFORM_GLM_API_KEY", true)}
+          <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.5, marginTop: -4 }}>
+            ⚠ 此处填<b>环境变量名</b>，不是 Key 本身——真实 Key 配在后端进程环境变量（run-backend 里
+            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。
+          </div>
         </div>
         <div style={{ display: "flex", gap: 14, marginTop: 12, fontSize: 12.5 }}>
           {(["all", "restricted"] as const).map((s) => (
@@ -257,9 +261,14 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button disabled={!ok} onClick={() => {
+            const env = f.secret_env_var.trim();
+            if (env && !/^[A-Z][A-Z0-9_]{2,63}$/.test(env)) {
+              setErr("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）——看起来填入了 Key 本身：Key 不落库，请配到后端环境变量后在此填变量名");
+              return;
+            }
             api.adminRegisterModel({
               display_name: f.display_name.trim(), model_id: f.model_id.trim(),
-              base_url: f.base_url.trim() || undefined, secret_env_var: f.secret_env_var.trim() || undefined,
+              base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
               access_scope: f.access_scope,
             }).then(onSaved).catch((e) => setErr((e as Error).message));
           }}>注册</Button>

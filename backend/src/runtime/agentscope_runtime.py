@@ -125,7 +125,10 @@ async def _build_model(st: TaskState) -> Any:
         key_src = "user-secret"
     elif spec.get("secret_env_var"):  # 平台模型：从环境变量取 Key
         api_key = os.environ.get(spec["secret_env_var"])
-        key_src = f"env:{spec['secret_env_var']}"
+        # 日志显示脱敏：该列应是环境变量名；若被误填成 Key 值（管理台实测有人填错），原样打出=泄密（SEC-001）
+        env_name = str(spec["secret_env_var"])
+        legal = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", env_name) is not None
+        key_src = f"env:{env_name}" if legal else "env:<非环境变量名，疑似误填了 Key 本身，已隐去>"
     if api_key:
         import httpx
 
@@ -154,7 +157,9 @@ async def _build_model(st: TaskState) -> Any:
             stream=False,
             client_kwargs=client_kwargs,
         )
-    print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）", flush=True)
+    print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）——"
+          "管理台该字段填环境变量名（如 OPENOPS_PLATFORM_GLM_API_KEY），真实 Key 配到后端进程环境变量（run-backend）",
+          flush=True)
     return _build_stub_model()
 
 

@@ -131,3 +131,17 @@ def test_model_acl_007_register_ignores_sensitive_and_dedups(client):
     dup = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                       json={"client_request_id": "m2", "display_name": "重复", "model_id": "gw-llm-1"})
     assert dup.status_code == 400
+
+
+def test_register_rejects_key_value_in_secret_env_var(client):
+    """SEC 护栏：secret_env_var 填成 Key 本身（如 sk-...）→ 入口拒绝，明文 Key 不落库。"""
+    r = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                    json={"client_request_id": "reg_k1", "display_name": "误填", "model_id": "oops-llm",
+                          "base_url": "http://gw/v1", "secret_env_var": "sk-1234abcd", "access_scope": "all"})
+    assert r.status_code == 400
+    assert "环境变量名" in r.json()["error"]["message"]
+
+    r2 = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                     json={"client_request_id": "reg_k2", "display_name": "正确", "model_id": "good-llm",
+                           "base_url": "http://gw/v1", "secret_env_var": "OPENOPS_TX_LLM_KEY", "access_scope": "all"})
+    assert r2.status_code == 200
