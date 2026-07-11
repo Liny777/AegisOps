@@ -89,7 +89,37 @@ def check_glm() -> None:
         print("[check-net]   对照：ConnectError=host/port 不通；TLS/SSL 错=https 拨了 http 端口（改 http://）")
 
 
+def check_omodel() -> None:
+    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
+
+    base = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip().rstrip("/")
+    print(f"[check-net]③ oModel(umodel)={base or '(未设 OPENOPS_OMODEL_BASE_URL，跳过)'}")
+    if not base:
+        return
+    cookie = os.environ.get("OPENOPS_OMODEL_COOKIE", "")
+    hdrs = {"Cookie": cookie} if cookie else {}
+    print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（29.7 workspace 端点匿名可用）'}")
+    kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
+    try:
+        r = httpx.get(f"{base}/healthz", **kw)
+        print(f"[check-net]   GET /healthz → HTTP {r.status_code}；{r.text[:200]}")
+        r = httpx.get(f"{base}/api/v1/workspaces", **kw)
+        print(f"[check-net]   GET /api/v1/workspaces → HTTP {r.status_code}", end="")
+        items = (r.json() or {}).get("items", []) if r.status_code == 200 else []
+        print(f"；workspaces={len(items)}" + (f"（如 {items[0].get('id')}）" if items else "（空，向导里创建即可）"))
+        if items:  # 顺带验 resolve 的数据源（端点 4）
+            ws = items[0].get("id")
+            r = httpx.get(f"{base}/api/v1/workspaces/{ws}/projects", **kw)
+            print(f"[check-net]   GET /{ws}/projects → HTTP {r.status_code}；前 200 字：{r.text[:200]}")
+    except Exception as e:  # noqa: BLE001 —— 原样暴露真实异常
+        print(f"[check-net]   ❌ {type(e).__name__}: {e}")
+        if "CERTIFICATE_VERIFY_FAILED" in str(e):
+            print("[check-net]   → 同 ① 的三选一（truststore / OPENOPS_TLS_CA_FILE / OPENOPS_TLS_INSECURE=1）")
+
+
 if __name__ == "__main__":
     check_console()
     print()
     check_glm()
+    print()
+    check_omodel()

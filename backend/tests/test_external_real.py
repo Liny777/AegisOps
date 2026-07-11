@@ -1,4 +1,4 @@
-"""外部依赖 real 变体对齐权威契约（29.5 omodel / 29.3 SkillHub·MCPRegistry / 28.2 平台 MCP）。
+"""外部依赖 real 变体对齐权威契约（29.7 omodel / 29.3 SkillHub·MCPRegistry / 28.2 平台 MCP）。
 
 每个 client 用 monkeypatch httpx.AsyncClient 桩验证：URL/method、请求 body、`{code,message,data}` 信封解包、
 字段映射为 OpenOps 词汇。mock 默认路径不受影响（这些 test 显式设 OPENOPS_*=real）。
@@ -51,7 +51,7 @@ def _install(monkeypatch, route):
     return captured
 
 
-# ============================ oModel（29.5） ============================
+# ============================ oModel（29.7） ============================
 
 async def test_ext_omodel_resolve_from_projects(monkeypatch):
     """resolve 走 29.5 端点 4 /{ws}/projects：effective_appids = 排序 project_id，scope_revision 私有派生。"""
@@ -85,12 +85,12 @@ async def test_ext_omodel_resolve_404_and_empty_failclosed(monkeypatch):
 
 
 async def test_ext_omodel_get_and_list_map_metadata(monkeypatch):
-    """WorkspaceMetadata（无信封）→ OpenOps 词汇；list 解 Page.items。"""
+    """WorkspaceMetadata（无信封，29.7 snake_case）→ OpenOps 词汇；list 解 Page.items；scopes 两格式兼容。"""
     from infra.external import omodel_real
 
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
-    md = {"id": "ws-a1", "name": "支付域", "status": "active", "updatedAt": "2026-07-09T08:00:00Z",
+    md = {"id": "ws-a1", "name": "支付域", "status": "active", "updated_at": "2026-07-10T08:00:00Z",
           "config": {"workspace_ui": {"scopes": [{"projectId": "APP-A"}, {"projectId": "APP-B"}]}}}
 
     _install(monkeypatch, lambda m, u, k: _Resp(200, md))
@@ -98,10 +98,51 @@ async def test_ext_omodel_get_and_list_map_metadata(monkeypatch):
     assert ws["workspace_id"] == "ws-a1" and ws["name"] == "支付域"
     assert ws["sync_status"] == "ready" and ws["app_ids"] == ["APP-A", "APP-B"]
     assert ws["scope_revision"].startswith("sc-")
+    assert ws["updated"] == "2026-07-10T08:00:00Z"  # 29.7 snake_case updated_at
 
-    _install(monkeypatch, lambda m, u, k: _Resp(200, {"items": [md], "nextToken": None}))
+    _install(monkeypatch, lambda m, u, k: _Resp(200, {"items": [md], "next_token": None}))
     lst = await omodel_real.list_workspaces()
     assert len(lst) == 1 and lst[0]["workspace_id"] == "ws-a1"  # 解 Page.items + 映射
+
+    # 29.7：scopes 旧 string[] 格式（仅 projectId）也要收
+    md2 = {"id": "ws-s", "name": "旧格式", "status": "active",
+           "config": {"workspace_ui": {"scopes": ["APP-C", "APP-D"]}}}
+    _install(monkeypatch, lambda m, u, k: _Resp(200, md2))
+    ws2 = await omodel_real.get_workspace("ws-s")
+    assert ws2["app_ids"] == ["APP-C", "APP-D"]
+
+
+async def test_ext_omodel_cookie_and_outbound_hardening(monkeypatch):
+    """OPENOPS_OMODEL_COOKIE 设置时带 Cookie；verify/trust_env 与 console 同口径（内网 SWG/证书教训）。"""
+    import httpx
+
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "sid=umodel-1")
+    monkeypatch.setenv("OPENOPS_TLS_INSECURE", "1")
+    init_kwargs: dict = {}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            init_kwargs.update(k)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, **k):
+            return _Resp(200, [])
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    res = await omodel_real.resolve_scope("ws-1", "rev", "u")
+    assert res["status"] == "ok"
+    assert init_kwargs["headers"]["Cookie"] == "sid=umodel-1"  # IAM session cookie 注入
+    assert init_kwargs["verify"] is False  # TLS 三档（INSECURE 档）生效
+    assert init_kwargs["trust_env"] is False  # 默认不信任环境/注册表代理
 
 
 async def test_ext_omodel_create_workspace_scopes(monkeypatch):
