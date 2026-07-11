@@ -51,6 +51,33 @@ def raise_with_body(r: Any) -> None:
         raise RuntimeError(f"console HTTP {r.status_code}：{r.text[:300]}")
 
 
+def mcp_route() -> str:
+    """MCP 发现/调用怎么到达目标 server：`OPENOPS_MCP_ROUTE=direct(默认)|proxy`。
+    direct=按标准 MCP streamable-HTTP 直连 server_url（JSON-RPC 信封 + SSE 响应；实测 mcpgateway
+    直连 200、且无需 console cookie）；proxy=经 console `mcps/proxy` 转发（实测其上游转发 404，
+    console 侧待修——修好可切回，生产 IAM 收口路径）。"""
+    return os.getenv("OPENOPS_MCP_ROUTE", "direct").strip().lower()
+
+
+def parse_mcp_response(r: Any) -> dict[str, Any]:
+    """解 streamable-HTTP MCP 响应：SSE（text/event-stream 的 `data:` 行）或纯 JSON，返回 JSON-RPC 对象。"""
+    if "text/event-stream" in str(r.headers.get("content-type", "")):
+        for line in r.text.splitlines():
+            line = line.strip()
+            if line.startswith("data:"):
+                try:
+                    obj = json.loads(line[5:].strip())
+                except ValueError:
+                    continue
+                if isinstance(obj, dict) and ("result" in obj or "error" in obj):
+                    return obj
+        raise RuntimeError(f"MCP SSE 响应无 JSON-RPC data 消息：{r.text[:200]}")
+    return r.json()
+
+
+_MCP_ACCEPT = "application/json, text/event-stream"  # streamable-HTTP：server 可回 JSON 或 SSE
+
+
 def console_tls_verify() -> bool | str:
     """console 是 https 内网证书：Python httpx 用 certifi CA（无公司内部 CA）会
     CERTIFICATE_VERIFY_FAILED（Windows curl 用系统证书库所以通）。三档：
@@ -110,21 +137,32 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         if not server_url or urlparse(server_url).hostname == "mock":
             return [{**t, "readonly": t.get("readonly", False), "schema_hash": _schema_hash(t["input_schema"])}
                     for t in _TOOLS]
-        base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
-        if not base:
-            raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
         import httpx
 
-        url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
-            r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
-                               headers=_console_headers())
-            raise_with_body(r)
-            body = r.json()
-        if int(body.get("code", -1)) != 0:  # 29.3 业务信封 {code:0, message, data}
-            raise RuntimeError(f"MCP Registry proxy 业务错误：code={body.get('code')} {body.get('message', '')}")
-        # data = 上游 JSON-RPC {jsonrpc,id,result:{tools}}；工具在 data.result.tools
-        tools = (((body.get("data") or {}).get("result")) or {}).get("tools", [])
+        if mcp_route() == "direct":  # 标准 MCP streamable-HTTP 直连 server_url（实测通；无需 console cookie）
+            async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
+                r = await cli.post(server_url,
+                                   json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                                   headers={"Accept": _MCP_ACCEPT})
+                raise_with_body(r)
+                rpc = parse_mcp_response(r)
+            if "error" in rpc:
+                raise RuntimeError(f"MCP tools/list 错误：{str(rpc['error'])[:200]}")
+            tools = (rpc.get("result") or {}).get("tools", [])
+        else:  # proxy：经 console mcps/proxy 转发（console 侧上游转发待修）
+            base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
+            if not base:
+                raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
+            url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
+            async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
+                r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
+                                   headers=_console_headers())
+                raise_with_body(r)
+                body = r.json()
+            if int(body.get("code", -1)) != 0:  # 29.3 业务信封 {code:0, message, data}
+                raise RuntimeError(f"MCP Registry proxy 业务错误：code={body.get('code')} {body.get('message', '')}")
+            # data = 上游 JSON-RPC {jsonrpc,id,result:{tools}}；工具在 data.result.tools
+            tools = (((body.get("data") or {}).get("result")) or {}).get("tools", [])
         return [{"tool_name": t.get("name"), "description": t.get("description", ""),
                  "input_schema": t.get("inputSchema", {}),
                  "readonly": bool((t.get("annotations") or {}).get("readOnlyHint", False)),

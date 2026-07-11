@@ -39,7 +39,28 @@ async def call_tool(
     if os.getenv("OPENOPS_MCP", "mock").lower() == "real":
         import httpx
 
-        if server_url:  # 动态 MCP：走注册表 proxy 的 tools/call（url=目标 server，name+arguments 在 params）
+        if server_url:  # 动态 MCP：direct=streamable-HTTP 直连 server_url（默认）；proxy=经 console mcps/proxy
+            from infra.external.mcp_registry_client import _MCP_ACCEPT, mcp_route, parse_mcp_response
+
+            if mcp_route() == "direct":
+                hdrs = dict(headers or {})  # 28.2 平台上下文头照带（审计/回放）；不带 console cookie（无需且不外泄）
+                hdrs["Accept"] = _MCP_ACCEPT
+                async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")),
+                                             verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
+                    r = await cli.post(server_url,
+                                       json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                             "params": {"name": tool_name, "arguments": arguments}},
+                                       headers=hdrs)
+                    raise_with_body(r)
+                    rpc = parse_mcp_response(r)
+                if "error" in rpc:
+                    raise RuntimeError(f"MCP 工具 {tool_name} JSON-RPC 错误：{str(rpc['error'])[:200]}")
+                result = rpc.get("result") or {}
+                if result.get("isError"):
+                    raise RuntimeError(f"MCP 工具 {tool_name} 返回错误：{_summarize(result)}")
+                rid = r.headers.get("Trace-Id") or "mcp_" + uuid.uuid4().hex[:10]  # mcpgateway Trace-Id 作外部请求号
+                return {"request_id": rid, "status": "ok", "result_summary": _summarize(result)}
+
             base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
             if not base:
                 raise RuntimeError("动态 MCP 调用需 OPENOPS_MCPREGISTRY_BASE_URL（经 console proxy 路由 tools/call）")

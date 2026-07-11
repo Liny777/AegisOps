@@ -1,18 +1,20 @@
-"""动态 MCP 工具装配（真注册表发现 → agent 工具，穿 Tool Gateway 经 console proxy 路由）单元测试。"""
+"""动态 MCP 工具装配（真注册表发现 → agent 工具，direct streamable-HTTP / console proxy 双路由）单元测试。"""
 from __future__ import annotations
 
 import asyncio
+import json as _json
 
 from infra.external import http_mcp_client, mcp_registry_client
 from runtime import agentscope_runtime as ar
 
 
 class _Resp:
-    status_code = 200  # raise_with_body 读 status_code/text（替代 raise_for_status）
-    text = ""
-
-    def __init__(self, payload: dict) -> None:
-        self._p = payload
+    def __init__(self, payload: dict | None = None, *, text: str | None = None,
+                 content_type: str = "application/json", status: int = 200) -> None:
+        self._p = payload or {}
+        self.status_code = status  # raise_with_body 读 status_code/text
+        self.text = text if text is not None else _json.dumps(self._p, ensure_ascii=False)
+        self.headers = {"content-type": content_type, "Trace-Id": "tr-test-1"}
 
     def raise_for_status(self) -> None:  # noqa: D401
         pass
@@ -24,6 +26,7 @@ class _Resp:
 class _FakeClient:
     captured: dict = {}
     init_kwargs: dict = {}
+    resp: _Resp | None = None  # 各用例可注入自定义响应
 
     def __init__(self, *a, **k) -> None:
         _FakeClient.init_kwargs = dict(k)
@@ -36,12 +39,64 @@ class _FakeClient:
 
     async def post(self, url, json=None, headers=None):
         _FakeClient.captured = {"url": url, "json": json, "headers": headers}
+        if _FakeClient.resp is not None:
+            return _FakeClient.resp
         return _Resp({"code": 0, "data": {"result": {
             "structuredContent": {"result": "告警3条：A/B/C"}, "isError": False}}})
 
 
+def test_mcp_direct_call_streamable_http(monkeypatch):
+    """默认 direct 路由：tools/call 直连 server_url，JSON-RPC 信封 + Accept SSE；28.2 头照带、不带 console cookie。"""
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_COOKIE", "sid=abc123")  # 有 cookie 也不该带到 mcpgateway
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)  # 默认 direct
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    sse = ('event: message\n'
+           'data: {"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"result":"告警3条：A/B/C"},"isError":false}}\n')
+    _FakeClient.resp = _Resp(text=sse, content_type="text/event-stream")
+    try:
+        r = asyncio.run(http_mcp_client.call_tool(
+            "query_alarm_list", {"project_id": "APP-REAL-1"},
+            headers={"X-OpenOps-Effective-Appids": "APP-REAL-1"}, server_url="http://mcpgw/x"))
+    finally:
+        _FakeClient.resp = None
+    cap = _FakeClient.captured
+    assert cap["url"] == "http://mcpgw/x"  # 直连 server_url，不经 console
+    assert cap["json"] == {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "query_alarm_list", "arguments": {"project_id": "APP-REAL-1"}}}
+    assert cap["headers"]["Accept"] == "application/json, text/event-stream"
+    assert cap["headers"]["X-OpenOps-Effective-Appids"] == "APP-REAL-1"  # 28.2 头照带
+    assert "Cookie" not in cap["headers"]  # console cookie 不外泄给 mcpgateway
+    assert r["result_summary"] == "告警3条：A/B/C"  # SSE data 行解析 + structuredContent 抽取
+    assert r["request_id"] == "tr-test-1"  # mcpgateway Trace-Id 作外部请求号
+
+
+def test_mcp_direct_discover_streamable_http(monkeypatch):
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    sse = ('event: message\n'
+           'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"query_alarm_list","description":"d",'
+           '"inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}},'
+           '"annotations":{"readOnlyHint":true}}]}}\n')
+    _FakeClient.resp = _Resp(text=sse, content_type="text/event-stream")
+    try:
+        tools = asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x"))
+    finally:
+        _FakeClient.resp = None
+    cap = _FakeClient.captured
+    assert cap["url"] == "http://mcpgw/x"
+    assert cap["json"]["method"] == "tools/list" and cap["json"]["jsonrpc"] == "2.0"
+    assert tools[0]["tool_name"] == "query_alarm_list" and tools[0]["readonly"] is True
+
+
 def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
     monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")  # 显式走 console proxy 路由（direct 是默认）
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_COOKIE", "sid=abc123")
     import httpx
@@ -62,6 +117,7 @@ def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
 def test_console_tls_insecure_switch(monkeypatch):
     """OPENOPS_TLS_INSECURE=1 → console httpx 用 verify=False（内网证书不在 certifi 时的联调临时档）。"""
     monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
     monkeypatch.setenv("OPENOPS_TLS_INSECURE", "1")
     import httpx
@@ -123,7 +179,7 @@ def test_dynamic_specs_empty_when_mock(monkeypatch):
 
 
 def test_discover_tools_real_mode_placeholder_endpoint_skips_proxy(monkeypatch):
-    """real 模式下占位 endpoint（seed 的 http://mock）不得发给 console proxy（否则网关连 http://mock → 504）。"""
+    """real 模式下占位 endpoint（seed 的 http://mock）不得发起任何网络调用（否则 504/502 噪声）。"""
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
     import httpx

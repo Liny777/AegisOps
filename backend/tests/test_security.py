@@ -69,7 +69,9 @@ def test_ext_007_external_real_switches_fail_loud_without_endpoint(client, monke
         # mock 默认：正常返回
         assert (await http_mcp_client.call_tool("query_resource", {"appid": "A"}))["status"] == "ok"
         assert (await skill_hub_client.download_skill_package("inspection", 2))["entrypoint"]
-        # real 但无 BASE_URL → fail loud
+        # real 但无 BASE_URL → fail loud（缺 BASE_URL 的失败面在 proxy 路由；direct 路由不需要
+        # BASE_URL——server_url 即端点，垃圾 URL 由 httpx 自身 fail loud）
+        monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")
         for env, fn in [
             ("OPENOPS_MCP", lambda: http_mcp_client.call_tool("query_resource", {"appid": "A"})),
             ("OPENOPS_MCPREGISTRY", lambda: mcp_registry_client.discover_tools("m")),

@@ -184,6 +184,7 @@ async def test_ext_mcpregistry_discover_unwraps_result_tools(monkeypatch):
 
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "http://registry")
+    monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")  # 本用例锚定 console proxy 契约（默认已切 direct）
     body = {"code": 0, "message": "ok", "data": {"jsonrpc": "2.0", "id": 1, "result": {"tools": [
         {"name": "query_resource", "description": "查资源", "inputSchema": {"type": "object"}}]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
@@ -200,6 +201,7 @@ async def test_ext_mcpregistry_discover_code_nonzero_raises(monkeypatch):
 
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "http://registry")
+    monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")  # 本用例锚定 console proxy 契约（默认已切 direct）
     _install(monkeypatch, lambda m, u, k: _Resp(200, {"code": 6006, "message": "bad param", "data": None}))
     try:
         await mcp_registry_client.discover_tools("http://x")
