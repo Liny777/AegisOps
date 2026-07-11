@@ -29,10 +29,18 @@ def _schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def console_cookie(specific_env: str) -> str:
+    """console 系 IAM 会话 cookie 统一读取：专属 env 优先，未设回退共享 `OPENOPS_CONSOLE_COOKIE`。
+
+    mcpregistry / omodel / apptree 三个面实为同一份登录态——共享变量让过期只换一处；
+    个别面确需不同 cookie 时用专属变量覆盖。"""
+    return os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or ""
+
+
 def _console_headers() -> dict[str, str]:
-    """console（mcps/list/query、mcps/proxy）需带用户 Cookie 鉴权：从 OPENOPS_MCPREGISTRY_COOKIE 注入。
+    """console（mcps/list/query、mcps/proxy）需带用户 Cookie 鉴权：OPENOPS_MCPREGISTRY_COOKIE（回退共享）。
     联调用（本地无 IAM 登录）；生产由真 IAM 网关透传用户 cookie。未设=不带（会 401，需配）。cookie 是会话态，会过期。"""
-    cookie = os.getenv("OPENOPS_MCPREGISTRY_COOKIE")
+    cookie = console_cookie("OPENOPS_MCPREGISTRY_COOKIE")
     return {"Cookie": cookie} if cookie else {}
 
 

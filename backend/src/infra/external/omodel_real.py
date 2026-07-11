@@ -31,12 +31,13 @@ def _base() -> str:
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:
-    """umodel 出站 httpx 客户端参数：TLS/代理与 console 同口径（内网教训），可选 IAM session cookie。"""
-    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
+    """umodel 出站 httpx 客户端参数：TLS/代理与 console 同口径（内网教训），可选 IAM session cookie
+    （OPENOPS_OMODEL_COOKIE，未设回退共享 OPENOPS_CONSOLE_COOKIE——三面同一登录态，过期只换一处）。"""
+    from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
-    cookie = os.environ.get("OPENOPS_OMODEL_COOKIE")
+    cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         kwargs["headers"] = {"Cookie": cookie}
     return kwargs

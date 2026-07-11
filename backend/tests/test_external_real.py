@@ -9,11 +9,13 @@ from typing import Any
 
 
 class _Resp:
-    def __init__(self, status: int = 200, payload: Any = None, headers: dict | None = None, content: bytes | None = None):
+    def __init__(self, status: int = 200, payload: Any = None, headers: dict | None = None,
+                 content: bytes | None = None, text: str = ""):
         self.status_code = status
         self._payload = payload
         self.headers = headers or {}
         self.content = content
+        self.text = text  # HTML 检测/raise_with_body 读 .text；默认空串不影响旧用例
 
     def json(self):
         return self._payload
@@ -329,4 +331,65 @@ async def test_ext_apptree_real_requires_base_url(monkeypatch):
     from infra.external import apptree_client
 
     with pytest.raises(RuntimeError):
+        await apptree_client.list_user_apps("u")
+
+
+@pytest.mark.asyncio
+async def test_ext_console_cookie_shared_fallback(monkeypatch):
+    """三面（mcpregistry/omodel/apptree）同一登录态：专属 env 优先，未设回退 OPENOPS_CONSOLE_COOKIE。"""
+    import httpx
+
+    from infra.external.mcp_registry_client import _console_headers, console_cookie
+
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_COOKIE", raising=False)
+    monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "sid=shared-1")
+    assert console_cookie("OPENOPS_MCPREGISTRY_COOKIE") == "sid=shared-1"
+    assert _console_headers() == {"Cookie": "sid=shared-1"}
+    monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "sid=omodel-own")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "sid=omodel-own"  # 专属优先
+
+    # apptree real 出站真的带上共享 cookie
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.setenv("OPENOPS_APPTREE_BASE_URL", "http://wesee")
+    from infra.external import apptree_client
+
+    seen: dict = {}
+
+    class _Client:
+        def __init__(self, *a, **k):
+            seen.update(k)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, **k):
+            return _Resp(200, {"status": "OK", "data": {"datas": []}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    await apptree_client.list_user_apps("u")
+    assert seen.get("headers", {}).get("Cookie") == "sid=shared-1"
+
+
+@pytest.mark.asyncio
+async def test_ext_apptree_error_envelope_and_html_raise(monkeypatch):
+    """联调"空对话框"止血：200+status 非 OK / HTML 响应必须显式报错，不得静默吞成空列表。"""
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.setenv("OPENOPS_APPTREE_BASE_URL", "http://wesee")
+    from infra.external import apptree_client
+
+    _install(monkeypatch, lambda m, u, k: _Resp(200, {"status": "FAILED", "message": "no permission"}))
+    with pytest.raises(RuntimeError, match="status=FAILED"):
+        await apptree_client.list_user_apps("u")
+
+    _install(monkeypatch, lambda m, u, k: _Resp(200, None, text="<!doctype html><title>登录</title>"))
+    with pytest.raises(RuntimeError, match="HTML"):
+        await apptree_client.list_user_apps("u")
+
+    _install(monkeypatch, lambda m, u, k: _Resp(401, None, text="unauthorized"))
+    with pytest.raises(RuntimeError, match="401"):
         await apptree_client.list_user_apps("u")

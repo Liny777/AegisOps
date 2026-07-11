@@ -8,8 +8,17 @@ from infra.external import apptree_client, omodel_client
 
 
 async def list_apps(user_id: str) -> list[dict[str, Any]]:
-    """「从应用创建系统范围」选源：该用户可见的应用（平铺）。"""
-    return await apptree_client.list_user_apps(user_id)
+    """「从应用创建系统范围」选源：该用户可见的应用（平铺）。
+
+    失败包成 ApiError 带上游原因（401=cookie 失效 / 404=enterprise·project 段错 / 非 OK 信封），
+    前端对话框直接显示——联调时"静默空列表"比报错更难定位。
+    """
+    try:
+        return await apptree_client.list_user_apps(user_id)
+    except ApiError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise ApiError(Err.INTERNAL_ERROR, f"应用目录查询失败：{str(e)[:300]}", retryable=True) from e
 
 
 async def list_workspaces() -> list[dict[str, Any]]:

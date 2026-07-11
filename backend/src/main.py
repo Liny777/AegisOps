@@ -44,8 +44,13 @@ async def lifespan(_app: FastAPI):
             _agentscope = f" (agentscope {getattr(agentscope, '__version__', '?')} 已装)"
         except ModuleNotFoundError:
             _agentscope = " (⚠ agentscope 未安装：提交任务会报错)"
-    _cookie = os.environ.get("OPENOPS_MCPREGISTRY_COOKIE", "")
-    _cookie_disp = f"SET(len={len(_cookie)})" if _cookie else "unset"  # cookie 含 `;`，引号不当会截断——长度识破
+    def _cookie_disp(specific: str) -> str:
+        """cookie 显示：专属 SET(len) > 共享 shared(len) > unset。含 `;` 引号不当会截断——长度识破。"""
+        v = os.environ.get(specific, "")
+        if v:
+            return f"SET(len={len(v)})"
+        shared = os.environ.get("OPENOPS_CONSOLE_COOKIE", "")
+        return f"shared(len={len(shared)})" if shared else "unset"
     _tls = ("ca-file" if os.environ.get("OPENOPS_TLS_CA_FILE") else
             "INSECURE" if os.environ.get("OPENOPS_TLS_INSECURE") == "1" else
             "truststore" if "truststore" in __import__("sys").modules else "certifi")
@@ -53,11 +58,15 @@ async def lifespan(_app: FastAPI):
         f"runtime={_rt}{_agentscope}  model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
         f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
         f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  "
+        f"omodel_cookie={_cookie_disp('OPENOPS_OMODEL_COOKIE')}  "
         f"scope_override={os.environ.get('OPENOPS_SCOPE_OVERRIDE_APPIDS') or 'off'}  "
         f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
         f"mcp_route={os.environ.get('OPENOPS_MCP_ROUTE', 'direct')}  "
         f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  "
-        f"mcp_cookie={_cookie_disp}  tls={_tls}  "
+        f"mcp_cookie={_cookie_disp('OPENOPS_MCPREGISTRY_COOKIE')}  "
+        f"apptree={os.environ.get('OPENOPS_APPTREE', 'mock')}  "
+        f"apptree_cookie={_cookie_disp('OPENOPS_APPTREE_COOKIE')}  "
+        f"apptree_user={os.environ.get('OPENOPS_APPTREE_USER_ID') or '(登录态 user_id)'}  tls={_tls}  "
         f"trust_env={'on' if os.environ.get('OPENOPS_HTTP_TRUST_ENV') == '1' else 'off'}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"

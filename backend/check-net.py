@@ -22,10 +22,10 @@ import httpx  # noqa: E402
 
 
 def check_console() -> None:
-    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env  # 与后端同一 TLS/代理口径
+    from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env  # 与后端同口径
 
     base = os.environ.get("OPENOPS_MCPREGISTRY_BASE_URL", "").strip()
-    cookie = os.environ.get("OPENOPS_MCPREGISTRY_COOKIE", "")
+    cookie = console_cookie("OPENOPS_MCPREGISTRY_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
     print(f"[check-net]① console={base or '(未设 OPENOPS_MCPREGISTRY_BASE_URL，跳过)'}  "
           f"tls={console_tls_verify()!r}  trust_env={http_trust_env()}")
     if not base:
@@ -102,7 +102,9 @@ def check_omodel() -> None:
           + ("（已剥 #fragment）" if raw and base != raw.rstrip("/") else ""))
     if not base:
         return
-    cookie = os.environ.get("OPENOPS_OMODEL_COOKIE", "")
+    from infra.external.mcp_registry_client import console_cookie
+
+    cookie = console_cookie("OPENOPS_OMODEL_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
     hdrs = {"Cookie": cookie} if cookie else {}
     print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（29.7 workspace 端点匿名可用）'}")
     kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
@@ -138,9 +140,49 @@ def check_omodel() -> None:
             print("[check-net]   → 同 ① 的三选一（truststore / OPENOPS_TLS_CA_FILE / OPENOPS_TLS_INSECURE=1）")
 
 
+def check_apptree() -> None:
+    """④ 应用目录（初始化「从应用创建系统范围」选源）：与 apptree_client 完全同口径打一次真请求。
+
+    对话框"空列表"三大来源一次照出：401/HTML=cookie 失效、404=enterprise/project 段错、
+    200+status 非 OK / datas 空=账号（uesrId）没查到应用。
+    """
+    from infra.external.apptree_client import _DEFAULT_ENTERPRISE, _DEFAULT_PROJECT, _PATH_TMPL, _map_rows
+    from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
+
+    mode = os.environ.get("OPENOPS_APPTREE", "mock").strip().lower()
+    base = os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].rstrip("/")
+    print(f"[check-net]④ apptree={mode}  base={base or '(未设 OPENOPS_APPTREE_BASE_URL' + ('——real 必配)' if mode == 'real' else '，跳过)')}")
+    if mode != "real" or not base:
+        return
+    cookie = console_cookie("OPENOPS_APPTREE_COOKIE")
+    w3 = os.environ.get("OPENOPS_APPTREE_USER_ID", "").strip()
+    path = _PATH_TMPL.format(enterprise=os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", _DEFAULT_ENTERPRISE),
+                             project=os.environ.get("OPENOPS_APPTREE_PROJECT_ID", _DEFAULT_PROJECT))
+    print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设'}  "
+          f"uesrId={w3 or '(⚠未设 OPENOPS_APPTREE_USER_ID——将用登录态 user_id，联调 mock 头不是 W3 账号会查空)'}")
+    try:
+        r = httpx.post(f"{base}{path}", json={"uesrId": w3 or "unset"}, timeout=10,
+                       headers={"Cookie": cookie} if cookie else {},
+                       verify=console_tls_verify(), trust_env=http_trust_env())
+        if _looks_html(r):
+            print(f"[check-net]   ❌ 返回 HTML（HTTP {r.status_code}）——cookie 失效或 BASE_URL 填成前端页")
+            return
+        if r.status_code >= 400:
+            print(f"[check-net]   ❌ HTTP {r.status_code}：{r.text[:200]}")
+            return
+        payload = r.json() or {}
+        rows = _map_rows(payload.get("data") or {})
+        print(f"[check-net]   POST {path} → HTTP {r.status_code}  status={payload.get('status')}  "
+              f"rows={len(rows)}" + (f"（如 {rows[0]['name']} {rows[0]['app_id']}）" if rows else "（空——该账号无应用或 uesrId 不对）"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[check-net]   ❌ {type(e).__name__}: {e}")
+
+
 if __name__ == "__main__":
     check_console()
     print()
     check_glm()
     print()
     check_omodel()
+    print()
+    check_apptree()

@@ -55,14 +55,23 @@ def _map_rows(data: dict[str, Any]) -> list[dict[str, str]]:
 
 
 async def list_user_apps(user_id: str) -> list[dict[str, str]]:
-    """列出该用户可见的应用（平铺）。mock/未配端点 → 兜底 mock 集；real → 打 verification 服务。"""
+    """列出该用户可见的应用（平铺）。mock/未配端点 → 兜底 mock 集；real → 打 verification 服务。
+
+    诊断口径（联调教训：任何失败不得静默变空列表）：非 2xx 带响应体报错；HTML 响应=登录页/地址填错；
+    信封 status 非 OK 也报错（曾见 200+错误信封被吞成空）。每次调用打一行 `[OpenOps][apptree]`（不含 cookie）。
+    """
     if not _is_real():
         return _MOCK_APPS
     base = _base()
     if not base:
         raise RuntimeError("OPENOPS_APPTREE=real 但未配置 OPENOPS_APPTREE_BASE_URL")
 
-    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
+    from infra.external.mcp_registry_client import (
+        console_cookie,
+        console_tls_verify,
+        http_trust_env,
+        raise_with_body,
+    )
 
     enterprise = os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", _DEFAULT_ENTERPRISE)
     project = os.environ.get("OPENOPS_APPTREE_PROJECT_ID", _DEFAULT_PROJECT)
@@ -72,7 +81,7 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
 
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
-    cookie = os.environ.get("OPENOPS_APPTREE_COOKIE")
+    cookie = console_cookie("OPENOPS_APPTREE_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
     if cookie:
         kwargs["headers"] = {"Cookie": cookie}
 
@@ -80,6 +89,14 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
 
     async with httpx.AsyncClient(**kwargs) as c:
         r = await c.post(path, json={"uesrId": w3})  # 上游 body 键拼写即 "uesrId"（勿改）
-        r.raise_for_status()
+        raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效、404=enterprise/project 段错）
+        text = (r.text or "").lstrip()
+        if text.startswith("<"):  # 登录页/门户 HTML：cookie 失效或 base_url 填成了前端页
+            raise RuntimeError(f"应用目录返回 HTML 而非 JSON（cookie 失效或 BASE_URL 填错）：{text[:120]}")
         payload = r.json() or {}
-    return _map_rows(payload.get("data") or {})
+    status = str(payload.get("status", "")).upper()
+    if status and status != "OK":  # 200+错误信封（如账号无权限/参数错）——不得静默吞成空列表
+        raise RuntimeError(f"应用目录返回 status={payload.get('status')}：{str(payload.get('message', ''))[:200]}")
+    rows = _map_rows(payload.get("data") or {})
+    print(f"[OpenOps][apptree] POST {base}{path} uesrId={w3} -> rows={len(rows)}", flush=True)
+    return rows

@@ -32,6 +32,19 @@ set OPENOPS_RUNTIME=agentscope
 REM set OPENOPS_PLATFORM_GLM_API_KEY=<内网 GLM 网关 key>
 REM set OPENOPS_ENCRYPTION_KEY=<生产 Fernet key；调试可不设>
 
+REM ==================== console 系外部依赖（要切 real 时才设）====================
+REM 共享登录态：mcpregistry / omodel / apptree 三面同一份 IAM 会话 cookie——只设这一个即可，
+REM 过期只换这一处；个别面要不同 cookie 时再用 OPENOPS_MCPREGISTRY_COOKIE 等专属变量覆盖。
+REM set OPENOPS_CONSOLE_COOKIE=<浏览器 F12 复制的整串 Cookie；cmd set 不要加引号>
+REM set OPENOPS_OMODEL=real
+REM set OPENOPS_OMODEL_BASE_URL=<oModel API 根，如 https://wesee.console.hissit.huawei.com>
+REM set OPENOPS_MCPREGISTRY=real
+REM set OPENOPS_MCPREGISTRY_BASE_URL=<console 根，如 https://console.his-op-beta.huawei.com>
+REM set OPENOPS_MCP=real
+REM set OPENOPS_APPTREE=real
+REM set OPENOPS_APPTREE_BASE_URL=<verification 根，如 http://wesee.console.hissit.huawei.com>
+REM set OPENOPS_APPTREE_USER_ID=<你的 W3 账号，如 l00833445——mock 登录头不是 W3，联调必设>
+
 REM ==================== venv 的 python ====================
 set PY=.venv\Scripts\python.exe
 if not exist "%PY%" (
