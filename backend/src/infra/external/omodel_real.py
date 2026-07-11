@@ -26,7 +26,8 @@ _PREFIX = "/api/v1/workspaces"
 
 
 def _base() -> str:
-    return os.environ.get("OPENOPS_OMODEL_BASE_URL", "").rstrip("/")
+    # 剥 URL fragment：用户常把浏览器地址栏整串贴进来（如 .../omodel/#），`#` 后是前端路由不是路径
+    return os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/")
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:

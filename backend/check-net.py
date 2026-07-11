@@ -89,11 +89,17 @@ def check_glm() -> None:
         print("[check-net]   对照：ConnectError=host/port 不通；TLS/SSL 错=https 拨了 http 端口（改 http://）")
 
 
+def _looks_html(r: "httpx.Response") -> bool:
+    return "text/html" in str(r.headers.get("content-type", "")) or r.text.lstrip()[:9].lower().startswith("<!doctype")
+
+
 def check_omodel() -> None:
     from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
 
-    base = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip().rstrip("/")
-    print(f"[check-net]③ oModel(umodel)={base or '(未设 OPENOPS_OMODEL_BASE_URL，跳过)'}")
+    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip()
+    base = raw.split("#", 1)[0].rstrip("/")  # 剥浏览器地址栏的 #fragment（同 omodel_real._base）
+    print(f"[check-net]③ oModel(umodel)={base or '(未设 OPENOPS_OMODEL_BASE_URL，跳过)'}"
+          + ("（已剥 #fragment）" if raw and base != raw.rstrip("/") else ""))
     if not base:
         return
     cookie = os.environ.get("OPENOPS_OMODEL_COOKIE", "")
@@ -102,8 +108,18 @@ def check_omodel() -> None:
     kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
     try:
         r = httpx.get(f"{base}/healthz", **kw)
+        if _looks_html(r):
+            print(f"[check-net]   ❌ GET /healthz 返回的是网页（HTTP {r.status_code}，HTML）——"
+                  "这个地址是 OModel Explorer **前端页面**，不是 umodel-server API 根。\n"
+                  "[check-net]   → 拿真 API 地址两个办法：a) 问同事 umodel-server 后端 host:port；\n"
+                  "[check-net]     b) 浏览器打开该页面 → F12 → Network → 随便点个操作，看它请求的\n"
+                  "[check-net]        /api/v1/workspaces 完整 URL，去掉 /api/v1/... 就是 API 根。")
+            return
         print(f"[check-net]   GET /healthz → HTTP {r.status_code}；{r.text[:200]}")
         r = httpx.get(f"{base}/api/v1/workspaces", **kw)
+        if _looks_html(r):
+            print(f"[check-net]   ❌ /api/v1/workspaces 返回网页（HTTP {r.status_code}）——同上，API 根不对")
+            return
         print(f"[check-net]   GET /api/v1/workspaces → HTTP {r.status_code}", end="")
         items = (r.json() or {}).get("items", []) if r.status_code == 200 else []
         print(f"；workspaces={len(items)}" + (f"（如 {items[0].get('id')}）" if items else "（空，向导里创建即可）"))
