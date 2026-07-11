@@ -91,7 +91,7 @@ export interface OpenOpsApi {
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
   getScopeApps(): Promise<ScopeApp[]>;
-  createWorkspace(name: string, appIds: string[]): Promise<{ workspace_id: string }>;
+  createWorkspace(name: string, apps: { app_id: string; name?: string }[]): Promise<{ workspace_id: string }>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   // demo 身份
   switchRole(admin: boolean): void;
@@ -528,10 +528,11 @@ const realApi: OpenOpsApi = {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/apps");
     return rows.map((a) => ({ app_id: String(a.app_id), name: String(a.name), type: String(a.type ?? "") }));
   },
-  async createWorkspace(name, appIds) {
+  async createWorkspace(name, apps) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/workspaces", {
       method: "POST",
-      body: { client_request_id: crid(), name, app_ids: appIds },
+      // apps 带应用中文名（→ umodel scopes[].projectCn）；app_ids 冗余保留（后端兼容旧形状）
+      body: { client_request_id: crid(), name, app_ids: apps.map((a) => a.app_id), apps },
     });
     return { workspace_id: String(d.workspace_id) };
   },
@@ -603,7 +604,7 @@ const mockApi: OpenOpsApi = {
   getTemplates: () => delay(M.mockTemplates),
   getWorkspaces: () => delay(M.mockWorkspaces),
   getScopeApps: () => delay(M.mockScopeApps),
-  createWorkspace: (_name, _appIds) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
+  createWorkspace: (_name, _apps) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
   createAgentTeam: () => delay({ instance_id: "agt_pay_fast_recovery" }, 600),
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");

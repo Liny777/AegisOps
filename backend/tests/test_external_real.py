@@ -148,7 +148,11 @@ async def test_ext_omodel_cookie_and_outbound_hardening(monkeypatch):
 
 
 async def test_ext_omodel_create_workspace_scopes(monkeypatch):
-    """create body：app_ids → config.workspace_ui.scopes[].projectId。"""
+    """create body 完全镜像 umodel UI 实抓包（2026-07-11 F12）：客户端生成 id（ws-{slug}-{rand}）、
+    labels/workspace_ui 的 tenantId/projectId="default" 字面量、scopes=object[]{projectId,projectCn}、
+    status:running + owner；400 必须透出响应体（内网定位教训）。"""
+    import re as _re
+
     import pytest as _pytest
 
     from infra.external import omodel_real
@@ -156,22 +160,32 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
     monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
-    md = {"id": "ws-new", "name": "新域", "status": "active",
-          "config": {"workspace_ui": {"scopes": ["APP-A", "APP-B"]}}}
+    md = {"id": "ws-new", "name": "pay 域", "status": "active",
+          "config": {"workspace_ui": {"scopes": [{"projectId": "APP-A", "projectCn": "应用甲"},
+                                                 {"projectId": "APP-B", "projectCn": "APP-B"}]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
 
-    ws = await omodel_real.create_workspace("新域", ["APP-A", "APP-B"])
+    ws = await omodel_real.create_workspace("pay 域", ["APP-A", "APP-B"],
+                                            app_names={"APP-A": "应用甲"}, owner="林一")
     body = cap[0][2]["json"]
-    assert body["name"] == "新域"
-    # 29.7 样例最大兼容面：scopes=string[] 旧格式 + labels/config 的 projectId=首个 appid
-    assert body["config"]["workspace_ui"] == {"scopes": ["APP-A", "APP-B"], "projectId": "APP-A"}
-    assert body["labels"] == {"projectId": "APP-A"}  # 未设 OPENOPS_OMODEL_TENANT_ID 不带 tenantId
+    assert body["name"] == "pay 域" and body["description"] == ""
+    assert _re.fullmatch(r"ws-pay-[0-9a-f]{5}", body["id"])  # 客户端生成 id：slug 只留小写字母数字
+    assert body["labels"] == {"tenantId": "default", "projectId": "default"}
+    assert body["config"]["workspace_ui"] == {
+        "tenantId": "default", "projectId": "default",
+        "scopes": [{"projectId": "APP-A", "projectCn": "应用甲"}, {"projectId": "APP-B", "projectCn": "APP-B"}],
+        "status": "running", "owner": "林一",
+    }
     assert ws["workspace_id"] == "ws-new" and ws["app_ids"] == ["APP-A", "APP-B"]
 
+    # 中文名 slug 剥空 → id 退化 ws-{rand}；tenant env 覆盖 default 字面量；未传 owner 不带
     monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "huawei")
     cap2 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
-    await omodel_real.create_workspace("新域", ["APP-A"])
-    assert cap2[0][2]["json"]["labels"] == {"projectId": "APP-A", "tenantId": "huawei"}
+    await omodel_real.create_workspace("观测联调域", ["APP-A"])
+    b2 = cap2[0][2]["json"]
+    assert _re.fullmatch(r"ws-[0-9a-f]{5}", b2["id"])
+    assert b2["labels"]["tenantId"] == "huawei" and b2["config"]["workspace_ui"]["tenantId"] == "huawei"
+    assert "owner" not in b2["config"]["workspace_ui"]
 
     # 400 必须透出响应体（umodel 错误信封 message 是唯一定位线索；内网 400 教训）
     _install(monkeypatch, lambda m, u, k: _Resp(400, None, text='{"code":"INVALID_ARGUMENT","message":"missing x"}'))

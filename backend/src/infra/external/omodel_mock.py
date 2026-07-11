@@ -31,7 +31,9 @@ def _req_id() -> str:
     return "req_" + uuid.uuid4().hex[:10]
 
 
-async def create_workspace(name: str, app_ids: list[str]) -> dict[str, Any]:
+async def create_workspace(name: str, app_ids: list[str], *,
+                           app_names: dict[str, str] | None = None, owner: str = "") -> dict[str, Any]:  # noqa: ARG001 —— mock 忽略
+    _ = (app_names, owner)
     ws_id = f"ws_{uuid.uuid4().hex[:8]}"
     ws = {
         "workspace_id": ws_id, "name": name,

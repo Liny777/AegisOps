@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import uuid
 from typing import Any
 
@@ -135,28 +136,40 @@ async def list_workspaces() -> list[dict[str, Any]]:
         return []
 
 
-async def create_workspace(name: str, app_ids: list[str]) -> dict[str, Any]:
+def _gen_ws_id(name: str) -> str:
+    """镜像 umodel UI 的客户端生成 id（`ws-{slug}-{rand}`，如 ws-asd-nvlms）：id 正则
+    `^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$`——slug 只保留小写字母数字（中文名会剥空则省略段）。"""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24].strip("-")
+    rand = uuid.uuid4().hex[:5]
+    return f"ws-{slug}-{rand}" if slug else f"ws-{rand}"
+
+
+async def create_workspace(name: str, app_ids: list[str], *,
+                           app_names: dict[str, str] | None = None, owner: str = "") -> dict[str, Any]:
     base = _base()
     if not base:
         raise RuntimeError("OPENOPS_OMODEL=real 但未配置 OPENOPS_OMODEL_BASE_URL")
     import httpx
 
-    # 请求体按 29.7 curl 样例的最大兼容面组装（内网 400 教训）：
-    # - scopes 用 string[] 旧格式（新旧两格式并存期，已部署 beta 可能还不认 object[]）；
-    # - 带 labels.projectId + config.workspace_ui.projectId=首个 appid（样例恒带，t_omodel_workspace 的 project_id 来源）；
-    # - labels.tenantId 走 OPENOPS_OMODEL_TENANT_ID（部署校验要求时配，如 huawei）。
-    primary = app_ids[0] if app_ids else ""
-    ui: dict[str, Any] = {"scopes": list(app_ids)}
-    labels: dict[str, str] = {}
-    if primary:
-        ui["projectId"] = primary
-        labels["projectId"] = primary
-    tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
-    if tenant:
-        labels["tenantId"] = tenant
-    body: dict[str, Any] = {"name": name, "config": {"workspace_ui": ui}}
-    if labels:
-        body["labels"] = labels
+    # 请求体**完全镜像 umodel UI 实抓包**（2026-07-11 F12 抓真 UI 创建请求，比 29.7 文档权威）：
+    # - id 客户端生成（UI 从不缺省——文档说服务端自动生成，但部署 build 疑似 400，这是最大嫌疑）；
+    # - labels 与 workspace_ui 的 tenantId/projectId 都是字面量 "default"（UI 原样；tenant 可 env 覆盖）；
+    # - scopes=object[]（{projectId, projectCn}；UI 还带 per-项目 tenantId，响应即剥掉，故省略）；
+    # - status:"running" + owner（服务端会按登录态改写 owner，带上以镜像 UI）。
+    names = app_names or {}
+    tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip() or "default"
+    ui: dict[str, Any] = {
+        "tenantId": tenant, "projectId": "default",
+        "scopes": [{"projectId": a, "projectCn": names.get(a) or a} for a in app_ids],
+        "status": "running",
+    }
+    if owner:
+        ui["owner"] = owner
+    body: dict[str, Any] = {
+        "id": _gen_ws_id(name), "name": name, "description": "",
+        "labels": {"tenantId": tenant, "projectId": "default"},
+        "config": {"workspace_ui": ui},
+    }
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:
         r = await c.post(_prefix(), json=body)
         if r.status_code >= 400:

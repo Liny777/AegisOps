@@ -29,7 +29,11 @@ async def list_workspaces(_user: User):
 
 @router.post("/workspaces")
 async def create_workspace(req: CreateWorkspaceRequest, _user: User):
-    return ok(await workspace_service.create_workspace(req.name, req.app_ids))
+    app_names = {a.app_id: (a.name or "") for a in (req.apps or [])}
+    return ok(await workspace_service.create_workspace(
+        req.name, req.app_ids, app_names=app_names,
+        owner=str(_user.get("display_name") or _user["user_id"]),
+    ))
 
 
 @router.get("/workspaces/{workspace_id}/status")
