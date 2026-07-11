@@ -209,11 +209,11 @@ def check_skillhub() -> None:
             print(f"[check-net]   ❌ HTTP {r.status_code}：{r.text[:200]}")
             return
         body = r.json() or {}
-        if int(body.get("code", -1)) != 0:
+        if int(body.get("code", -1)) not in (0, 200):  # 实测 skills 面成功码=200（mcps 面=0），两收
             print(f"[check-net]   ❌ HTTP {r.status_code} 但业务 code={body.get('code')}：{str(body.get('message', ''))[:200]}")
             return
         items = (body.get("data") or {}).get("items") or []
-        print(f"[check-net]   POST /skills/list/query → HTTP {r.status_code}  code=0  items={len(items)}"
+        print(f"[check-net]   POST /skills/list/query → HTTP {r.status_code}  code={body.get('code')}  items={len(items)}"
               + (f"（如 {items[0].get('name')} · {items[0].get('skill_id')}）" if items else "（空——注册表无 source=openops 的 skill）"))
     except Exception as e:  # noqa: BLE001
         print(f"[check-net]   ❌ {type(e).__name__}: {e}")

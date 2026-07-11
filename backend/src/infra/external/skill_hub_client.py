@@ -67,8 +67,11 @@ _MOCK_LIST = [
 
 
 def _unwrap_data(body: dict[str, Any]) -> dict[str, Any]:
-    """29.3 业务信封 `{code:0, message, data}`（code 是业务状态，与 HTTP 状态分离）：code!=0 raise，返回 data。"""
-    if int(body.get("code", -1)) != 0:
+    """业务信封 `{code, message, data}` 解包（code 是业务状态，与 HTTP 状态分离）。
+
+    成功码收 0 和 200 两种：29.3 文档写 `code:0`，但内网实测（2026-07-11 check-net ⑤）skills 面
+    成功返回 `code:200, message:"success"`——同一 console 网关 mcps 面是 0、skills 面是 200，两收。"""
+    if int(body.get("code", -1)) not in (0, 200):
         raise RuntimeError(f"Skill Hub 返回业务错误：code={body.get('code')} {body.get('message', '')}")
     return body.get("data") or {}
 

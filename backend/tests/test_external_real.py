@@ -524,6 +524,14 @@ async def test_ext_skillhub_cookie_base_fallback_and_html_guard(monkeypatch):
     assert url == "https://console/obsv/agent/management/skills/list/query"  # base 回退 + console 文根
     assert kwargs["headers"] == {"Cookie": "sid=shared-9"}  # 共享 cookie 回退带出
 
+    # 成功码兼容：内网实测 skills 面成功返回 code=200/success（29.3 文档写 0，mcps 面实测 0）——两收
+    body200 = {"code": 200, "message": "success", "data": {"items": [
+        {"skill_id": "inspection", "name": "巡检", "is_system": True, "latest_version": "2.0.0",
+         "checksum_sha256": "abc", "source": "openops", "created_by": "sys", "status": "active"}]}}
+    _install(monkeypatch, lambda m, u, k: _Resp(200, body200))
+    rows = await skill_hub_client.list_skills("u1")
+    assert rows and rows[0]["skill_key"] == "inspection"
+
     # 下载：HTML 响应显式报错（cookie 失效场景）
     class _HtmlResp(_Resp):
         def __init__(self):
