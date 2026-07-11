@@ -245,7 +245,10 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
             r = await tool_gateway.invoke(st, run, name, args, server_url=server_url,
                                           started_msg=f"调用 {name}", succeeded_msg=f"{name} 返回")
         except ToolBlocked as e:
-            st.tool_blocked = True
+            # 只读查询被拦（如查询出 scope 的 APPID_OUT_OF_SCOPE）不算「恢复被拦」：没有恢复动作可抑制，
+            # 模型转述拦截原因即可，任务收尾不该报「恢复动作被运行时拦截」；写类被拦才须抑制「已恢复」结论（B6-RT-001）
+            if not spec.get("readonly"):
+                st.tool_blocked = True
             return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         return ToolResponse(content=[TextBlock(type="text", text=str(r.get("result_summary", "ok")))])
 
@@ -421,19 +424,33 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
 
     返回 approved/rejected/timeout/cancelled；approval.{decision} 由 run_state_service.decide_approval 发。
     """
+    # 审批卡按真实工具呈现（tool_calls[0].name/.input）；demo recover_execute 保留剧本文案（叙事一致）
+    tcs = list(getattr(require_ev, "tool_calls", None) or [])
+    tool_name = tcs[0].name if tcs else "unknown_tool"
+    try:
+        tool_args = json.loads(tcs[0].input) if tcs and tcs[0].input else {}
+    except Exception:  # noqa: BLE001 —— 模型给的原始 JSON 串可能不完整
+        tool_args = {}
+    if tool_name == "recover_execute":
+        tool_args = {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"}
+        ask_msg = "恢复动作待批准：重启 svc-a 释放连接"
+        target = "APP-A · svc-payment-api/svc-a"
+        impact = "重启期间 svc-a 短暂不可用（约 15s）"
+    else:
+        ask_msg = f"写类操作待批准：{tool_name}"
+        target = str(tool_args.get("project_id") or tool_args.get("appid") or tool_args.get("app_id") or "—")
+        impact = "变更类操作，批准后才会执行"
     appr = await runs.create_approval(
-        st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "recover_execute",
-        {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"},
-        str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, tool_name,
+        tool_args, str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
     st.approval_ev.clear()  # 复用同一 asyncio.Event：等待前清位+清旧结果，避免上一次 ASK（如容器 Bash 审批）的
     st.approval_result = None  # set 未清 → 本次 wait() 立即返回并读到陈旧决策（与 sandbox_bash 同规矩）
     st.approval_id = str(appr["approval_request_id"])
     await emit(st, run, "openops.approval.required", severity="warning",
-               message="恢复动作待批准：重启 svc-a 释放连接",
-               payload={"approval_request_id": st.approval_id, "tool": "recover_execute",
-                        "target": "APP-A · svc-payment-api/svc-a",
-                        "impact": "重启期间 svc-a 短暂不可用（约 15s）"})
+               message=ask_msg,
+               payload={"approval_request_id": st.approval_id, "tool": tool_name,
+                        "target": target, "impact": impact})
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=ASK_TIMEOUT_S)
     except asyncio.TimeoutError:
@@ -480,6 +497,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）
+        fallback_conclusion = None  # st.rca 为 None（真流程无 demo 面板）时结论的落审计通道（task.completed payload）
 
         while True:
             require_ev = None
@@ -510,11 +528,15 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             confirmed = decision == "approved"
             if not confirmed:
                 recovery_denied = True
-                st.rca = rca(2, "验证 H1", {"conclusion": {
+                fallback_conclusion = {
                     "rejected": "恢复动作被拒绝：保持观察，建议走短期配置优化。",
                     "timeout": "批准超时：恢复动作未执行，待人工跟进。",
-                }.get(decision, "恢复动作未执行。")})
-                await emit(st, run, "openops.rca.updated", message="恢复动作未执行", payload=st.rca)
+                }.get(decision, "恢复动作未执行。")
+                # 仅 demo 恢复流有面板可更新（st.rca 只有 demo 工具会设）；真流程不得用 rca_demo 剧本造假面板
+                # ——曾在真对话结束时弹出「支付延迟突增/H1 连接泄漏」假 RCA 卡（与「根因 H1」误报同族）
+                if st.rca:
+                    st.rca = {**st.rca, "conclusion": fallback_conclusion}
+                    await emit(st, run, "openops.rca.updated", message="恢复动作未执行", payload=st.rca)
                 if decision == "timeout":
                     await emit(st, run, "openops.approval.timeout", severity="warning",
                                message="批准超时：恢复动作未执行", reason_code="APPROVAL_TIMEOUT")
@@ -529,12 +551,14 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 # 恢复被拒绝/超时：保留「未执行」结论，不被模型最终文本覆盖（B2-RUNTIME-001）
                 msg = "任务结束：恢复动作未执行（按用户决策），保持观察"
             elif st.tool_blocked:
-                # 工具被运行时拦截（标注热更新/未标注/模板未绑定）：同样不得采纳模型「已恢复」文本（B6-RT-001）。
-                # st.rca 可能为 None（如空模板全量剪枝，工具从未运行，B7-SEC-001）——结论必须照样落审计。
+                # 写类工具被运行时拦截（标注热更新/未标注/模板未绑定）：不得采纳模型「已恢复」文本（B6-RT-001）。
                 msg = "任务结束：恢复动作被运行时拦截（工具标注变更/未标注/模板未绑定），未执行——请管理员复核配置"
-                conclusion = "恢复动作被运行时拦截（工具标注变更/未标注/模板未绑定），未执行；请管理员复核配置后重试。"
-                st.rca = {**(st.rca or rca(1, "范围")), "conclusion": conclusion}
-                await emit(st, run, "openops.rca.updated", message="恢复动作被拦截，未执行", payload=st.rca)
+                fallback_conclusion = "恢复动作被运行时拦截（工具标注变更/未标注/模板未绑定），未执行；请管理员复核配置后重试。"
+                # st.rca 可能为 None（真流程/空模板全量剪枝，B7-SEC-001）——结论经 task.completed payload 照样
+                # 落审计；但不得用 rca_demo 剧本骨架造假面板（曾在真对话结束时弹出假「RCA 决策面板」卡）
+                if st.rca:
+                    st.rca = {**st.rca, "conclusion": fallback_conclusion}
+                    await emit(st, run, "openops.rca.updated", message="恢复动作被拦截，未执行", payload=st.rca)
             else:
                 # 已执行恢复（或本就无需 ASK）：采纳模型生成的结论（GLM 真实结论 / stub 脚本结论）
                 conclusion = _final_text(agent)
@@ -544,8 +568,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 # 「根因 H1…」是 demo 剧本文案：仅 demo 恢复流真跑过（st.rca 只有 demo 工具会设）才用；
                 # 真工具运行一律中性「任务完成」（曾在真对话里误报"已按审批执行恢复"）
                 msg = "任务完成：根因 H1，已按审批执行恢复" if st.rca else "任务完成"
-            await emit(st, run, "openops.task.completed", action="task", message=msg,
-                       payload={"conclusion": st.rca.get("conclusion")} if st.rca else None)
+            payload = ({"conclusion": st.rca.get("conclusion")} if st.rca
+                       else {"conclusion": fallback_conclusion} if fallback_conclusion else None)
+            await emit(st, run, "openops.task.completed", action="task", message=msg, payload=payload)
     except asyncio.CancelledError:
         await _finish_cancel(st, run)
         raise

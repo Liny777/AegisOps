@@ -127,9 +127,10 @@ export function Sidebar() {
         </div>
         {showText ? (
           <div style={{ lineHeight: 1.15 }}>
-            <div style={{ fontSize: 15, fontWeight: 800 }}>OpenOps</div>
+            {/* 用户视角叫产品名「感知快恢 Agent」；管理台保留平台名 OpenOps */}
+            <div style={{ fontSize: 15, fontWeight: 800 }}>{isAdmin ? "OpenOps" : "感知快恢 Agent"}</div>
             <div style={{ fontSize: 10.5, fontWeight: 600, color: color.textSubtle, letterSpacing: 0.4 }}>
-              SRE Agent 工作台
+              {isAdmin ? "SRE Agent 管理台" : "SRE Agent 工作台"}
             </div>
           </div>
         ) : null}
