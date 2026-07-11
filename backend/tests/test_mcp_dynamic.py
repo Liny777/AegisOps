@@ -8,6 +8,9 @@ from runtime import agentscope_runtime as ar
 
 
 class _Resp:
+    status_code = 200  # raise_with_body 读 status_code/text（替代 raise_for_status）
+    text = ""
+
     def __init__(self, payload: dict) -> None:
         self._p = payload
 
