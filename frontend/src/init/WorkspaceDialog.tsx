@@ -38,7 +38,7 @@ export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; o
     setBusy(true); setErr("");
     try {
       // 带应用中文名（→ umodel scopes[].projectCn），与 oModel 页面创建的 workspace 展示一致
-      const picked = apps.filter((a) => selected.has(a.app_id)).map((a) => ({ app_id: a.app_id, name: a.name }));
+      const picked = apps.filter((a) => selected.has(a.app_id)).map((a) => ({ app_id: a.app_id, name: a.name, tenant_id: a.tenant_id }));
       const { workspace_id } = await api.createWorkspace(name.trim(), picked);
       onCreated(workspace_id);
     } catch (e) {

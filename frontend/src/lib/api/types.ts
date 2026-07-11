@@ -250,6 +250,7 @@ export interface ScopeApp {
   app_id: string;
   name: string;
   type: string;
+  tenant_id?: string;
 }
 export interface Workspace {
   workspace_id: string;

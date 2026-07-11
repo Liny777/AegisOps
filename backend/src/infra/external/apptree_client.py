@@ -25,10 +25,10 @@ _FULL_URL_RE = re.compile(
 
 # mock 应用集（前端 mock 模式 + real facade 未配端点时的兜底，让向导无真环境也能演示平铺选择）
 _MOCK_APPS: list[dict[str, str]] = [
-    {"app_id": "00000000000000000000000000000423", "name": "日志管理分析(多租)", "type": "HIS-OP"},
-    {"app_id": "00000000000000000000000000000425", "name": "统一查询服务", "type": "HIS-OP"},
-    {"app_id": "00000000000000000000000000000601", "name": "支付核心交易", "type": "HIS-OP"},
-    {"app_id": "00000000000000000000000000000602", "name": "订单履约中心", "type": "HIS-OP"},
+    {"app_id": "00000000000000000000000000000423", "name": "日志管理分析(多租)", "type": "HIS-OP", "tenant_id": _DEFAULT_ENTERPRISE},
+    {"app_id": "00000000000000000000000000000425", "name": "统一查询服务", "type": "HIS-OP", "tenant_id": _DEFAULT_ENTERPRISE},
+    {"app_id": "00000000000000000000000000000601", "name": "支付核心交易", "type": "HIS-OP", "tenant_id": _DEFAULT_ENTERPRISE},
+    {"app_id": "00000000000000000000000000000602", "name": "订单履约中心", "type": "HIS-OP", "tenant_id": _DEFAULT_ENTERPRISE},
 ]
 
 
@@ -72,7 +72,8 @@ def _endpoint() -> tuple[str, str, str]:
 
 
 def _map_rows(data: dict[str, Any]) -> list[dict[str, str]]:
-    """verification 响应 `data.datas[]` → 平铺应用列表，按 app_id 去重、丢空 app_id。"""
+    """verification 响应 `data.datas[]` → 平铺应用列表，按 app_id 去重、丢空 app_id。
+    tenant_id 一并带出：umodel 新版 create 的 scopes[] 每项要 per-项目 tenantId（不同应用可属不同租户）。"""
     out: list[dict[str, str]] = []
     seen: set[str] = set()
     for row in data.get("datas") or []:
@@ -86,6 +87,7 @@ def _map_rows(data: dict[str, Any]) -> list[dict[str, str]]:
             "app_id": app_id,
             "name": str(row.get("current_name_zh") or app_id),
             "type": str(row.get("dimension_type") or ""),
+            "tenant_id": str(row.get("tenant_id") or ""),
         })
     return out
 

@@ -26,10 +26,10 @@ async def list_workspaces() -> list[dict[str, Any]]:
 
 
 async def create_workspace(name: str, app_ids: list[str], *,
-                           app_names: dict[str, str] | None = None, owner: str = "") -> dict[str, Any]:
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
     """失败包成 ApiError 带上游原因（umodel 400 的信封 message 是唯一定位线索），前端对话框直接显示。"""
     try:
-        return await omodel_client.create_workspace(name, app_ids, app_names=app_names, owner=owner)
+        return await omodel_client.create_workspace(name, app_ids, apps=apps, owner=owner)
     except ApiError:
         raise
     except Exception as e:  # noqa: BLE001

@@ -91,7 +91,7 @@ export interface OpenOpsApi {
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
   getScopeApps(): Promise<ScopeApp[]>;
-  createWorkspace(name: string, apps: { app_id: string; name?: string }[]): Promise<{ workspace_id: string }>;
+  createWorkspace(name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   // demo 身份
   switchRole(admin: boolean): void;
@@ -526,7 +526,7 @@ const realApi: OpenOpsApi = {
   },
   async getScopeApps() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/apps");
-    return rows.map((a) => ({ app_id: String(a.app_id), name: String(a.name), type: String(a.type ?? "") }));
+    return rows.map((a) => ({ app_id: String(a.app_id), name: String(a.name), type: String(a.type ?? ""), tenant_id: String(a.tenant_id ?? "") }));
   },
   async createWorkspace(name, apps) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/workspaces", {

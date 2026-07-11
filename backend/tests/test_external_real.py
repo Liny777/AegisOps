@@ -148,9 +148,10 @@ async def test_ext_omodel_cookie_and_outbound_hardening(monkeypatch):
 
 
 async def test_ext_omodel_create_workspace_scopes(monkeypatch):
-    """create body 镜像 umodel UI 实抓包（2026-07-11 F12）+ 拍板修正：**id 不传**（服务端生成，
-    对端已从契约移除该字段）、labels/workspace_ui 的 tenantId/projectId="default" 字面量、
-    scopes=object[]{projectId,projectCn}、status:running + owner；400 必须透出响应体（内网定位教训）。"""
+    """create body 镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后）：
+    id 不传；labels/workspace_ui 的 tenantId=真实租户（scopes 首个租户推导，env 覆盖优先）且**不带
+    projectId**（服务端自回填）；scopes=object[]{projectId,projectCn,tenantId}（per-项目租户）；
+    status:running + owner；400 必须透出响应体（内网定位教训）。"""
     import pytest as _pytest
 
     from infra.external import omodel_real
@@ -158,32 +159,43 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
     monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
-    md = {"id": "ws-new", "name": "pay 域", "status": "active",
+    md = {"id": "l0001-ws-d5d17150", "name": "pay 域", "status": "active",
           "config": {"workspace_ui": {"scopes": [{"projectId": "APP-A", "projectCn": "应用甲"},
                                                  {"projectId": "APP-B", "projectCn": "APP-B"}]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
 
-    ws = await omodel_real.create_workspace("pay 域", ["APP-A", "APP-B"],
-                                            app_names={"APP-A": "应用甲"}, owner="林一")
+    ws = await omodel_real.create_workspace(
+        "pay 域", ["APP-A", "APP-B"],
+        apps=[{"app_id": "APP-A", "name": "应用甲", "tenant_id": "T-1111"},
+              {"app_id": "APP-B", "name": "", "tenant_id": ""}],
+        owner="林一")
     body = cap[0][2]["json"]
     assert body["name"] == "pay 域" and body["description"] == ""
-    assert "id" not in body  # 拍板：id 由 umodel 服务端生成，调用方不传
-    assert body["labels"] == {"tenantId": "default", "projectId": "default"}
+    assert "id" not in body  # 拍板：id 由 umodel 服务端生成（{W3}-ws-{hex8}），调用方不传
+    assert body["labels"] == {"tenantId": "T-1111"}  # 首个 scope 租户推导；不带 projectId（服务端自回填）
     assert body["config"]["workspace_ui"] == {
-        "tenantId": "default", "projectId": "default",
-        "scopes": [{"projectId": "APP-A", "projectCn": "应用甲"}, {"projectId": "APP-B", "projectCn": "APP-B"}],
+        "tenantId": "T-1111",
+        "scopes": [{"projectId": "APP-A", "projectCn": "应用甲", "tenantId": "T-1111"},
+                   {"projectId": "APP-B", "projectCn": "APP-B"}],  # 无租户的项省略 tenantId 键
         "status": "running", "owner": "林一",
     }
-    assert ws["workspace_id"] == "ws-new" and ws["app_ids"] == ["APP-A", "APP-B"]
+    assert ws["workspace_id"] == "l0001-ws-d5d17150" and ws["app_ids"] == ["APP-A", "APP-B"]
 
-    # tenant env 覆盖 default 字面量；未传 owner 不带（id 已从对端 create 契约移除，任何情况都不发）
-    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "huawei")
+    # tenant env 覆盖推导值；未传 owner 不带；无 apps 信息时 projectCn=app_id、tenant 落 apptree 默认企业
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-ENV")
     cap2 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
     await omodel_real.create_workspace("观测联调域", ["APP-A"])
     b2 = cap2[0][2]["json"]
-    assert "id" not in b2
-    assert b2["labels"]["tenantId"] == "huawei" and b2["config"]["workspace_ui"]["tenantId"] == "huawei"
+    assert "id" not in b2 and "projectId" not in b2["labels"] if isinstance(b2["labels"], dict) else True
+    assert b2["labels"]["tenantId"] == "T-ENV" and b2["config"]["workspace_ui"]["tenantId"] == "T-ENV"
+    assert b2["config"]["workspace_ui"]["scopes"] == [{"projectId": "APP-A", "projectCn": "APP-A"}]
     assert "owner" not in b2["config"]["workspace_ui"]
+
+    monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
+    cap3 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
+    await omodel_real.create_workspace("无租户信息域", ["APP-C"])
+    from infra.external.apptree_client import _DEFAULT_ENTERPRISE
+    assert cap3[0][2]["json"]["labels"]["tenantId"] == _DEFAULT_ENTERPRISE
 
     # 400 必须透出响应体（umodel 错误信封 message 是唯一定位线索；内网 400 教训）
     _install(monkeypatch, lambda m, u, k: _Resp(400, None, text='{"code":"INVALID_ARGUMENT","message":"missing x"}'))
@@ -333,8 +345,10 @@ async def test_ext_apptree_real_maps_and_dedups(monkeypatch):
     from infra.external import apptree_client
 
     payload = {"status": "OK", "data": {"datas": [
-        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Reader"},
-        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Admin"},  # 同 appid 多角色→去重
+        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Reader",
+         "tenant_id": "T-8888"},
+        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Admin",
+         "tenant_id": "T-8888"},  # 同 appid 多角色→去重
         {"dimension_code": "APP-425", "current_name_zh": "统一查询", "dimension_type": "HIS-OP"},
         {"dimension_code": "", "current_name_zh": "空 ID 丢弃"},
     ]}}
@@ -346,8 +360,8 @@ async def test_ext_apptree_real_maps_and_dedups(monkeypatch):
     assert url == "http://wesee/observe/unifieduery/verification/api/v1/E1/P1/userid_search_appid"
     assert kwargs["json"] == {"uesrId": "l00833445"}  # env 覆盖 + 上游拼写 uesrId
     assert rows == [
-        {"app_id": "APP-423", "name": "日志分析", "type": "HIS-OP"},
-        {"app_id": "APP-425", "name": "统一查询", "type": "HIS-OP"},
+        {"app_id": "APP-423", "name": "日志分析", "type": "HIS-OP", "tenant_id": "T-8888"},
+        {"app_id": "APP-425", "name": "统一查询", "type": "HIS-OP", "tenant_id": ""},
     ]
 
 
@@ -444,7 +458,7 @@ async def test_ext_apptree_full_url_paste_truncates_and_extracts(monkeypatch):
     # 单拼路径（host 根 + 一次模板路径），enterprise/project 用 URL 里提取的两段
     assert cap[0][1] == ("http://wesee.console.hissit.huawei.com"
                          "/observe/unifieduery/verification/api/v1/EEE/PPP/userid_search_appid")
-    assert rows == [{"app_id": "APP-1", "name": "应用一", "type": "HIS-OP"}]
+    assert rows == [{"app_id": "APP-1", "name": "应用一", "type": "HIS-OP", "tenant_id": ""}]
 
     # env 覆盖优先于 URL 提取段
     monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "E-ENV")

@@ -136,30 +136,39 @@ async def list_workspaces() -> list[dict[str, Any]]:
 
 
 async def create_workspace(name: str, app_ids: list[str], *,
-                           app_names: dict[str, str] | None = None, owner: str = "") -> dict[str, Any]:
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
     base = _base()
     if not base:
         raise RuntimeError("OPENOPS_OMODEL=real 但未配置 OPENOPS_OMODEL_BASE_URL")
     import httpx
 
-    # 请求体镜像 umodel UI 实抓包（2026-07-11 F12，比 29.7 文档权威）：
-    # - labels 与 workspace_ui 的 tenantId/projectId 都是字面量 "default"（UI 原样；tenant 可 env 覆盖）；
-    # - scopes=object[]（{projectId, projectCn}；UI 还带 per-项目 tenantId，响应即剥掉，故省略）；
-    # - status:"running" + owner（服务端会按登录态改写 owner，带上以镜像 UI）。
-    # - **id 不传**（拍板 2026-07-11：workspace id 由 umodel 服务端生成，调用方不得自造——对端已
-    #   从 create 契约移除该字段并部署）。
-    names = app_names or {}
-    tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip() or "default"
-    ui: dict[str, Any] = {
-        "tenantId": tenant, "projectId": "default",
-        "scopes": [{"projectId": a, "projectCn": names.get(a) or a} for a in app_ids],
-        "status": "running",
-    }
+    # 请求体镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后再抓，比 29.7 文档权威）：
+    # - id 不传（服务端生成 {W3}-ws-{hex8}，拍板落地）；
+    # - labels/workspace_ui 的 tenantId=**真实租户 ID**（不再是 "default" 字面量）；**不带 projectId**
+    #   （服务端自己取首个 scope 回填，实抓响应可见）；
+    # - scopes=object[]{projectId, projectCn, tenantId}——per-项目租户（不同应用可属不同租户，
+    #   apptree 的 tenant_id 一路带下来；缺失则省略该键）；
+    # - status:"running" + owner（服务端按登录态改写 owner，带上以镜像 UI）。
+    by_id = {str(a.get("app_id")): a for a in (apps or [])}
+    scopes: list[dict[str, str]] = []
+    for aid in app_ids:
+        item = by_id.get(aid) or {}
+        entry = {"projectId": aid, "projectCn": str(item.get("name") or "") or aid}
+        if item.get("tenant_id"):
+            entry["tenantId"] = str(item["tenant_id"])
+        scopes.append(entry)
+    # workspace 级租户：env 覆盖 > 首个应用的租户 > apptree 默认企业 ID（与选应用来源同一租户概念）
+    from infra.external.apptree_client import _DEFAULT_ENTERPRISE
+
+    tenant = (os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
+              or next((s["tenantId"] for s in scopes if s.get("tenantId")), "")
+              or _DEFAULT_ENTERPRISE)
+    ui: dict[str, Any] = {"tenantId": tenant, "scopes": scopes, "status": "running"}
     if owner:
         ui["owner"] = owner
     body: dict[str, Any] = {
         "name": name, "description": "",
-        "labels": {"tenantId": tenant, "projectId": "default"},
+        "labels": {"tenantId": tenant},
         "config": {"workspace_ui": ui},
     }
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:

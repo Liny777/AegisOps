@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 class WorkspaceAppItem(BaseModel):
     app_id: str = Field(min_length=1)
     name: str | None = None  # 应用中文名 → umodel scopes[].projectCn
+    tenant_id: str | None = None  # 应用所属租户 → umodel scopes[].tenantId（不同应用可属不同租户）
 
 
 class CreateWorkspaceRequest(BaseModel):
