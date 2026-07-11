@@ -36,6 +36,17 @@ def _console_headers() -> dict[str, str]:
     return {"Cookie": cookie} if cookie else {}
 
 
+def console_tls_verify() -> bool | str:
+    """console 是 https 内网证书：Python httpx 用 certifi CA（无公司内部 CA）会
+    CERTIFICATE_VERIFY_FAILED（Windows curl 用系统证书库所以通）。三档：
+    OPENOPS_TLS_CA_FILE=<公司CA.pem>（正解）＞ OPENOPS_TLS_INSECURE=1（联调临时，等 curl -k）＞ 默认 certifi。
+    另一正解：pip install truststore 后 run.py 会自动注入系统证书库（见 run.py）。"""
+    ca = os.getenv("OPENOPS_TLS_CA_FILE", "").strip()
+    if ca:
+        return ca
+    return False if os.getenv("OPENOPS_TLS_INSECURE") == "1" else True
+
+
 async def list_servers() -> list[dict[str, Any]]:
     """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
     real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。"""
@@ -47,7 +58,7 @@ async def list_servers() -> list[dict[str, Any]]:
 
         url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
         out: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=15) as cli:
+        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify()) as cli:
             page, page_size = 1, 50
             while True:
                 r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"},
@@ -90,7 +101,7 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         import httpx
 
         url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
-        async with httpx.AsyncClient(timeout=15) as cli:
+        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify()) as cli:
             r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
                                headers=_console_headers())
             r.raise_for_status()

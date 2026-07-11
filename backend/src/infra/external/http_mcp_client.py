@@ -10,6 +10,8 @@ import os
 import uuid
 from typing import Any
 
+from infra.external.mcp_registry_client import console_tls_verify  # 内网证书 TLS 三档（CA 文件/insecure/默认）
+
 last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 {tool, arguments, headers}
 
 
@@ -46,7 +48,7 @@ async def call_tool(
             cookie = os.getenv("OPENOPS_MCPREGISTRY_COOKIE")
             if cookie and "Cookie" not in hdrs:
                 hdrs["Cookie"] = cookie
-            async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30"))) as cli:
+            async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")), verify=console_tls_verify()) as cli:
                 r = await cli.post(url, json={"url": server_url, "method": "tools/call",
                                               "params": {"name": tool_name, "arguments": arguments}},
                                    headers=hdrs)
@@ -62,7 +64,7 @@ async def call_tool(
         base = os.getenv("OPENOPS_MCP_BASE_URL")  # legacy 单网关（demo query_resource/recover_execute）
         if not base:
             raise RuntimeError("OPENOPS_MCP=real 需配 OPENOPS_MCP_BASE_URL（平台 MCP 网关未联）")
-        async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30"))) as cli:
+        async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")), verify=console_tls_verify()) as cli:
             r = await cli.post(f"{base.rstrip('/')}/tools/{tool_name}:call",
                                json={"tool_name": tool_name, "arguments": arguments}, headers=headers or {})
             r.raise_for_status()

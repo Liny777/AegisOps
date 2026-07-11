@@ -20,9 +20,10 @@ class _Resp:
 
 class _FakeClient:
     captured: dict = {}
+    init_kwargs: dict = {}
 
     def __init__(self, *a, **k) -> None:
-        pass
+        _FakeClient.init_kwargs = dict(k)
 
     async def __aenter__(self):
         return self
@@ -53,6 +54,21 @@ def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
     assert cap["headers"]["X-OpenOps-Effective-Appids"] == "APP-REAL-1"  # 28.2 头原样透传
     assert cap["headers"]["Cookie"] == "sid=abc123"  # console 鉴权 cookie 注入
     assert r["result_summary"] == "告警3条：A/B/C"  # fastmcp structuredContent.result 抽取
+
+
+def test_console_tls_insecure_switch(monkeypatch):
+    """OPENOPS_TLS_INSECURE=1 → console httpx 用 verify=False（内网证书不在 certifi 时的联调临时档）。"""
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
+    monkeypatch.setenv("OPENOPS_TLS_INSECURE", "1")
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    asyncio.run(http_mcp_client.call_tool("t", {}, server_url="http://mcpgw/x"))
+    assert _FakeClient.init_kwargs.get("verify") is False
+    monkeypatch.setenv("OPENOPS_TLS_CA_FILE", "/etc/corp-ca.pem")  # CA 文件档优先于 insecure
+    asyncio.run(http_mcp_client.call_tool("t", {}, server_url="http://mcpgw/x"))
+    assert _FakeClient.init_kwargs.get("verify") == "/etc/corp-ca.pem"
 
 
 def test_console_discovery_sends_cookie(monkeypatch):

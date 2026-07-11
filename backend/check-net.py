@@ -22,9 +22,11 @@ import httpx  # noqa: E402
 
 
 def check_console() -> None:
+    from infra.external.mcp_registry_client import console_tls_verify  # 与后端同一 TLS 三档
+
     base = os.environ.get("OPENOPS_MCPREGISTRY_BASE_URL", "").strip()
     cookie = os.environ.get("OPENOPS_MCPREGISTRY_COOKIE", "")
-    print(f"[check-net]① console={base or '(未设 OPENOPS_MCPREGISTRY_BASE_URL，跳过)'}")
+    print(f"[check-net]① console={base or '(未设 OPENOPS_MCPREGISTRY_BASE_URL，跳过)'}  tls={console_tls_verify()!r}")
     if not base:
         return
     #  cookie 含 `;`，bash export 引号不当会被静默截断——长度+分段数即可识破（不打印值）
@@ -33,11 +35,16 @@ def check_console() -> None:
     url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops"},
-                       headers={"Cookie": cookie} if cookie else {}, timeout=15)
+                       headers={"Cookie": cookie} if cookie else {}, timeout=15, verify=console_tls_verify())
         print(f"[check-net]   HTTP {r.status_code}；响应前 300 字：{r.text[:300]}")
         print("[check-net]   → 200+code:0=通；504=复现（cookie 失效/截断或网关问题）；401/403=cookie 不被认")
     except Exception as e:  # noqa: BLE001 —— 原样暴露真实异常
         print(f"[check-net]   ❌ {type(e).__name__}: {e}")
+        if "CERTIFICATE_VERIFY_FAILED" in str(e):
+            print("[check-net]   → 内网证书不在 Python certifi CA（curl 用 Windows 证书库所以通）。三选一：\n"
+                  "[check-net]     a) pip install truststore（run.py 自动用系统证书库，正解）\n"
+                  "[check-net]     b) export OPENOPS_TLS_CA_FILE=<公司根CA.pem>\n"
+                  "[check-net]     c) export OPENOPS_TLS_INSECURE=1（联调临时，等 curl -k）")
 
 
 def check_glm() -> None:

@@ -24,6 +24,16 @@ from pathlib import Path
 # 等价于 uvicorn 的 --app-dir src：把 src 加进 import 路径，使 main:app 可导入
 sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
 
+# TLS：装了 truststore 就用【操作系统证书库】验证 https（和 curl/浏览器一致）——内网自签/公司 CA
+# 不在 Python certifi 里，默认会 CERTIFICATE_VERIFY_FAILED。装法：pip install truststore（3.10+）。
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+    print("[OpenOps] TLS: truststore 已注入（用系统证书库验证 https）", flush=True)
+except ModuleNotFoundError:
+    pass
+
 
 async def _serve() -> None:
     import uvicorn
