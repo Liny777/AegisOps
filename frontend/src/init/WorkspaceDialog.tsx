@@ -29,7 +29,9 @@ export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; o
 
   const kw = q.trim().toLowerCase();
   const filtered = kw ? apps.filter((a) => a.app_id.toLowerCase().includes(kw) || a.name.toLowerCase().includes(kw)) : apps;
-  const canCreate = !!name.trim() && selected.size > 0 && !busy;
+  // 缺项提示：按钮为什么不可点必须让用户一眼看到（实测有人勾满应用却漏了名称，卡在灰按钮上）
+  const missing = !name.trim() ? "先在上方填写范围名称" : selected.size === 0 ? "至少勾选一个应用" : "";
+  const canCreate = !missing && !busy;
 
   const submit = async () => {
     if (!canCreate) return;
@@ -47,7 +49,9 @@ export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; o
     <Modal open={open} onClose={onClose} maxWidth={560}>
       <OverlayHeader title="创建系统范围" onClose={onClose} />
       <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px", minHeight: 260 }}>
-        <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>范围名称</label>
+        <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>
+          范围名称<span style={{ color: color.dangerText, marginLeft: 4 }}>*</span>
+        </label>
         <TextInput value={name} onChange={setName} placeholder="例如：支付核心域" />
 
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "18px 0 8px" }}>
@@ -99,7 +103,12 @@ export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; o
         </div>
         {err ? <div style={{ marginTop: 10, fontSize: 12, color: color.dangerText }}>{err}</div> : null}
       </div>
-      <div style={{ flex: "0 0 auto", display: "flex", justifyContent: "flex-end", gap: 8, padding: "14px 20px", borderTop: `1px solid ${color.border}`, background: color.surfaceAlt }}>
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "14px 20px", borderTop: `1px solid ${color.border}`, background: color.surfaceAlt }}>
+        {missing && !busy ? (
+          <span style={{ marginRight: "auto", display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: color.warningText }}>
+            <Icon name="info-circle" size={13} color={color.warningText} />{missing}
+          </span>
+        ) : null}
         <button onClick={onClose} disabled={busy} style={{ height: 36, padding: "0 16px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 600, color: "#313844", cursor: busy ? "not-allowed" : "pointer" }}>取消</button>
         <button onClick={submit} disabled={!canCreate}
           style={{ height: 36, padding: "0 18px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 700, cursor: canCreate ? "pointer" : "not-allowed", opacity: canCreate ? 1 : 0.5, display: "inline-flex", alignItems: "center", gap: 6 }}>
