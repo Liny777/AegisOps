@@ -541,7 +541,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 if conclusion and st.rca:
                     st.rca = {**st.rca, "conclusion": conclusion}
                     await emit(st, run, "openops.rca.updated", message="结论已更新（模型生成）", payload=st.rca)
-                msg = "任务完成：根因 H1，已按审批执行恢复"
+                # 「根因 H1…」是 demo 剧本文案：仅 demo 恢复流真跑过（st.rca 只有 demo 工具会设）才用；
+                # 真工具运行一律中性「任务完成」（曾在真对话里误报"已按审批执行恢复"）
+                msg = "任务完成：根因 H1，已按审批执行恢复" if st.rca else "任务完成"
             await emit(st, run, "openops.task.completed", action="task", message=msg,
                        payload={"conclusion": st.rca.get("conclusion")} if st.rca else None)
     except asyncio.CancelledError:

@@ -74,7 +74,11 @@ export function Workbench() {
   /** openops.* 事件统一处理器：AG-UI CUSTOM 与 SSE 双通道复用（活动线按 event_id 去重）。 */
   const handleOpenOpsEvent = useCallback((e: OpenOpsEvent) => {
     if (e.event_type === "openops.assistant.delta") return; // 文本增量走 TEXT_MESSAGE_*，不进活动线
-    pushNode(eventToNode(e));
+    const node = eventToNode(e);
+    // 双通道竞态：AG-UI CUSTOM 先到（aguiActive=true 不冒泡），SSE 同 event 迟到时 aguiActive 已复位
+    // → 曾把 task.completed 的 message 冒成聊天气泡。首达才允许冒泡（活动线本身仍按 id 去重）。
+    const firstDelivery = !seen.current.has(node.id);
+    pushNode(node);
     const p = (e.payload_redacted_json ?? {}) as Record<string, any>;
     switch (e.event_type) {
       case "openops.task.started":
@@ -107,15 +111,15 @@ export function Workbench() {
         break;
       case "openops.task.completed":
         setTaskStatus("completed");
-        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
+        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
         break;
       case "openops.task.failed":
         setTaskStatus("failed");
-        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.task.cancelled":
         setTaskStatus("cancelled");
-        if (!aguiActive.current) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.run.closed":
         setRunStatus("closed");
