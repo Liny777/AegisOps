@@ -53,8 +53,7 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
   （29.7 仅支持 `include_deleted` 参数）；`create` 请求体**镜像 umodel UI 实抓包**（2026-07-11 F12）：
   labels/workspace_ui 的 tenantId/projectId="default" 字面量（`OPENOPS_OMODEL_TENANT_ID` 覆盖 tenant）、
   scopes=object[]{projectId, projectCn}（前端带应用中文名下来）、status:"running"+owner；**id 不传**
-  （拍板 2026-07-11：id 由 umodel 服务端生成，对端已改自动生成；其修复未部署时过渡缝
-  `OPENOPS_OMODEL_CLIENT_WS_ID=1` 暂回客户端生成，部署后删）；scopes 读取兼容 string[] 旧格式。
+  （拍板 2026-07-11：id 由 umodel 服务端生成——对端已从 create 契约移除该字段）；scopes 读取兼容 string[] 旧格式。
 - 出站硬化同 console 口径（TLS 三档 + trust_env 默认 off）；可选 `OPENOPS_OMODEL_COOKIE`（umodel 部署
   `omodel.iam.validation.enable=true` 时带 session cookie；29.7 显示 workspace 端点匿名可用「未登录=system」，默认不带）。
 - `scope_revision` OpenOps 私有派生（范围内容 hash），不映射 umodel 同名列/`resourceVersion`（29.6 §三）；`sync_status` 降级 active→ready（umodel 无动态就绪态/`/status`，29.6 P2-1）。

@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import re
 import uuid
 from typing import Any
 
@@ -136,14 +135,6 @@ async def list_workspaces() -> list[dict[str, Any]]:
         return []
 
 
-def _gen_ws_id(name: str) -> str:
-    """镜像 umodel UI 的客户端生成 id（`ws-{slug}-{rand}`，如 ws-asd-nvlms）：id 正则
-    `^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$`——slug 只保留小写字母数字（中文名会剥空则省略段）。"""
-    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24].strip("-")
-    rand = uuid.uuid4().hex[:5]
-    return f"ws-{slug}-{rand}" if slug else f"ws-{rand}"
-
-
 async def create_workspace(name: str, app_ids: list[str], *,
                            app_names: dict[str, str] | None = None, owner: str = "") -> dict[str, Any]:
     base = _base()
@@ -155,9 +146,8 @@ async def create_workspace(name: str, app_ids: list[str], *,
     # - labels 与 workspace_ui 的 tenantId/projectId 都是字面量 "default"（UI 原样；tenant 可 env 覆盖）；
     # - scopes=object[]（{projectId, projectCn}；UI 还带 per-项目 tenantId，响应即剥掉，故省略）；
     # - status:"running" + owner（服务端会按登录态改写 owner，带上以镜像 UI）。
-    # - **id 不传**（拍板 2026-07-11：workspace id 由 umodel 服务端生成，调用方不得自造；旧 UI 是
-    #   客户端生成，对端已改服务端自动生成）。过渡缝：对端修复未部署时 OPENOPS_OMODEL_CLIENT_WS_ID=1
-    #   暂回客户端生成（镜像旧 UI），部署后删。
+    # - **id 不传**（拍板 2026-07-11：workspace id 由 umodel 服务端生成，调用方不得自造——对端已
+    #   从 create 契约移除该字段并部署）。
     names = app_names or {}
     tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip() or "default"
     ui: dict[str, Any] = {
@@ -172,8 +162,6 @@ async def create_workspace(name: str, app_ids: list[str], *,
         "labels": {"tenantId": tenant, "projectId": "default"},
         "config": {"workspace_ui": ui},
     }
-    if os.environ.get("OPENOPS_OMODEL_CLIENT_WS_ID") == "1":
-        body["id"] = _gen_ws_id(name)
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:
         r = await c.post(_prefix(), json=body)
         if r.status_code >= 400:
