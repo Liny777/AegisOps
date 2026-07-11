@@ -339,7 +339,22 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         text = await run_bound_skill(st, run, skill_name)
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
-    fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)}
+    async def list_scope_apps() -> Any:
+        """列出当前会话工作范围（scope）内可用的应用（appid）。用户问「我有哪些应用 / 能查哪些应用」时用此工具。"""
+        appids = (st.scope_ctx or {}).get("effective_appids", [])
+        if appids:
+            text = (f"当前工作范围内共 {len(appids)} 个应用（appid）：\n"
+                    + "\n".join(f"- {a}" for a in appids)
+                    + "\n（各查询工具的应用参数必须取自此范围）")
+        else:
+            text = "当前工作范围为空（无可用应用）。"
+        return ToolResponse(content=[TextBlock(type="text", text=text)])
+
+    # 动态 MCP 工具先发现（决定 demo 双工具去留）：有真工具时 demo 退场——不再弹假审批卡/脚本 RCA。
+    dynamic_specs = await _dynamic_mcp_specs()
+    _demo_env = os.environ.get("OPENOPS_DEMO_TOOLS", "").strip()  # 1=恒开 0=恒关 未设=自动
+    keep_demo = _demo_env == "1" or (_demo_env != "0" and not dynamic_specs)
+    fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)} if keep_demo else {}
     anns = st.tool_annotations or {}
     tools = []
     pruned: list[tuple[str, str]] = []  # (tool_name, reason_code) —— 裁剪也要有审计（B6-RT-001③）
@@ -356,10 +371,16 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
     # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
     tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", is_read_only=False))
+    # 真工具 list_scope_apps：读 st.scope_ctx（本地、只读、无出站）——「我有哪些应用」有真答案，GLM 不再乱够工具
+    st.tool_annotations = dict(st.tool_annotations or {})
+    st.tool_annotations["list_scope_apps"] = {"is_approval_required": False, "is_secret_required": False,
+                                              "scope_mode": "none", "appid_arg_path": None, "status": "allowed"}
+    if isinstance(st.template_tools, set):
+        st.template_tools.add("list_scope_apps")
+    tools.append(FunctionTool(list_scope_apps, name="list_scope_apps", is_read_only=True))
     # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
     # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
-    st.tool_annotations = dict(st.tool_annotations or {})
-    for spec in await _dynamic_mcp_specs():
+    for spec in dynamic_specs:
         st.tool_annotations[spec["name"]] = {
             "is_approval_required": not spec["readonly"], "is_secret_required": False,
             "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",

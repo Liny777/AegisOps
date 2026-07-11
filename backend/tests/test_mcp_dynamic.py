@@ -195,6 +195,71 @@ def test_discover_tools_real_mode_placeholder_endpoint_skips_proxy(monkeypatch):
         assert all("schema_hash" in t and "readonly" in t for t in tools)
 
 
+def _toolkit_st_run():
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.scope_ctx = {"effective_appids": ["APP-REAL-1", "APP-REAL-2"]}
+    st.tool_annotations = {
+        "query_resource": {"is_approval_required": False, "is_secret_required": False,
+                           "scope_mode": "required", "appid_arg_path": "$.appid", "status": "allowed"},
+        "recover_execute": {"is_approval_required": True, "is_secret_required": False,
+                            "scope_mode": "required", "appid_arg_path": "$.appid", "status": "allowed"},
+    }
+    st.template_tools = {"query_resource", "recover_execute"}
+    return st, {"agent_team_instance_id": "i", "framework_session_id": "s", "audit_trace_id": "tr"}
+
+
+def test_toolkit_demo_retirement_and_scope_tool(monkeypatch):
+    """有动态真工具 → demo 双工具退场（不再弹假审批/脚本 RCA）；list_scope_apps 恒在且返回 scope。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+
+    spec = {"name": "query_alarm_list", "description": "d", "server_url": "http://s", "readonly": True,
+            "scope_mode": "none", "appid_arg_path": None,
+            "input_schema": {"type": "object", "properties": {}}}
+
+    async def _run(specs, demo_env=None):
+        if demo_env is None:
+            monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
+        else:
+            monkeypatch.setenv("OPENOPS_DEMO_TOOLS", demo_env)
+
+        async def _specs():
+            return specs
+
+        monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+        st, run = _toolkit_st_run()
+        tk, pruned = await ar._build_toolkit(st, run)
+        names = {n: (await tk.get_tool(n)) is not None
+                 for n in ("query_resource", "recover_execute", "list_scope_apps", "query_alarm_list")}
+        return tk, names, pruned
+
+    async def scenario():
+        # 自动档：有动态工具 → demo 退场
+        tk, names, pruned = await _run([spec])
+        assert names["query_resource"] is False and names["recover_execute"] is False
+        assert names["list_scope_apps"] is True and names["query_alarm_list"] is True
+        assert pruned == []  # 退场是「不提供」不是「策略拦截」，不发 tool.blocked
+        # list_scope_apps 返回真 scope
+        ft = await tk.get_tool("list_scope_apps")
+        resp = await ft._func()
+        text = resp.content[0].text  # TextBlock 对象属性访问
+        assert "APP-REAL-1" in text and "APP-REAL-2" in text and "2 个应用" in text
+        # 自动档：无动态工具 → demo 保留（pytest/stub 现状不回归）
+        _, names, _ = await _run([])
+        assert names["query_resource"] is True and names["recover_execute"] is True
+        # 强制关：无动态工具也退场
+        _, names, _ = await _run([], demo_env="0")
+        assert names["query_resource"] is False
+        # 强制开：有动态工具也保留
+        _, names, _ = await _run([spec], demo_env="1")
+        assert names["query_resource"] is True and names["query_alarm_list"] is True
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     import pytest
 
