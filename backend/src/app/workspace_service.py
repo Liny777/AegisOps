@@ -4,7 +4,12 @@ from __future__ import annotations
 from typing import Any
 
 from domain.errors import ApiError, Err
-from infra.external import omodel_client
+from infra.external import apptree_client, omodel_client
+
+
+async def list_apps(user_id: str) -> list[dict[str, Any]]:
+    """「从应用创建系统范围」选源：该用户可见的应用（平铺）。"""
+    return await apptree_client.list_user_apps(user_id)
 
 
 async def list_workspaces() -> list[dict[str, Any]]:

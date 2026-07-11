@@ -12,6 +12,7 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 |---|---|---|---|---|
 | 平台 LLM（GLM 驱动 RCA） | —（有 Key 即真） | `OPENOPS_PLATFORM_GLM_API_KEY`（base_url 在 DB `sre_model_asset`） | 无 Key→stub | ✅ **内网已通**（2026-07-11） |
 | oModel(umodel)（scope resolve + workspace CRUD） | `OPENOPS_OMODEL=real` | `OPENOPS_OMODEL_BASE_URL` + `OPENOPS_OMODEL_COOKIE`（hissit 部署 /api/v1 要登录态，401 即缺） | mock | ✅ **内网已通**（2026-07-11：3 真 workspace、真 scope 拦截 APPID_OUT_OF_SCOPE 实测；安全口径见下） |
+| 应用目录（初始化「从应用创建系统范围」选源） | `OPENOPS_APPTREE=real` | `OPENOPS_APPTREE_BASE_URL` + `OPENOPS_APPTREE_COOKIE`（可选，IAM 会话态）；`OPENOPS_APPTREE_ENTERPRISE_ID`/`OPENOPS_APPTREE_PROJECT_ID`（联调默认值）；联调缝 `OPENOPS_APPTREE_USER_ID`（mock 头非 W3 账号时覆盖） | mock | **已按 verification 契约对齐**（`userid_search_appid`；内网待联调） |
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
 | Skill Hub（list + 下载 ZIP） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL` | mock | **已按 29.3 对齐**（`/obsv/agent/management/skills/*`） |
@@ -48,6 +49,9 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 > 🔴 **安全口径（联调必知）**：`GET /{ws}/projects` 是**静态全量关联项目、不按用户过滤**（29.6 §二 P0-1，「发现 ≠ 授权」）。
 > V1 用它接真 = `effective_appids` 是 **workspace 级发现集，非 per-user 授权集**；per-user 过滤待 umodel 真 `:resolve`
 > （29.7 有 `GET /api/v1/wesee/user-projects` 按登录用户搜项目，但需 IAM session，且语义是「用户的项目」非「workspace∩用户」，暂不采用）。
+
+### 应用目录（初始化「从应用创建系统范围」选源）—— 已按 verification 契约对齐
+`apptree_client.list_user_apps(user_id)`（`OPENOPS_APPTREE=real` 启用）：`POST {base}/observe/unifieduery/verification/api/v1/{enterprise}/{project}/userid_search_appid`，body `{"uesrId": <W3>}`（⚠path 段 `unifieduery`、body 键 `uesrId` 均为**对端真实拼写**，勿"修正"）；解 `data.datas[]` → 平铺 `{app_id=dimension_code, name=current_name_zh, type=dimension_type}`，**按 app_id 去重**（一人多角色→同 appid 多行）。`{enterprise}/{project}` 由 `OPENOPS_APPTREE_ENTERPRISE_ID`/`_PROJECT_ID`（联调默认值）配置；出站硬化与 console/oModel 同口径（TLS 三档 + trust_env 默认 off + 可选 `OPENOPS_APPTREE_COOKIE`）。**联调缝** `OPENOPS_APPTREE_USER_ID`：mock 登录头里的 user_id 未必是 W3 账号（如 `0026demo01`≠`l00833445`），设它可覆盖发给上游的账号（对齐 `OPENOPS_SCOPE_OVERRIDE_APPIDS` 模式，接真 IAM 后删）。前端 `WorkspaceDialog` 平铺展示（名称/APPID/类型 + 搜索），勾选后 `POST /workspaces` 真落库为范围。此接口**天然按用户过滤**（比 oModel `/{ws}/projects` 的「发现集」更接近授权集），但初始化选源与运行时 scope resolve 仍是两条链（后者的 per-user 化待 umodel P0-1）。
 
 ### 平台 HTTP MCP / MCP Registry / Skill Hub —— 已按 28.2 / 29.3 对齐
 real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，不静默降级）：

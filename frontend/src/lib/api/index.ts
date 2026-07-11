@@ -13,7 +13,7 @@ import type {
   AuditNode,
   Template,
   Workspace,
-  AppTreeNode,
+  ScopeApp,
   AssetRow,
   ConfigVersionRow,
   ModelOption,
@@ -90,7 +90,8 @@ export interface OpenOpsApi {
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
-  getAppTree(): Promise<AppTreeNode[]>;
+  getScopeApps(): Promise<ScopeApp[]>;
+  createWorkspace(name: string, appIds: string[]): Promise<{ workspace_id: string }>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   // demo 身份
   switchRole(admin: boolean): void;
@@ -523,7 +524,17 @@ const realApi: OpenOpsApi = {
       updated: "",
     }));
   },
-  getAppTree: () => delay(M.mockAppTree),
+  async getScopeApps() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/apps");
+    return rows.map((a) => ({ app_id: String(a.app_id), name: String(a.name), type: String(a.type ?? "") }));
+  },
+  async createWorkspace(name, appIds) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/workspaces", {
+      method: "POST",
+      body: { client_request_id: crid(), name, app_ids: appIds },
+    });
+    return { workspace_id: String(d.workspace_id) };
+  },
   async createAgentTeam(input) {
     const d = await apiFetch<{ instance: Record<string, unknown> }>("/openops/v1/agent-teams", {
       method: "POST",
@@ -591,7 +602,8 @@ const mockApi: OpenOpsApi = {
   adminRegisterModel: () => delay(undefined as unknown as void),
   getTemplates: () => delay(M.mockTemplates),
   getWorkspaces: () => delay(M.mockWorkspaces),
-  getAppTree: () => delay(M.mockAppTree),
+  getScopeApps: () => delay(M.mockScopeApps),
+  createWorkspace: (_name, _appIds) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
   createAgentTeam: () => delay({ instance_id: "agt_pay_fast_recovery" }, 600),
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");

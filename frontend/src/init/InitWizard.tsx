@@ -195,7 +195,7 @@ function StepWorkspace({ workspaces, wsId, onPick, onCreate }: { workspaces: Wor
         <Interactive as="button" onClick={onCreate}
           baseStyle={{ border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: color.brand, fontSize: 13, fontWeight: 600 }}
           hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.04)" }}>
-          <Icon name="plus" size={16} color={color.brand} />从应用树创建新的系统范围
+          <Icon name="plus" size={16} color={color.brand} />从应用创建新的系统范围
         </Interactive>
       </div>
     </>

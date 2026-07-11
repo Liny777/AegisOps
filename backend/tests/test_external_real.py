@@ -277,3 +277,56 @@ def test_ext_platform_headers_include_audit_trace(monkeypatch):
     h = _platform_headers(st, run)
     assert h["X-OpenOps-Audit-Trace-Id"] == "trace-xyz"
     assert h["X-OpenOps-User-Id"] == "0026demo01" and h["X-OpenOps-Effective-Appids"] == "APP-A"
+
+
+# ====================== 应用目录 apptree（"从应用创建系统范围"选源） ======================
+import pytest
+
+
+@pytest.mark.asyncio
+async def test_ext_apptree_mock_default_no_http(monkeypatch):
+    """默认 mock：不打网、返回内置应用集（前端向导无真环境也能演示平铺选择）。"""
+    monkeypatch.delenv("OPENOPS_APPTREE", raising=False)
+    from infra.external import apptree_client
+
+    rows = await apptree_client.list_user_apps("0026demo01")
+    assert rows and all({"app_id", "name", "type"} <= set(r) for r in rows)
+
+
+@pytest.mark.asyncio
+async def test_ext_apptree_real_maps_and_dedups(monkeypatch):
+    """real：POST userid_search_appid，映射 dimension_code/current_name_zh/dimension_type，按 app_id 去重。"""
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.setenv("OPENOPS_APPTREE_BASE_URL", "http://wesee")
+    monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "E1")
+    monkeypatch.setenv("OPENOPS_APPTREE_PROJECT_ID", "P1")
+    monkeypatch.setenv("OPENOPS_APPTREE_USER_ID", "l00833445")
+    from infra.external import apptree_client
+
+    payload = {"status": "OK", "data": {"datas": [
+        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Reader"},
+        {"dimension_code": "APP-423", "current_name_zh": "日志分析", "dimension_type": "HIS-OP", "role_code": "Admin"},  # 同 appid 多角色→去重
+        {"dimension_code": "APP-425", "current_name_zh": "统一查询", "dimension_type": "HIS-OP"},
+        {"dimension_code": "", "current_name_zh": "空 ID 丢弃"},
+    ]}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
+    rows = await apptree_client.list_user_apps("0026demo01")
+
+    method, url, kwargs = cap[0]
+    assert method == "POST"
+    assert url == "http://wesee/observe/unifieduery/verification/api/v1/E1/P1/userid_search_appid"
+    assert kwargs["json"] == {"uesrId": "l00833445"}  # env 覆盖 + 上游拼写 uesrId
+    assert rows == [
+        {"app_id": "APP-423", "name": "日志分析", "type": "HIS-OP"},
+        {"app_id": "APP-425", "name": "统一查询", "type": "HIS-OP"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ext_apptree_real_requires_base_url(monkeypatch):
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.delenv("OPENOPS_APPTREE_BASE_URL", raising=False)
+    from infra.external import apptree_client
+
+    with pytest.raises(RuntimeError):
+        await apptree_client.list_user_apps("u")

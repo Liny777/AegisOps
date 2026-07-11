@@ -16,6 +16,12 @@ async def available(_user: User):
 
 
 # workspace（oModel 契约面；EXT-001/002）——router 只调 workspace_service
+@router.get("/apps")
+async def list_apps(_user: User):
+    """「从应用创建系统范围」选源：当前用户可见的应用（平铺）。"""
+    return ok(await workspace_service.list_apps(_user["user_id"]))
+
+
 @router.get("/workspaces")
 async def list_workspaces(_user: User):
     return ok(await workspace_service.list_workspaces())

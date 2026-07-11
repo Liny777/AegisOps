@@ -246,11 +246,10 @@ export interface Template {
   capabilities: string[];
   active_version: string;
 }
-export interface AppTreeNode {
-  id: string;
+export interface ScopeApp {
+  app_id: string;
   name: string;
-  hasPermission?: boolean;
-  children?: AppTreeNode[];
+  type: string;
 }
 export interface Workspace {
   workspace_id: string;

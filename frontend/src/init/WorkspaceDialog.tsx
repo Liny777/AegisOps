@@ -1,78 +1,111 @@
 import { useEffect, useState } from "react";
 import { color, radius } from "../theme/tokens";
-import { Modal, OverlayHeader, Icon, Interactive, TextInput } from "../ui";
+import { Modal, OverlayHeader, Icon, TextInput } from "../ui";
 import { api } from "../lib/api";
-import type { AppTreeNode } from "../lib/api/types";
+import { ApiError } from "../lib/api/client";
+import type { ScopeApp } from "../lib/api/types";
 
-/** 系统范围创建：4 级应用树（产品>子产品>模块>应用），越权 App fail-closed 不可选。 */
+/** 系统范围创建：平铺应用列表（真实 APPID），勾选后落库为 workspace 范围。 */
 export function WorkspaceDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (id: string) => void }) {
-  const [tree, setTree] = useState<AppTreeNode[]>([]);
+  const [apps, setApps] = useState<ScopeApp[]>([]);
+  const [loading, setLoading] = useState(false);
   const [name, setName] = useState("");
+  const [q, setQ] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
 
   useEffect(() => {
-    if (open) api.getAppTree().then((t) => { setTree(t); setExpanded(new Set(collectIds(t))); });
+    if (!open) return;
+    setName(""); setQ(""); setSelected(new Set()); setErr("");
+    setLoading(true);
+    api.getScopeApps()
+      .then((a) => setApps(a))
+      .catch((e) => setErr(e instanceof ApiError ? e.message : "加载应用列表失败"))
+      .finally(() => setLoading(false));
   }, [open]);
 
   const toggleSel = (id: string) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-  const toggleExp = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
-  const canCreate = name.trim() && selected.size > 0;
+  const kw = q.trim().toLowerCase();
+  const filtered = kw ? apps.filter((a) => a.app_id.toLowerCase().includes(kw) || a.name.toLowerCase().includes(kw)) : apps;
+  const canCreate = !!name.trim() && selected.size > 0 && !busy;
+
+  const submit = async () => {
+    if (!canCreate) return;
+    setBusy(true); setErr("");
+    try {
+      const { workspace_id } = await api.createWorkspace(name.trim(), [...selected]);
+      onCreated(workspace_id);
+    } catch (e) {
+      setErr(e instanceof ApiError ? e.message : "创建失败，请重试");
+      setBusy(false);
+    }
+  };
 
   return (
     <Modal open={open} onClose={onClose} maxWidth={560}>
       <OverlayHeader title="创建系统范围" onClose={onClose} />
-      <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px" }}>
+      <div style={{ flex: 1, overflowY: "auto", padding: "18px 20px", minHeight: 260 }}>
         <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>范围名称</label>
         <TextInput value={name} onChange={setName} placeholder="例如：支付核心域" />
-        <div style={{ fontSize: 13, fontWeight: 600, margin: "18px 0 8px" }}>选择应用（APPID）</div>
-        <div style={{ fontSize: 11.5, color: color.warningText, background: color.warningBg, border: `1px solid ${color.warningBorder}`, borderRadius: radius.md, padding: "8px 11px", marginBottom: 10 }}>
-          推荐使用有权限的 APPID 创建；无权限 App 已锁定（越权 fail-closed）。
+
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "18px 0 8px" }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>选择应用（APPID）</span>
+          <span style={{ fontSize: 11.5, color: color.textSubtle }}>已选 {selected.size}</span>
         </div>
-        <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, overflow: "hidden" }}>
-          {tree.map((n) => <TreeRow key={n.id} node={n} depth={0} selected={selected} expanded={expanded} onSel={toggleSel} onExp={toggleExp} />)}
+        <div style={{ fontSize: 11.5, color: color.textSubtle, marginBottom: 8 }}>
+          仅列出你有权限访问的应用；勾选的 APPID 组成该系统范围。
         </div>
+
+        <div style={{ position: "relative", marginBottom: 8 }}>
+          <Icon name="search" size={14} color={color.textFaint} style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)" }} />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索应用名称或 APPID"
+            style={{ width: "100%", height: 34, boxSizing: "border-box", padding: "0 10px 0 30px", border: `1px solid ${color.border}`, borderRadius: radius.md, fontSize: 12.5, background: color.surface, color: color.textStrong }}
+          />
+        </div>
+
+        <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, overflow: "hidden", minHeight: 120 }}>
+          {loading ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "36px 0", color: color.textSubtle, fontSize: 12.5 }}>
+              <Icon name="loader-2" size={15} color={color.textSubtle} spin />加载应用列表…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "36px 0", color: color.textSubtle, fontSize: 12.5 }}>
+              {apps.length === 0 ? "未查询到有权限的应用" : "无匹配的应用"}
+            </div>
+          ) : (
+            filtered.map((a) => {
+              const checked = selected.has(a.app_id);
+              return (
+                <div key={a.app_id} onClick={() => toggleSel(a.app_id)}
+                  style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer", background: checked ? color.brandTintBg : "transparent", borderBottom: `1px solid ${color.borderFaint}` }}>
+                  <div style={{ width: 16, height: 16, flex: "0 0 auto", borderRadius: 4, border: `1.5px solid ${checked ? color.brand : "#cfd3da"}`, background: checked ? color.brand : "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    {checked ? <Icon name="check" size={11} color="#fff" /> : null}
+                  </div>
+                  <Icon name="apps" size={15} color={color.textSubtle} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 500, color: color.textStrong, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name}</div>
+                    <div style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.app_id}</div>
+                  </div>
+                  {a.type ? <span style={{ flex: "0 0 auto", fontSize: 10.5, color: color.textSubtle, background: color.surfaceAlt, border: `1px solid ${color.border}`, borderRadius: radius.sm, padding: "2px 7px" }}>{a.type}</span> : null}
+                </div>
+              );
+            })
+          )}
+        </div>
+        {err ? <div style={{ marginTop: 10, fontSize: 12, color: color.dangerText }}>{err}</div> : null}
       </div>
       <div style={{ flex: "0 0 auto", display: "flex", justifyContent: "flex-end", gap: 8, padding: "14px 20px", borderTop: `1px solid ${color.border}`, background: color.surfaceAlt }}>
-        <button onClick={onClose} style={{ height: 36, padding: "0 16px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 600, color: "#313844", cursor: "pointer" }}>取消</button>
-        <button onClick={() => canCreate && onCreated("ws_new_" + Date.now().toString(36))} disabled={!canCreate}
-          style={{ height: 36, padding: "0 18px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 700, cursor: canCreate ? "pointer" : "not-allowed", opacity: canCreate ? 1 : 0.5 }}>
-          创建系统范围（{selected.size}）
+        <button onClick={onClose} disabled={busy} style={{ height: 36, padding: "0 16px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 600, color: "#313844", cursor: busy ? "not-allowed" : "pointer" }}>取消</button>
+        <button onClick={submit} disabled={!canCreate}
+          style={{ height: 36, padding: "0 18px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 700, cursor: canCreate ? "pointer" : "not-allowed", opacity: canCreate ? 1 : 0.5, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          {busy ? <Icon name="loader-2" size={14} color="#fff" spin /> : null}创建系统范围（{selected.size}）
         </button>
       </div>
     </Modal>
   );
-}
-
-function TreeRow({ node, depth, selected, expanded, onSel, onExp }: {
-  node: AppTreeNode; depth: number; selected: Set<string>; expanded: Set<string>;
-  onSel: (id: string) => void; onExp: (id: string) => void;
-}) {
-  const isApp = node.hasPermission !== undefined;
-  const isOpen = expanded.has(node.id);
-  const locked = isApp && node.hasPermission === false;
-  const checked = selected.has(node.id);
-  return (
-    <>
-      <div
-        onClick={() => (isApp ? (!locked && onSel(node.id)) : onExp(node.id))}
-        style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", paddingLeft: 12 + depth * 18, cursor: locked ? "not-allowed" : "pointer", background: checked ? color.brandTintBg : "transparent", borderBottom: `1px solid ${color.borderFaint}` }}
-      >
-        {!isApp ? <Icon name={isOpen ? "chevron-down" : "chevron-right"} size={15} color={color.textSubtle} /> : (
-          <div style={{ width: 16, height: 16, borderRadius: 4, border: `1.5px solid ${locked ? "#d7dae0" : checked ? color.brand : "#cfd3da"}`, background: checked ? color.brand : "#fff", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            {checked ? <Icon name="check" size={11} color="#fff" /> : null}
-          </div>
-        )}
-        <Icon name={isApp ? "app-window" : depth === 0 ? "box" : depth === 1 ? "stack-2" : "components"} size={15} color={locked ? color.textFaint : color.textSubtle} />
-        <span style={{ flex: 1, fontSize: 12.5, fontWeight: isApp ? 500 : 600, color: locked ? color.textFaint : color.textStrong }}>{node.name}{isApp ? <span style={{ color: color.textSubtle, fontFamily: "ui-monospace, monospace", marginLeft: 6, fontSize: 11 }}>{node.id}</span> : null}</span>
-        {locked ? <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 11, color: color.textFaint }}><Icon name="lock" size={12} color={color.textFaint} />无权限</span> : null}
-      </div>
-      {!isApp && isOpen ? node.children?.map((c) => <TreeRow key={c.id} node={c} depth={depth + 1} selected={selected} expanded={expanded} onSel={onSel} onExp={onExp} />) : null}
-    </>
-  );
-}
-
-function collectIds(nodes: AppTreeNode[]): string[] {
-  return nodes.flatMap((n) => [n.id, ...(n.children ? collectIds(n.children) : [])]);
 }

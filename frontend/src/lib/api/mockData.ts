@@ -9,7 +9,7 @@ import type {
   AuditNode,
   Template,
   Workspace,
-  AppTreeNode,
+  ScopeApp,
   AssetRow,
   ConfigVersionRow,
 } from "./types";
@@ -288,25 +288,9 @@ export const mockWorkspaces: Workspace[] = [
   { workspace_id: "ws_pay_abc", name: "支付核心域", scope_revision: "rev-20260708-001", sync_status: "ready", updated: "07-08 09:50" },
 ];
 
-export const mockAppTree: AppTreeNode[] = [
-  {
-    id: "prod_pay",
-    name: "支付产品",
-    children: [
-      {
-        id: "sub_core",
-        name: "支付核心",
-        children: [
-          { id: "mod_order", name: "下单模块", children: [
-            { id: "APP-A", name: "svc-payment-api", hasPermission: true },
-            { id: "APP-B", name: "svc-order", hasPermission: true },
-          ] },
-          { id: "mod_settle", name: "结算模块", children: [
-            { id: "APP-C", name: "svc-settle", hasPermission: true },
-            { id: "APP-X", name: "svc-ledger", hasPermission: false },
-          ] },
-        ],
-      },
-    ],
-  },
+export const mockScopeApps: ScopeApp[] = [
+  { app_id: "00000000000000000000000000000423", name: "日志管理分析(多租)", type: "HIS-OP" },
+  { app_id: "00000000000000000000000000000425", name: "统一查询服务", type: "HIS-OP" },
+  { app_id: "00000000000000000000000000000601", name: "支付核心交易", type: "HIS-OP" },
+  { app_id: "00000000000000000000000000000602", name: "订单履约中心", type: "HIS-OP" },
 ];
