@@ -146,18 +146,18 @@ def check_apptree() -> None:
     对话框"空列表"三大来源一次照出：401/HTML=cookie 失效、404=enterprise/project 段错、
     200+status 非 OK / datas 空=账号（uesrId）没查到应用。
     """
-    from infra.external.apptree_client import _DEFAULT_ENTERPRISE, _DEFAULT_PROJECT, _PATH_TMPL, _map_rows
+    from infra.external.apptree_client import _PATH_TMPL, _endpoint, _map_rows
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
     mode = os.environ.get("OPENOPS_APPTREE", "mock").strip().lower()
-    base = os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].rstrip("/")
-    print(f"[check-net]④ apptree={mode}  base={base or '(未设 OPENOPS_APPTREE_BASE_URL' + ('——real 必配)' if mode == 'real' else '，跳过)')}")
+    base, enterprise, project = _endpoint()  # 与后端同口径：整条 curl URL 直贴会自动截回 host 根+提取两段
+    print(f"[check-net]④ apptree={mode}  base={base or '(未设 OPENOPS_APPTREE_BASE_URL' + ('——real 必配)' if mode == 'real' else '，跳过)')}"
+          + (f"  enterprise={enterprise}  project={project}" if base else ""))
     if mode != "real" or not base:
         return
     cookie = console_cookie("OPENOPS_APPTREE_COOKIE")
     w3 = os.environ.get("OPENOPS_APPTREE_USER_ID", "").strip()
-    path = _PATH_TMPL.format(enterprise=os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", _DEFAULT_ENTERPRISE),
-                             project=os.environ.get("OPENOPS_APPTREE_PROJECT_ID", _DEFAULT_PROJECT))
+    path = _PATH_TMPL.format(enterprise=enterprise, project=project)
     print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设'}  "
           f"uesrId={w3 or '(⚠未设 OPENOPS_APPTREE_USER_ID——将用登录态 user_id，联调 mock 头不是 W3 账号会查空)'}")
     try:
@@ -171,6 +171,12 @@ def check_apptree() -> None:
             print(f"[check-net]   ❌ HTTP {r.status_code}：{r.text[:200]}")
             return
         payload = r.json() or {}
+        status = str(payload.get("status", "")).upper()
+        if status and status != "OK":
+            print(f"[check-net]   ❌ HTTP {r.status_code} 但信封 status={payload.get('status')}：{str(payload.get('message', ''))[:200]}\n"
+                  "[check-net]   → 常见原因：BASE_URL 贴了整条 URL 导致路径双拼（现已自动截回，重跑核对上面 base=）、"
+                  "enterprise/project 段不对、该账号无权限")
+            return
         rows = _map_rows(payload.get("data") or {})
         print(f"[check-net]   POST {path} → HTTP {r.status_code}  status={payload.get('status')}  "
               f"rows={len(rows)}" + (f"（如 {rows[0]['name']} {rows[0]['app_id']}）" if rows else "（空——该账号无应用或 uesrId 不对）"))

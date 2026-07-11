@@ -9,6 +9,7 @@ appid 多行）。出站硬化与 console/omodel 同口径（TLS 三档 + trust_
 from __future__ import annotations
 
 import os
+import re
 from typing import Any
 
 # {enterprise}/{project} 由 env 配置（联调环境用默认值）；path/键的拼写是对端真实契约（见模块 docstring）
@@ -16,6 +17,11 @@ _PATH_TMPL = "/observe/unifieduery/verification/api/v1/{enterprise}/{project}/us
 _TIMEOUT = float(os.environ.get("OPENOPS_APPTREE_TIMEOUT_S", "8"))
 _DEFAULT_ENTERPRISE = "88888888888888888888888888888888"
 _DEFAULT_PROJECT = "00000000000000000000000000000425"
+# 整条 curl URL 直贴的识别（实测坑：BASE_URL 填了完整 URL → 客户端再拼一遍路径 → 双拼 → 网关 200+status=ERROR）
+_FULL_URL_RE = re.compile(
+    r"^(?P<root>.+?)/observe/unifieduery/verification/api/v1/(?P<ent>[^/]+)/(?P<proj>[^/]+)/userid_search_appid$",
+    re.IGNORECASE,
+)
 
 # mock 应用集（前端 mock 模式 + real facade 未配端点时的兜底，让向导无真环境也能演示平铺选择）
 _MOCK_APPS: list[dict[str, str]] = [
@@ -30,9 +36,23 @@ def _is_real() -> bool:
     return os.environ.get("OPENOPS_APPTREE", "mock").strip().lower() == "real"
 
 
-def _base() -> str:
-    # 剥 URL fragment（用户常把浏览器地址栏整串贴进来，`#` 后是前端路由不是路径），与 omodel_real 同口径
-    return os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].rstrip("/")
+def _endpoint() -> tuple[str, str, str]:
+    """解析 (host 根, enterprise, project)。BASE_URL 三种填法都收：
+    ① host 根（推荐）；② 整条 curl URL——自动截回 host 根并提取 enterprise/project 两段（否则路径双拼，
+    网关 200+status=ERROR，实测坑）；③ 带部分路径——截到 /observe/unifieduery 前。#fragment 照剥。
+    env OPENOPS_APPTREE_ENTERPRISE_ID/_PROJECT_ID 优先级最高，其次 URL 提取段，最后内置默认。"""
+    raw = os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    url_ent = url_proj = ""
+    m = _FULL_URL_RE.match(raw)
+    if m:
+        raw, url_ent, url_proj = m.group("root"), m.group("ent"), m.group("proj")
+    else:
+        i = raw.lower().find("/observe/unifieduery")
+        if i > 0:
+            raw = raw[:i]
+    enterprise = os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", "").strip() or url_ent or _DEFAULT_ENTERPRISE
+    project = os.environ.get("OPENOPS_APPTREE_PROJECT_ID", "").strip() or url_proj or _DEFAULT_PROJECT
+    return raw.rstrip("/"), enterprise, project
 
 
 def _map_rows(data: dict[str, Any]) -> list[dict[str, str]]:
@@ -62,7 +82,7 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
     """
     if not _is_real():
         return _MOCK_APPS
-    base = _base()
+    base, enterprise, project = _endpoint()
     if not base:
         raise RuntimeError("OPENOPS_APPTREE=real 但未配置 OPENOPS_APPTREE_BASE_URL")
 
@@ -73,8 +93,6 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
         raise_with_body,
     )
 
-    enterprise = os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", _DEFAULT_ENTERPRISE)
-    project = os.environ.get("OPENOPS_APPTREE_PROJECT_ID", _DEFAULT_PROJECT)
     # 联调缝：mock 登录头里的 user_id 未必是 W3 账号，允许 env 覆盖（对齐 OPENOPS_SCOPE_OVERRIDE_APPIDS 模式）
     w3 = os.environ.get("OPENOPS_APPTREE_USER_ID", "").strip() or user_id
     path = _PATH_TMPL.format(enterprise=enterprise, project=project)

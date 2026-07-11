@@ -393,3 +393,33 @@ async def test_ext_apptree_error_envelope_and_html_raise(monkeypatch):
     _install(monkeypatch, lambda m, u, k: _Resp(401, None, text="unauthorized"))
     with pytest.raises(RuntimeError, match="401"):
         await apptree_client.list_user_apps("u")
+
+
+@pytest.mark.asyncio
+async def test_ext_apptree_full_url_paste_truncates_and_extracts(monkeypatch):
+    """实测坑复现：BASE_URL 贴整条 curl URL → 路径双拼 → 网关 200+status=ERROR。
+    现自动截回 host 根并提取 enterprise/project 两段（env 覆盖仍最高优先）。"""
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.setenv(
+        "OPENOPS_APPTREE_BASE_URL",
+        "http://wesee.console.hissit.huawei.com/observe/unifieduery/verification/api/v1/EEE/PPP/userid_search_appid",
+    )
+    monkeypatch.delenv("OPENOPS_APPTREE_ENTERPRISE_ID", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_PROJECT_ID", raising=False)
+    monkeypatch.setenv("OPENOPS_APPTREE_USER_ID", "l00833445")
+    from infra.external import apptree_client
+
+    payload = {"status": "OK", "data": {"datas": [
+        {"dimension_code": "APP-1", "current_name_zh": "应用一", "dimension_type": "HIS-OP"}]}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
+    rows = await apptree_client.list_user_apps("u")
+
+    # 单拼路径（host 根 + 一次模板路径），enterprise/project 用 URL 里提取的两段
+    assert cap[0][1] == ("http://wesee.console.hissit.huawei.com"
+                         "/observe/unifieduery/verification/api/v1/EEE/PPP/userid_search_appid")
+    assert rows == [{"app_id": "APP-1", "name": "应用一", "type": "HIS-OP"}]
+
+    # env 覆盖优先于 URL 提取段
+    monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "E-ENV")
+    base, ent, proj = apptree_client._endpoint()
+    assert (base, ent, proj) == ("http://wesee.console.hissit.huawei.com", "E-ENV", "PPP")
