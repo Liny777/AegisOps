@@ -165,11 +165,12 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
                                                  {"projectId": "APP-B", "projectCn": "APP-B"}]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
 
+    monkeypatch.delenv("OPENOPS_OMODEL_CLIENT_WS_ID", raising=False)
     ws = await omodel_real.create_workspace("pay 域", ["APP-A", "APP-B"],
                                             app_names={"APP-A": "应用甲"}, owner="林一")
     body = cap[0][2]["json"]
     assert body["name"] == "pay 域" and body["description"] == ""
-    assert _re.fullmatch(r"ws-pay-[0-9a-f]{5}", body["id"])  # 客户端生成 id：slug 只留小写字母数字
+    assert "id" not in body  # 拍板：id 由 umodel 服务端生成，调用方不传
     assert body["labels"] == {"tenantId": "default", "projectId": "default"}
     assert body["config"]["workspace_ui"] == {
         "tenantId": "default", "projectId": "default",
@@ -178,7 +179,9 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     }
     assert ws["workspace_id"] == "ws-new" and ws["app_ids"] == ["APP-A", "APP-B"]
 
+    # 过渡缝 OPENOPS_OMODEL_CLIENT_WS_ID=1 → 暂回客户端生成 id（对端自动生成未部署时用，之后删）；
     # 中文名 slug 剥空 → id 退化 ws-{rand}；tenant env 覆盖 default 字面量；未传 owner 不带
+    monkeypatch.setenv("OPENOPS_OMODEL_CLIENT_WS_ID", "1")
     monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "huawei")
     cap2 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
     await omodel_real.create_workspace("观测联调域", ["APP-A"])
@@ -186,6 +189,9 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     assert _re.fullmatch(r"ws-[0-9a-f]{5}", b2["id"])
     assert b2["labels"]["tenantId"] == "huawei" and b2["config"]["workspace_ui"]["tenantId"] == "huawei"
     assert "owner" not in b2["config"]["workspace_ui"]
+    cap3 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
+    await omodel_real.create_workspace("pay 域", ["APP-A"])
+    assert _re.fullmatch(r"ws-pay-[0-9a-f]{5}", cap3[0][2]["json"]["id"])  # ASCII slug 保留
 
     # 400 必须透出响应体（umodel 错误信封 message 是唯一定位线索；内网 400 教训）
     _install(monkeypatch, lambda m, u, k: _Resp(400, None, text='{"code":"INVALID_ARGUMENT","message":"missing x"}'))

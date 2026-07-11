@@ -151,11 +151,13 @@ async def create_workspace(name: str, app_ids: list[str], *,
         raise RuntimeError("OPENOPS_OMODEL=real 但未配置 OPENOPS_OMODEL_BASE_URL")
     import httpx
 
-    # 请求体**完全镜像 umodel UI 实抓包**（2026-07-11 F12 抓真 UI 创建请求，比 29.7 文档权威）：
-    # - id 客户端生成（UI 从不缺省——文档说服务端自动生成，但部署 build 疑似 400，这是最大嫌疑）；
+    # 请求体镜像 umodel UI 实抓包（2026-07-11 F12，比 29.7 文档权威）：
     # - labels 与 workspace_ui 的 tenantId/projectId 都是字面量 "default"（UI 原样；tenant 可 env 覆盖）；
     # - scopes=object[]（{projectId, projectCn}；UI 还带 per-项目 tenantId，响应即剥掉，故省略）；
     # - status:"running" + owner（服务端会按登录态改写 owner，带上以镜像 UI）。
+    # - **id 不传**（拍板 2026-07-11：workspace id 由 umodel 服务端生成，调用方不得自造；旧 UI 是
+    #   客户端生成，对端已改服务端自动生成）。过渡缝：对端修复未部署时 OPENOPS_OMODEL_CLIENT_WS_ID=1
+    #   暂回客户端生成（镜像旧 UI），部署后删。
     names = app_names or {}
     tenant = os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip() or "default"
     ui: dict[str, Any] = {
@@ -166,10 +168,12 @@ async def create_workspace(name: str, app_ids: list[str], *,
     if owner:
         ui["owner"] = owner
     body: dict[str, Any] = {
-        "id": _gen_ws_id(name), "name": name, "description": "",
+        "name": name, "description": "",
         "labels": {"tenantId": tenant, "projectId": "default"},
         "config": {"workspace_ui": ui},
     }
+    if os.environ.get("OPENOPS_OMODEL_CLIENT_WS_ID") == "1":
+        body["id"] = _gen_ws_id(name)
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:
         r = await c.post(_prefix(), json=body)
         if r.status_code >= 400:
