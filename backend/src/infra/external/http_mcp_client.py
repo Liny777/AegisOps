@@ -10,7 +10,7 @@ import os
 import uuid
 from typing import Any
 
-from infra.external.mcp_registry_client import console_tls_verify, http_trust_env, raise_with_body  # 内网证书 TLS 三档（CA 文件/insecure/默认）
+from infra.external.mcp_registry_client import console_api_prefix, console_tls_verify, http_trust_env, raise_with_body  # 同 console 口径
 
 last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 {tool, arguments, headers}
 
@@ -64,7 +64,7 @@ async def call_tool(
             base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
             if not base:
                 raise RuntimeError("动态 MCP 调用需 OPENOPS_MCPREGISTRY_BASE_URL（经 console proxy 路由 tools/call）")
-            url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
+            url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/proxy"
             hdrs = dict(headers or {})  # console 需用户 Cookie 鉴权（同发现路径）；真 IAM 网关透传时不覆盖
             cookie = os.getenv("OPENOPS_MCPREGISTRY_COOKIE")
             if cookie and "Cookie" not in hdrs:

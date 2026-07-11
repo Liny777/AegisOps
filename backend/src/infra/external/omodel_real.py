@@ -22,7 +22,13 @@ import uuid
 from typing import Any
 
 _TIMEOUT = float(os.environ.get("OPENOPS_OMODEL_TIMEOUT_S", "8"))
-_PREFIX = "/api/v1/workspaces"
+
+
+def _prefix() -> str:
+    """workspace API 文根：默认 29.7 的 `/api/v1/workspaces`；测试/生产网关文根不同或对端改文根时
+    设 `OPENOPS_OMODEL_API_PREFIX` 覆盖，免改码（host 差异走 BASE_URL，文根差异走本变量）。"""
+    p = os.environ.get("OPENOPS_OMODEL_API_PREFIX", "/api/v1/workspaces").strip()
+    return "/" + p.strip("/")
 
 
 def _base() -> str:
@@ -83,7 +89,7 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
         import httpx
 
         async with httpx.AsyncClient(**_client_kwargs(base)) as c:
-            r = await c.get(f"{_PREFIX}/{workspace_id}/projects")
+            r = await c.get(f"{_prefix()}/{workspace_id}/projects")
             if r.status_code == 404:
                 return _failed(scope_revision)  # workspace 不存在/已删除
             r.raise_for_status()
@@ -104,7 +110,7 @@ async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
         import httpx
 
         async with httpx.AsyncClient(**_client_kwargs(base)) as c:
-            r = await c.get(f"{_PREFIX}/{workspace_id}")
+            r = await c.get(f"{_prefix()}/{workspace_id}")
             if r.status_code == 404:
                 return None  # 29.5：不存在即 404（不再自动创建）
             r.raise_for_status()
@@ -121,7 +127,7 @@ async def list_workspaces() -> list[dict[str, Any]]:
         import httpx
 
         async with httpx.AsyncClient(**_client_kwargs(base)) as c:
-            r = await c.get(_PREFIX)
+            r = await c.get(_prefix())
             r.raise_for_status()
             page = r.json() or {}
             return [_map_metadata(md) for md in page.get("items", [])]  # 解 Page<WorkspaceMetadata>.items
@@ -138,6 +144,6 @@ async def create_workspace(name: str, app_ids: list[str]) -> dict[str, Any]:
     # app_ids → 29.5 项目级 scopes（P1-1 粒度落差：OpenOps 的 appid 直接当 projectId，待 umodel 明确展开口径）
     body = {"name": name, "config": {"workspace_ui": {"scopes": [{"projectId": a} for a in app_ids]}}}
     async with httpx.AsyncClient(**_client_kwargs(base)) as c:
-        r = await c.post(_PREFIX, json=body)
+        r = await c.post(_prefix(), json=body)
         r.raise_for_status()  # 409 ALREADY_EXISTS / 400 INVALID_ARGUMENT 直接抛（调用方收口）
         return _map_metadata(r.json())

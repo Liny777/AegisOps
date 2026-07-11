@@ -36,6 +36,22 @@ def _is_real() -> bool:
     return os.environ.get("OPENOPS_APPTREE", "mock").strip().lower() == "real"
 
 
+def resolve_url() -> tuple[str, str]:
+    """(最终端点 URL, 装配说明)。两种配置法：
+    ① `OPENOPS_APPTREE_URL`=整条端点 URL **原样使用**（最高优先，推荐——对端改文根/路径只改这一个 env，
+       测试/生产不同环境各配各的，代码零改动）；
+    ② `OPENOPS_APPTREE_BASE_URL`（host 根）+ 内置模板 + enterprise/project 段组装（贴整条 URL 也会被识别）。
+    未配任一 → ("", "")，调用方报缺配置。"""
+    verbatim = os.environ.get("OPENOPS_APPTREE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    if verbatim:
+        return verbatim, "url(原样)"
+    base, enterprise, project = _endpoint()
+    if not base:
+        return "", ""
+    return base + _PATH_TMPL.format(enterprise=enterprise, project=project), \
+        f"base+模板(enterprise={enterprise} project={project})"
+
+
 def _endpoint() -> tuple[str, str, str]:
     """解析 (host 根, enterprise, project)。BASE_URL 三种填法都收：
     ① host 根（推荐）；② 整条 curl URL——自动截回 host 根并提取 enterprise/project 两段（否则路径双拼，
@@ -82,9 +98,9 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
     """
     if not _is_real():
         return _MOCK_APPS
-    base, enterprise, project = _endpoint()
-    if not base:
-        raise RuntimeError("OPENOPS_APPTREE=real 但未配置 OPENOPS_APPTREE_BASE_URL")
+    url, _how = resolve_url()
+    if not url:
+        raise RuntimeError("OPENOPS_APPTREE=real 但未配置端点（OPENOPS_APPTREE_URL 整条原样用，或 OPENOPS_APPTREE_BASE_URL 组装）")
 
     from infra.external.mcp_registry_client import (
         console_cookie,
@@ -95,9 +111,8 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
 
     # 联调缝：mock 登录头里的 user_id 未必是 W3 账号，允许 env 覆盖（对齐 OPENOPS_SCOPE_OVERRIDE_APPIDS 模式）
     w3 = os.environ.get("OPENOPS_APPTREE_USER_ID", "").strip() or user_id
-    path = _PATH_TMPL.format(enterprise=enterprise, project=project)
 
-    kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
+    kwargs: dict[str, Any] = {"timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
     cookie = console_cookie("OPENOPS_APPTREE_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
     if cookie:
@@ -106,15 +121,15 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
     import httpx
 
     async with httpx.AsyncClient(**kwargs) as c:
-        r = await c.post(path, json={"uesrId": w3})  # 上游 body 键拼写即 "uesrId"（勿改）
-        raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效、404=enterprise/project 段错）
+        r = await c.post(url, json={"uesrId": w3})  # 上游 body 键拼写即 "uesrId"（勿改）
+        raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效、404=文根/enterprise/project 段错）
         text = (r.text or "").lstrip()
-        if text.startswith("<"):  # 登录页/门户 HTML：cookie 失效或 base_url 填成了前端页
-            raise RuntimeError(f"应用目录返回 HTML 而非 JSON（cookie 失效或 BASE_URL 填错）：{text[:120]}")
+        if text.startswith("<"):  # 登录页/门户 HTML：cookie 失效或 URL 填成了前端页
+            raise RuntimeError(f"应用目录返回 HTML 而非 JSON（cookie 失效或 URL 填错）：{text[:120]}")
         payload = r.json() or {}
     status = str(payload.get("status", "")).upper()
     if status and status != "OK":  # 200+错误信封（如账号无权限/参数错）——不得静默吞成空列表
         raise RuntimeError(f"应用目录返回 status={payload.get('status')}：{str(payload.get('message', ''))[:200]}")
     rows = _map_rows(payload.get("data") or {})
-    print(f"[OpenOps][apptree] POST {base}{path} uesrId={w3} -> rows={len(rows)}", flush=True)
+    print(f"[OpenOps][apptree] POST {url} uesrId={w3} -> rows={len(rows)}", flush=True)
     return rows

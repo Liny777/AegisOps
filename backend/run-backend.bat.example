@@ -42,8 +42,12 @@ REM set OPENOPS_MCPREGISTRY=real
 REM set OPENOPS_MCPREGISTRY_BASE_URL=<console 根，如 https://console.his-op-beta.huawei.com>
 REM set OPENOPS_MCP=real
 REM set OPENOPS_APPTREE=real
+REM set OPENOPS_APPTREE_URL=<整条 userid_search_appid URL 原样贴（推荐，curl 里那条）；或用下行 BASE_URL 组装>
 REM set OPENOPS_APPTREE_BASE_URL=<verification 根，如 http://wesee.console.hissit.huawei.com>
 REM set OPENOPS_APPTREE_USER_ID=<你的 W3 账号，如 l00833445——mock 登录头不是 W3，联调必设>
+REM 文根与环境差异（测试/生产网关文根不同、对端改文根时改这里，不用改码）：
+REM set OPENOPS_CONSOLE_API_PREFIX=/obsv/agent/management
+REM set OPENOPS_OMODEL_API_PREFIX=/api/v1/workspaces
 
 REM ==================== venv 的 python ====================
 set PY=.venv\Scripts\python.exe

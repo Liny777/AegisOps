@@ -146,22 +146,21 @@ def check_apptree() -> None:
     对话框"空列表"三大来源一次照出：401/HTML=cookie 失效、404=enterprise/project 段错、
     200+status 非 OK / datas 空=账号（uesrId）没查到应用。
     """
-    from infra.external.apptree_client import _PATH_TMPL, _endpoint, _map_rows
+    from infra.external.apptree_client import _map_rows, resolve_url
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
     mode = os.environ.get("OPENOPS_APPTREE", "mock").strip().lower()
-    base, enterprise, project = _endpoint()  # 与后端同口径：整条 curl URL 直贴会自动截回 host 根+提取两段
-    print(f"[check-net]④ apptree={mode}  base={base or '(未设 OPENOPS_APPTREE_BASE_URL' + ('——real 必配)' if mode == 'real' else '，跳过)')}"
-          + (f"  enterprise={enterprise}  project={project}" if base else ""))
-    if mode != "real" or not base:
+    url, how = resolve_url()  # 与后端同口径：URL 原样模式 / BASE+模板组装（整条 curl URL 直贴自动识别）
+    print(f"[check-net]④ apptree={mode}  "
+          + (f"端点[{how}]={url}" if url else "(未配 OPENOPS_APPTREE_URL / _BASE_URL" + ("——real 必配)" if mode == "real" else "，跳过)")))
+    if mode != "real" or not url:
         return
     cookie = console_cookie("OPENOPS_APPTREE_COOKIE")
     w3 = os.environ.get("OPENOPS_APPTREE_USER_ID", "").strip()
-    path = _PATH_TMPL.format(enterprise=enterprise, project=project)
     print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设'}  "
           f"uesrId={w3 or '(⚠未设 OPENOPS_APPTREE_USER_ID——将用登录态 user_id，联调 mock 头不是 W3 账号会查空)'}")
     try:
-        r = httpx.post(f"{base}{path}", json={"uesrId": w3 or "unset"}, timeout=10,
+        r = httpx.post(url, json={"uesrId": w3 or "unset"}, timeout=10,
                        headers={"Cookie": cookie} if cookie else {},
                        verify=console_tls_verify(), trust_env=http_trust_env())
         if _looks_html(r):
@@ -178,7 +177,7 @@ def check_apptree() -> None:
                   "enterprise/project 段不对、该账号无权限")
             return
         rows = _map_rows(payload.get("data") or {})
-        print(f"[check-net]   POST {path} → HTTP {r.status_code}  status={payload.get('status')}  "
+        print(f"[check-net]   POST → HTTP {r.status_code}  status={payload.get('status')}  "
               f"rows={len(rows)}" + (f"（如 {rows[0]['name']} {rows[0]['app_id']}）" if rows else "（空——该账号无应用或 uesrId 不对）"))
     except Exception as e:  # noqa: BLE001
         print(f"[check-net]   ❌ {type(e).__name__}: {e}")

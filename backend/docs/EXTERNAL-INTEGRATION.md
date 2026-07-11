@@ -28,6 +28,14 @@ TLS 三档 `OPENOPS_TLS_CA_FILE` > `OPENOPS_TLS_INSECURE=1` > certifi（正解�
 （专属 `OPENOPS_{MCPREGISTRY,OMODEL,APPTREE}_COOKIE` 优先，未设回退共享），过期只换一处。启动横幅每面显示
 `SET(len)`（专属）/`shared(len)`（回退共享）/`unset`。
 
+**端点装配规则（文根全 env 可覆盖——测试/生产文根不同、对端改文根只改 env 不改码）**：
+`实际 URL = BASE_URL(host 根) + API_PREFIX(env 可覆盖的文根) + 操作尾段(代码，随契约走)`：
+- console 系（mcps 列表/代理、skills 列表/下载同一网关文根）：`OPENOPS_CONSOLE_API_PREFIX`（默认 `/obsv/agent/management`）；
+- oModel：`OPENOPS_OMODEL_API_PREFIX`（默认 `/api/v1/workspaces`）；
+- apptree（单端点）：`OPENOPS_APPTREE_URL`=**整条端点 URL 原样使用**（最高优先，推荐），或 BASE_URL+内置模板组装。
+操作尾段（如 `/mcps/list/query`、`/{ws}/projects`、`userid_search_appid`）不做 env——端点名变了通常请求/响应
+契约也变了，必须改码适配；env 管"挂在哪"，代码管"契约是什么"。
+
 ## 逐项说明
 
 ### 平台 LLM（真 GLM）—— 代码就绪

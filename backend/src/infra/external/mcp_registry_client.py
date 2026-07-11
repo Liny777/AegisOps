@@ -29,6 +29,14 @@ def _schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def console_api_prefix() -> str:
+    """console 系 API 文根（mcps 列表/代理、skills 列表/下载同一网关文根）：默认 29.3 的
+    `/obsv/agent/management`；测试/生产网关文根不同、或对端改文根时设 `OPENOPS_CONSOLE_API_PREFIX`
+    覆盖，免改码（与共享 cookie 同思路：console 面的部署差异全走 env）。"""
+    p = os.getenv("OPENOPS_CONSOLE_API_PREFIX", "/obsv/agent/management").strip()
+    return ("/" + p.strip("/")) if p.strip("/") else ""
+
+
 def console_cookie(specific_env: str) -> str:
     """console 系 IAM 会话 cookie 统一读取：专属 env 优先，未设回退共享 `OPENOPS_CONSOLE_COOKIE`。
 
@@ -106,7 +114,7 @@ async def list_servers() -> list[dict[str, Any]]:
             raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
         import httpx
 
-        url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
+        url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/list/query"
         out: list[dict[str, Any]] = []
         async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             page, page_size = 1, 50
@@ -161,7 +169,7 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
             base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
             if not base:
                 raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
-            url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
+            url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/proxy"
             async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
                 r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
                                    headers=_console_headers())

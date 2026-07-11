@@ -423,3 +423,40 @@ async def test_ext_apptree_full_url_paste_truncates_and_extracts(monkeypatch):
     monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "E-ENV")
     base, ent, proj = apptree_client._endpoint()
     assert (base, ent, proj) == ("http://wesee.console.hissit.huawei.com", "E-ENV", "PPP")
+
+
+@pytest.mark.asyncio
+async def test_ext_api_prefix_env_overrides(monkeypatch):
+    """文根全 env 可覆盖（测试/生产文根不同、对端改文根只改 env 不改码）：
+    console 系 OPENOPS_CONSOLE_API_PREFIX、oModel OPENOPS_OMODEL_API_PREFIX、apptree OPENOPS_APPTREE_URL 原样。"""
+    from infra.external import apptree_client, omodel_real
+    from infra.external.mcp_registry_client import console_api_prefix
+
+    # console 系：默认 29.3 文根；覆盖后 list_servers 实际 URL 跟随
+    assert console_api_prefix() == "/obsv/agent/management"
+    monkeypatch.setenv("OPENOPS_CONSOLE_API_PREFIX", "/newroot/mgmt/")
+    assert console_api_prefix() == "/newroot/mgmt"
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    from infra.external import mcp_registry_client
+
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, {"code": 0, "data": {"items": [], "total": 0}}))
+    await mcp_registry_client.list_servers()
+    assert cap[0][1] == "https://console/newroot/mgmt/mcps/list/query"
+
+    # oModel：默认 29.7 文根；覆盖后 resolve URL 跟随
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    monkeypatch.setenv("OPENOPS_OMODEL_API_PREFIX", "/omodel-api/v2/workspaces")
+    cap2 = _install(monkeypatch, lambda m, u, k: _Resp(200, []))
+    await omodel_real.resolve_scope("ws-1", "rev", "u")
+    assert cap2[0][1] == "http://umodel:8080/omodel-api/v2/workspaces/ws-1/projects"
+
+    # apptree：OPENOPS_APPTREE_URL 整条原样（最高优先，无视 BASE_URL/模板/两段）
+    monkeypatch.setenv("OPENOPS_APPTREE", "real")
+    monkeypatch.setenv("OPENOPS_APPTREE_URL", "http://other-env/custom/root/v9/E2/P2/userid_search_appid")
+    monkeypatch.setenv("OPENOPS_APPTREE_BASE_URL", "http://ignored")
+    payload = {"status": "OK", "data": {"datas": []}}
+    cap3 = _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
+    await apptree_client.list_user_apps("u")
+    assert cap3[0][1] == "http://other-env/custom/root/v9/E2/P2/userid_search_appid"
