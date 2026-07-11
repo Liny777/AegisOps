@@ -16,7 +16,7 @@ import zipfile
 from typing import Any
 
 from domain.skill_package import package_checksum
-from infra.external.mcp_registry_client import console_tls_verify  # 内网证书 TLS 三档（同 console）
+from infra.external.mcp_registry_client import console_tls_verify, http_trust_env  # 内网证书 TLS 三档（同 console）
 
 # mock 平台 Skill「inspection」的可执行包（run.py 写 output.json，run_skill 真跑得通）
 _MOCK_RUN_PY = (
@@ -91,7 +91,7 @@ async def list_skills(user_id: str) -> list[dict[str, Any]]:
         import httpx
 
         url = f"{base.rstrip('/')}/obsv/agent/management/skills/list/query"
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify()) as cli:
+        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             r = await cli.post(url, json={"page": 1, "page_size": 200, "source": "openops"})
             r.raise_for_status()
             items = _unwrap_data(r.json()).get("items", [])  # 分页对象 data.items，非裸 list
@@ -128,7 +128,7 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
             raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（29.3 Skill Hub 未联）")
         import httpx
 
-        async with httpx.AsyncClient(timeout=30, verify=console_tls_verify()) as cli:
+        async with httpx.AsyncClient(timeout=30, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             # 29.3 §2.5：flat `GET /skills/download?skill_id=&version=`。V1 省略 version → 下载 latest
             # （OpenOps 存 version_no(int) 无 semver，精确 pin 待 repo 穿透；latest + ZIP 字节 checksum 校验漂移即 fail-closed）。
             r = await cli.get(f"{base.rstrip('/')}/obsv/agent/management/skills/download",

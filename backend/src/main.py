@@ -57,6 +57,7 @@ async def lifespan(_app: FastAPI):
         f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
         f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  "
         f"mcp_cookie={_cookie_disp}  tls={_tls}  "
+        f"trust_env={'on' if os.environ.get('OPENOPS_HTTP_TRUST_ENV') == '1' else 'off'}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
     )

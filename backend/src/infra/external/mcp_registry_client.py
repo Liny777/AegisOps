@@ -36,6 +36,14 @@ def _console_headers() -> dict[str, str]:
     return {"Cookie": cookie} if cookie else {}
 
 
+def http_trust_env() -> bool:
+    """出站是否信任环境代理（HTTP(S)_PROXY / Windows 注册表 IE 代理——httpx 经 urllib getproxies
+    在 Windows 会读注册表）。默认 **False**：console/GLM 都是内网直连目标，公司 SWG 代理够不到它们
+    （实测被代理劫走 → 504 / HIS Proxy 错误页，且是否中招随 shell 环境漂移）。真需要走代理时
+    OPENOPS_HTTP_TRUST_ENV=1 恢复。"""
+    return os.getenv("OPENOPS_HTTP_TRUST_ENV") == "1"
+
+
 def console_tls_verify() -> bool | str:
     """console 是 https 内网证书：Python httpx 用 certifi CA（无公司内部 CA）会
     CERTIFICATE_VERIFY_FAILED（Windows curl 用系统证书库所以通）。三档：
@@ -58,7 +66,7 @@ async def list_servers() -> list[dict[str, Any]]:
 
         url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
         out: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify()) as cli:
+        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             page, page_size = 1, 50
             while True:
                 r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"},
@@ -101,7 +109,7 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         import httpx
 
         url = f"{base.rstrip('/')}/obsv/agent/management/mcps/proxy"
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify()) as cli:
+        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
                                headers=_console_headers())
             r.raise_for_status()

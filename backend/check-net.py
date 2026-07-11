@@ -22,11 +22,12 @@ import httpx  # noqa: E402
 
 
 def check_console() -> None:
-    from infra.external.mcp_registry_client import console_tls_verify  # 与后端同一 TLS 三档
+    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env  # 与后端同一 TLS/代理口径
 
     base = os.environ.get("OPENOPS_MCPREGISTRY_BASE_URL", "").strip()
     cookie = os.environ.get("OPENOPS_MCPREGISTRY_COOKIE", "")
-    print(f"[check-net]① console={base or '(未设 OPENOPS_MCPREGISTRY_BASE_URL，跳过)'}  tls={console_tls_verify()!r}")
+    print(f"[check-net]① console={base or '(未设 OPENOPS_MCPREGISTRY_BASE_URL，跳过)'}  "
+          f"tls={console_tls_verify()!r}  trust_env={http_trust_env()}")
     if not base:
         return
     #  cookie 含 `;`，bash export 引号不当会被静默截断——长度+分段数即可识破（不打印值）
@@ -35,7 +36,8 @@ def check_console() -> None:
     url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops"},
-                       headers={"Cookie": cookie} if cookie else {}, timeout=15, verify=console_tls_verify())
+                       headers={"Cookie": cookie} if cookie else {}, timeout=15,
+                       verify=console_tls_verify(), trust_env=http_trust_env())
         print(f"[check-net]   HTTP {r.status_code}；响应前 300 字：{r.text[:300]}")
         print("[check-net]   → 200+code:0=通；504=复现（cookie 失效/截断或网关问题）；401/403=cookie 不被认")
     except Exception as e:  # noqa: BLE001 —— 原样暴露真实异常
@@ -73,12 +75,13 @@ def check_glm() -> None:
         print("[check-net]   ❌ 还是 seed 的公网 bigmodel.cn（内网不可达）→ 这就是 Connection error 根因。UPDATE 之。")
 
     from app.model_gateway import _openai_base_url  # 与后端同一派生逻辑
+    from infra.external.mcp_registry_client import http_trust_env
 
     api_base = _openai_base_url(stored)
-    print(f"[check-net]   派生 base = {api_base}（后端在此基础上拼 /chat/completions）")
+    print(f"[check-net]   派生 base = {api_base}（后端在此基础上拼 /chat/completions）  trust_env={http_trust_env()}")
     try:
         r = httpx.get(f"{api_base.rstrip('/')}/models", headers={"Authorization": f"Bearer {key}"} if key else {},
-                      timeout=15)
+                      timeout=15, trust_env=http_trust_env())
         print(f"[check-net]   GET /models → HTTP {r.status_code}；前 300 字：{r.text[:300]}")
         print("[check-net]   → 200=通（后端应能连）；401=key 错；ConnectError/TLS=URL 的 scheme/host/port 有误")
     except Exception as e:  # noqa: BLE001

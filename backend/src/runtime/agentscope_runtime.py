@@ -127,17 +127,32 @@ async def _build_model(st: TaskState) -> Any:
         api_key = os.environ.get(spec["secret_env_var"])
         key_src = f"env:{spec['secret_env_var']}"
     if api_key:
+        import httpx
+
         from agentscope.credential import OpenAICredential
         from agentscope.model import OpenAIChatModel
+        from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
 
         # 构建目标一眼可见（同 [db]/[startup] 模式；不含 key 值）——DB base_url 错时这行即诊断
         print(f"[OpenOps][model] building {spec['model_id']} "
-              f"base_url={spec.get('base_url') or 'default(api.openai.com)'} key={key_src}", flush=True)
+              f"base_url={spec.get('base_url') or 'default(api.openai.com)'} key={key_src} "
+              f"trust_env={http_trust_env()}", flush=True)
+        # 自定义 http_client：trust_env 默认 False——openai SDK 默认信任环境/Windows 注册表代理，
+        # 内网 GLM 会被公司 SWG 劫走（实测返回 HIS Proxy 错误页而非模型响应）。超时对齐推理耗时。
+        client_kwargs: dict[str, Any] = {
+            "http_client": httpx.AsyncClient(
+                trust_env=http_trust_env(), verify=console_tls_verify(),
+                timeout=httpx.Timeout(connect=10.0, read=float(os.environ.get("OPENOPS_MODEL_READ_TIMEOUT_S", "300")),
+                                      write=30.0, pool=10.0),
+            ),
+        }
+        if spec.get("base_url"):
+            client_kwargs["base_url"] = spec["base_url"]
         return OpenAIChatModel(
             credential=OpenAICredential(api_key=api_key),
             model=spec["model_id"],
             stream=False,
-            client_kwargs={"base_url": spec["base_url"]} if spec.get("base_url") else None,
+            client_kwargs=client_kwargs,
         )
     print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）", flush=True)
     return _build_stub_model()

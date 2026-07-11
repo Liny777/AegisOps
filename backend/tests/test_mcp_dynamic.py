@@ -66,9 +66,12 @@ def test_console_tls_insecure_switch(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
     asyncio.run(http_mcp_client.call_tool("t", {}, server_url="http://mcpgw/x"))
     assert _FakeClient.init_kwargs.get("verify") is False
+    assert _FakeClient.init_kwargs.get("trust_env") is False  # 默认不信任环境/注册表代理（内网直连）
     monkeypatch.setenv("OPENOPS_TLS_CA_FILE", "/etc/corp-ca.pem")  # CA 文件档优先于 insecure
+    monkeypatch.setenv("OPENOPS_HTTP_TRUST_ENV", "1")
     asyncio.run(http_mcp_client.call_tool("t", {}, server_url="http://mcpgw/x"))
     assert _FakeClient.init_kwargs.get("verify") == "/etc/corp-ca.pem"
+    assert _FakeClient.init_kwargs.get("trust_env") is True
 
 
 def test_console_discovery_sends_cookie(monkeypatch):
