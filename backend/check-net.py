@@ -183,6 +183,42 @@ def check_apptree() -> None:
         print(f"[check-net]   ❌ {type(e).__name__}: {e}")
 
 
+def check_skillhub() -> None:
+    """⑤ Skill Hub（skills/list/query，同 console 网关）：与 skill_hub_client 完全同口径打一次真请求。
+    401/HTML=cookie 失效；code!=0=业务错误（信封 message 说明原因）；items=0=注册表里没有 source=openops 的 skill。"""
+    from infra.external.mcp_registry_client import console_api_prefix, console_cookie, console_tls_verify, http_trust_env
+    from infra.external.skill_hub_client import skillhub_base
+
+    mode = os.environ.get("OPENOPS_SKILLHUB", "mock").strip().lower()
+    base = skillhub_base()
+    miss = "(未配 OPENOPS_SKILLHUB_BASE_URL / _MCPREGISTRY_BASE_URL" + ("——real 必配)" if mode == "real" else "，跳过)")
+    print(f"[check-net]⑤ skillhub={mode}  base={base or miss}")
+    if mode != "real" or not base:
+        return
+    cookie = console_cookie("OPENOPS_SKILLHUB_COOKIE")
+    print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（console 面大概率 401）'}")
+    url = f"{base}{console_api_prefix()}/skills/list/query"
+    try:
+        r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops"}, timeout=15,
+                       headers={"Cookie": cookie} if cookie else {},
+                       verify=console_tls_verify(), trust_env=http_trust_env())
+        if _looks_html(r):
+            print(f"[check-net]   ❌ 返回 HTML（HTTP {r.status_code}）——cookie 失效或 BASE_URL 错")
+            return
+        if r.status_code >= 400:
+            print(f"[check-net]   ❌ HTTP {r.status_code}：{r.text[:200]}")
+            return
+        body = r.json() or {}
+        if int(body.get("code", -1)) != 0:
+            print(f"[check-net]   ❌ HTTP {r.status_code} 但业务 code={body.get('code')}：{str(body.get('message', ''))[:200]}")
+            return
+        items = (body.get("data") or {}).get("items") or []
+        print(f"[check-net]   POST /skills/list/query → HTTP {r.status_code}  code=0  items={len(items)}"
+              + (f"（如 {items[0].get('name')} · {items[0].get('skill_id')}）" if items else "（空——注册表无 source=openops 的 skill）"))
+    except Exception as e:  # noqa: BLE001
+        print(f"[check-net]   ❌ {type(e).__name__}: {e}")
+
+
 if __name__ == "__main__":
     check_console()
     print()
@@ -191,3 +227,5 @@ if __name__ == "__main__":
     check_omodel()
     print()
     check_apptree()
+    print()
+    check_skillhub()

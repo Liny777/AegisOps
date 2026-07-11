@@ -171,6 +171,8 @@ async def test_skill_011_real_download_verifies_zip_bytes_checksum(monkeypatch):
 
     class _Resp:
         def __init__(self, checksum):
+            self.status_code = 200  # raise_with_body 读 status_code/text（换掉 raise_for_status 后）
+            self.text = ""
             self.content = zip_bytes
             self.headers = {"X-Checksum-SHA256": checksum}
 

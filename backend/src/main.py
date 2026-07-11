@@ -69,6 +69,7 @@ async def lifespan(_app: FastAPI):
         f"apptree_user={os.environ.get('OPENOPS_APPTREE_USER_ID') or '(登录态 user_id)'}  tls={_tls}  "
         f"trust_env={'on' if os.environ.get('OPENOPS_HTTP_TRUST_ENV') == '1' else 'off'}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
+        f"skillhub_cookie={_cookie_disp('OPENOPS_SKILLHUB_COOKIE')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
     )
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)

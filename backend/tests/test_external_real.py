@@ -501,3 +501,35 @@ async def test_ext_api_prefix_env_overrides(monkeypatch):
     cap3 = _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
     await apptree_client.list_user_apps("u")
     assert cap3[0][1] == "http://other-env/custom/root/v9/E2/P2/userid_search_appid"
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_cookie_base_fallback_and_html_guard(monkeypatch):
+    """Skill Hub 接真三护栏：cookie（专属>共享）随请求带出；BASE_URL 未配回退 MCPREGISTRY 同 console 网关；
+    下载响应是 HTML（登录页）→ 显式报错而非 BadZipFile。"""
+    import pytest as _pytest
+
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.delenv("OPENOPS_SKILLHUB_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")  # 回退源
+    monkeypatch.delenv("OPENOPS_SKILLHUB_COOKIE", raising=False)
+    monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "sid=shared-9")
+
+    body = {"code": 0, "message": "ok", "data": {"items": []}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
+    await skill_hub_client.list_skills("u1")
+    method, url, kwargs = cap[0]
+    assert url == "https://console/obsv/agent/management/skills/list/query"  # base 回退 + console 文根
+    assert kwargs["headers"] == {"Cookie": "sid=shared-9"}  # 共享 cookie 回退带出
+
+    # 下载：HTML 响应显式报错（cookie 失效场景）
+    class _HtmlResp(_Resp):
+        def __init__(self):
+            super().__init__(200, None, headers={}, text="<html>login</html>")
+            self.content = b"<html>login page</html>"
+
+    _install(monkeypatch, lambda m, u, k: _HtmlResp())
+    with _pytest.raises(RuntimeError, match="HTML"):
+        await skill_hub_client.download_skill_package("inspection", 2)

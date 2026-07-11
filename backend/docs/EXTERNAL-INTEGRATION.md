@@ -15,7 +15,7 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 | 应用目录（初始化「从应用创建系统范围」选源） | `OPENOPS_APPTREE=real` | `OPENOPS_APPTREE_BASE_URL` + `OPENOPS_APPTREE_COOKIE`（可选，IAM 会话态）；`OPENOPS_APPTREE_ENTERPRISE_ID`/`OPENOPS_APPTREE_PROJECT_ID`（联调默认值）；联调缝 `OPENOPS_APPTREE_USER_ID`（mock 头非 W3 账号时覆盖） | mock | **已按 verification 契约对齐**（`userid_search_appid`；内网待联调） |
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
-| Skill Hub（list + 下载 ZIP） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL` | mock | **已按 29.3 对齐**（`/obsv/agent/management/skills/*`） |
+| Skill Hub（list + 下载 ZIP） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL`（未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`，同 console 网关）+ cookie（专属/共享） | mock | **已按 29.3 对齐**，接真护栏齐（cookie/带体报错/HTML 检测/check-net ⑤） |
 | 用户自定义 LLM 探测 | `OPENOPS_LLM_PROBE=real` | 用户配置的 base_url/Key（建配置时提交） | mock | **代码就绪**，real 发真 `chat/completions` 验能力 |
 | Secret 加密 key | —（生产必配） | `OPENOPS_ENCRYPTION_KEY`（+`_OLD` 轮换） | 派生 dev key | **代码就绪**（Fernet），生产须配 |
 | 真 W3/IAM introspect | 未做（B9） | — | `X-OpenOps-Mock-User` 头 | **未做**（B9 整块） |
