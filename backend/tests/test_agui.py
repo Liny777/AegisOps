@@ -57,6 +57,11 @@ def test_agui_full_flow_standard_and_custom_events(client):
     assert isinstance(_json.loads(args_evs[0]["delta"]), dict)  # delta 是可解析的 JSON 入参
     start_ids = {e["toolCallId"] for e in evs if e["type"] == "TOOL_CALL_START"}
     assert all(a["toolCallId"] in start_ids for a in args_evs)  # 与所属调用配对
+    # Result 正文=工具真实输出（result_summary），不是「xxx 返回」占位（内网实测缺口）
+    summaries = [str((e["value"].get("payload_redacted_json") or {}).get("result_summary") or "")
+                 for e in evs if e["type"] == "CUSTOM" and e["name"] == "openops.tool.call.succeeded"]
+    results = [e["content"] for e in evs if e["type"] == "TOOL_CALL_RESULT"]
+    assert results and any(s and s[:100] in r for s in summaries for r in results)
     # 对话主区有文本（mock 无增量 → task.completed 合成结论消息）
     assert "TEXT_MESSAGE_START" in types and "TEXT_MESSAGE_CONTENT" in types and "TEXT_MESSAGE_END" in types
     # openops.* 自定义事件透传（活动线 / RCA）
