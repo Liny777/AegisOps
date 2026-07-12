@@ -7,16 +7,18 @@ import { api } from "../lib/api";
 import type { AgentInstance, AssetRow, ConfigVersionRow, ModelOption } from "../lib/api/types";
 import { AddCustomModelDialog } from "./AddCustomModelDialog";
 
-type Tab = "lib" | "prompt" | "model";
+type Tab = "skill" | "mcp" | "model" | "prompt";
 type Filter = "all" | "on" | "off";
 
-/** 实例配置（isSettings·新原型）：「我的感知快恢 Agent 清单」管理页 → per-agent 配置。 */
+/** 实例配置（isSettings·新原型）：对话页点「设置」**直达当前 Agent 的配置视图**（Skill/MCP/模型/提示词），
+ * 返回箭头才回「我的全部 Agent」清单管理页（新建/启停/删除入口在那）。 */
 export function SettingsPage() {
   const nav = useNavigate();
   const { instanceId } = useParams();
   useSyncCurrentAgent(instanceId);  // 直链/新建实例进入：全局列表缺它则重拉
   const { agents, refresh } = useApp();
-  const [detailId, setDetailId] = useState<string | null>(null);
+  // 初始=路由实例：设置入口带着当前 Agent 进来，直达其配置（实测诉求：不要先看所有 Agent 卡片）
+  const [detailId, setDetailId] = useState<string | null>(instanceId ?? null);
   const detail = agents.find((a) => a.instance_id === detailId) ?? null;
 
   return (
@@ -35,7 +37,7 @@ export function SettingsPage() {
         {!detail ? <Button icon="plus" onClick={() => nav("/init")}>新建 Agent</Button> : null}
       </header>
 
-      {detail ? <AgentDetail instanceId={detail.instance_id} /> : <AgentListPage agents={agents} onOpen={setDetailId} onChanged={refresh} />}
+      {detail ? <AgentDetail instance={detail} /> : <AgentListPage agents={agents} onOpen={setDetailId} onChanged={refresh} />}
     </>
   );
 }
@@ -181,13 +183,14 @@ function CardAction({ icon, label, color: c, hoverBg, bold, disabled, onClick }:
   );
 }
 
-/* ---------------- per-agent 配置（Skill·MCP 库 / 模型配置）——沿用 ---------------- */
-function AgentDetail({ instanceId }: { instanceId: string }) {
-  const [tab, setTab] = useState<Tab>("lib");
+/* ---------------- per-agent 配置（运行服务视角：Skill / MCP / 模型 / 提示词）---------------- */
+function AgentDetail({ instance }: { instance: AgentInstance }) {
+  const [tab, setTab] = useState<Tab>("skill");
+  const instanceId = instance.instance_id;
   return (
     <>
       <div style={{ flex: "0 0 auto", background: "#fff", borderBottom: `1px solid ${color.border}`, padding: "0 24px", display: "flex", gap: 6 }}>
-        {([["lib", "Skill · MCP 库", "puzzle"], ["prompt", "角色提示词", "message-2"], ["model", "模型配置", "cpu"]] as const).map(([k, label, icon]) => {
+        {([["skill", "Skill 配置", "puzzle"], ["mcp", "MCP 配置", "plug"], ["model", "模型配置", "cpu"], ["prompt", "角色提示词", "message-2"]] as const).map(([k, label, icon]) => {
           const active = tab === k;
           return (
             <div key={k} onClick={() => setTab(k)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "13px 4px", margin: "0 8px", cursor: "pointer", fontSize: 13.5, fontWeight: active ? 700 : 500, color: active ? color.brand : color.textNav, borderBottom: `2px solid ${active ? color.brand : "transparent"}` }}>
@@ -196,83 +199,173 @@ function AgentDetail({ instanceId }: { instanceId: string }) {
           );
         })}
       </div>
-      {tab === "lib" ? <LibTab instanceId={instanceId} /> : tab === "prompt" ? <PromptTab instanceId={instanceId} /> : <ModelTab />}
+      {tab === "skill" || tab === "mcp" ? <PluginPane key={tab} kind={tab} instanceId={instanceId} />
+        : tab === "prompt" ? <PromptTab instanceId={instanceId} /> : <ModelTab instance={instance} />}
     </>
   );
 }
 
-function LibTab({ instanceId }: { instanceId: string }) {
+/** Skill 配置 / MCP 配置（原型 PluginsPage 布局）：工具栏（搜索+添加）+ 左树（系统自带/用户自定义，
+ * 带已绑定标记与自定义项删除）+ 右详情（版本/来源/状态/说明 + 绑定/解绑当前 Agent）。 */
+function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: string }) {
+  const isSkill = kind === "skill";
   const [search, setSearch] = useState("");
   const [bound, setBound] = useState<AssetRow[]>([]);
   const [lib, setLib] = useState<AssetRow[]>([]);
   const [versions, setVersions] = useState<ConfigVersionRow[]>([]);
-  const [dialog, setDialog] = useState<"skill" | "mcp" | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [dialog, setDialog] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [groupOpen, setGroupOpen] = useState<{ sys: boolean; mine: boolean }>({ sys: true, mine: true });
 
   const reload = () => {
-    api.getBoundSkills(instanceId).then(setBound);
-    Promise.all([api.getSkillLibrary(), api.getMcpLibrary()]).then(([s, m]) => setLib([...s, ...m]));
+    api.getBoundSkills(instanceId).then((rows) => setBound(rows.filter((r) => r.kind === kind)));
+    (isSkill ? api.getSkillLibrary() : api.getMcpLibrary()).then((rows) => {
+      setLib(rows);
+      setSelectedId((cur) => cur && rows.some((r) => r.id === cur) ? cur : rows[0]?.id ?? null);
+    });
     api.getConfigVersions(instanceId).then(setVersions);
   };
-  useEffect(reload, [instanceId]);
+  useEffect(reload, [instanceId, kind]);
 
   const run = (p: Promise<unknown>) => {
     setBusy(true);
     p.then(reload).catch((e) => alert((e as Error).message)).finally(() => setBusy(false));
   };
-  const boundAssetIds = new Set(bound.map((b) => b.assetId));
+
+  const boundByAsset = new Map(bound.map((b) => [b.assetId, b]));
+  const q = search.trim().toLowerCase();
+  const filtered = lib.filter((r) => !q || r.name.toLowerCase().includes(q));
+  const mine = filtered.filter((r) => r.meta.includes("我的"));
+  const sys = filtered.filter((r) => !r.meta.includes("我的"));
+  const selected = lib.find((r) => r.id === selectedId) ?? null;
+  const selBinding = selected ? boundByAsset.get(selected.id) : undefined;
+  const noun = isSkill ? "Skill" : "MCP";
+
+  const treeRow = (r: AssetRow) => {
+    const on = selectedId === r.id;
+    const isBound = boundByAsset.has(r.id);
+    const deletable = r.meta.includes("我的");
+    return (
+      <Interactive key={r.id} onClick={() => setSelectedId(r.id)}
+        baseStyle={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 10px", margin: "1px 0", borderRadius: radius.md, cursor: "pointer", background: on ? color.brandTintBg : "transparent" }}
+        hoverStyle={on ? {} : { background: "#f5f6f8" }}>
+        <Icon name={isSkill ? "file-code" : "plug"} size={14} color={on ? color.brand : color.textSubtle} />
+        <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: on ? 650 : 500, color: on ? color.brand : color.textBody, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
+        {isBound ? <span title="已绑定当前 Agent" style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
+        {deletable ? (
+          <Icon name="trash" size={13} color={color.textFaint} title="删除"
+            onClick={() => { if (confirm(`删除「${r.name}」？`)) run(api.deleteAsset(kind, r.id)); }} />
+        ) : null}
+      </Interactive>
+    );
+  };
+
+  const group = (key: "sys" | "mine", label: string, rows: AssetRow[]) => (
+    <div>
+      <div onClick={() => setGroupOpen((g) => ({ ...g, [key]: !g[key] }))}
+        style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 6px", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: color.textStrong }}>
+        <Icon name={groupOpen[key] ? "chevron-down" : "chevron-right"} size={14} color={color.textSubtle} />
+        <Icon name="folder-open" size={14} color={color.brand} />{label}
+        <span style={{ fontWeight: 500, color: color.textSubtle }}>（{rows.length}）</span>
+      </div>
+      {groupOpen[key] ? <div style={{ paddingLeft: 14 }}>{rows.map(treeRow)}
+        {rows.length === 0 ? <div style={{ padding: "6px 10px", fontSize: 12, color: color.textFaint }}>无</div> : null}
+      </div> : null}
+    </div>
+  );
 
   return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "22px 30px 40px" }}>
-      <div style={{ maxWidth: 860 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 18 }}>
-          <div style={{ width: 300 }}><TextInput value={search} onChange={setSearch} placeholder="搜索 Skill / HTTP MCP…" icon="search" /></div>
-          <div style={{ flex: 1 }} />
-          <Button variant="secondary" icon="refresh" disabled={busy} onClick={() => run(api.reconcileAssets())}>刷新对账</Button>
-          <Button variant="secondary" icon="upload" onClick={() => setDialog("skill")}>上传 Skill</Button>
-          <Button variant="secondary" icon="plug" onClick={() => setDialog("mcp")}>注册 HTTP MCP</Button>
+    <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: color.surfaceAlt }}>
+      {/* 工具栏 */}
+      <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", gap: 12, padding: "12px 24px", background: "#fff", borderBottom: `1px solid ${color.border}` }}>
+        <div style={{ width: 300 }}><TextInput value={search} onChange={setSearch} placeholder={`按 ${noun} 名称搜索…`} icon="search" /></div>
+        <div style={{ flex: 1 }} />
+        <Button variant="secondary" icon="refresh" disabled={busy} onClick={() => run(api.reconcileAssets())}>同步资产</Button>
+        <Button variant="secondary" icon={isSkill ? "upload" : "plug"} onClick={() => setDialog(true)}>{isSkill ? "上传 Skill" : "注册 HTTP MCP"}</Button>
+      </div>
+
+      {/* 左树 + 右详情 */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <div style={{ width: 250, flex: "0 0 250px", background: "#fff", borderRight: `1px solid ${color.border}`, overflowY: "auto", padding: "10px 8px" }}>
+          {group("sys", "系统自带", sys)}
+          {group("mine", "用户自定义", mine)}
         </div>
-
-        <SectionLabel>当前已绑定（main Agent）</SectionLabel>
-        <AssetTable rows={bound} actionLabel={() => "解绑"} onAction={(r) => run(api.unbindAsset(r.id))} />
-
-        <div style={{ height: 22 }} />
-        <SectionLabel>资产库（平台 + 我的）</SectionLabel>
-        <AssetTable
-          rows={lib.filter((r) => !search || r.name.includes(search))}
-          actionLabel={(r) => (boundAssetIds.has(r.id) ? "已绑定" : "绑定")}
-          onAction={(r) => { if (!boundAssetIds.has(r.id)) run(api.bindAsset(instanceId, r)); }}
-          onDelete={(r) => (r.meta.includes("我的") ? run(api.deleteAsset(r.kind ?? "skill", r.id)) : undefined)}
-        />
-
-        <div style={{ height: 22 }} />
-        <SectionLabel>配置版本历史</SectionLabel>
-        <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
-          {versions.map((v, i) => (
-            <div key={v.config_version_id} style={{ display: "grid", gridTemplateColumns: "70px 1fr 120px 120px", gap: 10, padding: "11px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
-              <span style={{ fontWeight: 700 }}>{v.version_no}{v.status === "active" ? <Pill tone="good" style={{ marginLeft: 6 }}>active</Pill> : null}</span>
-              <span style={{ color: color.textBody }}>{v.change_reason}</span>
-              <span style={{ color: color.textSubtle }}>{v.created_by}</span>
-              <span style={{ color: color.textSubtle, textAlign: "right" }}>{v.creation_date}</span>
+        <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "24px 30px 40px" }}>
+          {selected ? (
+            <div style={{ maxWidth: 720 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                <h3 style={{ fontSize: 17, fontWeight: 700, margin: 0 }}>{selected.name}</h3>
+                <Pill tone={isSkill ? "neutral" : "warning"}>{noun}</Pill>
+                <Pill tone={selected.statusTone}>{selected.status}</Pill>
+              </div>
+              <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 18 }}>
+                版本 {selected.version} · {selected.meta}
+              </div>
+              <SectionLabel>说明</SectionLabel>
+              <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18 }}>
+                {isSkill
+                  ? "在你的隔离沙箱容器内受控执行的技能包（对话里可用 / 名称直接触发）。绑定到当前 Agent 后进入其装配集。"
+                  : "经 Tool Gateway 受控调用的 HTTP MCP 服务（scope 校验 / 审批门 / 审计留痕）。其工具在运行时动态装配给 Agent。"}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                {selBinding ? (
+                  <>
+                    <Pill tone="good">已绑定当前 Agent</Pill>
+                    <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindAsset(selBinding.id))}>解绑</Button>
+                  </>
+                ) : (
+                  <Button disabled={busy} onClick={() => run(api.bindAsset(instanceId, selected))}>绑定到当前 Agent</Button>
+                )}
+              </div>
             </div>
-          ))}
-        </div>
-        <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
-          保存配置会生成新的 active 版本（历史版本与绑定不改写）。运行中的 Run 不重建会话，下一次模型/工具边界按最新配置生效。
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "60%", color: color.textFaint, gap: 10 }}>
+              <Icon name={isSkill ? "file-code" : "plug"} size={34} color={color.textFaint} />
+              <span style={{ fontSize: 13 }}>左侧选择一个 {noun} 查看详情</span>
+            </div>
+          )}
+
+          <div style={{ maxWidth: 720, marginTop: 30 }}>
+            <ConfigVersionsBlock versions={versions} />
+          </div>
         </div>
       </div>
 
       {dialog ? (
         <AssetDialog
-          kind={dialog}
+          kind={kind}
           busy={busy}
-          onClose={() => setDialog(null)}
+          onClose={() => setDialog(false)}
           onSubmit={(name, endpoint) => {
-            run((dialog === "skill" ? api.uploadSkill(name) : api.registerMcp(name, endpoint)).then(() => setDialog(null)));
+            run((isSkill ? api.uploadSkill(name) : api.registerMcp(name, endpoint)).then(() => setDialog(false)));
           }}
         />
       ) : null}
     </div>
+  );
+}
+
+/** 配置版本历史（Skill/MCP 两个 pane 底部共用）。 */
+function ConfigVersionsBlock({ versions }: { versions: ConfigVersionRow[] }) {
+  if (versions.length === 0) return null;
+  return (
+    <>
+      <SectionLabel>配置版本历史</SectionLabel>
+      <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
+        {versions.map((v, i) => (
+          <div key={v.config_version_id} style={{ display: "grid", gridTemplateColumns: "70px 1fr 120px 120px", gap: 10, padding: "11px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
+            <span style={{ fontWeight: 700 }}>{v.version_no}{v.status === "active" ? <Pill tone="good" style={{ marginLeft: 6 }}>active</Pill> : null}</span>
+            <span style={{ color: color.textBody }}>{v.change_reason}</span>
+            <span style={{ color: color.textSubtle }}>{v.created_by}</span>
+            <span style={{ color: color.textSubtle, textAlign: "right" }}>{v.creation_date}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ marginTop: 12, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
+        绑定/解绑会生成新的 active 配置版本（历史版本不改写）。运行中的 Run 不重建会话，下一次工具边界按最新配置生效。
+      </div>
+    </>
   );
 }
 
@@ -343,7 +436,7 @@ function PromptTab({ instanceId }: { instanceId: string }) {
   );
 }
 
-function ModelTab() {
+function ModelTab({ instance }: { instance: AgentInstance }) {
   const [models, setModels] = useState<ModelOption[]>([]);
   const [picked, setPicked] = useState<string>("");
   const [dialog, setDialog] = useState(false);
@@ -357,7 +450,18 @@ function ModelTab() {
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "26px 30px 40px" }}>
       <div style={{ maxWidth: 720 }}>
         <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>模型配置</h2>
-        <div style={{ fontSize: 12.5, color: color.textSubtle, marginBottom: 22 }}>为该 Agent 选择默认模型；可使用平台模型，也可添加自己的模型（仅支持 OpenAI 兼容协议，且必须支持 tool calling）。</div>
+        <div style={{ fontSize: 12.5, color: color.textSubtle, marginBottom: 16 }}>当前 Agent 的模型来源与可用模型清单（查看为主）。</div>
+        {/* 当前 Agent 默认模型（创建向导设定；查看为主，不做实例级修改持久化） */}
+        <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "14px 16px", marginBottom: 20 }}>
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 38px" }}>
+            <Icon name="cpu" size={20} color={color.brand} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 12, color: color.textSubtle }}>当前 Agent 默认模型</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginTop: 2 }}>{instance.model ?? "平台默认模型"}</div>
+          </div>
+          <span style={{ fontSize: 11.5, color: color.textSubtle }}>创建向导设定 · 对话中可临时切换（会话级）</span>
+        </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {models.map((m) => {
             const on = picked === m.llm_config_id;
@@ -391,37 +495,4 @@ function ModelTab() {
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10, color: color.textStrong }}>{children}</div>;
-}
-
-function AssetTable({ rows, actionLabel, onAction, onDelete }: {
-  rows: AssetRow[];
-  actionLabel: (r: AssetRow) => string;
-  onAction: (r: AssetRow) => void;
-  onDelete?: (r: AssetRow) => void;
-}) {
-  return (
-    <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
-      {rows.length === 0 ? (
-        <div style={{ padding: "18px 16px", fontSize: 12.5, color: color.textSubtle }}>暂无资产，点右上「上传 Skill / 注册 MCP」。</div>
-      ) : rows.map((r, i) => {
-        const label = actionLabel(r);
-        const inert = label === "已绑定";
-        const deletable = onDelete && r.meta.includes("我的");
-        return (
-          <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 64px 70px 90px 1fr 120px", gap: 10, padding: "12px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
-            <span style={{ fontWeight: 600, color: color.textStrong }}>{r.name}</span>
-            {/* 类型徽标：skill 与 MCP 同名（如 alarm-query 两个资产）时唯一的可视区分 */}
-            <Pill tone={r.kind === "mcp" ? "warning" : "neutral"}>{r.kind === "mcp" ? "MCP" : "Skill"}</Pill>
-            <span style={{ color: color.textSubtle }}>{r.version}</span>
-            <Pill tone={r.statusTone}>{r.status}</Pill>
-            <span style={{ color: color.textSubtle }}>{r.meta}</span>
-            <span style={{ textAlign: "right", fontSize: 12, fontWeight: 600, display: "flex", gap: 12, justifyContent: "flex-end" }}>
-              <span onClick={() => !inert && onAction(r)} style={{ color: inert ? color.textSubtle : color.brand, cursor: inert ? "default" : "pointer" }}>{label}</span>
-              {deletable ? <span onClick={() => onDelete(r)} style={{ color: color.dangerText, cursor: "pointer" }}>删除</span> : null}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
 }
