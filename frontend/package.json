@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 4175",
     "runtime": "tsx watch server/copilot-runtime.ts",
-    "runtime:start": "node --import tsx server/copilot-runtime.ts"
+    "runtime:start": "node --import tsx server/copilot-runtime.ts",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@ag-ui/client": "0.0.57",
@@ -26,6 +27,7 @@
     "zod": "^3.25.75"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@types/express": "4.17.25",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",

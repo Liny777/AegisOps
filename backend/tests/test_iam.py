@@ -70,3 +70,108 @@ def test_iam_whitelist_grant_revoke_cycle(client):
     r = client.post("/api/openops/v1/admin/users/whitelist:revoke", headers=ADMIN_HEADERS,
                     json={"client_request_id": f"wlr3_{_time.time_ns()}", "user_id": "admin"})
     assert r.status_code == 400
+
+
+# ---- B9：真 IAM 双步握手（OPENOPS_IAM_ENABLED=1 + 假上游） ----
+
+class _FakeResp:
+    def __init__(self, status, payload):
+        self.status_code = status
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeIam:
+    """假 IAM 上游：script = {"token": (status, payload), "userinfo": (status, payload)}。"""
+
+    calls = {"token": 0, "userinfo": 0}
+    script = {}
+
+    def __init__(self, *a, **kw):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *a):
+        return False
+
+    async def get(self, url, headers=None):
+        kind = "token" if "token" in url else "userinfo"
+        _FakeIam.calls[kind] += 1
+        status, payload = _FakeIam.script[kind]
+        return _FakeResp(status, payload)
+
+
+def _iam_env(monkeypatch, **extra):
+    from infra.external import iam_client
+
+    monkeypatch.setenv("OPENOPS_IAM_ENABLED", "1")
+    monkeypatch.setenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "http://iam.internal/token")
+    monkeypatch.setenv("OPENOPS_IAM_USERINFO_URL", "http://iam.internal/userinfo")
+    for k, v in extra.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(iam_client.httpx, "AsyncClient", _FakeIam)
+    iam_client.clear_cache()
+    _FakeIam.calls = {"token": 0, "userinfo": 0}
+
+
+def test_iam_b9_double_step_and_cache(client, monkeypatch):
+    """成功路径：cookie→token→userinfo→login_key 小写化；TTL 内二次请求命中缓存不重打 IAM。"""
+    _iam_env(monkeypatch)
+    _FakeIam.script = {"token": (200, {"code": "201", "access_token": "tk-1"}),
+                       "userinfo": (200, {"id": "W123XYZ", "name": "王五"})}
+    hdr = {"Cookie": "iam_sess=abc123"}
+    me = unwrap(client.get("/api/openops/v1/me", headers=hdr))
+    assert me["user_id"] == "w123xyz"  # strip+lower（老项目口径）
+    assert me["display_name"] == "王五"
+    assert me["whitelisted"] is False  # 白名单仍须管理员显式开通
+    unwrap(client.get("/api/openops/v1/me", headers=hdr))  # 二次
+    assert _FakeIam.calls["token"] == 1  # 命中 TokenCache
+    # 未带 cookie → 401
+    assert client.get("/api/openops/v1/me").status_code == 401
+
+
+def test_iam_b9_rejects_and_upstream(client, monkeypatch):
+    """code≠201 → 401（带 login_url）；上游 500 → 502 IAM_UPSTREAM；缺用户标识 → 401。"""
+    from infra.external import iam_client
+
+    _iam_env(monkeypatch, OPENOPS_IAM_LOGIN_URL="https://iam.example/login")
+    _FakeIam.script = {"token": (200, {"code": "403"}), "userinfo": (200, {})}
+    r = client.get("/api/openops/v1/me", headers={"Cookie": "iam_sess=expired"})
+    assert r.status_code == 401
+    assert r.json()["error"]["login_url"] == "https://iam.example/login"
+
+    iam_client.clear_cache()
+    _FakeIam.script = {"token": (500, {}), "userinfo": (200, {})}
+    r = client.get("/api/openops/v1/me", headers={"Cookie": "iam_sess=x2"})
+    assert r.status_code == 502
+    assert r.json()["error"]["code"] == "IAM_UPSTREAM"
+
+    iam_client.clear_cache()
+    _FakeIam.script = {"token": (200, {"code": "201", "accessToken": "tk-2"}),
+                       "userinfo": (200, {"name": "无标识"})}
+    r = client.get("/api/openops/v1/me", headers={"Cookie": "iam_sess=x3"})
+    assert r.status_code == 401
+
+
+def test_iam_b9_dot_path_fields_and_logout(client, monkeypatch):
+    """点分路径字段映射（data.user.id）；logout 清 TokenCache 后需重新校验。"""
+    from infra.external import iam_client
+
+    _iam_env(monkeypatch,
+             OPENOPS_IAM_LOGIN_KEY_FIELD="data.user.id",
+             OPENOPS_IAM_DISPLAY_NAME_FIELD="data.user.cn")
+    _FakeIam.script = {"token": (200, {"code": "201", "access_token": "tk-3"}),
+                       "userinfo": (200, {"data": {"user": {"id": "P777", "cn": "赵六"}}})}
+    hdr = {"Cookie": "iam_sess=dot"}
+    me = unwrap(client.get("/api/openops/v1/me", headers=hdr))
+    assert me["user_id"] == "p777" and me["display_name"] == "赵六"
+    # logout 清缓存 → 再请求重新打 IAM
+    before = _FakeIam.calls["token"]
+    out = unwrap(client.post("/api/openops/v1/auth/logout", headers=hdr))
+    assert "signout_url" in out
+    unwrap(client.get("/api/openops/v1/me", headers=hdr))
+    assert _FakeIam.calls["token"] == before + 1

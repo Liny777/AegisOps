@@ -125,3 +125,20 @@ real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，�
 校验上限 200000 是为大窗口模型留的余量，**不是**安全值；换小窗口模型时要同步压低。
 
 双层截断关系：`OPENOPS_MCP_RESULT_CAP`（字符，网络层先砍）→ `tool_result_limit`（token，agentscope 上下文层兜底）。
+
+## IAM 双步鉴权（B9；2026-07-13，老项目 D4 机制迁移）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `OPENOPS_IAM_ENABLED` | false | true=公司 IAM cookie 双步握手替代 X-OpenOps-Mock-*（mock 头即失效） |
+| `OPENOPS_IAM_ACCESS_TOKEN_URL` | — | 步1：GET，headers=Cookie+IAM-Client-Ip（XFF 首跳），判 `code=="201"` 取 access_token/accessToken |
+| `OPENOPS_IAM_USERINFO_URL` | — | 步2：GET，`Authorization: <裸token>`（无 Bearer 前缀） |
+| `OPENOPS_IAM_LOGIN_KEY_FIELD` | id | userinfo 取用户标识的点分路径（如 `data.user.id`）；strip+lower 后作 user_id |
+| `OPENOPS_IAM_DISPLAY_NAME_FIELD` | name | 展示名字段路径；缺失回退 login_key |
+| `OPENOPS_IAM_CACHE_TTL_S` | 300 | 进程内 TokenCache（SHA-256(cookie)→身份，上限 1024 条），TTL 内不重打 IAM |
+| `OPENOPS_IAM_LOGIN_URL` | — | 配了则 401 响应体带 `login_url`，前端自动跳登录 |
+| `OPENOPS_IAM_SIGNOUT_URL` | — | `POST /auth/logout` 返回给前端（登出清 TokenCache） |
+
+TLS 与代理沿用三档口径（OPENOPS_TLS_CA_FILE ＞ OPENOPS_TLS_INSECURE=1 ＞ certifi；truststore 自动注入见 run.py）。
+失败语义：401（会话无效/无用户标识，带 login_url）/ 502 `IAM_UPSTREAM`（IAM 不可达）；白名单 403 与 mock 模式同一条链。
+用户行：IAM 首次校验通过即 upsert `sre_openops_user`（角色默认 user，仅建行不授权）；**使用权仍由白名单闸控制**（管理员显式开通）。

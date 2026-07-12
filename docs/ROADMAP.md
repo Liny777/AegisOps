@@ -40,11 +40,16 @@
 
 > 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）、`OPENOPS_LLM_PROBE=mock|real`（用户自定义 LLM 探测：real 发真 `chat/completions` 验 tool-calling 能力，默认 mock 启发式）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。外部依赖接真开关（`OPENOPS_MCP`/`OPENOPS_MCPREGISTRY`/`OPENOPS_SKILLHUB`=mock\|real）见 `backend/docs/EXTERNAL-INTEGRATION.md`。
 
-## B9 真实 W3/IAM + E2E + 发布准备
+## B9 真实 W3/IAM + E2E + 发布准备（可自主部分 ✅ 2026-07-13；真 IAM 联调待内网字段对齐）
 
-- 用公司 W3/IAM Cookie introspect 替换 `X-OpenOps-Mock-User`；保持白名单/管理员/owner 隔离语义。
-- Playwright E2E：准入、初始化、对话+GLM RCA、ASK、取消、关闭、设置页、管理台 forbidden/admin。
-- 发布检查：DDL、敏感信息、禁用功能入口、审计串联。
+- ✅ IAM 双步鉴权（老项目 D4 机制迁移）：`OPENOPS_IAM_ENABLED=true` 时 cookie→access_token（code=201）
+  →userinfo（裸 token Authorization）→点分路径字段映射（LOGIN_KEY_FIELD/DISPLAY_NAME_FIELD）；
+  进程内 TokenCache（SHA-256(cookie)，TTL 300s）；401 带 login_url 前端自动跳登录；`POST /auth/logout`
+  清缓存；白名单/角色裁决与 mock 同链。env 清单见 backend/docs/EXTERNAL-INTEGRATION.md「IAM 双步鉴权」。
+  剩余：内网 IAM 真端点/字段对齐（99 号 P0）后 `OPENOPS_IAM_ENABLED=true` 联调。
+- ✅ Playwright E2E smoke（`npm run e2e`，mock 模式免后端，6 例：工作台/发送/向导/清单/管理台切换+编辑器/审计）；
+  ⚠内网离线须公司 npm 镜像装 chromium，或跳过（后端面 pytest 已覆盖）。
+- ✅ 发布检查：docs/release-checklist.md + scripts/release_check.sh（DDL 表数/敏感扫描/禁用入口自动项 + 手动项清单）。
 
 ## 附：已知跨块待办
 

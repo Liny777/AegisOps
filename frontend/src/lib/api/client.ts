@@ -29,6 +29,8 @@ export async function apiFetch<T = unknown>(
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: opts.method ?? "GET",
+    // B9：带上公司 IAM cookie（后端 OPENOPS_IAM_ENABLED=true 时据此双步校验；mock 模式无害）
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       "X-OpenOps-Mock-User": demoIdentity.user,
@@ -39,7 +41,11 @@ export async function apiFetch<T = unknown>(
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = (json as { error?: { code?: string; message?: string; retryable?: boolean } }).error;
+    const err = (json as { error?: { code?: string; message?: string; retryable?: boolean; login_url?: string } }).error;
+    // B9：IAM 会话失效且后端带了登录地址 → 直接跳公司登录页（老项目 App.tsx 379-430 口径）
+    if (res.status === 401 && err?.login_url) {
+      window.location.assign(err.login_url);
+    }
     throw new ApiError(err?.code ?? `HTTP_${res.status}`, err?.message ?? res.statusText, err?.retryable);
   }
   return (json as { data?: T }).data as T;

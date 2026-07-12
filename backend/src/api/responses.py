@@ -20,7 +20,8 @@ def install_error_handlers(app: Any) -> None:
         return JSONResponse(
             status_code=exc.status,
             content={
-                "error": {"code": exc.code, "message": exc.message, "retryable": exc.retryable},
+                "error": {"code": exc.code, "message": exc.message, "retryable": exc.retryable,
+                          **getattr(exc, "extra", {})},
                 "request_id": "req_" + uuid.uuid4().hex[:12],
             },
         )

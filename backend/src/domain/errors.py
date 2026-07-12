@@ -30,6 +30,7 @@ class Err:
     SANDBOX_CONTAINER_FAILED = "SANDBOX_CONTAINER_FAILED"
     SKILL_CHECKSUM_MISMATCH = "SKILL_CHECKSUM_MISMATCH"
     SKILL_TIMEOUT = "SKILL_TIMEOUT"
+    IAM_UPSTREAM = "IAM_UPSTREAM"  # B9：IAM 服务不可达/异常（502，可重试）
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -49,6 +50,7 @@ _STATUS = {
     Err.SANDBOX_CONTAINER_FAILED: 503,
     Err.SKILL_CHECKSUM_MISMATCH: 400,
     Err.SKILL_TIMEOUT: 504,
+    Err.IAM_UPSTREAM: 502,
     Err.INTERNAL_ERROR: 500,
 }
 
@@ -56,9 +58,12 @@ _STATUS = {
 class ApiError(Exception):
     """业务错误：API 层统一转 {error:{code,message,retryable}} envelope。"""
 
-    def __init__(self, code: str, message: str, *, retryable: bool = False, status: int | None = None):
+    def __init__(self, code: str, message: str, *, retryable: bool = False, status: int | None = None,
+                 extra: dict | None = None):
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
         self.status = status or _STATUS.get(code, 400)
+        # B9：并入 error 对象的附加字段（如 401 的 login_url，前端跳登录用）；None 值不输出
+        self.extra = {k: v for k, v in (extra or {}).items() if v is not None}
