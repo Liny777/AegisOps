@@ -72,8 +72,13 @@ async def resolve_for_task(
         await _blocked(run_id, task_id, instance_id, audit_trace_id, user_id, "WORKSPACE_NOT_READY", "workspace 未就绪")
         raise ApiError(Err.WORKSPACE_NOT_READY, "workspace 未就绪（fail-closed）", retryable=True)
     if status != "ok":
-        await _blocked(run_id, task_id, instance_id, audit_trace_id, user_id, "SCOPE_RESOLVE_FAILED", "范围解析失败")
-        raise ApiError(Err.SCOPE_RESOLVE_FAILED, "范围解析失败（fail-closed）", retryable=True)
+        # 原因必达（内网实测：光秃 SCOPE_RESOLVE_FAILED 无法定位——常见=实例绑的 workspace 是
+        # mock 时代旧 id / 已在 umodel 删除，check-net ③ 可列真实 workspaces 核对）
+        why = str(res.get("reason") or "上游未给原因")
+        msg = (f"范围解析失败（fail-closed）：workspace={ws_id}，{why}。"
+               "该实例绑定的系统范围可能已失效——用初始化向导从真实应用树新建 Agent，或核对 check-net ③")
+        await _blocked(run_id, task_id, instance_id, audit_trace_id, user_id, "SCOPE_RESOLVE_FAILED", msg)
+        raise ApiError(Err.SCOPE_RESOLVE_FAILED, msg, retryable=True)
     appids = res["effective_appids"]
     if not appids:
         await _blocked(run_id, task_id, instance_id, audit_trace_id, user_id, "EMPTY_SCOPE", "有效范围为空")

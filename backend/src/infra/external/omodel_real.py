@@ -55,8 +55,10 @@ def _derive_rev(effective_appids: list[str]) -> str:
     return "sc-" + hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
 
 
-def _failed(scope_revision: str) -> dict[str, Any]:
-    return {"status": "failed", "effective_appids": [], "scope_revision": scope_revision, "omodel_request_id": ""}
+def _failed(scope_revision: str, reason: str = "") -> dict[str, Any]:
+    # reason 供 Scope Service 拼进 fail-closed 报错（内网实测：无原因的 SCOPE_RESOLVE_FAILED 无法定位）
+    return {"status": "failed", "effective_appids": [], "scope_revision": scope_revision,
+            "omodel_request_id": "", "reason": reason}
 
 
 def _map_metadata(md: dict[str, Any]) -> dict[str, Any]:
@@ -84,22 +86,22 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
     """
     base = _base()
     if not base:
-        return _failed(scope_revision)
+        return _failed(scope_revision, "OPENOPS_OMODEL_BASE_URL 未配置")
     try:
         import httpx
 
         async with httpx.AsyncClient(**_client_kwargs(base)) as c:
             r = await c.get(f"{_prefix()}/{workspace_id}/projects")
             if r.status_code == 404:
-                return _failed(scope_revision)  # workspace 不存在/已删除
+                return _failed(scope_revision, f"umodel 查不到该 workspace（GET /{workspace_id}/projects → 404，可能已删除或是 mock 时代旧 id）")
             r.raise_for_status()
             projects = r.json() or []
             appids = sorted(p["project_id"] for p in projects if isinstance(p, dict) and p.get("project_id"))
             rid = r.headers.get("X-Request-Id") or "req_" + uuid.uuid4().hex[:10]
             return {"status": "ok", "effective_appids": appids,
                     "scope_revision": _derive_rev(appids), "omodel_request_id": rid}
-    except Exception:
-        return _failed(scope_revision)  # fail-closed（含超时/连接错/解析错）
+    except Exception as e:  # fail-closed（含超时/连接错/解析错/非 2xx）
+        return _failed(scope_revision, f"{type(e).__name__}: {str(e)[:150]}")
 
 
 async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
