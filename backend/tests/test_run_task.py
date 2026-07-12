@@ -200,3 +200,81 @@ def test_run_delete_soft_and_list_excludes(client):
     assert all(r2["agent_run_id"] != rid for r2 in runs_list)  # 列表不再含
     r2 = client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS)
     assert r2.status_code == 404  # get_run 过滤 deleted_at
+
+
+def test_idem_survives_process_restart(client):
+    """P1（INIT-006 跨进程版）：幂等键落 PG——清空内存 L1（模拟重启）后同
+    client_request_id 重放仍命中，返回首个 run 而非重复创建。"""
+    from infra import idempotency
+
+    instance = create_instance(client)
+    crid = f"idem_{time.time_ns()}"
+    body = {"client_request_id": crid, "agent_team_instance_id": instance["instance_id"]}
+    r1 = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body))
+
+    idempotency.clear()  # 模拟进程重启：内存 L1 清空，PG 行仍在
+    r2 = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body))
+    assert r2["run"]["agent_run_id"] == r1["run"]["agent_run_id"]
+
+    runs_list = unwrap(client.get("/api/openops/v1/agent-runs", headers=USER_HEADERS))
+    assert sum(1 for r in runs_list if r["agent_run_id"] == r1["run"]["agent_run_id"]) == 1
+
+
+def test_p2_restart_orphan_convergence(client):
+    """P2：任务 running 中"重启"（清内存注册表）→ converge 标 interrupted；
+    /state 回退快照展示 interrupted；cancel 按快照收敛不再 404。"""
+    import asyncio as _asyncio
+
+    from app import run_state_service as rss
+    from runtime import task_registry
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    task = start_task(client, run["agent_run_id"])  # mock 剧本停在 ASK，保持 running
+    tid = task["task_id"]
+
+    task_registry.reset()  # 模拟进程重启：内存态清空，PG 快照仍在
+    n = _asyncio.run(rss.converge_orphan_tasks())
+    assert n >= 1
+
+    state = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/state", headers=USER_HEADERS))
+    assert state["active_task"] is not None
+    assert state["active_task"]["task_id"] == tid
+    assert state["active_task"]["status"] == "interrupted"
+
+    out = unwrap(client.post(f"/api/openops/v1/tasks/{tid}:cancel", headers=USER_HEADERS, json={}))
+    assert out["status"] == "cancelled"
+
+
+def test_p3_session_state_continuity(client, runtime_backend):
+    """P3：同 run 两个 task——AgentState 落 PG、第二轮 context 累积（同会话不再失忆）。"""
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("AgentState 持久化仅 agentscope runtime 生效")
+    from test_agui import _annotate_recover_no_ask
+
+    from infra.repositories import agent_session_states
+
+    _annotate_recover_no_ask(client)  # 免审批直通完成
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid, fsid = run["agent_run_id"], run["framework_session_id"]
+
+    def _status():
+        s = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+        at = s.get("active_task")
+        return at if at and at["status"] in ("completed", "failed") else None
+
+    start_task(client, rid, "第一句：请记住数字 42")
+    assert wait_until(_status)["status"] == "completed"
+    saved1 = _asyncio.run(agent_session_states.get_state_json(fsid, "main"))
+    assert saved1 is not None and len(saved1.get("context") or []) > 0  # 第一轮已落 PG
+
+    start_task(client, rid, "第二句：我刚让你记的数字是多少")
+    assert wait_until(_status)["status"] == "completed"
+    saved2 = _asyncio.run(agent_session_states.get_state_json(fsid, "main"))
+    # 第二轮恢复了第一轮 context 再累积（不再失忆）
+    assert len(saved2.get("context") or []) > len(saved1.get("context") or [])

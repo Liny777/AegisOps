@@ -999,6 +999,68 @@ COMMENT ON COLUMN sre_audit_event.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN sre_audit_event.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_audit_event.expire_at IS '过期时间，V1 审计保留 30 天';
 
+-- P 块（运行态持久化，2026-07-12）：幂等键跨进程表。新表 CREATE IF NOT EXISTS 天然幂等，
+-- 旧库重跑本文件或执行 migrate-2026-07-12-persistence.sql 均可建。
+CREATE TABLE IF NOT EXISTS sre_idempotency_key (
+  idempotency_id uuid NOT NULL PRIMARY KEY,
+  user_id text NOT NULL,
+  op text NOT NULL,
+  client_request_id text NOT NULL,
+  result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  expire_at timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_idempotency_key
+  ON sre_idempotency_key (user_id, op, client_request_id) WHERE deleted_at IS NULL;
+COMMENT ON TABLE sre_idempotency_key IS '幂等键（P 块）：同 (user_id, op, client_request_id) 重放返回首个结果，跨进程持久（内存为 L1）；过期行启动时物理清理';
+COMMENT ON COLUMN sre_idempotency_key.result_json IS '首次执行的结果（row_json 后的 JSON），重放原样返回';
+COMMENT ON COLUMN sre_idempotency_key.expire_at IS '过期时间（默认 7 天）；过期后允许同 key 重新执行';
+
+-- P 块：任务运行态快照（重启孤儿收敛用；内存 task_registry 为热路径，本表为影子快照）
+CREATE TABLE IF NOT EXISTS sre_task_state (
+  task_id text NOT NULL PRIMARY KEY,
+  run_id uuid NOT NULL,
+  user_id text NOT NULL,
+  instance_id uuid NOT NULL,
+  task_status text NOT NULL DEFAULT 'running',
+  input_text text NOT NULL DEFAULT '',
+  rca_json jsonb,
+  selected_model text,
+  scope_ctx_json jsonb,
+  approval_id text,
+  started_at text,
+  audit_trace_id text,
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS ix_task_state_run ON sre_task_state (run_id, creation_date DESC);
+CREATE INDEX IF NOT EXISTS ix_task_state_running ON sre_task_state (user_id) WHERE task_status = 'running';
+COMMENT ON TABLE sre_task_state IS '任务运行态影子快照（P 块）：可序列化字段落盘（协程/Event 活对象不落）；重启后 running 行由 startup 收敛为 interrupted，不做协程恢复';
+COMMENT ON COLUMN sre_task_state.task_status IS 'running / completed / failed / cancelled / interrupted（重启收敛态）';
+
+-- P 块：Agent 会话状态（同 run 跨 task 记忆连续性；AgentState pydantic 全量 JSON）
+CREATE TABLE IF NOT EXISTS sre_agent_session_state (
+  session_state_id uuid NOT NULL PRIMARY KEY,
+  framework_session_id text NOT NULL,
+  agent_key text NOT NULL DEFAULT 'main',
+  state_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_session_state
+  ON sre_agent_session_state (framework_session_id, agent_key) WHERE deleted_at IS NULL;
+COMMENT ON TABLE sre_agent_session_state IS 'Agent 会话状态（P 块）：AgentState 按 (framework_session_id, agent_key) 持久化，task 开始读入/终态回写——同 run 第二个 task 不再失忆；agent_key 为 D 块 sub agent 预留';
+
 -- ==================== 增量迁移（幂等，重跑本文件自动补齐旧库） ====================
 -- ⚠ 新列的 COMMENT 必须放本段（ALTER 之后）：COMMENT 无 IF EXISTS，放上方主体段会在旧库炸 UndefinedColumn。
 -- 2026-07-12 会话名称（独立增量文件：migrate-2026-07-12-run-title.sql）

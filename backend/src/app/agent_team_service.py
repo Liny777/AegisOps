@@ -24,7 +24,7 @@ def _owner_check(row: dict[str, Any] | None, user_id: str) -> dict[str, Any]:
 
 async def create(user: dict[str, Any], req: Any) -> dict[str, Any]:
     uid = user["user_id"]
-    cached = idempotency.get(uid, "create_agent_team", req.client_request_id)
+    cached = await idempotency.get(uid, "create_agent_team", req.client_request_id)
     if cached is not None:
         return cached  # INIT-006 幂等重放
 
@@ -56,7 +56,7 @@ async def create(user: dict[str, Any], req: Any) -> dict[str, Any]:
         actor_type="user",
     )
     result = {"instance": _dto(inst)}
-    return idempotency.put(uid, "create_agent_team", req.client_request_id, result)
+    return await idempotency.put(uid, "create_agent_team", req.client_request_id, result)
 
 
 def _dto(row: dict[str, Any]) -> dict[str, Any]:

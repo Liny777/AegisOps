@@ -2,14 +2,30 @@
 
 mock orchestrator 与真 AgentScope runtime 共用本函数，保证两条后端产出的 `openops.*`
 事件与审计投影完全一致（30.4 envelope）。敏感字段禁入事件（SEC-002）由调用方保证。
+P 块：任务状态转移事件在此单点顺带落影子快照（sre_task_state）——两条 runtime 全部
+状态变化都过 emit，无需在各终态散点插桩；快照失败不阻断任务（旧库未迁移时降级）。
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from infra.repositories import audit
+from infra.repositories import audit, task_states
 from runtime import events
 from runtime.task_registry import TaskState
+
+log = logging.getLogger("openops.emit")
+
+# 事件 → 快照状态（事件即真相，不依赖调用方是否已改 st.status）
+_SNAPSHOT_STATUS = {
+    "openops.task.started": "running",
+    "openops.task.completed": "completed",
+    "openops.task.failed": "failed",
+    "openops.task.cancelled": "cancelled",
+}
+# 不改状态但需刷新快照内容的事件（RCA 面板 / 审批引用）
+_SNAPSHOT_REFRESH = {"openops.rca.updated", "openops.approval.required",
+                     "openops.approval.approved", "openops.approval.rejected"}
 
 
 async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -> None:
@@ -25,3 +41,8 @@ async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -
         reason_code=kw.get("reason_code"), severity=kw.get("severity", "info"),
         payload=kw.get("payload"), audit_trace_id=trace,
     ))
+    if event_type in _SNAPSHOT_STATUS or event_type in _SNAPSHOT_REFRESH:
+        try:
+            await task_states.upsert_snapshot(st, _SNAPSHOT_STATUS.get(event_type, st.status), trace)
+        except Exception:  # noqa: BLE001 —— 旧库未跑 persistence 迁移等，快照降级不阻断
+            log.warning("[OpenOps][snapshot] 任务快照写入失败（见 sql/migrate-2026-07-12-persistence.sql）")

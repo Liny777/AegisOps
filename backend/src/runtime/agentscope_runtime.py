@@ -24,7 +24,7 @@ import re
 from typing import Any
 
 from runtime import events, tool_gateway
-from infra.repositories import runs
+from infra.repositories import agent_session_states, runs
 from runtime.emit import emit
 from runtime.rca_demo import rca
 from runtime.task_registry import TaskState
@@ -501,6 +501,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     from agentscope.message import Msg, TextBlock
     from agentscope.state import AgentState
 
+    agent = None  # P3：finally 回写引用；toolkit 构建抛错时保持 None
     try:
         toolkit, pruned = await _build_toolkit(st, run)
         for name, reason in pruned:  # 裁剪审计对齐 mock（B6-RT-001③）：未标注/blocked 工具运行前即留痕
@@ -508,12 +509,27 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             await emit(st, run, "openops.tool.blocked", severity="warning", action=name,
                        message=f"工具 {name} 未进入运行工具集（{'未标注' if reason == 'TOOL_NOT_ANNOTATED' else '已拉黑'}），运行时 fail-closed",
                        reason_code=reason, payload={"tool": name, "phase": "toolkit_build"})
+        # P3：同 run 跨 task 记忆连续性——按 (framework_session_id,'main') 恢复 AgentState
+        # （含 context 消息历史）；permission_context 必须覆盖为本 task 规则（标注可能已热更新）。
+        # 旧库未迁移/首个 task → 全新 state。
+        fsid = str(run["framework_session_id"])
+        agent_state = None
+        try:
+            saved = await agent_session_states.get_state_json(fsid, "main")
+            if saved:
+                agent_state = AgentState.model_validate(saved)
+                agent_state.permission_context = _permission_context(st)
+        except Exception:  # noqa: BLE001 —— 状态损坏/schema 漂移：放弃恢复，全新开始（不阻断任务）
+            log.warning("[OpenOps][session-state] AgentState 恢复失败，本 task 从空状态开始 session=%s", fsid)
+            agent_state = None
+        if agent_state is None:
+            agent_state = AgentState(session_id=fsid, permission_context=_permission_context(st))
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
             model=await _build_model(st),
             toolkit=toolkit,
-            state=AgentState(session_id=str(run["framework_session_id"]), permission_context=_permission_context(st)),
+            state=agent_state,
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）
@@ -600,3 +616,17 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         await emit(st, run, "openops.model.call.failed", severity="error", action="model_call",
                    message="模型调用失败", reason_code="MODEL_CALL_FAILED", payload={"error": _redact(str(e))})
         await emit(st, run, "openops.task.failed", severity="error", message="任务失败，请重试或联系管理员", action="task")
+    finally:
+        # P3：终态回写 AgentState（completed/failed/cancelled 均落）——同 run 下一个 task 恢复记忆
+        if agent is not None:
+            try:
+                import json as _json
+
+                dump = agent.state.model_dump(mode="json")
+                if len(_json.dumps(dump, ensure_ascii=False)) > 2_000_000:
+                    log.warning("[OpenOps][session-state] state_json 超 2MB（考虑 offload/压缩）session=%s",
+                                run["framework_session_id"])
+                await agent_session_states.upsert_state_json(
+                    str(run["framework_session_id"]), dump, "main", st.user_id)
+            except Exception:  # noqa: BLE001 —— 旧库未迁移/序列化异常不阻断终态收口
+                log.warning("[OpenOps][session-state] AgentState 回写失败 session=%s", run["framework_session_id"])

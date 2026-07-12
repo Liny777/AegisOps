@@ -9,7 +9,7 @@ from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, sco
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
-from infra.repositories import agent_teams, audit, runs, runtime_config, secrets, templates
+from infra.repositories import agent_teams, audit, runs, runtime_config, secrets, task_states, templates
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
 from sandbox.executor import executor as sandbox_executor
@@ -40,7 +40,7 @@ async def list_pending(user: dict[str, Any], run_id: str) -> list[dict[str, Any]
 
 async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
     uid = user["user_id"]
-    cached = idempotency.get(uid, "create_run", req.client_request_id)
+    cached = await idempotency.get(uid, "create_run", req.client_request_id)
     if cached is not None:
         return cached
     inst = await agent_teams.get_instance(req.agent_team_instance_id)
@@ -66,7 +66,7 @@ async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
         actor_type="system",
     )
     result = {"run": row_json(run)}
-    return idempotency.put(uid, "create_run", req.client_request_id, result)
+    return await idempotency.put(uid, "create_run", req.client_request_id, result)
 
 
 async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
@@ -77,7 +77,12 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     # 并发上限（RUN-004）：读平台运行配置
     cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
     limit = int(cfg.get("per_user_running_task_limit", 2))
-    if task_registry.running_count(uid) >= limit:
+    running = task_registry.running_count(uid)
+    try:  # P2：与快照取 max（重启后内存归零时防瞬时超发；旧库未迁移降级内存值）
+        running = max(running, await task_states.count_running(uid))
+    except Exception:  # noqa: BLE001
+        pass
+    if running >= limit:
         raise ApiError(Err.USER_TASK_CONCURRENCY_LIMIT, f"并发任务数已达上限（{limit}）")
 
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
@@ -139,6 +144,11 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
     # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）
     st.available_skills = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
+    # P2：初始 running 快照（task.started 审计在上方直发不走 emit，此处补单点落盘）；失败降级不阻断
+    try:
+        await task_states.upsert_snapshot(st, "running", trace)
+    except Exception:  # noqa: BLE001
+        log.warning("[OpenOps][snapshot] 初始任务快照写入失败（见 sql/migrate-2026-07-12-persistence.sql）")
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 
@@ -204,7 +214,15 @@ async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any]
 async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
     st = task_registry.get_by_task(task_id)
     if st is None:
-        raise ApiError(Err.NOT_FOUND, "任务不存在或已结束")
+        # P2 收敛：内存 miss（进程重启过）→ 按快照收口而非 404，用户可把孤儿任务显式关掉
+        snap = await task_states.get_by_task(task_id)
+        if snap is None:
+            raise ApiError(Err.NOT_FOUND, "任务不存在或已结束")
+        if snap["user_id"] != user["user_id"]:
+            raise ApiError(Err.FORBIDDEN, "无权取消该任务")
+        if snap["task_status"] in ("running", "interrupted"):
+            await task_states.mark_status(task_id, "cancelled", user["user_id"])
+        return {"task_id": task_id, "status": "cancelled"}
     if st.user_id != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权取消该任务")
     if st.status == "running":
@@ -320,18 +338,59 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     st = task_registry.get_by_run(run_id)
     pend = await runs.pending_approvals(run_id)
     recent = await audit.list_by_run(run_id, limit=100)
+    active_task: dict[str, Any] | None = None
+    rca: Any = None
+    if st is not None:
+        active_task = {"task_id": st.task_id, "status": st.status, "input_text": st.input_text,
+                       "started_at": st.started_at, "selected_model": st.selected_model}
+        rca = st.rca
+    else:
+        # P2 回退：内存 miss（进程重启过）读影子快照——恢复面能看到最后任务与 RCA，
+        # interrupted 态由启动收敛写入，前端据此停「运行中」转圈
+        try:
+            snap = await task_states.get_latest_by_run(run_id)
+        except Exception:  # noqa: BLE001 —— 旧库未迁移
+            snap = None
+        if snap is not None:
+            active_task = {"task_id": snap["task_id"], "status": snap["task_status"],
+                           "input_text": snap["input_text"], "started_at": snap["started_at"],
+                           "selected_model": snap["selected_model"]}
+            rca = snap["rca_json"]
     return {
         "run": row_json(run),
         "instance": row_json(inst) if inst else None,
-        "active_task": {
-            "task_id": st.task_id, "status": st.status, "input_text": st.input_text,
-            "started_at": st.started_at, "selected_model": st.selected_model,
-        } if st else None,
-        "rca": st.rca if st else None,
+        "active_task": active_task,
+        "rca": rca,
         "pending_approvals": [row_json(a) for a in pend],
         "recent_events": [row_json(e) for e in recent],
         "last_event_seq": events.snapshot(run_id)[-1]["sequence"] if events.snapshot(run_id) else 0,
     }
+
+
+async def converge_orphan_tasks() -> int:
+    """P2 启动收敛：上个进程遗留的 running 快照 → interrupted + 审计（不做协程恢复）。
+
+    正常终态在 emit 边界已落快照，这里剩下的 running 行都是重启孤儿。收敛后 get_state
+    回退展示 interrupted、cancel 可显式关掉、并发计数不再被幽灵任务占用。
+    """
+    try:
+        orphans = await task_states.list_running()
+    except Exception:  # noqa: BLE001 —— 旧库未迁移，静默跳过
+        return 0
+    for row in orphans:
+        await task_states.mark_status(str(row["task_id"]), "interrupted", "system")
+        try:
+            await audit.insert_event(
+                audit_trace_id=str(row["audit_trace_id"] or uuid.uuid4()), event_type="task.interrupted",
+                user_id=str(row["user_id"]), run_id=str(row["run_id"]), instance_id=str(row["instance_id"]),
+                task_id=str(row["task_id"]), action="converge", actor_type="system",
+                payload_redacted={"reason": "backend_restart"},
+            )
+        except Exception:  # noqa: BLE001 —— 审计失败不阻断启动
+            log.warning("[OpenOps][snapshot] 孤儿任务审计写入失败 task=%s", row["task_id"])
+    if orphans:
+        log.warning("[OpenOps][snapshot] 启动收敛 %d 个重启孤儿任务 → interrupted", len(orphans))
+    return len(orphans)
 
 
 async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:

@@ -30,6 +30,12 @@ from infra.db import close_pool, open_pool
 async def lifespan(_app: FastAPI):
     await open_pool()
     await seed.seed()
+    # P 块启动例程：过期幂等键清理 + 重启孤儿任务收敛（running 快照 → interrupted）
+    from app import run_state_service as _rss
+    from infra import idempotency as _idem
+
+    await _idem.purge_expired()
+    await _rss.converge_orphan_tasks()
     # 后台资产对账（28.7）：OPENOPS_RECONCILE_INTERVAL_S > 0 时启用（默认关；登录/refresh 触发已覆盖 V1）
     import asyncio
     import logging

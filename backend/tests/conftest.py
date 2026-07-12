@@ -33,6 +33,9 @@ OTHER_HEADERS = {"X-OpenOps-Mock-User": "0099other", "X-OpenOps-Mock-Name": "Oth
 ROOT = Path(__file__).resolve().parents[1]
 DDL = ROOT / "sql" / "openops_v1_core.sql"
 TABLES = [
+    "sre_idempotency_key",
+    "sre_task_state",
+    "sre_agent_session_state",
     "sre_model_access_grant",
     "sre_model_asset",
     "sre_audit_event",
