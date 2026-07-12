@@ -110,3 +110,17 @@ a {
   color: inherit;
   text-decoration: none;
 }
+
+/* CopilotChat 工具卡（Part B）：无空格长串（长 URL/token/JSON）会把 pre 撑宽、灰背景溢出卡片
+   ——组件自带 pre-wrap+overflow-auto 但缺 anywhere 断行，且 grid 子项 min-width:auto 会被内容撑开。
+   本机实测：注入 1200 字无空格串 pre 8292px→678px、卡片恢复 ≤ 行宽。 */
+.copilot-chat-panel pre,
+.copilot-chat-panel code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+.copilot-chat-panel [class*="cpk:grid"],
+.copilot-chat-panel [class*="cpk:grid"] > div {
+  min-width: 0;
+}
