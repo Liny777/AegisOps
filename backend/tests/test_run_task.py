@@ -472,3 +472,36 @@ def test_e1_approval_wait_excluded_from_timeout_budget(client, runtime_backend, 
     report = _asyncio.run(_scenario())
     assert "【恢复·completed】" in report
     assert "超时" not in report
+
+
+def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monkeypatch):
+    """per-agent 隔离：动态 MCP 工具在子 Agent 面按画像 mcp_tools 白名单裁剪；main 保持全量注入。"""
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("toolkit 构建仅 agentscope runtime")
+    from runtime import agentscope_runtime as rt
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+
+    def _spec(name):
+        return {"name": name, "description": "内网动态工具", "server_url": "http://mcp.internal",
+                "readonly": True, "scope_mode": "none", "appid_arg_path": None,
+                "input_schema": {"type": "object", "properties": {}}}
+
+    async def _fake_specs():
+        return [_spec("dyn_alarm_query"), _spec("dyn_log_query")]
+
+    monkeypatch.setattr(rt, "_dynamic_mcp_specs", _fake_specs)
+    # 子：白名单只放 dyn_alarm_query → dyn_log_query 不得注入
+    sub = {"key": "probe", "label": "探针", "role": "只查告警", "skills": [], "mcp_tools": ["dyn_alarm_query"]}
+    child = subagent_dispatch._child_state(st, sub, "probe", "查告警", 0)
+    _asyncio.run(rt._build_toolkit(child, run_row))
+    assert "dyn_alarm_query" in (child.tool_annotations or {})
+    assert "dyn_log_query" not in (child.tool_annotations or {})
+    # main：全量注入豁免不变
+    _asyncio.run(rt._build_toolkit(st, run_row))
+    assert "dyn_alarm_query" in st.tool_annotations and "dyn_log_query" in st.tool_annotations
