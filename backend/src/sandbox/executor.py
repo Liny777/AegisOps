@@ -141,20 +141,34 @@ class SandboxExecutor:
             await c.backend.close()
         return len(expired)
 
+    async def _get_or_revive(self, user_id: str, run_id: str | None, cfg: dict[str, Any] | None) -> Container:
+        """执行边界取容器；缺失且带 run 上下文则按容量准入现场重建（自愈）。
+
+        会话期常驻（create_run 边界 ensure）是**优化不是正确性前提**：进程重启丢内存注册表 /
+        idle TTL 回收后，DB 里 run 仍 active，复用旧 run 的任务在此自愈重建（内网实测：
+        后端重启后 /alarm-query 报「用户容器不存在」）。容量满仍 SANDBOX_CAPACITY_FULL fail-closed；
+        无 run/cfg 上下文的调用维持原 fail-closed 语义。
+        """
+        c = self._by_user.get(user_id)
+        if c is None and run_id and cfg is not None:
+            c = await self.ensure_user_container(user_id, run_id, cfg)
+        if c is None:
+            raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
+        return c
+
     async def run_skill(
         self, user_id: str, *, task_id: str, tool_call_id: str, entrypoint: str,
         files: dict[str, bytes], expected_checksum: str | None = None, timeout: float | None = None,
+        run_id: str | None = None, cfg: dict[str, Any] | None = None,
     ) -> SkillResult:
         """在该用户容器内执行一个脚本型 Skill（28.3）：checksum 校验 → 装包 → 执行 entrypoint。
 
         - `files`：Skill 包内文件（相对 skill 目录），执行前按 `expected_checksum` 校验整包一致性。
         - `entrypoint`：容器内一条 shell 命令（`python run.py` / `bash run.sh`），经 sh 通道执行。
         - 每次调用独立 workdir（`skills/{tool_call_id}/`），不与其他调用/task 共享。
-        容器必须已由 ensure_user_container 就位（会话期常驻）；缺失即 SANDBOX_CONTAINER_FAILED。
+        - 传 `run_id`+`cfg` 时容器缺失自动重建（_get_or_revive）；否则缺失即 SANDBOX_CONTAINER_FAILED。
         """
-        c = self._by_user.get(user_id)
-        if c is None:
-            raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
+        c = await self._get_or_revive(user_id, run_id, cfg)
         if expected_checksum and package_checksum(files) != expected_checksum:
             raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝执行")
         rel_dir = f"skills/{task_id}/{tool_call_id}"
@@ -177,11 +191,10 @@ class SandboxExecutor:
 
     async def run_command(
         self, user_id: str, command: str, *, timeout: float | None = None,
+        run_id: str | None = None, cfg: dict[str, Any] | None = None,
     ) -> SkillResult:
         """容器内执行一条 Bash 命令（B8-3 受控 Bash 的执行原语；管控/审计在装配层）。"""
-        c = self._by_user.get(user_id)
-        if c is None:
-            raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
+        c = await self._get_or_revive(user_id, run_id, cfg)
         r = await c.backend.exec_shell(["sh", "-lc", command], timeout=timeout or _SKILL_TIMEOUT_S,
                                        max_output_bytes=_OUTPUT_MAX_BYTES)
         status = "timeout" if r.timed_out else ("success" if r.exit_code == 0 else "failed")

@@ -40,6 +40,7 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
             entrypoint=pkg["entrypoint"], files=pkg["files"],
             expected_checksum=pkg["checksum"],  # 传输完整性（29.3 X-Checksum-SHA256）
+            run_id=st.run_id, cfg=st.sandbox_cfg,  # 容器缺失自愈重建（进程重启/idle 回收后）
         )
     except Exception as e:  # noqa: BLE001 — checksum/超时/容器缺失/下载失败等结构化收口
         st.tool_blocked = True

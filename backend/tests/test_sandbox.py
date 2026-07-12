@@ -465,3 +465,36 @@ def test_sbx_003_exec_timeout_flags_timed_out(client):
         await sandbox_executor.close_all()
 
     asyncio.run(scenario())
+
+
+def test_sbx_revive_after_process_restart(client):
+    """执行边界自愈（内网实测回归）：进程重启丢内存容器注册表后，复用旧 run 的
+    skill/bash 执行应按容量准入现场重建容器，而非 SANDBOX_CONTAINER_FAILED。"""
+    from domain.errors import ApiError
+    from domain.skill_package import package_checksum
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uR", "run-x", _CFG)
+        await sandbox_executor.close_all()  # 模拟后端重启：内存注册表清空，DB 里 run 仍 active
+        assert sandbox_executor.get("uR") is None
+
+        files = {"run.py": b"print('revived')"}
+        res = await sandbox_executor.run_skill(
+            "uR", task_id="t1", tool_call_id="tc1", entrypoint="python3 run.py",
+            files=files, expected_checksum=package_checksum(files),
+            run_id="run-x", cfg=_CFG)  # 带 run 上下文 → 自愈重建
+        assert res.status == "success" and "revived" in res.stdout
+        c = sandbox_executor.get("uR")
+        assert c is not None and c.status == "active" and "run-x" in c.active_run_ids  # close_run 可对账
+
+        res2 = await sandbox_executor.run_command("uR", "echo hi", run_id="run-x", cfg=_CFG)
+        assert res2.status == "success"
+
+        # 无 run/cfg 上下文（老路径）：缺容器仍 fail-closed
+        await sandbox_executor.close_all()
+        with pytest.raises(ApiError) as ei:
+            await sandbox_executor.run_command("uR", "echo hi")
+        assert ei.value.code == "SANDBOX_CONTAINER_FAILED"
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())

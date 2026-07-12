@@ -47,8 +47,8 @@ async def run_bash(
                        payload={"command": command})
             return SkillResult(status="denied", exit_code=-1, stdout="", stderr="用户拒绝执行")
 
-    # allow，或 ask 已批准 → 容器内执行
-    res = await sandbox_executor.run_command(st.user_id, command)
+    # allow，或 ask 已批准 → 容器内执行（容器缺失自愈重建）
+    res = await sandbox_executor.run_command(st.user_id, command, run_id=st.run_id, cfg=st.sandbox_cfg)
     await emit(st, run, "openops.sandbox.command.executed", action="bash",
                message="命令执行完成", decision="success" if res.status == "success" else res.status,
                payload={"command": command, "exit_code": res.exit_code,
