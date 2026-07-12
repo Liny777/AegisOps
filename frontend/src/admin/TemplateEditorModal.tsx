@@ -119,6 +119,11 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                         onChange={(e) => patch("max_iters", Number(e.target.value) || 20)}
                         style={{ width: 58, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
                     </label>
+                    <label style={{ fontSize: 11.5, color: color.textSubtle }} title="单条工具结果进上下文的保留 token；必须小于模型窗口，经验 ≤1/3（如 128k 窗口 ≤ 40000）">tool_result_limit
+                      <input type="number" min={1000} max={200000} step={1000} value={Number(s.tool_result_limit ?? 24000)}
+                        onChange={(e) => patch("tool_result_limit", Number(e.target.value) || 24000)}
+                        style={{ width: 76, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
+                    </label>
                   </div>
                   <textarea value={String(s.role ?? "")} onChange={(e) => patch("role", e.target.value)} rows={2}
                     style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 8px", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
@@ -136,7 +141,7 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
               );
             })}
           </div>
-          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>子 Agent 只读执行：需人工审批的写工具在运行时被剔除（恢复动作由 main Agent 走审批执行）。</div>
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>写工具可绑到子 Agent（E1 审批桥）：需人工审批的工具触发时弹审批卡（任务号带子 Agent 后缀），批准后由该子 Agent 继续执行；tool_result_limit 必须小于模型窗口（经验 ≤1/3）。</div>
         </Box>
         <Box title="模板默认 LLM">
           <div style={{ fontSize: 12.5, color: color.textBody, fontFamily: "ui-monospace, monospace" }}>

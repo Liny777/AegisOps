@@ -90,3 +90,38 @@ real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，�
 - 🟠 **Skill 版本 semver 精确 pin**：需 repo/DDL 穿透 semver；当前下载 latest。
 
 > 联调实际顺序（2026-07-11 实践）：真 DB → 真 GLM（模型）→ 真 MCP（注册表+告警工具全链路）→ oModel（进行中）→ Skill Hub → Sandbox。每项切 real 后先跑 `check-net.py` 校准连通与响应形状，再全量联调；过程与坑见 Obsidian《35-内网联调进展记录》。
+
+## 运行时治理旋钮（E4；2026-07-12）
+
+两类改法：**env 变量**改后端启动环境（内网 run-backend.bat / 本机 shell），改完须重启进程；
+**模板画像字段**走管理台模板编辑器（或 admin API 存草稿+发布），发布后存量实例在下一次任务边界自动派生升级，免重启。
+
+### env（主 Agent / 平台面，重启生效）
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `OPENOPS_MAIN_MAX_ITERS` | 20 | 主 Agent ReAct 循环上限（ReActConfig.max_iters） |
+| `OPENOPS_MAIN_TOOL_RESULT_LIMIT` | 24000 | 主 Agent 单条工具结果进上下文保留 token（ContextConfig.tool_result_limit） |
+| `OPENOPS_SUBAGENT_TIMEOUT_S` | 300 | 单个子 Agent 执行预算（监控循环实现；**审批等待期不计入**） |
+| `OPENOPS_ASK_TIMEOUT_S` | 300 | 审批（ASK）等待超时，主/子/沙箱 Bash 共用 |
+| `OPENOPS_MCP_RESULT_CAP` | 24000 字符 | MCP client 网络层对工具返回文本的字符截断（第一层） |
+| `OPENOPS_MCP_TIMEOUT_S` | 30 | MCP tools/call 全程超时 |
+| `OPENOPS_SKILL_TIMEOUT_S` / `OPENOPS_SKILL_OUTPUT_MAX_BYTES` | 600 / 2MiB | 沙箱内 Skill/Bash 执行超时与输出上限 |
+| `OPENOPS_MODEL_CONNECT_TIMEOUT_S` / `OPENOPS_MODEL_READ_TIMEOUT_S` / `OPENOPS_MODEL_MAX_RETRIES` | 10 / 300 / 0 | 模型客户端（主+子共用 _build_model） |
+
+### 模板画像字段（子 Agent / 派发预算，发布后下个任务生效）
+
+| 字段 | 校验域 | 默认（seed） | 作用 |
+|---|---|---|---|
+| `sub_agents[].max_iters` | 1..200 | 20（recover=10） | 子 Agent ReAct 循环上限 |
+| `sub_agents[].tool_result_limit` | 1000..200000 | 24000 | 子 Agent 单条工具结果保留 token |
+| `main.max_children` | 1..10 | 3 | 同时活跃子 Agent 上限（另有单批硬上限 _MAX_BATCH=5） |
+| `main.delegation_max_spawns` | 1..100 | 10 | 单 task 累计派发兜底（防失败重派死循环） |
+
+### 不变式（D7 事故教训，校验不强制、人必须守）
+
+**tool_result_limit < 模型上下文窗口，经验 ≤ 1/3**（GLM 128k 窗口 → ≤ 40000）。
+老项目曾配 160000 > 128000：单条工具结果直接撑爆窗口，压缩 fallback 删最老消息把用户问题删掉。
+校验上限 200000 是为大窗口模型留的余量，**不是**安全值；换小窗口模型时要同步压低。
+
+双层截断关系：`OPENOPS_MCP_RESULT_CAP`（字符，网络层先砍）→ `tool_result_limit`（token，agentscope 上下文层兜底）。
