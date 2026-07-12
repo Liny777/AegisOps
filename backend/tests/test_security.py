@@ -139,3 +139,51 @@ def test_sec_002_events_and_audit_are_redacted(client):
     body = json.dumps({"state": state, "audit": audit}, ensure_ascii=False)
     for token in SENSITIVE:
         assert token not in body
+
+
+def test_sec_s3_dns_pin_blocks_disjoint_drift(client, monkeypatch):
+    """S3（C2-OBS-002）：同 host 解析集与钉扎完全不相交 → 拦（疑似 rebinding）；有交集/关开关放行。"""
+    import socket as _socket
+
+    import pytest as _pytest
+
+    from domain.errors import ApiError
+    from infra import egress
+
+    egress.reset_pins()
+    resolved = {"ips": [("1.2.3.4",)]}
+
+    def _fake_gai(host, port, proto=0):  # noqa: ANN001
+        return [(2, 1, 6, "", (ip[0], 443)) for ip in resolved["ips"]]
+
+    monkeypatch.setattr(egress.socket, "getaddrinfo", _fake_gai)
+    egress.check_llm_egress("https://llm.corp.example/v1")  # 首见 → 钉扎 1.2.3.4
+    resolved["ips"] = [("1.2.3.4",), ("5.6.7.8",)]
+    egress.check_llm_egress("https://llm.corp.example/v1")  # 有交集 → 放行
+    resolved["ips"] = [("9.9.9.9",)]
+    with _pytest.raises(ApiError) as ei:
+        egress.check_llm_egress("https://llm.corp.example/v1")  # 完全漂移 → 拦
+    assert "解析漂移" in ei.value.message
+    monkeypatch.setenv("OPENOPS_LLM_EGRESS_PIN", "0")
+    egress.check_llm_egress("https://llm.corp.example/v1")  # 开关关 → 放行
+    egress.reset_pins()
+
+
+def test_sec_s3_user_llm_no_silent_fallback(client, monkeypatch):
+    """S3（C2-OBS-003）：选中的自定义 LLM 失效不再静默回退平台默认——显式 MODEL_NOT_AUTHORIZED。"""
+    import asyncio as _asyncio
+    import uuid as _uuid
+
+    import pytest as _pytest
+
+    from app import model_gateway
+    from domain.errors import ApiError
+    from infra.repositories import secrets as secrets_repo
+
+    async def _gone(_id):  # 配置已删除/禁用
+        return None
+
+    monkeypatch.setattr(secrets_repo, "get_llm_config", _gone)
+    with _pytest.raises(ApiError) as ei:
+        _asyncio.run(model_gateway.resolve_runtime_model(str(_uuid.uuid4()), "0026demo01"))
+    assert ei.value.code == "MODEL_NOT_AUTHORIZED"

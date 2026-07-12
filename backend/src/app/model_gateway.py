@@ -12,6 +12,7 @@ import os
 import uuid
 from typing import Any
 
+from domain.errors import ApiError, Err
 from infra import egress
 from infra.repositories import model_assets, secrets
 
@@ -78,7 +79,10 @@ async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str,
         user_spec = await _user_llm_spec(selected, user_id)
         if user_spec is not None:
             return user_spec
-        # 选中值既非平台授权模型、也非本人可用 LLM → 回退平台默认（不静默采纳无效选择）
+        # S3（C2-OBS-003 关闭）：选中的自定义 LLM 失效（禁用/删除/非本人）不再静默回退平台默认——
+        # 否则用户 prompt 会流向其没有选择的模型。显式报错让用户重选/改绑。
+        raise ApiError(Err.MODEL_NOT_AUTHORIZED,
+                       "选中的自定义 LLM 不可用（已禁用或非本人配置），请重新选择模型或调整实例默认绑定")
     target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r["secret_env_var"]), None)
     if target is None or not target.get("secret_env_var"):
         return None  # 无可用真模型 → stub

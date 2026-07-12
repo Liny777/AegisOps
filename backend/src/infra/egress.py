@@ -7,7 +7,11 @@
 
 内网 LLM 网关（企业 RFC1918）默认放行——SRE 平台的 GLM 网关常在内网；如需全锁私网，设
 `OPENOPS_LLM_EGRESS_BLOCK_PRIVATE=1`。额外 deny CIDR/host 经 `OPENOPS_LLM_EGRESS_DENY`（逗号分隔）。
-DNS rebinding 防护：校验时解析 host→IP 并逐一比对（不信任 hostname 字面）。
+DNS rebinding 防护：校验时解析 host→IP 并逐一比对（不信任 hostname 字面）；
+S3 追加**解析钉扎**：同一 host 的解析结果跨调用比对，与钉扎集完全不相交=疑似 rebinding → 拦截
+（OPENOPS_LLM_EGRESS_PIN=0 可关；TTL OPENOPS_LLM_EGRESS_PIN_TTL_S 默认 86400s）。
+残余风险（C2-OBS-002 已知）：check→httpx 实连之间的单次窗口仍存在（真正消除需自定义 DNS transport，
+V1 不做）——企业 LLM 端点解析稳定，跨调用钉扎已覆盖实际攻击面（TTL=0 快速翻转）。
 """
 from __future__ import annotations
 
@@ -19,6 +23,24 @@ from urllib.parse import urlparse
 from domain.errors import ApiError, Err
 
 _DEFAULT_DENY = "172.17.0.0/16"  # Docker 默认 bridge
+
+_PIN: dict[str, tuple[float, frozenset[str]]] = {}  # host → (expire_monotonic, 首见解析 IP 集)
+
+
+def _pin_enabled() -> bool:
+    return os.environ.get("OPENOPS_LLM_EGRESS_PIN", "1") != "0"
+
+
+def _pin_ttl() -> float:
+    try:
+        return float(os.environ.get("OPENOPS_LLM_EGRESS_PIN_TTL_S", "86400"))
+    except ValueError:
+        return 86400.0
+
+
+def reset_pins() -> None:
+    """测试钩子：清解析钉扎表。"""
+    _PIN.clear()
 
 
 def _deny_networks() -> list:
@@ -71,8 +93,20 @@ def check_llm_egress(base_url: str) -> None:
                                    proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
         raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 主机无法解析：{host}") from e
-    for info in infos:
-        ip = ipaddress.ip_address(info[4][0])
+    ips = frozenset(str(ipaddress.ip_address(info[4][0])) for info in infos)
+    for raw in ips:
+        ip = ipaddress.ip_address(raw)
         reason = _blocked_ip(ip)
         if reason is not None:
             raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 指向受限地址（{reason}）：{host}→{ip}")
+    # S3 解析钉扎：与首见解析集完全不相交 → 疑似 DNS rebinding（合法 CDN 轮换通常有交集/走 deny 白名单面）
+    if _pin_enabled():
+        import time as _time
+
+        now = _time.monotonic()
+        pinned = _PIN.get(host.lower())
+        if pinned and pinned[0] > now and ips.isdisjoint(pinned[1]):
+            raise ApiError(Err.MODEL_PROBE_FAILED,
+                           f"base_url 解析漂移（疑似 DNS rebinding，已拦截）：{host}；如为合法迁移请重启后端或置 OPENOPS_LLM_EGRESS_PIN=0")
+        if pinned is None or pinned[0] <= now:
+            _PIN[host.lower()] = (now + _pin_ttl(), ips)

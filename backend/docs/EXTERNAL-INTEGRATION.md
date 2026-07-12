@@ -126,6 +126,18 @@ real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，�
 
 双层截断关系：`OPENOPS_MCP_RESULT_CAP`（字符，网络层先砍）→ `tool_result_limit`（token，agentscope 上下文层兜底）。
 
+### LLM egress（S3 安全三件，2026-07-13）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `OPENOPS_LLM_EGRESS_BLOCK_PRIVATE` | 0（内网放行 RFC1918） | 公网部署置 1 全锁私网（环回/链路本地/metadata/docker bridge 恒拦不受此开关影响） |
+| `OPENOPS_LLM_EGRESS_PIN` | 1 | 解析钉扎：同 host 解析集与首见集完全不相交=疑似 DNS rebinding → 拦；合法迁移重启后端或置 0 |
+| `OPENOPS_LLM_EGRESS_PIN_TTL_S` | 86400 | 钉扎有效期 |
+| `OPENOPS_LLM_EGRESS_DENY` / `_DENY_HOSTS` | docker bridge / localhost,metadata | 额外 deny 网段/主机 |
+
+残余风险（已知）：check→实连之间的单次 TOCTOU 窗口仍在（消除需自定义 DNS transport，V1 不做）；
+用户 LLM 失效时不再静默回退平台默认（显式 MODEL_NOT_AUTHORIZED，C2-OBS-003 关闭）。
+
 ## IAM 双步鉴权（B9；2026-07-13，老项目 D4 机制迁移）
 
 | 变量 | 默认 | 说明 |
