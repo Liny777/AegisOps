@@ -408,8 +408,10 @@ function AssetTable({ rows, actionLabel, onAction, onDelete }: {
         const inert = label === "已绑定";
         const deletable = onDelete && r.meta.includes("我的");
         return (
-          <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 70px 90px 1fr 120px", gap: 10, padding: "12px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
+          <div key={r.id} style={{ display: "grid", gridTemplateColumns: "1fr 64px 70px 90px 1fr 120px", gap: 10, padding: "12px 16px", fontSize: 12.5, alignItems: "center", borderTop: i ? `1px solid ${color.borderFaint}` : "none" }}>
             <span style={{ fontWeight: 600, color: color.textStrong }}>{r.name}</span>
+            {/* 类型徽标：skill 与 MCP 同名（如 alarm-query 两个资产）时唯一的可视区分 */}
+            <Pill tone={r.kind === "mcp" ? "warning" : "neutral"}>{r.kind === "mcp" ? "MCP" : "Skill"}</Pill>
             <span style={{ color: color.textSubtle }}>{r.version}</span>
             <Pill tone={r.statusTone}>{r.status}</Pill>
             <span style={{ color: color.textSubtle }}>{r.meta}</span>

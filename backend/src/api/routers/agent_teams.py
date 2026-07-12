@@ -41,6 +41,12 @@ async def delete(instance_id: str, user: User):
     return ok({"deleted": True})
 
 
+@router.get("/agent-teams/{instance_id}/available-skills")
+async def available_skills(instance_id: str, user: User):
+    """composer「/」列表：与执行门禁同源的可执行 Skill 装配集（平台 active ∪ 绑定的用户 Skill）。"""
+    return ok(await agent_team_service.available_skills(user, instance_id))
+
+
 @router.get("/agent-teams/{instance_id}/config-versions")
 async def list_configs(instance_id: str, user: User):
     return ok(await agent_team_service.list_configs(user, instance_id))

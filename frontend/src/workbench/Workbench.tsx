@@ -15,6 +15,7 @@ import type {
   RcaCardData,
   WorkbenchState,
   ModelOption,
+  Skill,
 } from "../lib/api/types";
 import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
@@ -41,6 +42,7 @@ export function Workbench() {
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
   const [models, setModels] = useState<ModelOption[]>(demo.models);
+  const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
   const [currentModel, setCurrentModel] = useState(demo.currentModel);
   const [nodes, setNodes] = useState<ActivityNode[]>([]);
   const [conn, setConn] = useState<ConnState>("connecting");
@@ -182,6 +184,11 @@ export function Workbench() {
         setModels(ms);
         setCurrentModel(ms.find((m) => m.current)?.label ?? ms[0].label);
       }).catch(() => undefined);
+      if (instanceId) {
+        api.getAvailableSkills(instanceId).then((sk) => {
+          if (!closed && sk.length) setSkills(sk); // 空装配集回退 demo（mock 演示不受影响）
+        }).catch(() => undefined);
+      }
       await refresh(rid);
       // SSE 通道保留：被动更新（他端触发 / 刷新后接续运行中任务）。agui 主动流与之按 event_id 去重。
       handle = subscribeSse(`/api/openops/v1/agent-runs/${rid}/events/stream`, {
@@ -303,7 +310,7 @@ export function Workbench() {
             </div>
           ) : (
             <Composer
-              skills={demo.skills}
+              skills={skills}
               models={models}
               currentModel={currentModel}
               onSend={send}

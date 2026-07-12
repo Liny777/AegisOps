@@ -14,6 +14,7 @@ import type {
   Template,
   Workspace,
   ScopeApp,
+  Skill,
   AssetRow,
   ConfigVersionRow,
   ModelOption,
@@ -48,6 +49,8 @@ export interface OpenOpsApi {
   deleteInstance(instanceId: string): Promise<void>;
   // settings
   getBoundSkills(instanceId: string): Promise<AssetRow[]>;
+  /** composer「/」列表：与后端执行门禁同源的可执行 Skill 装配集（skill_key 即调用名）。 */
+  getAvailableSkills(instanceId: string): Promise<Skill[]>;
   getSkillLibrary(): Promise<AssetRow[]>;
   getMcpLibrary(): Promise<AssetRow[]>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
@@ -203,6 +206,14 @@ const realApi: OpenOpsApi = {
       bound: true,
       kind: (r.asset_type === "mcp" ? "mcp" : "skill") as "skill" | "mcp",
       assetId: String(r.skill_id ?? r.mcp_id ?? ""),
+    }));
+  },
+  async getAvailableSkills(instanceId) {
+    const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/agent-teams/${instanceId}/available-skills`);
+    return rows.map((r) => ({
+      skill_id: String(r.skill_key),
+      name: "/" + String(r.skill_key),
+      desc: `${r.display_name ?? r.skill_key} · ${r.source_type === "platform" ? "平台" : "我的"}`,
     }));
   },
   async getSkillLibrary() {
@@ -571,6 +582,7 @@ const mockApi: OpenOpsApi = {
   toggleInstance: () => delay(undefined as unknown as void),
   deleteInstance: () => delay(undefined as unknown as void),
   getBoundSkills: () => delay(M.mockBoundSkills),
+  getAvailableSkills: () => delay(M.mockWorkbenchState().skills),
   getSkillLibrary: () => delay(M.mockSkillLibrary),
   getMcpLibrary: () => delay([]),
   uploadSkill: () => delay(undefined as unknown as void),

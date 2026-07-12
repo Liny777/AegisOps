@@ -378,7 +378,17 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 工具级 agentscope 权限设为 allow（tool 本身受控，逐命令再裁决）。
     tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
     # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
-    tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", is_read_only=False))
+    # description 动态注入装配集（同 _make_dynamic_tool 的 description 覆盖模式）：LLM 必须"知道"有哪些
+    # skill_key 合法，否则零感知（实测问「介绍 alarm-query」只答同名 MCP）且易传错名被 fail-closed。
+    _sk = st.available_skills or {}
+    _sk_names = "、".join(
+        f"`{k}`（{v.get('display_name')}）" if v.get("display_name") and v.get("display_name") != k else f"`{k}`"
+        for k, v in _sk.items()
+    ) or "（当前实例未装配任何 Skill）"
+    _sk_desc = (f"执行一个已装配到当前实例的 Skill（在你的隔离容器内受控执行，返回结构化结果）。"
+                f"当前可用 Skill：{_sk_names}。用户消息以 `/<Skill名>` 开头即要求优先执行对应 Skill。"
+                f"skill_name 必须取自上述清单（取反引号内的名字），未装配会被拒绝。")
+    tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", description=_sk_desc, is_read_only=False))
     # 真工具 list_scope_apps：读 st.scope_ctx（本地、只读、无出站）——「我有哪些应用」有真答案，GLM 不再乱够工具
     st.tool_annotations = dict(st.tool_annotations or {})
     st.tool_annotations["list_scope_apps"] = {"is_approval_required": False, "is_secret_required": False,

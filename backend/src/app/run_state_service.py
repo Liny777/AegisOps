@@ -121,24 +121,31 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
     # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）
-    st.available_skills = await _resolve_available_skills(uid, str(inst["active_config_version_id"]))
+    st.available_skills = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 
 
-async def _resolve_available_skills(uid: str, config_version_id: str) -> dict[str, dict[str, Any]]:
-    """Agent 可执行的 Skill 集合：平台 active（模板层提供）∪ 本实例 main 绑定的用户 Skill。"""
+async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str, dict[str, Any]]:
+    """Agent 可执行的 Skill 集合：平台 active（模板层提供）∪ 本实例 main 绑定的用户 Skill。
+
+    键统一为 **skill_key**（run_bound_skill 精确按键匹配、LLM 工具描述按键注入、composer "/" 按键插入
+    ——三面必须同源同键；旧数据无 skill_key 时回退 display_name）。公有：available-skills 端点复用。"""
     from infra.repositories import assets
 
     out: dict[str, dict[str, Any]] = {}
     for s in await assets.list_skills(uid, include_platform=True):
         if s.get("status") == "active" and s.get("skill_key"):
             out[str(s["skill_key"])] = {"version_no": s.get("version_no"), "checksum": s.get("checksum_sha256"),
-                                        "source_type": s.get("source_type")}
+                                        "source_type": s.get("source_type"),
+                                        "display_name": s.get("display_name") or str(s["skill_key"])}
     for b in await agent_teams.list_binding_details(config_version_id):
-        if b.get("asset_type") == "skill" and b.get("skill_status") in ("enabled", "validated", "uploaded") and b.get("skill_display_name"):
-            out[str(b["skill_display_name"])] = {"version_no": b.get("skill_version_no"),
-                                                 "checksum": None, "source_type": "user"}
+        if b.get("asset_type") == "skill" and b.get("skill_status") in ("enabled", "validated", "uploaded"):
+            key = b.get("skill_key") or b.get("skill_display_name")  # 键基统一：skill_key 优先，旧数据回退
+            if not key:
+                continue
+            out[str(key)] = {"version_no": b.get("skill_version_no"), "checksum": None, "source_type": "user",
+                             "display_name": b.get("skill_display_name") or str(key)}
     return out
 
 

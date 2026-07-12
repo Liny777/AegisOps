@@ -88,3 +88,51 @@ def test_model_switch_is_run_level_only(client):
 
     cfgs = unwrap(client.get(f"/api/openops/v1/agent-teams/{instance['instance_id']}/config-versions", headers=USER_HEADERS))
     assert len(cfgs) == 1
+
+
+def test_resolve_available_skills_unifies_skill_key(monkeypatch):
+    """键基统一：平台 skill 按 skill_key；用户绑定 skill 也按 skill_key（旧数据无 key 回退 display_name）。
+    三面同源（执行门禁/LLM 工具描述/composer「/」列表）必须用同一个键。"""
+    import asyncio
+
+    from app import run_state_service as rss
+
+    async def _skills(uid, include_platform=True):
+        return [{"skill_key": "alarm-query", "display_name": "告警查询", "status": "active",
+                 "version_no": 2, "checksum_sha256": "abc", "source_type": "platform"}]
+
+    async def _bindings(cv):
+        return [
+            {"asset_type": "skill", "skill_status": "enabled", "skill_key": "my-tool",
+             "skill_display_name": "我的工具", "skill_version_no": 1},
+            {"asset_type": "skill", "skill_status": "enabled", "skill_key": None,
+             "skill_display_name": "旧数据无key", "skill_version_no": 1},  # 回退 display_name
+            {"asset_type": "mcp", "skill_status": None, "skill_key": None, "skill_display_name": None},
+        ]
+
+    from infra.repositories import assets as assets_repo
+
+    monkeypatch.setattr(assets_repo, "list_skills", _skills)
+    from infra.repositories import agent_teams as at_repo
+
+    monkeypatch.setattr(at_repo, "list_binding_details", _bindings)
+
+    out = asyncio.run(rss.resolve_available_skills("u1", "cv1"))
+    assert set(out) == {"alarm-query", "my-tool", "旧数据无key"}
+    assert out["alarm-query"]["display_name"] == "告警查询"
+    assert out["my-tool"]["source_type"] == "user" and out["my-tool"]["display_name"] == "我的工具"
+
+
+def test_available_skills_endpoint_shape_and_ownership(client):
+    """GET /agent-teams/{id}/available-skills：与执行门禁同源；他人实例 403。"""
+    from conftest import OTHER_HEADERS, USER_HEADERS, create_instance, unwrap
+
+    inst = create_instance(client)
+    rows = unwrap(client.get(f"/api/openops/v1/agent-teams/{inst['instance_id']}/available-skills",
+                             headers=USER_HEADERS))
+    assert isinstance(rows, list) and rows  # seed 平台 skill（inspection）至少 1 条
+    assert {"skill_key", "display_name", "source_type"} <= set(rows[0])
+    assert any(r["skill_key"] == "inspection" for r in rows)
+
+    r = client.get(f"/api/openops/v1/agent-teams/{inst['instance_id']}/available-skills", headers=OTHER_HEADERS)
+    assert r.status_code == 403

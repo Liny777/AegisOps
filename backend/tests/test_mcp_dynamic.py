@@ -283,3 +283,34 @@ def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     asyncio.run(ft._func())  # 不传 project_id → scope 唯一 appid 自动补上
     assert cap["args"] == {"project_id": "APP-REAL-1"}
     assert cap["server_url"] == "http://s"
+
+
+def test_run_platform_skill_description_injects_available_skills(monkeypatch):
+    """LLM 装配集感知：toolkit 构建后 run_platform_skill 的 description 含 st.available_skills 键名
+    （实测缺口：静态 docstring 时模型零感知，问「介绍 alarm-query」只答同名 MCP、传错名被 fail-closed）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+
+    async def _specs():
+        return []
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    async def scenario():
+        st, run = _toolkit_st_run()
+        st.available_skills = {"alarm-query": {"version_no": 1, "checksum": None,
+                                               "source_type": "platform", "display_name": "告警查询"}}
+        tk, _ = await ar._build_toolkit(st, run)
+        tool = await tk.get_tool("run_platform_skill")
+        desc = str(getattr(tool, "description", ""))
+        assert "alarm-query" in desc and "告警查询" in desc and "/<Skill名>" in desc
+
+        # 空装配集：明说没有，不留静态假例子
+        st2, run2 = _toolkit_st_run()
+        st2.available_skills = {}
+        tk2, _ = await ar._build_toolkit(st2, run2)
+        tool2 = await tk2.get_tool("run_platform_skill")
+        assert "未装配任何 Skill" in str(getattr(tool2, "description", ""))
+
+    asyncio.run(scenario())

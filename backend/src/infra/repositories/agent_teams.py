@@ -208,6 +208,7 @@ async def list_binding_details(config_version_id: str) -> list[dict[str, Any]]:
         select
           b.*,
           s.display_name as skill_display_name,
+          s.skill_key as skill_key,
           sv.version_no as skill_version_no,
           s.status as skill_status,
           s.source_type as skill_source_type,
