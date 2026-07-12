@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import os
 import zipfile
 from typing import Any
@@ -159,6 +160,13 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
             header_checksum = r.headers.get("X-Checksum-SHA256", "")
         if raw[:1] == b"<":  # 登录页/门户 HTML 而非 ZIP：cookie 失效——直接说清，别让 BadZipFile 迷惑定位
             raise RuntimeError(f"Skill 下载返回 HTML 而非 ZIP（cookie 失效或地址错）：{raw[:120]!r}")
+        if raw[:1] in (b"{", b"["):  # JSON 信封而非裸 ZIP 字节：29.3 §2.5 约定直接回 ZIP，同网关 list 面
+            # 却是 {code,message,data} 信封——对端若 download 也包信封，这里显式说清（带 code/message），
+            # 拿到真实形状后再适配，不瞎猜 base64/download_url 分支
+            raise RuntimeError(f"Skill 下载返回 JSON 信封而非 ZIP 字节（对端契约与 29.3 §2.5 不符）：{raw[:200]!r}")
+        if not header_checksum:
+            logging.getLogger("openops.skillhub").warning(
+                "[skillhub] download %s 无 X-Checksum-SHA256 头，跳过传输校验（对端未实现该头）", skill_key)
         # 传输完整性（29.3 §2.5）：X-Checksum-SHA256 = 下载 ZIP **原始字节**的 sha256，非解包内容。
         if header_checksum and hashlib.sha256(raw).hexdigest() != header_checksum:
             raise RuntimeError("Skill 包传输校验失败：X-Checksum-SHA256 与 ZIP 字节不符")

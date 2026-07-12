@@ -541,3 +541,24 @@ async def test_ext_skillhub_cookie_base_fallback_and_html_guard(monkeypatch):
     _install(monkeypatch, lambda m, u, k: _HtmlResp())
     with _pytest.raises(RuntimeError, match="HTML"):
         await skill_hub_client.download_skill_package("inspection", 2)
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_download_json_envelope_explicit(monkeypatch):
+    """下载响应是 JSON 信封而非裸 ZIP（29.3 §2.5 约定直接回 ZIP 字节）→ 显式报错带信封内容，
+    不再退化成难懂的 BadZipFile（内网头号嫌疑，拿到真实形状后再适配）。"""
+    import pytest as _pytest
+
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "https://console")
+
+    class _JsonResp(_Resp):
+        def __init__(self):
+            super().__init__(200, None, text="")
+            self.content = b'{"code":200,"message":"success","data":{"download_url":"..."}}'
+
+    _install(monkeypatch, lambda m, u, k: _JsonResp())
+    with _pytest.raises(RuntimeError, match="JSON 信封"):
+        await skill_hub_client.download_skill_package("alarm-query", 1)

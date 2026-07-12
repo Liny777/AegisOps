@@ -40,7 +40,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         return {"skipped": True}
     _last_run["at"] = time.monotonic()
     summary: dict[str, Any] = {
-        "trigger": trigger, "skills_created": 0, "skill_versions_added": 0,
+        "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "mcps_created": 0,
         "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
@@ -64,6 +64,28 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                     {"synced_from": "skill_hub"}, s["checksum_sha256"], "system",
                 )
                 summary["skill_versions_added"] += 1
+
+        # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
+        # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
+        try:
+            from urllib.parse import urlparse
+
+            existing = {str(m.get("display_name")) for m in await assets.list_platform_mcps()}
+            for srv in await mcp_registry_client.list_servers():
+                url = str(srv.get("server_url") or "")
+                if not url or urlparse(url).hostname == "mock":  # 占位防呆（同 discover_tools 口径）
+                    continue
+                name = str(srv.get("server_name") or srv.get("server_id") or "")
+                if not name or name in existing:
+                    continue  # V1 create-if-missing（改名/下线同步不做）
+                await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
+                                        {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
+                                         "description": srv.get("description", "")})
+                existing.add(name)
+                summary["mcps_created"] += 1
+        except Exception as e:  # noqa: BLE001 —— 注册表不可达不炸整轮（skill 已对账完，catalog 照刷）
+            log.warning("mcp registry ingest failed: %s", str(e)[:200])
+            summary["mcp_ingest_error"] = str(e)[:200]
 
         # ---- MCP Registry：平台 MCP tools/list → schema_hash 对账（ASSET-005） ----
         for m in await assets.list_platform_mcps():

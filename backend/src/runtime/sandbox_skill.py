@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -14,6 +15,8 @@ from runtime.emit import emit
 from runtime.task_registry import TaskState
 from sandbox.executor import SkillResult
 from sandbox.executor import executor as sandbox_executor
+
+log = logging.getLogger("openops.skill")
 
 
 async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
@@ -38,12 +41,17 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             entrypoint=pkg["entrypoint"], files=pkg["files"],
             expected_checksum=pkg["checksum"],  # 传输完整性（29.3 X-Checksum-SHA256）
         )
-    except Exception as e:  # noqa: BLE001 — checksum/超时/容器缺失等结构化收口
+    except Exception as e:  # noqa: BLE001 — checksum/超时/容器缺失/下载失败等结构化收口
         st.tool_blocked = True
         code = getattr(e, "code", "SKILL_FAILED")
+        # 根因必须三通道可见（内网教训：下载类失败曾全部塌缩成无信息的 SKILL_FAILED，
+        # raise_with_body 保留的响应体/BadZipFile 文本被丢弃，无法定位）
+        detail = f"{type(e).__name__}: {str(e)[:300]}"
+        log.warning("[skill] %s 执行失败 %s", skill_name, detail)
         await emit(st, run, "openops.skill.call.failed", severity="error", action=skill_name,
-                   message=f"Skill 执行失败：{code}", reason_code=str(code), payload={"skill": skill_name})
-        return f"Skill 「{skill_name}」执行失败：{code}"
+                   message=f"Skill 执行失败：{code}", reason_code=str(code),
+                   payload={"skill": skill_name, "error": detail})
+        return f"Skill 「{skill_name}」执行失败：{code}（{detail}）"
 
     if res.status != "success":
         st.tool_blocked = True

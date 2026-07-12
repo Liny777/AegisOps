@@ -205,3 +205,33 @@ def test_asset_mcp_endpoint_redacted(client):
     assert "endpoint_config_json" not in mine
     assert str(mine["endpoint_config_redacted"]["endpoint"]).endswith("…")
     assert "supersecret123" not in str(mine)
+
+
+def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
+    """注册表 server → 平台 MCP 资产入库（内网缺口：此前只刷已有资产 catalog，真 server 永不落库）：
+    真 server 入库、占位 http://mock 不入、重复对账幂等、list_servers 挂了不炸 skill 分支。"""
+    from infra.external import mcp_registry_client
+
+    async def fake_servers():
+        return [
+            {"server_id": "alarm-server", "server_name": "alarm-server",
+             "server_url": "https://mcpgateway.local/alarm", "description": "告警工具"},
+            {"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "占位"},
+        ]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", fake_servers)
+    first = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert first["mcps_created"] == 1
+    names = {m["display_name"] for m in unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))}
+    assert "alarm-server" in names and "mock MCP" not in names  # 真 server 入库、占位防呆
+
+    second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert second["mcps_created"] == 0  # create-if-missing 幂等
+
+    async def boom():
+        raise RuntimeError("console down")
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", boom)
+    third = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert "console down" in third.get("mcp_ingest_error", "")
+    assert "skills_created" in third and "failed" not in third  # 注册表不可达不炸整轮

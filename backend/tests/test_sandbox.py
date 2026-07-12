@@ -418,3 +418,36 @@ def test_admin_008b_container_endpoints_forbidden_for_user(client):
     r2 = client.post("/api/openops/v1/admin/sandbox/containers/x:destroy", headers=USER_HEADERS,
                      json={"client_request_id": "u", "reason": "x"})
     assert r1.status_code == 403 and r2.status_code == 403
+
+
+def test_skill_012_failure_detail_surfaces(client, monkeypatch):
+    """失败根因三通道可见（内网教训：下载类失败曾塌缩成无信息 SKILL_FAILED）：download 抛裸
+    RuntimeError → 返回给模型的文本与审计 payload 都带异常类型+文本（raise_with_body 的 body 不再被吞）。"""
+    import json as _json
+
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_det", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {"alarm-query": {"version_no": 1}}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def boom(_key, _ver):
+        raise RuntimeError("console HTTP 401：unauthorized body snippet")
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", boom)
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "alarm-query")
+        assert "RuntimeError" in txt and "401" in txt  # LLM 可见根因
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    failed = next(e for e in events if e["event_type"] == "openops.skill.call.failed")
+    assert "401" in _json.dumps(failed, ensure_ascii=False, default=str)  # 审计/活动栏可见根因
