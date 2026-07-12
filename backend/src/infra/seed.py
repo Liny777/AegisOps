@@ -48,14 +48,16 @@ TEMPLATE_CONTENT = {
     },
     # D 块：sub_agents = 可执行角色画像（权威载体，04 号口径）：skills=skill_key 白名单、
     # mcp_tools=平台工具白名单——子 Agent toolkit 按此裁剪（per-agent 工具隔离）。
-    # V1.x 边界：子 Agent 只读（需审批的写工具在子 toolkit 构建时剔除；恢复动作由 main 亲自执行走 ASK）
+    # E1 审批桥：写工具可绑到子 Agent（如恢复工具绑恢复 Agent）——触发时审批卡带子 task_id
+    # 弹前端，批准后结果按 task_id 精确路由回该子 Agent 继续。
+    # tool_result_limit：单条工具结果进上下文的保留 token（必须 < 模型窗口，经验 ≤1/3；E4 治理）。
     "sub_agents": [
         {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险，只做查询不做变更。",
-         "skills": ["inspection"], "mcp_tools": ["query_resource"], "max_iters": 20},
+         "skills": ["inspection"], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
         {"key": "diagnose", "label": "定界", "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行。",
-         "skills": [], "mcp_tools": ["query_resource"], "max_iters": 20},
-        {"key": "recover", "label": "恢复", "role": "给出受控恢复建议（不直接执行——恢复动作由主 Agent 经人工批准执行）。",
-         "skills": [], "mcp_tools": [], "max_iters": 10},
+         "skills": [], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
+        {"key": "recover", "label": "恢复", "role": "执行受控恢复动作：先核对目标与影响面，恢复类工具调用需人工批准后执行。",
+         "skills": [], "mcp_tools": ["recover_execute"], "max_iters": 10, "tool_result_limit": 24000},
     ],
     "default_llm": {"provider": "platform", "model": "qwen3.5-instruct"},
 }

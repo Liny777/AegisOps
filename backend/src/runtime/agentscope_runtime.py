@@ -549,12 +549,22 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             agent_state = None
         if agent_state is None:
             agent_state = AgentState(session_id=fsid, permission_context=_permission_context(st))
+        try:  # E4：治理 config（2.0.3 公开导出优先，私有路径兜底）
+            from agentscope.agent import ContextConfig, ReActConfig
+        except ImportError:  # pragma: no cover
+            from agentscope.agent._config import ContextConfig, ReActConfig
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
             model=await _build_model(st),
             toolkit=toolkit,
             state=agent_state,
+            # E4 治理（limits-and-budgets）：max_iters 防失控狂转；tool_result_limit 必须 < 模型窗口
+            # （D7 事故：160000>128000 单条工具结果撑爆窗口→压缩 fallback 删掉用户问题）。
+            # 2.0.3 默认 20/50000；主 agent 对齐老经验 ≤1/4 窗口取 24000。
+            react_config=ReActConfig(max_iters=int(os.environ.get("OPENOPS_MAIN_MAX_ITERS", "20"))),
+            context_config=ContextConfig(
+                tool_result_limit=int(os.environ.get("OPENOPS_MAIN_TOOL_RESULT_LIMIT", "24000"))),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）

@@ -342,3 +342,133 @@ def test_d3_dispatch_end_to_end(client, runtime_backend):
     events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
     types = {e["event_type"] for e in events}
     assert "openops.subagent.dispatched" in types and "openops.subagent.reported" in types
+
+
+def test_e1_subagent_approval_bridge(client, runtime_backend):
+    """E1：恢复工具绑恢复 Agent——子循环触发 ASK → 审批行带子 task_id → decide 按 task_id
+    路由回子 approval_ev（不误触主 st）→ approve 后子完成汇报；再走一遍 rejected 路径。"""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("子 Agent 循环仅 agentscope runtime")
+    from app import run_state_service as rss
+    from infra.repositories import delegations
+    from infra.repositories import runs as runs_repo
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+
+    async def _wait_child_approval():
+        for _ in range(400):
+            rows = await runs_repo.pending_approvals(st.run_id)
+            # 只认子 task 的审批（主任务「环境预热」的 ASK 也可能 pending）
+            rows = [r for r in rows if str(r["task_id"]).startswith(st.task_id + ".")]
+            if rows:
+                return rows[0]
+            await _asyncio.sleep(0.05)
+        raise AssertionError("子 Agent 审批未出现")
+
+    async def _scenario():
+        user = {"user_id": st.user_id}
+        # ① approve 路径
+        job = _asyncio.ensure_future(subagent_dispatch.dispatch(
+            st, run_row, [{"role": "recover", "task": "重启 APP-A"}]))
+        appr = await _wait_child_approval()
+        assert str(appr["task_id"]).startswith(f"{st.task_id}.recover")
+        assert appr["tool_call_name"] == "recover_execute"
+        out = await rss.decide_approval(user, str(appr["approval_request_id"]),
+                                        SimpleNamespace(decision="approved", reason=""))
+        assert out["decision"] == "approved"
+        assert st.approval_result is None  # E1 路由：子审批不误置主 st 的握手信号
+        report_ok = await job
+        # ② rejected 路径：子照常恢复循环并收尾（工具不执行，不挂死）
+        job2 = _asyncio.ensure_future(subagent_dispatch.dispatch(
+            st, run_row, [{"role": "recover", "task": "再试一次重启"}]))
+        appr2 = await _wait_child_approval()
+        out2 = await rss.decide_approval(user, str(appr2["approval_request_id"]),
+                                         SimpleNamespace(decision="rejected", reason="先不动"))
+        assert out2["decision"] == "rejected"
+        report_rej = await job2
+        return report_ok, report_rej
+
+    report_ok, report_rej = _asyncio.run(_scenario())
+    assert "【恢复·completed】" in report_ok
+    assert "【恢复·completed】" in report_rej  # 拒绝≠子失败：跳过工具后继续收尾汇报
+    rows = _asyncio.run(delegations.list_by_task(st.task_id))
+    assert [r["delegation_status"] for r in rows[-2:]] == ["completed", "completed"]
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
+    types = {e["event_type"] for e in events}
+    assert "approval.approved" in types and "approval.rejected" in types
+
+
+def test_e4_child_governance_config(client, runtime_backend, monkeypatch):
+    """E4：子 Agent 按画像接 ReActConfig(max_iters)/ContextConfig(tool_result_limit)。"""
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("子 Agent 循环仅 agentscope runtime")
+    import agentscope.agent as ag_mod
+
+    from runtime import subagent_dispatch
+
+    captured: dict[str, tuple] = {}  # name → (react_config, context_config)；按名取避免主 Agent 构造竞态
+    real_agent = ag_mod.Agent
+
+    class SpyAgent(real_agent):  # type: ignore[misc,valid-type]
+        def __init__(self, *a, **kw):  # noqa: ANN002, ANN003
+            captured[str(kw.get("name"))] = (kw.get("react_config"), kw.get("context_config"))
+            super().__init__(*a, **kw)
+
+    monkeypatch.setattr(ag_mod, "Agent", SpyAgent)
+    st, run_row = _dispatch_env(client)
+    prof = next(s for s in st.sub_agents if s["key"] == "inspect")
+    prof["max_iters"], prof["tool_result_limit"] = 7, 12345  # 非默认值才证明真接上了
+    out = _asyncio.run(subagent_dispatch.dispatch(
+        st, run_row, [{"role": "inspect", "task": "查看 APP-A 健康状态"}]))
+    assert "【巡检" in out
+    react_cfg, ctx_cfg = captured["sre-inspect"]
+    assert react_cfg is not None and react_cfg.max_iters == 7
+    assert ctx_cfg is not None and ctx_cfg.tool_result_limit == 12345
+
+
+def test_e1_approval_wait_excluded_from_timeout_budget(client, runtime_backend, monkeypatch):
+    """E1：审批等待期不计执行超时预算——预算 2s、等人 3s 后 approve，子仍完成而非 timeout。"""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("子 Agent 循环仅 agentscope runtime")
+    from app import run_state_service as rss
+    from infra.repositories import runs as runs_repo
+    from runtime import subagent_dispatch
+
+    monkeypatch.setattr(subagent_dispatch, "SUB_TIMEOUT_S", 2.0)
+    st, run_row = _dispatch_env(client)
+
+    async def _scenario():
+        job = _asyncio.ensure_future(subagent_dispatch.dispatch(
+            st, run_row, [{"role": "recover", "task": "重启 APP-A"}]))
+        appr = None
+        for _ in range(400):
+            rows = await runs_repo.pending_approvals(st.run_id)
+            rows = [r for r in rows if str(r["task_id"]).startswith(st.task_id + ".")]
+            if rows:
+                appr = rows[0]
+                break
+            await _asyncio.sleep(0.05)
+        assert appr is not None
+        await _asyncio.sleep(3.0)  # 挂着不批 3s > 预算 2s：wait_for 硬包会在这里判死
+        await rss.decide_approval({"user_id": st.user_id}, str(appr["approval_request_id"]),
+                                  SimpleNamespace(decision="approved", reason=""))
+        return await job
+
+    report = _asyncio.run(_scenario())
+    assert "【恢复·completed】" in report
+    assert "超时" not in report

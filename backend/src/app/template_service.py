@@ -58,6 +58,9 @@ async def _validate_content(content: dict[str, Any]) -> None:
         mi = s.get("max_iters", 20)
         if not isinstance(mi, int) or not (1 <= mi <= 200):
             raise ApiError(Err.VALIDATION_FAILED, f"sub_agents[{s['key']}].max_iters 须为 1..200 整数")
+        trl = s.get("tool_result_limit", 24000)
+        if not isinstance(trl, int) or not (1000 <= trl <= 200000):  # E4：须 < 模型窗口（经验 ≤1/3）
+            raise ApiError(Err.VALIDATION_FAILED, f"sub_agents[{s['key']}].tool_result_limit 须为 1000..200000 整数")
     for f, lo, hi in (("max_children", 1, 10), ("delegation_max_spawns", 1, 100)):
         v = main.get(f)
         if v is not None and (not isinstance(v, int) or not (lo <= v <= hi)):

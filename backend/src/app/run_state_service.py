@@ -147,7 +147,12 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     st.dispatch_cfg = {"max_children": _main.get("max_children", 3),
                        "delegation_max_spawns": _main.get("delegation_max_spawns", 10)}
     anns = await mcp_tool_annotation_service.runtime_annotations()
-    st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
+    # E1：标注快照按 main ∪ 全部 sub 白名单过滤——子角色可绑 main 集之外的平台工具（如恢复
+    # 工具只绑恢复 Agent），否则子 toolkit 构建时拿不到标注被 fail-closed 裁剪。
+    # main 自身的 toolkit 边界仍只按 st.template_tools（不扩大）。
+    _all_tools = set(st.template_tools or set()) | {
+        t for s in _subs if isinstance(s, dict) for t in (s.get("mcp_tools") or [])}
+    st.tool_annotations = {k: v for k, v in anns.items() if k in _all_tools}
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
     # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）
     st.available_skills = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
@@ -155,7 +160,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     try:
         await task_states.upsert_snapshot(st, "running", trace)
     except Exception:  # noqa: BLE001
-        log.warning("[OpenOps][snapshot] 初始任务快照写入失败（见 sql/migrate-2026-07-12-persistence.sql）")
+        log.warning("[OpenOps][snapshot] 初始任务快照写入失败（旧库重跑 sql/openops_v1_core.sql 补表）")
     runtime_adapter.submit_task(st, run)
     return {"task_id": task_id, "status": "running"}
 
@@ -330,7 +335,9 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
         message="已批准，恢复动作将执行" if req.decision == "approved" else "已拒绝，当前工具调用终止",
         payload={"approval_request_id": approval_id},
     ))
-    st = task_registry.get_by_run(run_id)
+    # E1 审批桥：按审批行的 task_id 精确路由（主/子 Agent 各自的 approval_ev）——
+    # 此前按 run 查恒命中主 st，子 Agent 的审批会错置主任务握手信号
+    st = task_registry.get_by_task(str(appr["task_id"])) or task_registry.get_by_run(run_id)
     if st:
         st.approval_result = req.decision
         st.approval_ev.set()

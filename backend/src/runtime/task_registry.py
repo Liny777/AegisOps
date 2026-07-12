@@ -43,8 +43,19 @@ class TaskState:
 _by_run: dict[str, TaskState] = {}  # run_id → 当前 task（V1 每 Run 同时最多 1 个 running task 上下文）
 
 
+_subtasks: dict[str, TaskState] = {}  # E1：子 Agent task（审批桥按 task_id 精确路由到子 approval_ev）
+
+
 def put(state: TaskState) -> None:
     _by_run[state.run_id] = state
+
+
+def register_subtask(state: TaskState) -> None:
+    _subtasks[state.task_id] = state
+
+
+def unregister_subtask(task_id: str) -> None:
+    _subtasks.pop(task_id, None)
 
 
 def get_by_run(run_id: str) -> TaskState | None:
@@ -55,7 +66,7 @@ def get_by_task(task_id: str) -> TaskState | None:
     for st in _by_run.values():
         if st.task_id == task_id:
             return st
-    return None
+    return _subtasks.get(task_id)  # E1：主表 miss 再查子表（decide_approval/cancel 路由）
 
 
 def running_count(user_id: str) -> int:
@@ -67,6 +78,7 @@ def instance_has_running(instance_id: str) -> bool:
 
 
 def reset() -> None:  # 测试用
+    _subtasks.clear()
     for st in _by_run.values():
         if st.orchestrator and not st.orchestrator.done():
             st.orchestrator.cancel()
