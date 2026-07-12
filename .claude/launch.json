@@ -7,6 +7,13 @@
       "runtimeArgs": ["run", "dev"],
       "cwd": "frontend",
       "port": 5175
+    },
+    {
+      "name": "openops-copilot-sidecar",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "runtime:start"],
+      "cwd": "frontend",
+      "port": 4002
     }
   ]
 }

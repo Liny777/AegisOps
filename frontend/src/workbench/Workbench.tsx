@@ -21,7 +21,13 @@ import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
+import { CopilotChatPanel } from "./copilot/CopilotChatPanel";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
+
+// Part B：CopilotChat 接管对话区（real+agui）。回退开关：VITE_OPENOPS_COPILOT_CHAT=0 回自建渲染。
+const USE_COPILOT_CHAT =
+  API_MODE === "real" && TRANSPORT === "agui" &&
+  (import.meta.env.VITE_OPENOPS_COPILOT_CHAT as string | undefined) !== "0";
 
 type ConnState = "connecting" | "open" | "reconnecting" | "error";
 
@@ -37,7 +43,7 @@ export function Workbench() {
   const { instanceId = "", runId: runIdParam } = useParams();
   const [searchParams] = useSearchParams();
   const explicitRunId = runIdParam ?? searchParams.get("run_id");
-  const { agents, setCurrentAgentId } = useApp();
+  const { agents, currentAgentId, setCurrentAgentId } = useApp();
   useSyncCurrentAgent(instanceId);  // 新建实例 SPA 导航进来：侧栏列表缺它则重拉（实测 777 bug）
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
@@ -341,6 +347,27 @@ export function Workbench() {
       ) : null}
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        {USE_COPILOT_CHAT && runId && runStatus !== "closed" ? (
+          // Part B：CopilotChat 接管对话区（含输入框/发送按钮原生两态/停止=取消桥）。
+          // RCA/HITL 卡不进消息流——由 SSE 通道驱动，浮在面板上方（30.4 三层模型不变）。
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            {rca || hitl ? (
+              <div style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, padding: "14px 24px 10px", background: color.pageBg }}>
+                <div style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+                  {rca ? <RcaCard rca={rca} /> : null}
+                  {hitl ? (
+                    <HitlCard
+                      key={hitl.approval_request_id + hitl.status}
+                      hitl={hitl}
+                      onDecide={(d) => api.decideApproval(hitl.approval_request_id, d)}
+                    />
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <CopilotChatPanel runId={runId} instanceId={instanceId || currentAgentId || ""} />
+          </div>
+        ) : (
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px 0" }}>
             <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 24px", display: "flex", flexDirection: "column", gap: 18 }}>
@@ -383,6 +410,7 @@ export function Workbench() {
             />
           )}
         </div>
+        )}
         {activityOpen ? <ActivityRail groups={groupNodes(nodes, running)} /> : null}
       </div>
     </>

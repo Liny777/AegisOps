@@ -18,7 +18,7 @@ from typing import Any, AsyncGenerator
 
 from app import run_state_service
 from domain.errors import ApiError, Err
-from runtime import events
+from runtime import events, task_registry
 
 KEEPALIVE_S = 15.0
 HARD_TIMEOUT_S = 1800.0
@@ -61,7 +61,27 @@ async def start(user: dict[str, Any], run_id: str, body: dict[str, Any]) -> dict
         "task_id": task["task_id"],
         "thread_id": str(body.get("threadId") or run_id),
         "agui_run_id": agui_run_id,
+        "user": user,  # 取消桥：断流时以发起人身份取消任务
     }
+
+
+def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
+    """客户端断流（CopilotChat 停止按钮 / 关页）→ 停止 Agent 运行（取消桥，Part B）。
+
+    只在本 task 仍 running 时取消（正常终态在 return 前已推进状态，不会误伤）。
+    GeneratorExit 处理器内禁止 await —— fire-and-forget 到事件循环。
+    """
+    st = task_registry.get_by_task(ctx["task_id"])
+    if st is None or st.status != "running":
+        return
+
+    async def _do() -> None:
+        try:
+            await run_state_service.cancel_task(ctx["user"], ctx["task_id"])
+        except Exception:  # noqa: BLE001 —— 已终态/权限竞态等，尽力而为
+            pass
+
+    asyncio.get_running_loop().create_task(_do())
 
 
 async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
@@ -155,5 +175,8 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
             elif et == "openops.run.closed":
                 yield _sse({"type": "RUN_FINISHED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
                 return
+    except (asyncio.CancelledError, GeneratorExit):
+        _schedule_cancel_on_disconnect(ctx)
+        raise
     finally:
         events.unsubscribe(ctx["run_id"], q)
