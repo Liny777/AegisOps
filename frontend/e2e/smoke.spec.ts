@@ -21,10 +21,18 @@ test("mock 发送：回执气泡出现", async ({ page }) => {
   await expect(page.getByText(/任务已受理/)).toBeVisible({ timeout: 10_000 });
 });
 
-test("初始化向导：五步骨架", async ({ page }) => {
+test("初始化向导：三步骨架（2/3/4 已合并为「配置 Agent」）", async ({ page }) => {
   await page.goto("/init");
   await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("配置 Agent").first()).toBeVisible();
   await expect(page.getByText("激活 Agent").first()).toBeVisible();
+  // 进合并页：四区块关键元素在位
+  await page.getByRole("button", { name: "下一步" }).click();
+  await expect(page.getByPlaceholder(/感知快恢Agent/)).toBeVisible();
+  await expect(page.getByText("身份确认")).toBeVisible();
+  await expect(page.getByText("模型供应商")).toBeVisible();
+  await expect(page.getByText("系统看护范围")).toBeVisible();
+  await expect(page.getByRole("button", { name: "添加自定义模型" })).toBeVisible();
 });
 
 test("全部 Agents 清单（/agents）", async ({ page }) => {

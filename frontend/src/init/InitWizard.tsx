@@ -5,11 +5,19 @@ import { Icon, Interactive, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import type { Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
-import { AddCustomModelDialog } from "../settings/AddCustomModelDialog";
+import { submitCustomLlm } from "../settings/AddCustomModelDialog";
 
-const STEPS = ["选择模板", "填写信息", "系统范围", "配置模型", "激活 Agent"];
+// 2026-07-13 改版（对齐更新版设计原型）：五步 → 三步，原 填写信息/系统范围/配置模型 合并为「配置 Agent」一页。
+// 「选择模板」「激活 Agent」两个字面量被 e2e 断言依赖，改名须同步 e2e/smoke.spec.ts。
+const STEPS = ["选择模板", "配置 Agent", "激活 Agent"];
 
-/** 初始化向导（30.2）：模板 → 名称 → workspace → LLM → 激活。壳外全屏。 */
+/** 自定义模型卡展示元数据（创建成功时从表单捕获；仅展示用，事实在后端 llm-config）。 */
+interface CustomLlmMeta {
+  modelName: string;
+  baseUrl: string;
+}
+
+/** 初始化向导（30.2 改版）：模板 → 配置（名称+身份+模型+范围合一页）→ 激活。壳外全屏。 */
 export function InitWizard() {
   const nav = useNavigate();
   const [step, setStep] = useState(0);
@@ -21,7 +29,7 @@ export function InitWizard() {
   const [llm, setLlm] = useState<"platform" | "custom">("platform");
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
-  const [llmDialog, setLlmDialog] = useState(false);
+  const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
   const [wsDialog, setWsDialog] = useState(false);
   const [activating, setActivating] = useState(false);
   const [err, setErr] = useState("");
@@ -31,8 +39,8 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, []);
 
-  // custom 分支须先创建一个自定义模型才能继续（否则是死路）
-  const canNext = [!!tplId, !!name.trim(), !!wsId, llm === "platform" || !!customLlmId, true][step];
+  // 合并页门条件：名称 + 范围 + 模型（custom 分支须已创建，否则是死路）
+  const canNext = [!!tplId, !!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), true][step];
 
   const activate = () => {
     setActivating(true);
@@ -43,11 +51,13 @@ export function InitWizard() {
         nav(`/agent-teams/${r.instance_id}/chat`);
       })
       .catch((e: unknown) => {
-        // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如“同名实例已存在”）
+        // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如"同名实例已存在"）
         setActivating(false);
         setErr(e instanceof Error ? e.message : "激活失败，请重试");
       });
   };
+
+  const tpl = templates.find((t) => t.template_version_id === tplId);
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: color.pageBg }}>
@@ -57,7 +67,7 @@ export function InitWizard() {
           <Icon name="robot" size={18} color="#fff" />
         </div>
         <div style={{ fontSize: 15, fontWeight: 800 }}>初始化 Agent</div>
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 0, maxWidth: 640, margin: "0 auto" }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 0, maxWidth: 520, margin: "0 auto" }}>
           {STEPS.map((s, i) => (
             <div key={s} style={{ display: "flex", alignItems: "center", flex: i === STEPS.length - 1 ? "0 0 auto" : 1 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
@@ -75,18 +85,27 @@ export function InitWizard() {
 
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "36px 24px" }}>
-        <div style={{ maxWidth: 680, margin: "0 auto" }}>
+        <div style={{ maxWidth: 720, margin: "0 auto" }}>
           {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} /> : null}
-          {step === 1 ? <StepName name={name} onName={setName} /> : null}
-          {step === 2 ? <StepWorkspace workspaces={workspaces} wsId={wsId} onPick={setWsId} onCreate={() => setWsDialog(true)} /> : null}
-          {step === 3 ? <StepLlm llm={llm} onLlm={setLlm} customLabel={customLlmId ? customLlmLabel : ""} onAdd={() => setLlmDialog(true)} /> : null}
-          {step === 4 ? <StepActivate name={name} activating={activating} /> : null}
+          {step === 1 ? (
+            <StepConfigure
+              name={name} onName={setName}
+              workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog(true)}
+              llm={llm} onLlm={setLlm}
+              customLlmId={customLlmId} customLlmLabel={customLlmLabel} customLlmMeta={customLlmMeta}
+              onCustomCreated={(id, label, meta) => {
+                setCustomLlmId(id); setCustomLlmLabel(label); setCustomLlmMeta(meta); setLlm("custom");
+              }}
+              onCustomRemoved={() => { setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null); setLlm("platform"); }}
+            />
+          ) : null}
+          {step === 2 ? <StepActivate name={name} activating={activating} capabilities={tpl?.capabilities ?? []} /> : null}
         </div>
       </div>
 
       {/* footer */}
       <div style={{ flex: "0 0 auto", borderTop: `1px solid ${color.border}`, background: "#fff", padding: "14px 24px", display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ maxWidth: 680, margin: "0 auto", width: "100%", display: "flex", gap: 10 }}>
+        <div style={{ maxWidth: 720, margin: "0 auto", width: "100%", display: "flex", gap: 10 }}>
           {step > 0 ? <Button variant="secondary" icon="arrow-left" onClick={() => setStep((s) => s - 1)}>上一步</Button> : null}
           <div style={{ flex: 1 }} />
           {err ? (
@@ -95,7 +114,7 @@ export function InitWizard() {
               <span>{err}</span>
             </div>
           ) : null}
-          {step < 4 ? (
+          {step < 2 ? (
             <Button icon="arrow-right" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>下一步</Button>
           ) : (
             <Button icon="rocket" disabled={activating} onClick={activate}>{activating ? "激活中…" : "激活 Agent"}</Button>
@@ -105,11 +124,10 @@ export function InitWizard() {
 
       <WorkspaceDialog open={wsDialog} onClose={() => setWsDialog(false)}
         onCreated={(id) => {
-          // 创建成功：选中新范围 + 重拉列表（否则第三步列表还是旧的，看不到刚建的 workspace）
+          // 创建成功：选中新范围 + 重拉列表（否则配置页网格还是旧的，看不到刚建的 workspace）
           setWsId(id); setWsDialog(false);
           api.getWorkspaces().then(setWorkspaces);
         }} />
-      <AddCustomModelDialog open={llmDialog} onClose={() => setLlmDialog(false)} onCreated={(id, label) => { setCustomLlmId(id); setCustomLlmLabel(label); setLlm("custom"); setLlmDialog(false); }} />
     </div>
   );
 }
@@ -119,6 +137,17 @@ function Title({ t, d }: { t: string; d: string }) {
     <div style={{ marginBottom: 22 }}>
       <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>{t}</h2>
       <div style={{ fontSize: 13, color: color.textSubtle }}>{d}</div>
+    </div>
+  );
+}
+
+function SectionLabel({ text, required, right }: { text: string; required?: boolean; right?: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+      <label style={{ fontSize: 13, fontWeight: 600, color: color.textStrong }}>
+        {text}{required ? <span style={{ color: color.dangerText }}> *</span> : null}
+      </label>
+      {right ?? null}
     </div>
   );
 }
@@ -160,120 +189,274 @@ function StepTemplate({ templates, tplId, onPick }: { templates: Template[]; tpl
   );
 }
 
-function StepName({ name, onName }: { name: string; onName: (v: string) => void }) {
+/** 单选卡右侧的 radio 圆点。 */
+function RadioDot({ on }: { on: boolean }) {
   return (
-    <>
-      <Title t="填写 Agent 信息" d="给这个 Agent 起个名字；身份使用你当前的 W3 员工账号。" />
-      <label style={{ fontSize: 13, fontWeight: 600, display: "block", marginBottom: 8 }}>Agent 名称</label>
-      <TextInput value={name} onChange={onName} placeholder="例如：支付域感知快恢" />
-      <div style={{ marginTop: 18, display: "flex", alignItems: "center", gap: 10, background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: "12px 14px" }}>
-        <Icon name="user-circle" size={20} color={color.textSubtle} />
-        <div>
-          <div style={{ fontSize: 12.5, fontWeight: 600 }}>当前身份：0026demo01（林一）</div>
-          <div style={{ fontSize: 11.5, color: color.textSubtle }}>W3 员工账号，只读</div>
-        </div>
-      </div>
-    </>
+    <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 18px" }}>
+      {on ? <div style={{ width: 8, height: 8, borderRadius: "50%", background: color.brand }} /> : null}
+    </div>
   );
 }
 
-function StepWorkspace({ workspaces, wsId, onPick, onCreate }: { workspaces: Workspace[]; wsId: string; onPick: (id: string) => void; onCreate: () => void }) {
-  return (
-    <>
-      <Title t="选择或创建系统范围" d="系统范围（workspace）= 命名的 APPID 集合 + scope_revision。运行时范围由 oModel 按你的授权解析。" />
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {workspaces.map((ws) => {
-          const on = ws.workspace_id === wsId;
-          return (
-            <Interactive key={ws.workspace_id} onClick={() => onPick(ws.workspace_id)}
-              baseStyle={{ border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-              hoverStyle={on ? {} : { borderColor: color.brandTintBorder }}>
-              <Icon name="target" size={18} color={color.brand} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{ws.name}</div>
-                <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 2 }}>{ws.workspace_id} · {ws.scope_revision} · 更新于 {ws.updated}</div>
-              </div>
-              <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 8px", borderRadius: radius.pill }}>{ws.sync_status}</span>
-            </Interactive>
-          );
-        })}
-        <Interactive as="button" onClick={onCreate}
-          baseStyle={{ border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: color.brand, fontSize: 13, fontWeight: 600 }}
-          hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.04)" }}>
-          <Icon name="plus" size={16} color={color.brand} />从应用创建新的系统范围
-        </Interactive>
-      </div>
-    </>
-  );
-}
-
-function StepLlm({ llm, onLlm, customLabel, onAdd }: {
-  llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void; customLabel: string; onAdd: () => void;
+/** 合并配置页（原型 STEP1）：名称 → 身份确认 → 模型供应商 → 系统看护范围。 */
+function StepConfigure({
+  name, onName,
+  workspaces, wsId, onPickWs, onCreateWs,
+  llm, onLlm,
+  customLlmId, customLlmLabel, customLlmMeta, onCustomCreated, onCustomRemoved,
+}: {
+  name: string; onName: (v: string) => void;
+  workspaces: Workspace[]; wsId: string; onPickWs: (id: string) => void; onCreateWs: () => void;
+  llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void;
+  customLlmId: string; customLlmLabel: string; customLlmMeta: CustomLlmMeta | null;
+  onCustomCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
+  onCustomRemoved: () => void;
 }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const selectedWs = workspaces.find((w) => w.workspace_id === wsId);
   return (
     <>
-      <Title t="配置模型" d="默认使用平台模型即可启动；也可添加自己的 OpenAI 兼容模型（必须支持 tool calling）。" />
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {([["platform", "使用平台默认模型（Qwen3.5）", "无需 Secret，直接启动"], ["custom", "使用我的自定义模型（OpenAI 兼容）", "填 base_url / model / API Key，创建时探测"]] as const).map(([v, t, d]) => {
-          const on = llm === v;
-          return (
-            <Interactive key={v} onClick={() => onLlm(v)}
-              baseStyle={{ border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-              hoverStyle={on ? {} : { borderColor: color.brandTintBorder }}>
-              <Icon name="cpu" size={18} color={on ? color.brand : color.textSubtle} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13.5, fontWeight: 600 }}>{t}</div>
-                <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 2 }}>{d}</div>
-              </div>
-              <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                {on ? <div style={{ width: 8, height: 8, borderRadius: "50%", background: color.brand }} /> : null}
-              </div>
-            </Interactive>
-          );
-        })}
-      </div>
-      {llm === "custom" ? (
-        <div style={{ marginTop: 12 }}>
-          {customLabel ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderRadius: radius.lg, background: color.goodBg, border: `1px solid ${color.goodBorder}` }}>
-              <Icon name="circle-check" size={17} color={color.good} />
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: color.goodText }}>已添加：{customLabel}</div>
-                <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 1 }}>探测通过，将作为该 Agent 的默认模型</div>
-              </div>
-              <Button variant="secondary" icon="pencil" onClick={onAdd}>更换</Button>
-            </div>
-          ) : (
-            <Interactive as="button" onClick={onAdd}
-              baseStyle={{ width: "100%", border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, padding: "14px 16px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: color.brand, fontSize: 13, fontWeight: 600 }}
-              hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.04)" }}>
-              <Icon name="plus" size={16} color={color.brand} />添加自定义模型（base_url / model / API Key）
-            </Interactive>
-          )}
+      <Title t="配置 Agent" d="一页完成：名称、模型与看护范围；身份使用你当前的登录账号。" />
+      <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
+
+        {/* ① 名称 */}
+        <div>
+          <SectionLabel text="Agent 名称" required />
+          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 8px", lineHeight: 1.55 }}>
+            建议用「看护系统范围 + 感知快恢Agent」，如「运行观测-感知快恢Agent」，便于快速识别 Agent 看护的系统范围。
+          </div>
+          <TextInput value={name} onChange={onName} placeholder="如：支付域-感知快恢Agent" />
+          {!name.trim() ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 6 }}>名称必填</div> : null}
         </div>
-      ) : null}
-      <div style={{ marginTop: 16, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
-        Secret 明文仅在创建时提交、加密存 user_secret，API 永不回显；探测失败的模型不能激活。
+
+        {/* ② 身份确认 */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, border: `1px solid ${color.border}`, borderRadius: radius.xl, background: "rgba(247,248,250,.5)", padding: 14 }}>
+          <div style={{ width: 32, height: 32, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
+            <Icon name="user" size={17} color={color.brand} />
+          </div>
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>身份确认</div>
+            <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.6 }}>
+              你将以 <span style={{ fontWeight: 600, color: color.textStrong }}>0026demo01（林一）</span> 的身份创建此 Agent，所有操作将关联到该账号。
+            </div>
+          </div>
+        </div>
+
+        {/* ③ 模型供应商 */}
+        <div>
+          <SectionLabel text="模型供应商" />
+          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 10px" }}>选择 Agent 使用的模型：可用平台提供的模型，也可接入自带模型（OpenAI 兼容，须支持 tool calling）。</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <Interactive onClick={() => onLlm("platform")}
+              baseStyle={{ border: `1px solid ${llm === "platform" ? color.brand : color.border}`, background: llm === "platform" ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
+              hoverStyle={llm === "platform" ? {} : { borderColor: color.brandTintBorder }}>
+              <div style={{ width: 34, height: 34, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
+                <Icon name="sparkles" size={17} color={color.brand} />
+              </div>
+              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 13, fontWeight: 600 }}>平台默认模型（Qwen3.5）</span>
+                <span style={{ fontSize: 10, color: color.textSubtle, background: color.neutralBg, padding: "2px 6px", borderRadius: 5 }}>平台提供</span>
+              </div>
+              <RadioDot on={llm === "platform"} />
+            </Interactive>
+
+            {customLlmId ? (
+              <Interactive onClick={() => onLlm("custom")}
+                baseStyle={{ border: `1px solid ${llm === "custom" ? color.brand : color.border}`, background: llm === "custom" ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
+                hoverStyle={llm === "custom" ? {} : { borderColor: color.brandTintBorder }}>
+                <div style={{ width: 34, height: 34, borderRadius: radius.md, background: color.neutralBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
+                  <Icon name="cpu" size={17} color={color.textNav} />
+                </div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, fontWeight: 600 }}>{customLlmLabel}</span>
+                    {customLlmMeta ? <span style={{ fontSize: 10, color: color.textSubtle, background: color.neutralBg, padding: "2px 6px", borderRadius: 5, fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.modelName}</span> : null}
+                    <span style={{ fontSize: 10, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, fontWeight: 600 }}>可用</span>
+                  </div>
+                  {customLlmMeta ? <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.baseUrl}</div> : null}
+                </div>
+                <Icon name="trash" size={16} color={color.textFaint} title="删除该自定义模型（回退平台默认）"
+                  onClick={onCustomRemoved} />
+                <RadioDot on={llm === "custom"} />
+              </Interactive>
+            ) : null}
+
+            {showAdd ? (
+              <InlineAddModel
+                onCancel={() => setShowAdd(false)}
+                onCreated={(id, label, meta) => { setShowAdd(false); onCustomCreated(id, label, meta); }}
+              />
+            ) : !customLlmId ? (
+              <Interactive as="button" onClick={() => setShowAdd(true)}
+                baseStyle={{ width: "100%", border: `2px dashed ${color.borderInput}`, background: "#fff", borderRadius: radius.xl, padding: "11px 0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: color.brand, fontSize: 13, fontWeight: 600 }}
+                hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.02)" }}>
+                <Icon name="plus" size={16} color={color.brand} />添加自定义模型
+              </Interactive>
+            ) : null}
+          </div>
+        </div>
+
+        {/* ④ 系统看护范围 */}
+        <div>
+          <SectionLabel text="系统看护范围" required
+            right={<span style={{ fontSize: 12, color: color.textSubtle }}>已选：{selectedWs?.name ?? "—"}</span>} />
+          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择 Agent 看护的系统范围（workspace = 命名的 APPID 集合）；运行时范围由 oModel 按你的授权解析。</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
+            {workspaces.map((ws) => {
+              const on = ws.workspace_id === wsId;
+              return (
+                <Interactive key={ws.workspace_id} onClick={() => onPickWs(ws.workspace_id)}
+                  baseStyle={{ position: "relative", border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: 14, cursor: "pointer" }}
+                  hoverStyle={on ? {} : { borderColor: color.brandTintBorder }}>
+                  {on ? (
+                    <div style={{ position: "absolute", top: 12, right: 12, width: 20, height: 20, borderRadius: "50%", background: color.brand, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      <Icon name="check" size={13} color="#fff" />
+                    </div>
+                  ) : null}
+                  <div style={{ fontSize: 14, fontWeight: 600, paddingRight: 24 }}>{ws.name}</div>
+                  <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{ws.workspace_id}</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 7px", borderRadius: radius.pill }}>{ws.sync_status}</span>
+                    <span style={{ fontSize: 11, color: color.textSubtle, background: color.neutralBg, padding: "2px 7px", borderRadius: 5 }}>{ws.scope_revision}</span>
+                  </div>
+                </Interactive>
+              );
+            })}
+            <Interactive as="button" onClick={onCreateWs}
+              baseStyle={{ minHeight: 104, border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}
+              hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.05)" }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#fff", border: `1px solid ${color.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <Icon name="plus" size={17} color={color.brand} />
+              </div>
+              <span style={{ fontSize: 13, fontWeight: 600, color: color.brand }}>新建系统范围</span>
+            </Interactive>
+          </div>
+          {!wsId ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 8 }}>请选择或新建一个系统范围</div> : null}
+        </div>
       </div>
     </>
   );
 }
 
-function StepActivate({ name, activating }: { name: string; activating: boolean }) {
+/** 页内内联「添加自定义模型」表单（原型口径；提交链与设置页弹窗共用 submitCustomLlm）。 */
+function InlineAddModel({ onCancel, onCreated }: {
+  onCancel: () => void;
+  onCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
+}) {
+  const [displayName, setDisplayName] = useState("");
+  const [baseUrl, setBaseUrl] = useState("https://");
+  const [modelName, setModelName] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const ok = displayName.trim().length > 0 && /^https?:\/\/.+/.test(baseUrl.trim())
+    && modelName.trim().length > 0 && apiKey.trim().length > 0;
+
+  const submit = () => {
+    if (!ok || busy) return;
+    setBusy(true);
+    setError("");
+    submitCustomLlm({ displayName, baseUrl, modelName, apiKey })
+      .then((r) => onCreated(r.id, r.label, { modelName: modelName.trim(), baseUrl: baseUrl.trim() }))
+      .catch((e: unknown) => { setError(e instanceof Error ? e.message : "创建失败"); setBusy(false); });
+  };
+
+  return (
+    <div style={{ border: `1px solid rgba(22,131,255,.30)`, background: "#fafcff", borderRadius: radius.xl, padding: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <span style={{ fontSize: 13, fontWeight: 700 }}>添加自定义模型</span>
+        <Icon name="x" size={16} color={color.textSubtle} onClick={busy ? undefined : onCancel} />
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+        <InlineField label="展示名" required><TextInput value={displayName} onChange={setDisplayName} placeholder="例：我的 GPT-4o" /></InlineField>
+        <InlineField label="API 地址" required><TextInput value={baseUrl} onChange={setBaseUrl} placeholder="https://api.example.com/v1" mono /></InlineField>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <InlineField label="模型标识" required><TextInput value={modelName} onChange={setModelName} placeholder="gpt-4o" mono /></InlineField>
+          </div>
+          <div style={{ flex: 1 }}>
+            <InlineField label="API Key" required>
+              <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" autoComplete="off"
+                style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "ui-monospace, monospace" }} />
+            </InlineField>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: color.textSubtle }}>接口协议：OpenAI 兼容（须支持 tool calling）；Key 明文仅此刻提交、加密存 user_secret，接口永不回显。</div>
+        {error ? <div style={{ fontSize: 12, color: color.dangerText }}>{error}</div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <Button variant="secondary" onClick={onCancel} disabled={busy}>取消</Button>
+          <Button icon={busy ? "loader-2" : "plus"} disabled={!ok || busy} onClick={submit}>{busy ? "创建并探测中…" : "添加"}</Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function InlineField({ label, required, children }: { label: string; required?: boolean; children: React.ReactNode }) {
+  return (
+    <div>
+      <div style={{ fontSize: 12, fontWeight: 600, color: color.textSubtle, marginBottom: 5 }}>
+        {label}{required ? <span style={{ color: color.dangerText }}> *</span> : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// 能力卡文案（激活页「能力识别」，原型 STEP2 并入）：模板 capabilities 中文名 → 图标+描述
+const CAP_META: Record<string, { icon: string; desc: string }> = {
+  "巡检": { icon: "radar", desc: "基于看护范围查看健康状态、异常信号与风险，只做查询不做变更。" },
+  "定界": { icon: "stethoscope", desc: "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行。" },
+  "恢复": { icon: "first-aid-kit", desc: "执行受控恢复动作：先核对目标与影响面，需人工批准后执行。" },
+};
+
+function StepActivate({ name, activating, capabilities }: { name: string; activating: boolean; capabilities: string[] }) {
   const items = ["创建 AgentTeam 实例", "同步系统范围（oModel 就绪）", "装配模板默认能力（巡检 / 定界 / 恢复）", "启动 Agent 服务"];
   return (
-    <div style={{ textAlign: "center", padding: "20px 0" }}>
-      <div style={{ width: 64, height: 64, borderRadius: 18, background: color.brandGrad, display: "inline-flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand, marginBottom: 18, animation: activating ? "omPulse 1.4s ease-in-out infinite" : undefined }}>
-        <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
-      </div>
-      <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>{activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`}</h2>
-      <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>激活将创建实例与初始配置版本，然后进入对话工作台。</div>
-      <div style={{ maxWidth: 380, margin: "0 auto", textAlign: "left", display: "flex", flexDirection: "column", gap: 10 }}>
-        {items.map((it, i) => (
-          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: color.textBody }}>
-            <Icon name={activating ? "loader-2" : "circle-check"} size={17} color={activating ? color.textSubtle : color.good} spin={activating} />{it}
+    <div style={{ padding: "8px 0" }}>
+      {/* 能力识别（原型「确认 Agent 能力清单」并入）：所选模板已具备的内置能力 */}
+      {capabilities.length ? (
+        <div style={{ marginBottom: 26 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="bolt" size={16} color={color.brand} />能力识别
+            <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>Agent 已具备的内置能力</span>
           </div>
-        ))}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            {capabilities.map((c) => {
+              const meta = CAP_META[c] ?? { icon: "bolt", desc: "平台内置能力。" };
+              return (
+                <div key={c} style={{ border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
+                    <Icon name={meta.icon} size={21} color={color.brand} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>{c}</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap" }}>已识别</span>
+                    </div>
+                    <p style={{ fontSize: 12, color: color.textSubtle, margin: 0, lineHeight: 1.55 }}>{meta.desc}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      <div style={{ textAlign: "center" }}>
+        <div style={{ width: 64, height: 64, borderRadius: 18, background: color.brandGrad, display: "inline-flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand, marginBottom: 18, animation: activating ? "omPulse 1.4s ease-in-out infinite" : undefined }}>
+          <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
+        </div>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>{activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`}</h2>
+        <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>激活将创建实例与初始配置版本，然后进入对话工作台。</div>
+        <div style={{ maxWidth: 380, margin: "0 auto", textAlign: "left", display: "flex", flexDirection: "column", gap: 10 }}>
+          {items.map((it, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: color.textBody }}>
+              <Icon name={activating ? "loader-2" : "circle-check"} size={17} color={activating ? color.textSubtle : color.good} spin={activating} />{it}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -8,6 +8,20 @@ import { api } from "../lib/api";
  * 服务端在建配置时做 egress SSRF 校验 + tool-calling 探测；失败以后端 message 直显，不激活。
  * onCreated 回传 llm_config_id + 展示名，供调用方重载列表/自动选中/绑为实例默认。
  */
+
+/** 提交链共享（本弹窗与初始化向导内联表单共用）：录 Secret → 建 llm-config → 回传 id+label。 */
+export async function submitCustomLlm(f: {
+  displayName: string; baseUrl: string; modelName: string; apiKey: string;
+}): Promise<{ id: string; label: string }> {
+  const sec = await api.createSecret(`${f.displayName.trim()} Key`, f.apiKey.trim());
+  const cfg = await api.createLlmConfig({
+    display_name: f.displayName.trim(),
+    base_url: f.baseUrl.trim(),
+    model_name: f.modelName.trim(),
+    secret_ref_id: sec.secret_ref_id,
+  });
+  return { id: cfg.llm_config_id, label: f.displayName.trim() };
+}
 export function AddCustomModelDialog({
   open,
   onClose,
@@ -41,14 +55,8 @@ export function AddCustomModelDialog({
     setBusy(true);
     setError(null);
     try {
-      const sec = await api.createSecret(`${displayName.trim()} Key`, apiKey.trim());
-      const cfg = await api.createLlmConfig({
-        display_name: displayName.trim(),
-        base_url: baseUrl.trim(),
-        model_name: modelName.trim(),
-        secret_ref_id: sec.secret_ref_id,
-      });
-      onCreated(cfg.llm_config_id, displayName.trim());
+      const created = await submitCustomLlm({ displayName, baseUrl, modelName, apiKey });
+      onCreated(created.id, created.label);
       reset();
       onClose();
     } catch (e) {
