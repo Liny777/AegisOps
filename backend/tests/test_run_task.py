@@ -179,3 +179,24 @@ def test_run_title_autoname_and_rename(client):
     r2 = client.post(f"/api/openops/v1/agent-runs/{rid}:rename", headers=USER_HEADERS,
                      json={"client_request_id": "rn3", "title": "   "})
     assert r2.status_code in (400, 422)  # service trim 后空 → VALIDATION_FAILED（422=pydantic 拦）
+
+
+def test_run_delete_soft_and_list_excludes(client):
+    """会话删除（软删）：列表不再含该 run、他人 403、审计 run.deleted、删后 state 404。"""
+    from conftest import OTHER_HEADERS
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+
+    # 他人无权删
+    r = client.post(f"/api/openops/v1/agent-runs/{rid}:delete", headers=OTHER_HEADERS, json={})
+    assert r.status_code == 403
+
+    out = unwrap(client.post(f"/api/openops/v1/agent-runs/{rid}:delete", headers=USER_HEADERS, json={}))
+    assert out["deleted"] is True
+
+    runs_list = unwrap(client.get("/api/openops/v1/agent-runs", headers=USER_HEADERS))
+    assert all(r2["agent_run_id"] != rid for r2 in runs_list)  # 列表不再含
+    r2 = client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS)
+    assert r2.status_code == 404  # get_run 过滤 deleted_at

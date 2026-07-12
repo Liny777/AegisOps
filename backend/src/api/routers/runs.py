@@ -39,6 +39,11 @@ async def cancel_task(task_id: str, user: User):
     return ok(await run_state_service.cancel_task(user, task_id))
 
 
+@router.post("/agent-runs/{run_id}:delete")
+async def delete_run(run_id: str, user: User):
+    return ok(await run_state_service.delete_run(user, run_id))
+
+
 @router.post("/agent-runs/{run_id}:rename")
 async def rename_run(run_id: str, req: RenameRunRequest, user: User):
     return ok(await run_state_service.rename_run(user, run_id, req))

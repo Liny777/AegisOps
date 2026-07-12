@@ -38,6 +38,7 @@ export interface OpenOpsApi {
   ensureRun(instanceId: string): Promise<string>; // → run_id
   createRun(instanceId: string): Promise<string>; // always create a new run
   renameRun(runId: string, title: string): Promise<void>;
+  deleteRun(runId: string): Promise<void>;
   getRunState(runId: string): Promise<Record<string, unknown>>;
   startTask(runId: string, text: string): Promise<{ task_id: string }>;
   cancelTask(taskId: string): Promise<void>;
@@ -124,9 +125,10 @@ const realApi: OpenOpsApi = {
     return rows.map(projectInstance);
   },
   async listConversations() {
-    // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」
+    // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」；
+    // 按 Agent 过滤/条数截断在显示层（Sidebar）做——此处截断会导致过滤后不足
     const runs = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-runs");
-    return runs.slice(0, 30).map((r) => ({
+    return runs.map((r) => ({
       id: String(r.agent_run_id),
       title: String(r.run_title ?? "") || "新对话",
       instance_id: String(r.agent_team_instance_id),
@@ -168,6 +170,10 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { client_request_id: crid(), title },
     });
+  },
+  async deleteRun(runId) {
+    await apiFetch(`/openops/v1/agent-runs/${runId}:delete`, { method: "POST", body: {} });
+    runByInstance.forEach((v, k) => { if (v === runId) runByInstance.delete(k); });
   },
   getRunState: (runId) => apiFetch(`/openops/v1/agent-runs/${runId}/state`),
   async startTask(runId, text) {
@@ -591,6 +597,11 @@ const mockApi: OpenOpsApi = {
   renameRun: (runId, title) => {
     const c = M.mockConversations.find((x) => x.id === runId);
     if (c) c.title = title;
+    return delay(undefined as unknown as void);
+  },
+  deleteRun: (runId) => {
+    const i = M.mockConversations.findIndex((x) => x.id === runId);
+    if (i >= 0) M.mockConversations.splice(i, 1);
     return delay(undefined as unknown as void);
   },
   getRunState: () => delay({}),

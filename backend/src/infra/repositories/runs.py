@@ -36,6 +36,18 @@ async def list_runs_by_user(user_id: str) -> list[dict[str, Any]]:
     )
 
 
+async def soft_delete_run(run_id: str, updated_by: str) -> int:
+    """软删（会话删除入口）：打 deleted_at 标记；get_run/list_runs_by_user 均已过滤。"""
+    return await exec1(
+        """
+        update sre_agent_run
+        set deleted_at=now(), last_update_date=now(), last_updated_by=%(u)s
+        where agent_run_id=%(r)s and deleted_at is null
+        """,
+        {"r": run_id, "u": updated_by},
+    )
+
+
 async def set_run_title(run_id: str, title: str, updated_by: str) -> int:
     return await exec1(
         """

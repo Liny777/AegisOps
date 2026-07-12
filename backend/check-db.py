@@ -48,6 +48,19 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001 —— GaussDB 目录差异不影响主判定
             print(f"[check-db]   （连接数查询跳过：{type(e).__name__}: {e}）")
         try:
+            # 增量迁移哨兵：缺列=旧库没跑迁移（会话名会一直显示「新对话」，改名接口报错）
+            has_title = conn.execute(
+                "select 1 from information_schema.columns "
+                "where table_name='sre_agent_run' and column_name='run_title'"
+            ).fetchone()
+            if has_title:
+                print("[check-db]   ✅ sre_agent_run.run_title 列存在（会话名迁移已跑）")
+            else:
+                print("[check-db]   ❌ sre_agent_run.run_title 列缺失——请执行 sql/migrate-2026-07-12-run-title.sql"
+                      "（或重跑 core.sql，尾部增量段幂等补列），否则会话自动起名/重命名不生效")
+        except Exception as e:  # noqa: BLE001
+            print(f"[check-db]   （run_title 列检测跳过：{type(e).__name__}: {e}）")
+        try:
             sp = conn.execute("show search_path").fetchone()[0]
             print(f"[check-db]   search_path = {sp}")
         except Exception:  # noqa: BLE001

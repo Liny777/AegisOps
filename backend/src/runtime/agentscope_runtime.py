@@ -142,10 +142,14 @@ async def _build_model(st: TaskState) -> Any:
               f"trust_env={http_trust_env()}", flush=True)
         # 自定义 http_client：trust_env 默认 False——openai SDK 默认信任环境/Windows 注册表代理，
         # 内网 GLM 会被公司 SWG 劫走（实测返回 HIS Proxy 错误页而非模型响应）。超时对齐推理耗时。
+        # max_retries 默认 0：openai SDK 默认重试 2 次，坏 base_url（内网实测 DB 里填了占位假地址）
+        # 会 connect 超时×3 轮 ≈ 半分钟无反馈才 task.failed——失败要快到快透出。
         client_kwargs: dict[str, Any] = {
+            "max_retries": int(os.environ.get("OPENOPS_MODEL_MAX_RETRIES", "0")),
             "http_client": httpx.AsyncClient(
                 trust_env=http_trust_env(), verify=console_tls_verify(),
-                timeout=httpx.Timeout(connect=10.0, read=float(os.environ.get("OPENOPS_MODEL_READ_TIMEOUT_S", "300")),
+                timeout=httpx.Timeout(connect=float(os.environ.get("OPENOPS_MODEL_CONNECT_TIMEOUT_S", "10")),
+                                      read=float(os.environ.get("OPENOPS_MODEL_READ_TIMEOUT_S", "300")),
                                       write=30.0, pool=10.0),
             ),
         }

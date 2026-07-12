@@ -23,7 +23,7 @@ import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 
-type ConnState = "connecting" | "open" | "reconnecting";
+type ConnState = "connecting" | "open" | "reconnecting" | "error";
 
 /** 会话自动起名（与后端 run_state_service._auto_title 同规则）：单行化取前 30 字。 */
 const autoTitle = (t: string) => {
@@ -191,7 +191,16 @@ export function Workbench() {
     seen.current = new Set();
     setConn("connecting");
     (async () => {
-      const rid = explicitRunId ?? (await api.ensureRun(instanceId));
+      // ensureRun/refresh 失败必须透出（实测坑：静默吞掉 → runId 恒 null → send 走 mock 文案误导）
+      let rid: string;
+      try {
+        rid = explicitRunId ?? (await api.ensureRun(instanceId));
+      } catch (err) {
+        if (closed) return;
+        setConn("error");
+        setMessages([{ id: "init_err", role: "bot", text: `会话创建失败：${(err as Error).message}` }]);
+        return;
+      }
       if (closed) return;
       setRunId(rid);
       api.getModelConfigs().then((ms) => {
@@ -222,10 +231,20 @@ export function Workbench() {
     setMessages((m) => [...m, { id: `u${m.length}`, role: "user", text }]);
     // 首条输入即时起名（后端 start_task 同规则落库；本地先行避免等下一次 /state 才见标题）
     if (API_MODE === "real" && runId && !chatTitle) setChatTitle(autoTitle(text));
-    if (API_MODE !== "real" || !runId) {
-      setTimeout(() => setMessages((m) => [...m, { id: `b${m.length}`, role: "bot", text: "（mock 演示）任务已受理。", showCopy: true }]), 400);
+    if (API_MODE === "real" && !runId) {
+      // 实测坑：此前与 mock 合一个分支，会话创建失败时回「(mock 演示）任务已受理」误导排障
+      appendMessage({ id: `e${Date.now()}`, role: "bot", text: "会话未就绪（创建失败或仍在连接），请稍后重试；持续失败请看上方错误或后端日志。" });
       return;
     }
+    if (API_MODE !== "real") {
+      setTaskStatus("running");  // mock 也走按钮两态，便于演示
+      setTimeout(() => {
+        setMessages((m) => [...m, { id: `b${m.length}`, role: "bot", text: "（mock 演示）任务已受理。", showCopy: true }]);
+        setTaskStatus("completed");
+      }, 900);
+      return;
+    }
+    if (!runId) return;  // 上方两分支已保证非空；此守卫仅为类型收窄
     setRca(undefined);
     setHitl(undefined);
     if (TRANSPORT === "agui") {
@@ -378,6 +397,7 @@ function ConnBadge({ conn, closed }: { conn: ConnState; closed: boolean }) {
     open: { label: "实时", tone: "good" },
     connecting: { label: "连接中", tone: "neutral" },
     reconnecting: { label: "重连中", tone: "warning" },
+    error: { label: "会话创建失败", tone: "warning" },
   };
   const m = map[conn];
   return (

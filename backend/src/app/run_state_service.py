@@ -219,6 +219,26 @@ async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
     return {"task_id": task_id, "status": "cancelled"}
 
 
+async def delete_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """会话删除（软删）：running task 先取消、释放容器（同 close_run 收尾），再打 deleted_at + 审计。"""
+    uid = user["user_id"]
+    run = await owned_run(uid, run_id)
+    st = task_registry.get_by_run(run_id)
+    if st and st.status == "running":
+        await cancel_task(user, st.task_id)
+    if run["run_status"] != "closed":  # 已 close 的 run 容器早已释放，勿重复 release
+        cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+        await sandbox_executor.release_user_container(uid, run_id)
+        await sandbox_executor.sweep_idle(cfg)
+    await runs.soft_delete_run(run_id, uid)
+    await audit.insert_event(
+        audit_trace_id=str(run["audit_trace_id"]), event_type="run.deleted", user_id=uid,
+        run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="delete", actor_type="user",
+    )
+    events.publish(run_id, events.envelope(run_id, "openops.run.deleted", message="会话已删除"))
+    return {"agent_run_id": run_id, "deleted": True}
+
+
 async def rename_run(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
     """会话重命名：trim + 截 60 字；审计 run.renamed + SSE（侧栏/多端同步）。"""
     uid = user["user_id"]

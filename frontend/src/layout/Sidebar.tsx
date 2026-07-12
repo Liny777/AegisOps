@@ -64,13 +64,29 @@ export function Sidebar() {
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
 
-  // 历史会话（真实 run 列表）：路由变化即重拉——新对话/自动起名/改名/关闭返回后自然刷新
+  // 历史会话（真实 run 列表）：路由变化即重拉——新对话/自动起名/改名/关闭返回后自然刷新；
+  // 显示时按当前 Agent 过滤（会话绑定实例，切 Agent 列表跟着切）再截断
   const [convs, setConvs] = useState<Conversation[]>([]);
   useEffect(() => {
     let dead = false;
     api.listConversations().then((c) => { if (!dead) setConvs(c); }).catch(() => undefined);
     return () => { dead = true; };
   }, [loc.pathname]);
+  const shownConvs = convs
+    .filter((c) => !currentAgentId || !c.instance_id || c.instance_id === currentAgentId)
+    .slice(0, 20);
+
+  const deleteConv = async (c: Conversation) => {
+    if (!confirm(`删除会话「${c.title}」？`)) return;
+    try {
+      await api.deleteRun(c.id);
+      setConvs((prev) => prev.filter((x) => x.id !== c.id));
+      // 删的是当前打开的会话 → 回当前 Agent 的对话入口（ensureRun 会开新会话）
+      if (loc.pathname.includes(c.id) && currentAgentId) nav(`/agent-teams/${currentAgentId}/chat`);
+    } catch (e) {
+      alert(`删除失败：${(e as Error).message}`);
+    }
+  };
 
   // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
   // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
@@ -244,10 +260,10 @@ export function Sidebar() {
               <div style={{ fontSize: 11, fontWeight: 700, color: color.textLabel, letterSpacing: 0.5, padding: "10px 8px 6px", display: "flex", alignItems: "center", gap: 6 }}>
                 <Icon name="clock" size={13} />历史会话
               </div>
-              {convs.length === 0 ? (
+              {shownConvs.length === 0 ? (
                 <div style={{ padding: "8px 10px", fontSize: 12.5, color: color.textFaint }}>暂无会话</div>
               ) : (
-                convs.map((c) => {
+                shownConvs.map((c) => {
                   const cur = loc.pathname.includes(c.id);
                   return (
                     <Interactive
@@ -259,6 +275,10 @@ export function Sidebar() {
                     >
                       <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.title}</span>
                       {c.status === "closed" ? <Icon name="lock" size={12} color={color.textFainter} /> : null}
+                      {/* stopPropagation：点删除不触发行跳转（Icon onClick 不带 event，包 span） */}
+                      <span onClick={(e) => { e.stopPropagation(); void deleteConv(c); }} style={{ display: "inline-flex" }}>
+                        <Icon name="trash" size={12} color={color.textFainter} title="删除会话" />
+                      </span>
                     </Interactive>
                   );
                 })
