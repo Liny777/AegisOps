@@ -132,6 +132,7 @@ export interface ActivityNode {
   detail: string;
   time: string;
   icon: string;
+  agentKey?: string;  // D 块：事件归属 agent（main/子角色 key）——活动栏分组用
   tone: Tone;
   running?: boolean;
 }

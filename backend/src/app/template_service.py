@@ -41,13 +41,33 @@ async def _validate_content(content: dict[str, Any]) -> None:
     tools = main.get("default_tools", [])
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise ApiError(Err.VALIDATION_FAILED, "main.default_tools 必须是工具名数组")
-    if not isinstance(content.get("sub_agents", []), list):
+    subs = content.get("sub_agents", [])
+    if not isinstance(subs, list):
         raise ApiError(Err.VALIDATION_FAILED, "sub_agents 必须是数组")
+    # D 块：sub 画像校验（key/role 必填；skills/mcp_tools 字符串数组；max_iters 1..200；key 唯一）
+    seen_keys: set[str] = set()
+    for s in subs:
+        if not isinstance(s, dict) or not str(s.get("key", "")).strip() or not str(s.get("role", "")).strip():
+            raise ApiError(Err.VALIDATION_FAILED, "sub_agents 每项须含 key 与 role")
+        if s["key"] in seen_keys:
+            raise ApiError(Err.VALIDATION_FAILED, f"sub_agents key 重复：{s['key']}")
+        seen_keys.add(s["key"])
+        for f in ("skills", "mcp_tools"):
+            if not isinstance(s.get(f, []), list) or not all(isinstance(x, str) for x in s.get(f, [])):
+                raise ApiError(Err.VALIDATION_FAILED, f"sub_agents[{s['key']}].{f} 必须是字符串数组")
+        mi = s.get("max_iters", 20)
+        if not isinstance(mi, int) or not (1 <= mi <= 200):
+            raise ApiError(Err.VALIDATION_FAILED, f"sub_agents[{s['key']}].max_iters 须为 1..200 整数")
+    for f, lo, hi in (("max_children", 1, 10), ("delegation_max_spawns", 1, 100)):
+        v = main.get(f)
+        if v is not None and (not isinstance(v, int) or not (lo <= v <= hi)):
+            raise ApiError(Err.VALIDATION_FAILED, f"main.{f} 须为 {lo}..{hi} 整数")
     anns = await mcp_tool_annotation_service.runtime_annotations()  # 全部已标注工具（含 blocked，运行时另拦）
     allowed = {k for k, v in anns.items() if v.get("status") == "allowed"}  # 绑定校验只认 allowed（B7-TEST-001 暴露：曾误放行 blocked）
-    bad = [t for t in tools if t not in allowed]
+    sub_tools = [t for s in subs for t in s.get("mcp_tools", [])]
+    bad = [t for t in [*tools, *sub_tools] if t not in allowed]
     if bad:
-        raise ApiError(Err.VALIDATION_FAILED, f"以下平台 tool 未 allowed 标注，不可绑定：{', '.join(bad)}")
+        raise ApiError(Err.VALIDATION_FAILED, f"以下平台 tool 未 allowed 标注，不可绑定：{', '.join(sorted(set(bad)))}")
 
 
 async def admin_detail(template_id: str) -> dict[str, Any]:

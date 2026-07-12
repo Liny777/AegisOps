@@ -180,6 +180,7 @@ async def invoke(
     await emit(st, run, "openops.tool.call.started", action=tool_name,
                message=started_msg or f"调用工具 {tool_name}",
                payload={"tool": tool_name, "source_type": source_type,
+                        "agent_key": st.agent_key,  # D 块：前端活动栏按 agent 分组
                         # 入参进事件（前端工具卡展示；内网实测缺口：agent 真带参但界面显示空）。
                         # Secret 不在 arguments（gateway 在调用边界注 header，28.2 不破）；超长截断防事件膨胀
                         "arguments": _args_for_event(arguments)})
@@ -194,5 +195,6 @@ async def invoke(
                message=succeeded_msg or f"工具 {tool_name} 调用完成",
                external_request_id=result.get("request_id"),
                payload={"tool": tool_name,  # 审计查询体验：成功事件也带 tool 名（B5-OBS-002）
+                        "agent_key": st.agent_key,  # D 块：前端活动栏按 agent 分组
                         **{k: v for k, v in result.items() if k in ("result_summary", "execution_id", "status")}})
     return result

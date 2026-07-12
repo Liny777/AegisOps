@@ -11,6 +11,12 @@ import type { Tone } from "../../theme/tokens";
 
 /* 事件类型 → 活动线节点外观 */
 const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = {
+  // D 块：子 Agent 编排事件
+  "openops.subagent.dispatched": { icon: "send", tone: "neutral", title: "派发子 Agent" },
+  "openops.subagent.started": { icon: "robot", tone: "neutral", title: "子 Agent 启动" },
+  "openops.subagent.reported": { icon: "clipboard-check", tone: "good", title: "子 Agent 汇报" },
+  "openops.subagent.timeout": { icon: "clock-exclamation", tone: "warning", title: "子 Agent 超时" },
+  "openops.subagent.failed": { icon: "alert-triangle", tone: "warning", title: "子 Agent 异常" },
   "agent_run.created": { icon: "player-play", tone: "neutral", title: "会话创建" },
   "task.started": { icon: "bolt", tone: "neutral", title: "任务启动" },
   "openops.task.started": { icon: "bolt", tone: "neutral", title: "任务启动" },
@@ -64,12 +70,14 @@ export function auditToNode(e: Record<string, unknown>): ActivityNode {
     time: hhmm(String(e.occurred_at ?? "")),
     icon: m.icon,
     tone: m.tone,
+    agentKey: (p as Record<string, unknown>).agent_key ? String((p as Record<string, unknown>).agent_key) : undefined,
   };
 }
 
 /** openops.* SSE 事件 → 活动节点。 */
 export function eventToNode(e: OpenOpsEvent): ActivityNode {
   const m = meta(e.event_type);
+  const ak = ((e.payload_redacted_json ?? {}) as Record<string, unknown>).agent_key;
   return {
     id: e.event_id,
     title: m.title,
@@ -78,6 +86,7 @@ export function eventToNode(e: OpenOpsEvent): ActivityNode {
     time: hhmm(e.occurred_at),
     icon: m.icon,
     tone: m.tone,
+    agentKey: ak ? String(ak) : undefined,
   };
 }
 
@@ -86,7 +95,18 @@ export function groupNodes(nodes: ActivityNode[], running: boolean): ActivityGro
     ...n,
     running: running && i === nodes.length - 1,
   }));
-  return [{ label: "时间线", items }];
+  // D 块：子 Agent 事件（payload.agent_key ≠ main）各自成组（SubagentActivityRail 口径，30.3 §八）
+  const main = items.filter((n) => !n.agentKey || n.agentKey === "main");
+  const groups: ActivityGroup[] = [{ label: "时间线", items: main }];
+  const byKey = new Map<string, typeof items>();
+  for (const n of items) {
+    if (n.agentKey && n.agentKey !== "main") {
+      if (!byKey.has(n.agentKey)) byKey.set(n.agentKey, []);
+      byKey.get(n.agentKey)!.push(n);
+    }
+  }
+  for (const [k, v] of byKey) groups.push({ label: `子 Agent · ${k}`, items: v });
+  return groups;
 }
 
 /** approval_request 行 → HITL 卡数据。 */

@@ -27,16 +27,35 @@ MODEL_ASSETS = [
     ("交易大模型-TX", "tx-llm-v2", None, None, "restricted", "active"),
 ]
 
+# D 块：worker 汇报纪律（37 号老 roles.yaml 口径翻译）——拼进每个 sub agent 的 system_prompt
+SUB_REPORT_DISCIPLINE = (
+    "缺参数时直接返回 blocker 说明，绝不凭空造参数。"
+    "禁止无差别调用所有工具——按任务选择所需工具，同参数每个工具只调用一次；"
+    "工具返回空结果/无数据 = 查询完成，严禁对同一条件重复调用或自行调整参数重试。"
+    "必须在全部步骤执行完成后一次性汇报结果，禁止中途输出部分结论；"
+    "只汇报查询结果本身，不要发散分析置信度、caveats 或建议——这些由主 Agent 判断。"
+)
+
 TEMPLATE_CONTENT = {
     "main": {
         "role": "理解用户任务，调度巡检/定界/恢复能力，工具调用前遵守平台安全策略。",
         # B7·二：RuntimePlan 只装配模板 default_tools 内的平台工具（恢复类照常受 ASK 标注管控）
         "default_tools": ["query_resource", "recover_execute"],
+        # D 块派发预算（老 D6 两层模型）：max_children=同时活跃子 Agent 上限；
+        # delegation_max_spawns=单 task 累计派发兜底（防失败重派死循环）
+        "max_children": 3,
+        "delegation_max_spawns": 10,
     },
+    # D 块：sub_agents = 可执行角色画像（权威载体，04 号口径）：skills=skill_key 白名单、
+    # mcp_tools=平台工具白名单——子 Agent toolkit 按此裁剪（per-agent 工具隔离）。
+    # V1.x 边界：子 Agent 只读（需审批的写工具在子 toolkit 构建时剔除；恢复动作由 main 亲自执行走 ASK）
     "sub_agents": [
-        {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险"},
-        {"key": "diagnose", "label": "定界", "role": "结合告警/指标/日志/链路/拓扑判断问题边界"},
-        {"key": "recover", "label": "恢复", "role": "给出受控恢复建议，用户确认后执行"},
+        {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险，只做查询不做变更。",
+         "skills": ["inspection"], "mcp_tools": ["query_resource"], "max_iters": 20},
+        {"key": "diagnose", "label": "定界", "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行。",
+         "skills": [], "mcp_tools": ["query_resource"], "max_iters": 20},
+        {"key": "recover", "label": "恢复", "role": "给出受控恢复建议（不直接执行——恢复动作由主 Agent 经人工批准执行）。",
+         "skills": [], "mcp_tools": [], "max_iters": 10},
     ],
     "default_llm": {"provider": "platform", "model": "qwen3.5-instruct"},
 }

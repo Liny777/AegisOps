@@ -138,7 +138,14 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     st.scope_ctx = scope
     # 模板工具集（B7·二）：RuntimePlan 只装配模板 default_tools 内的平台工具；标注快照按此过滤
     tpl_ver = await templates.get_version(str(inst["template_version_id"]))
-    st.template_tools = set(((tpl_ver or {}).get("content_json") or {}).get("main", {}).get("default_tools", []))
+    _content = (tpl_ver or {}).get("content_json") or {}
+    _main = _content.get("main", {})
+    st.template_tools = set(_main.get("default_tools", []))
+    # D 块：sub_agents 画像装配到 main task（子 task 恒 None=禁二层派发）；派发预算随模板
+    _subs = _content.get("sub_agents") or []
+    st.sub_agents = [s for s in _subs if isinstance(s, dict) and s.get("key")] or None
+    st.dispatch_cfg = {"max_children": _main.get("max_children", 3),
+                       "delegation_max_spawns": _main.get("delegation_max_spawns", 10)}
     anns = await mcp_tool_annotation_service.runtime_annotations()
     st.tool_annotations = {k: v for k, v in anns.items() if k in st.template_tools}
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）

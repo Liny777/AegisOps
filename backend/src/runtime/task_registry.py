@@ -34,6 +34,10 @@ class TaskState:
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled
     approval_id: str | None = None
+    # D 块：sub_agents 编排
+    agent_key: str = "main"  # 本 TaskState 归属 agent（子 task=角色 key；事件 payload 携带供前端分组）
+    sub_agents: list[dict[str, Any]] | None = None  # 模板 content_json.sub_agents（仅 main 装配；子恒 None=禁二层派发）
+    dispatch_cfg: dict[str, Any] | None = None  # {"max_children", "delegation_max_spawns"}（仅 main）
 
 
 _by_run: dict[str, TaskState] = {}  # run_id → 当前 task（V1 每 Run 同时最多 1 个 running task 上下文）

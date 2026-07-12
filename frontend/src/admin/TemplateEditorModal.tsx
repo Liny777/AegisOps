@@ -98,15 +98,45 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
           </div>
           <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>发布后版本不可原地改；再次修改须另存新草稿。</div>
         </Box>
-        <Box title="sub Agent 组（只读，普通用户不可改）">
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {(((content.sub_agents ?? []) as Record<string, unknown>[])).map((s) => (
-              <div key={String(s.key)} style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, padding: "10px 12px" }}>
-                <span style={{ fontSize: 12, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm, marginRight: 8 }}>{String(s.label)}</span>
-                <span style={{ fontSize: 12, color: color.textBody }}>{String(s.role)}</span>
-              </div>
-            ))}
+        <Box title="sub Agent 组（D 块：管理员可编辑；skills/mcp_tools 为该子 Agent 的工具白名单）">
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {(((content.sub_agents ?? []) as Record<string, unknown>[])).map((s, i) => {
+              const patch = (field: string, value: unknown) => {
+                const subs = [...((content.sub_agents ?? []) as Record<string, unknown>[])];
+                subs[i] = { ...subs[i], [field]: value };
+                setContent({ ...content, sub_agents: subs });
+              };
+              const csv = (v: unknown) => ((v ?? []) as string[]).join(", ");
+              const parse = (t: string) => t.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+              return (
+                <div key={String(s.key)} style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm }}>{String(s.label ?? s.key)}</span>
+                    <span style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace" }}>{String(s.key)}</span>
+                    <span style={{ flex: 1 }} />
+                    <label style={{ fontSize: 11.5, color: color.textSubtle }}>max_iters
+                      <input type="number" min={1} max={200} value={Number(s.max_iters ?? 20)}
+                        onChange={(e) => patch("max_iters", Number(e.target.value) || 20)}
+                        style={{ width: 58, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
+                    </label>
+                  </div>
+                  <textarea value={String(s.role ?? "")} onChange={(e) => patch("role", e.target.value)} rows={2}
+                    style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 8px", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <label style={{ flex: 1, fontSize: 11.5, color: color.textSubtle }}>skills（逗号分隔）
+                      <input value={csv(s.skills)} onChange={(e) => patch("skills", parse(e.target.value))}
+                        style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "4px 8px", fontSize: 12, fontFamily: "ui-monospace, monospace" }} />
+                    </label>
+                    <label style={{ flex: 1, fontSize: 11.5, color: color.textSubtle }}>mcp_tools（逗号分隔）
+                      <input value={csv(s.mcp_tools)} onChange={(e) => patch("mcp_tools", parse(e.target.value))}
+                        style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "4px 8px", fontSize: 12, fontFamily: "ui-monospace, monospace" }} />
+                    </label>
+                  </div>
+                </div>
+              );
+            })}
           </div>
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>子 Agent 只读执行：需人工审批的写工具在运行时被剔除（恢复动作由 main Agent 走审批执行）。</div>
         </Box>
         <Box title="模板默认 LLM">
           <div style={{ fontSize: 12.5, color: color.textBody, fontFamily: "ui-monospace, monospace" }}>

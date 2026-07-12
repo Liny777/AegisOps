@@ -400,6 +400,31 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     if isinstance(st.template_tools, set):
         st.template_tools.add("list_scope_apps")
     tools.append(FunctionTool(list_scope_apps, name="list_scope_apps", is_read_only=True))
+    # D 块：派发工具（仅 main 且模板配了 sub_agents；子 st.sub_agents 恒 None → 天然 1 层）
+    if st.agent_key == "main" and st.sub_agents:
+        from runtime import subagent_dispatch
+
+        _roles = "、".join(f"`{s['key']}`（{s.get('label', s['key'])}：{str(s.get('role', ''))[:60]}）"
+                           for s in st.sub_agents)
+
+        async def dispatch_subagents(tasks: list[dict[str, Any]]) -> Any:
+            """并行派发子 Agent 执行子任务，全部完成后返回各自汇报。
+
+            Args:
+                tasks: 派发清单，每项 {"role": 角色key, "task": 子任务描述}；一次最多 5 个。
+            """
+            text = await subagent_dispatch.dispatch(st, run, tasks)
+            return ToolResponse(content=[TextBlock(type="text", text=text)])
+
+        _dp_desc = (f"把独立子任务并行派发给专职子 Agent（各自只带本角色的工具，只读执行，完成后汇报）。"
+                    f"可用角色：{_roles}。互不依赖的查询应一次派一批以并行提效；"
+                    f"派发会阻塞至全部子 Agent 完成或超时，汇报在返回值中。")
+        tools.append(FunctionTool(dispatch_subagents, name="dispatch_subagents",
+                                  description=_dp_desc, is_read_only=True))
+        st.tool_annotations["dispatch_subagents"] = {"is_approval_required": False, "is_secret_required": False,
+                                                     "scope_mode": "none", "appid_arg_path": None, "status": "allowed"}
+        if isinstance(st.template_tools, set):
+            st.template_tools.add("dispatch_subagents")
     # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
     # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
     for spec in dynamic_specs:

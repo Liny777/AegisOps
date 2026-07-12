@@ -278,3 +278,67 @@ def test_p3_session_state_continuity(client, runtime_backend):
     saved2 = _asyncio.run(agent_session_states.get_state_json(fsid, "main"))
     # 第二轮恢复了第一轮 context 再累积（不再失忆）
     assert len(saved2.get("context") or []) > len(saved1.get("context") or [])
+
+
+def _dispatch_env(client):
+    """建 instance/run/task 后取内存 st 与 run 行，供直调 dispatch。"""
+    import asyncio as _asyncio
+
+    from infra.repositories import runs as runs_repo
+    from runtime import task_registry
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    start_task(client, run["agent_run_id"], "环境预热")
+    st = task_registry.get_by_run(run["agent_run_id"])
+    assert st is not None and st.sub_agents, "seed 模板应装配 sub_agents 画像"
+    run_row = _asyncio.run(runs_repo.get_run(run["agent_run_id"]))
+    return st, run_row
+
+
+def test_d2_dispatch_budget_and_unknown_role(client):
+    """D2：预算两层与角色校验在 spawn 前拒绝（不依赖 agentscope，双解释器可跑）。"""
+    import asyncio as _asyncio
+
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+    # 未知角色
+    out = _asyncio.run(subagent_dispatch.dispatch(st, run_row, [{"role": "nope", "task": "x"}]))
+    assert "未知角色" in out
+    # max_children 拒发（活跃 0 + 本批 2 > 1）
+    st.dispatch_cfg = {"max_children": 1, "delegation_max_spawns": 10}
+    out = _asyncio.run(subagent_dispatch.dispatch(
+        st, run_row, [{"role": "inspect", "task": "a"}, {"role": "diagnose", "task": "b"}]))
+    assert "预算拒绝" in out
+    # 累计兜底拒发（total 0 + 本批 1 > 0 不可能——用 max_spawns=0 不合法域，直接造已有行）
+    st.dispatch_cfg = {"max_children": 3, "delegation_max_spawns": 1}
+    from infra.repositories import delegations
+
+    _asyncio.run(delegations.create(st.run_id, st.task_id, "inspect", "老账", 60, st.user_id))
+    out = _asyncio.run(subagent_dispatch.dispatch(st, run_row, [{"role": "inspect", "task": "c"}]))
+    assert "累计兜底拒绝" in out
+
+
+def test_d3_dispatch_end_to_end(client, runtime_backend):
+    """D3：真派一个 inspect 子 Agent（stub 模型完整 ReAct 循环）→ 汇报合并返回 + 账本 completed +
+    审计含 dispatched/reported（payload 带 agent_key）。"""
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("子 Agent 循环仅 agentscope runtime")
+    from infra.repositories import delegations
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+    out = _asyncio.run(subagent_dispatch.dispatch(
+        st, run_row, [{"role": "inspect", "task": "查看 APP-A 健康状态"}]))
+    assert "【巡检" in out  # 合并汇报带角色标签
+    rows = _asyncio.run(delegations.list_by_task(st.task_id))
+    assert rows and rows[-1]["delegation_status"] == "completed"
+    assert rows[-1]["report_text"]
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
+    types = {e["event_type"] for e in events}
+    assert "openops.subagent.dispatched" in types and "openops.subagent.reported" in types
