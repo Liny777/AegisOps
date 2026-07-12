@@ -25,17 +25,27 @@ import { useApp, useSyncCurrentAgent } from "../lib/appState";
 
 type ConnState = "connecting" | "open" | "reconnecting";
 
+/** 会话自动起名（与后端 run_state_service._auto_title 同规则）：单行化取前 30 字。 */
+const autoTitle = (t: string) => {
+  const s = t.split(/\s+/).filter(Boolean).join(" ");
+  return s.length > 30 ? s.slice(0, 30) + "…" : s;
+};
+
 /** 对话工作台（isChat）：real 模式 = 按 run_id 恢复 或 ensureRun + /state + SSE（30.3/30.4/30.7）。
  *  两个入口：/agent-teams/:instanceId/chat（ensureRun 复用 active run）与 /agent-runs/:runId（按 run 恢复）。 */
 export function Workbench() {
   const { instanceId = "", runId: runIdParam } = useParams();
   const [searchParams] = useSearchParams();
   const explicitRunId = runIdParam ?? searchParams.get("run_id");
-  const { setCurrentAgentId } = useApp();
+  const { agents, setCurrentAgentId } = useApp();
   useSyncCurrentAgent(instanceId);  // 新建实例 SPA 导航进来：侧栏列表缺它则重拉（实测 777 bug）
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<"active" | "closed">("active");
+  const [chatTitle, setChatTitle] = useState<string | null>(null);   // run_title（real）；null=未起名
+  const [agentName, setAgentName] = useState<string | null>(null);   // /state 的 instance.instance_name
+  const [editingTitle, setEditingTitle] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -137,6 +147,8 @@ export function Workbench() {
     // 按 run 恢复入口：state 返回 instance，回填侧栏当前 Agent 使其与该 run 对齐
     const instId = d.instance?.agent_team_instance_id;
     if (instId) setCurrentAgentId(String(instId));
+    setChatTitle((d.run?.run_title as string | undefined) || null);
+    if (d.instance?.instance_name) setAgentName(String(d.instance.instance_name));
     setRunStatus(d.run?.run_status === "closed" ? "closed" : "active");
     if (d.active_task) {
       setTaskId(d.active_task.task_id);
@@ -167,6 +179,9 @@ export function Workbench() {
     let handle: { close: () => void } | null = null;
     setRunId(null);
     setRunStatus("active");
+    setChatTitle(null);
+    setAgentName(null);
+    setEditingTitle(false);
     setTaskId(null);
     setTaskStatus(null);
     setMessages([]);
@@ -205,6 +220,8 @@ export function Workbench() {
 
   const send = async (text: string) => {
     setMessages((m) => [...m, { id: `u${m.length}`, role: "user", text }]);
+    // 首条输入即时起名（后端 start_task 同规则落库；本地先行避免等下一次 /state 才见标题）
+    if (API_MODE === "real" && runId && !chatTitle) setChatTitle(autoTitle(text));
     if (API_MODE !== "real" || !runId) {
       setTimeout(() => setMessages((m) => [...m, { id: `b${m.length}`, role: "bot", text: "（mock 演示）任务已受理。", showCopy: true }]), 400);
       return;
@@ -240,13 +257,39 @@ export function Workbench() {
   };
 
   const running = taskStatus === "running";
+  // 标题=会话名（real：run_title，未起名「新对话」；mock 保持 demo 文案）；徽标=真实 Agent 名
+  const displayTitle = chatTitle ?? (API_MODE === "real" ? "新对话" : demo.chatTitle);
+  const displayAgent = agentName ?? agents.find((a) => a.instance_id === instanceId)?.name ?? demo.agentName;
+  const commitTitle = () => {
+    const t = titleDraft.split(/\s+/).filter(Boolean).join(" ").slice(0, 60);
+    setEditingTitle(false);
+    if (!t || !runId || t === chatTitle) return;
+    const prev = chatTitle;
+    setChatTitle(t);
+    api.renameRun(runId, t).catch((e) => { setChatTitle(prev); alert(`重命名失败：${(e as Error).message}`); });
+  };
   return (
     <>
       {/* header */}
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 20px", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{demo.chatTitle}</div>
+        {editingTitle ? (
+          <input
+            autoFocus
+            value={titleDraft}
+            onChange={(e) => setTitleDraft(e.target.value)}
+            onBlur={commitTitle}
+            onKeyDown={(e) => { if (e.key === "Enter") commitTitle(); if (e.key === "Escape") setEditingTitle(false); }}
+            maxLength={60}
+            style={{ fontSize: 15, fontWeight: 700, border: `1px solid ${color.brandTintBorder}`, borderRadius: radius.md, padding: "4px 8px", width: 280, outline: "none", color: color.textStrong }}
+          />
+        ) : (
+          <div title={displayTitle} style={{ fontSize: 15, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{displayTitle}</div>
+        )}
+        {!editingTitle && runId ? (
+          <IconButton icon="pencil" title="重命名会话" onClick={() => { setTitleDraft(chatTitle ?? ""); setEditingTitle(true); }} />
+        ) : null}
         <span title="创建时绑定，不可更改" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.border}`, padding: "4px 10px", borderRadius: radius.pill, whiteSpace: "nowrap", flex: "0 0 auto" }}>
-          <Icon name="robot" size={14} color={color.brand} />当前使用：{demo.agentName}<Icon name="lock" size={12} color={color.textFaint} />
+          <Icon name="robot" size={14} color={color.brand} />当前使用：{displayAgent}<Icon name="lock" size={12} color={color.textFaint} />
         </span>
         <ConnBadge conn={conn} closed={runStatus === "closed"} />
         <div style={{ flex: 1 }} />

@@ -1,6 +1,7 @@
 """Run / Task / ASK / state 聚合（28.1 / 28.5 / 28.8 / 30.7）。"""
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -12,6 +13,14 @@ from infra.repositories import agent_teams, audit, runs, runtime_config, secrets
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
 from sandbox.executor import executor as sandbox_executor
+
+log = logging.getLogger("openops.run")
+
+
+def _auto_title(text: str) -> str:
+    """会话自动起名：输入单行化取前 30 字（与前端本地即时显示同规则）。"""
+    t = " ".join(text.split())
+    return t[:30] + ("…" if len(t) > 30 else "")
 
 
 async def owned_run(user_id: str, run_id: str) -> dict[str, Any]:
@@ -102,6 +111,14 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         payload={"effective_appids": scope["effective_appids"], "scope_snapshot_id": scope["scope_snapshot_id"]},
         audit_trace_id=trace,
     ))
+
+    # 会话自动起名：run 首个任务的输入作 run_title（用户可随时改名覆盖）。失败不阻断任务
+    # （旧库未跑 sql/migrate-2026-07-12-run-title.sql 时列缺失——改名入口会显式报错提示）。
+    if not run.get("run_title"):
+        try:
+            await runs.set_run_title(run_id, _auto_title(req.input_text), uid)
+        except Exception:  # noqa: BLE001
+            log.warning("[OpenOps][run] 自动起名失败（run_title 列缺失？见 sql/migrate-2026-07-12-run-title.sql）")
 
     # 实例默认模型：active 配置 overlay 绑定的用户自定义 LLM 作为该实例默认（InitWizard custom 分支 / 30.5）。
     # 会话级 select-model 在本 task 内直接改 st.selected_model 覆盖；无绑定则 None→平台默认（B7 ACL 解析）。
@@ -200,6 +217,24 @@ async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
         if st.orchestrator and not st.orchestrator.done():
             st.orchestrator.cancel()
     return {"task_id": task_id, "status": "cancelled"}
+
+
+async def rename_run(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
+    """会话重命名：trim + 截 60 字；审计 run.renamed + SSE（侧栏/多端同步）。"""
+    uid = user["user_id"]
+    run = await owned_run(uid, run_id)
+    title = " ".join(req.title.split())[:60]
+    if not title:
+        raise ApiError(Err.VALIDATION_FAILED, "会话名称不能为空")
+    await runs.set_run_title(run_id, title, uid)
+    await audit.insert_event(
+        audit_trace_id=str(run["audit_trace_id"]), event_type="run.renamed", user_id=uid,
+        run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="rename",
+        actor_type="user", payload_redacted={"title": title},
+    )
+    events.publish(run_id, events.envelope(run_id, "openops.run.renamed",
+                                           message=f"会话已重命名：{title}", payload={"title": title}))
+    return {"agent_run_id": run_id, "run_title": title}
 
 
 async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:

@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from api.deps import User
 from api.responses import ok
 from app import agui_service, event_stream_service, run_state_service
-from domain.schemas import CreateRunRequest, SelectModelRequest, StartTaskRequest
+from domain.schemas import CreateRunRequest, RenameRunRequest, SelectModelRequest, StartTaskRequest
 from runtime import events
 
 router = APIRouter(prefix="/api/openops/v1", tags=["runs"])
@@ -37,6 +37,11 @@ async def start_task(run_id: str, req: StartTaskRequest, user: User):
 @router.post("/tasks/{task_id}:cancel")
 async def cancel_task(task_id: str, user: User):
     return ok(await run_state_service.cancel_task(user, task_id))
+
+
+@router.post("/agent-runs/{run_id}:rename")
+async def rename_run(run_id: str, req: RenameRunRequest, user: User):
+    return ok(await run_state_service.rename_run(user, run_id, req))
 
 
 @router.post("/agent-runs/{run_id}:close")

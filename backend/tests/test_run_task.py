@@ -136,3 +136,46 @@ def test_available_skills_endpoint_shape_and_ownership(client):
 
     r = client.get(f"/api/openops/v1/agent-teams/{inst['instance_id']}/available-skills", headers=OTHER_HEADERS)
     assert r.status_code == 403
+
+
+def test_run_title_autoname_and_rename(client):
+    """会话名：首个任务输入自动起名（前 30 字）；:rename 覆盖并落审计；他人 403。"""
+    from conftest import OTHER_HEADERS
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+    assert run.get("run_title") in (None, "")  # 新会话未起名
+
+    long_text = "支付下单接口刚才延迟突然变高，帮我看下是什么问题，谢谢啦，多余的字要被裁掉"
+    start_task(client, rid, long_text)
+    state = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+    title = state["run"]["run_title"]
+    assert title and len(title) <= 31 and title.startswith(long_text[:10])
+    assert title.endswith("…")  # 超 30 字截断标记
+
+    # 列表面（侧栏历史会话数据源）带 run_title
+    runs_list = unwrap(client.get("/api/openops/v1/agent-runs", headers=USER_HEADERS))
+    assert any(r["agent_run_id"] == rid and r["run_title"] == title for r in runs_list)
+
+    # 重命名：trim + 生效 + 审计
+    renamed = unwrap(client.post(f"/api/openops/v1/agent-runs/{rid}:rename", headers=USER_HEADERS,
+                                 json={"client_request_id": "rn1", "title": "  Redis 连接池  排查  "}))
+    assert renamed["run_title"] == "Redis 连接池 排查"
+    state2 = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+    assert state2["run"]["run_title"] == "Redis 连接池 排查"
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{rid}", headers=USER_HEADERS))
+    assert "run.renamed" in {e["event_type"] for e in events}
+
+    # 再起任务不覆盖既有名称（只有首个任务起名）
+    start_task(client, rid, "第二个任务的输入不该改标题")
+    state3 = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+    assert state3["run"]["run_title"] == "Redis 连接池 排查"
+
+    # 他人无权改名；空白标题 400
+    r = client.post(f"/api/openops/v1/agent-runs/{rid}:rename", headers=OTHER_HEADERS,
+                    json={"client_request_id": "rn2", "title": "hack"})
+    assert r.status_code == 403
+    r2 = client.post(f"/api/openops/v1/agent-runs/{rid}:rename", headers=USER_HEADERS,
+                     json={"client_request_id": "rn3", "title": "   "})
+    assert r2.status_code in (400, 422)  # service trim 后空 → VALIDATION_FAILED（422=pydantic 拦）

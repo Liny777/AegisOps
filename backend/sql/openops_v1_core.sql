@@ -328,6 +328,7 @@ CREATE TABLE IF NOT EXISTS sre_agent_run (
   framework_session_id text NOT NULL,
   scope_snapshot_id uuid,
   audit_trace_id uuid NOT NULL,
+  run_title text,
   run_status text NOT NULL DEFAULT 'active',
   started_at timestamptz NOT NULL DEFAULT now(),
   ended_at timestamptz,
@@ -997,3 +998,9 @@ COMMENT ON COLUMN sre_audit_event.creation_date IS '创建时间';
 COMMENT ON COLUMN sre_audit_event.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN sre_audit_event.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_audit_event.expire_at IS '过期时间，V1 审计保留 30 天';
+
+-- ==================== 增量迁移（幂等，重跑本文件自动补齐旧库） ====================
+-- ⚠ 新列的 COMMENT 必须放本段（ALTER 之后）：COMMENT 无 IF EXISTS，放上方主体段会在旧库炸 UndefinedColumn。
+-- 2026-07-12 会话名称（独立增量文件：migrate-2026-07-12-run-title.sql）
+ALTER TABLE sre_agent_run ADD COLUMN IF NOT EXISTS run_title text;
+COMMENT ON COLUMN sre_agent_run.run_title IS '会话名称：首个任务输入自动起名（前 30 字），用户可改；NULL=未起名（显示「新对话」）';

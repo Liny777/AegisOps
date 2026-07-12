@@ -92,6 +92,11 @@ class StartTaskRequest(BaseModel):
     skill_hint: str | None = None
 
 
+class RenameRunRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+    title: str = Field(min_length=1, max_length=120)  # service 侧 trim+截 60 字
+
+
 class SelectModelRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     llm_config_id: str | None = None

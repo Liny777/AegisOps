@@ -141,8 +141,10 @@ export interface ActivityGroup {
 }
 
 export interface Conversation {
-  id: string;
-  title: string;
+  id: string;           // real = agent_run_id（点击经 /agent-runs/:id 恢复）
+  title: string;        // run_title；未起名显示「新对话」
+  instance_id?: string;
+  status?: "active" | "closed";
 }
 
 /** 对话工作台聚合状态（对应 GET /agent-runs/{id}/state 的前端投影）。 */

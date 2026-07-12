@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
 import { useApp } from "../lib/appState";
 import { api } from "../lib/api";
+import type { Conversation } from "../lib/api/types";
 
 const EXPANDED = 248;
 const COLLAPSED = 60;
@@ -62,6 +63,14 @@ export function Sidebar() {
   const isAdmin = loc.pathname.startsWith("/admin");
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
+
+  // 历史会话（真实 run 列表）：路由变化即重拉——新对话/自动起名/改名/关闭返回后自然刷新
+  const [convs, setConvs] = useState<Conversation[]>([]);
+  useEffect(() => {
+    let dead = false;
+    api.listConversations().then((c) => { if (!dead) setConvs(c); }).catch(() => undefined);
+    return () => { dead = true; };
+  }, [loc.pathname]);
 
   // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
   // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
@@ -235,16 +244,25 @@ export function Sidebar() {
               <div style={{ fontSize: 11, fontWeight: 700, color: color.textLabel, letterSpacing: 0.5, padding: "10px 8px 6px", display: "flex", alignItems: "center", gap: 6 }}>
                 <Icon name="clock" size={13} />历史会话
               </div>
-              {["支付延迟突增定界", "对账任务超时排查", "Redis 连接池告警"].map((t, i) => (
-                <Interactive
-                  key={i}
-                  onClick={() => nav(`/agent-teams/${currentAgentId}/chat`)}
-                  baseStyle={{ display: "flex", alignItems: "center", padding: "8px 10px", borderRadius: radius.md, cursor: "pointer", fontSize: 13, color: color.textNav }}
-                  hoverStyle={{ background: "#e9ecf1" }}
-                >
-                  <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{t}</span>
-                </Interactive>
-              ))}
+              {convs.length === 0 ? (
+                <div style={{ padding: "8px 10px", fontSize: 12.5, color: color.textFaint }}>暂无会话</div>
+              ) : (
+                convs.map((c) => {
+                  const cur = loc.pathname.includes(c.id);
+                  return (
+                    <Interactive
+                      key={c.id}
+                      title={c.title}
+                      onClick={() => nav(`/agent-runs/${c.id}`)}
+                      baseStyle={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: radius.md, cursor: "pointer", fontSize: 13, color: cur ? color.brand : c.status === "closed" ? color.textFaint : color.textNav, fontWeight: cur ? 600 : 400, background: cur ? color.brandTintBg : "transparent" }}
+                      hoverStyle={cur ? {} : { background: "#e9ecf1" }}
+                    >
+                      <span style={{ flex: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.title}</span>
+                      {c.status === "closed" ? <Icon name="lock" size={12} color={color.textFainter} /> : null}
+                    </Interactive>
+                  );
+                })
+              )}
             </div>
           ) : (
             <div style={{ flex: 1 }} />

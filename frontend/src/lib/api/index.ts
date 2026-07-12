@@ -37,6 +37,7 @@ export interface OpenOpsApi {
   // 运行态（real：ensureRun → state/task/approval/SSE）
   ensureRun(instanceId: string): Promise<string>; // → run_id
   createRun(instanceId: string): Promise<string>; // always create a new run
+  renameRun(runId: string, title: string): Promise<void>;
   getRunState(runId: string): Promise<Record<string, unknown>>;
   startTask(runId: string, text: string): Promise<{ task_id: string }>;
   cancelTask(taskId: string): Promise<void>;
@@ -122,7 +123,16 @@ const realApi: OpenOpsApi = {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams");
     return rows.map(projectInstance);
   },
-  listConversations: () => delay(M.mockConversations),
+  async listConversations() {
+    // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」
+    const runs = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-runs");
+    return runs.slice(0, 30).map((r) => ({
+      id: String(r.agent_run_id),
+      title: String(r.run_title ?? "") || "新对话",
+      instance_id: String(r.agent_team_instance_id),
+      status: (r.run_status === "closed" ? "closed" : "active") as "active" | "closed",
+    }));
+  },
 
   async ensureRun(instanceId) {
     const cached = runByInstance.get(instanceId);
@@ -152,6 +162,12 @@ const realApi: OpenOpsApi = {
     const id = String(d.run.agent_run_id);
     runByInstance.set(instanceId, id);
     return id;
+  },
+  async renameRun(runId, title) {
+    await apiFetch(`/openops/v1/agent-runs/${runId}:rename`, {
+      method: "POST",
+      body: { client_request_id: crid(), title },
+    });
   },
   getRunState: (runId) => apiFetch(`/openops/v1/agent-runs/${runId}/state`),
   async startTask(runId, text) {
@@ -572,6 +588,11 @@ const mockApi: OpenOpsApi = {
   listConversations: () => delay(M.mockConversations),
   ensureRun: () => delay("run_demo"),
   createRun: () => delay("run_demo_" + Math.random().toString(36).slice(2, 8)),
+  renameRun: (runId, title) => {
+    const c = M.mockConversations.find((x) => x.id === runId);
+    if (c) c.title = title;
+    return delay(undefined as unknown as void);
+  },
   getRunState: () => delay({}),
   startTask: () => delay({ task_id: "tsk_demo" }),
   cancelTask: () => delay(undefined as unknown as void),
