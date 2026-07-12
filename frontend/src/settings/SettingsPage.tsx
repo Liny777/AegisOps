@@ -24,13 +24,12 @@ export function SettingsPage() {
   return (
     <>
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 12 }}>
-        {detail ? (
-          <Interactive as="button" onClick={() => setDetailId(null)}
-            baseStyle={{ border: `1px solid ${color.border}`, background: "#fff", cursor: "pointer", width: 32, height: 32, borderRadius: radius.md, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#697283" }}
-            hoverStyle={{ background: color.pageBg }}>
-            <Icon name="arrow-left" size={17} />
-          </Interactive>
-        ) : null}
+        {/* 返回：detail 态回全部 Agent 清单；清单态回上一页（实测缺口：清单页没有回对话页的入口） */}
+        <Interactive as="button" onClick={() => (detail ? setDetailId(null) : nav(-1))}
+          baseStyle={{ border: `1px solid ${color.border}`, background: "#fff", cursor: "pointer", width: 32, height: 32, borderRadius: radius.md, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#697283" }}
+          hoverStyle={{ background: color.pageBg }}>
+          <Icon name="arrow-left" size={17} />
+        </Interactive>
         <div style={{ fontSize: 15, fontWeight: 700 }}>{detail ? detail.name : "Agent 设置"}</div>
         <span style={{ fontSize: 12, color: color.textSubtle }}>{detail ? `${detail.template} · ${detail.workspace_label}` : "管理你的全部 Agent"}</span>
         <div style={{ flex: 1 }} />
