@@ -63,10 +63,11 @@ export function Sidebar() {
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
 
-  // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 先全部置灰，无对应页面）
+  // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
+  // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
   const userNav: NavItem[] = [
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
-    { key: "plugins", label: "插件", icon: "puzzle", locked: true },
+    { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
     { key: "ontology", label: "本体", icon: "sitemap", locked: true },
   ];
@@ -91,7 +92,8 @@ export function Sidebar() {
 
   const activeKey = (() => {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
-    if (loc.pathname.includes("/settings")) return "settings";
+    if (loc.pathname === "/settings") return "settings";  // 新设置页（OModel 二级菜单）
+    if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";
   })();
 
@@ -263,7 +265,7 @@ export function Sidebar() {
             item={{ key: "settings", label: "设置", icon: "settings" }}
             active={activeKey === "settings"}
             showText={showText}
-            onClick={() => nav(`/agent-teams/${currentAgentId}/settings`)}
+            onClick={() => nav("/settings")}
           />
         ) : null}
         <Interactive

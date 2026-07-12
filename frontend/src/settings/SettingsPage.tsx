@@ -11,9 +11,10 @@ type Tab = "skill" | "mcp" | "model" | "prompt";
 type Filter = "all" | "on" | "off";
 
 /** 实例配置（isSettings·新原型）：视图完全由路由驱动 —— `/agent-teams/:id/settings` = 当前 Agent
- * 配置详情（对话页「设置」直达），`/agents` = 全部 Agent 清单（picker「全部 Agents」进入，新建/启停/
- * 删除入口在那）。切换视图一律 nav() 产生历史条目，返回统一 nav(-1)，来路由历史栈表达：
- * 对话→设置→返回=对话页；清单→编辑→返回=清单（实测诉求：设置返回不再经停清单页）。 */
+ * 配置详情（侧栏「插件」直达；原「设置」入口，现「设置」挂 /settings 的 OModel 占位页），
+ * `/agents` = 全部 Agent 清单（picker「全部 Agents」进入，新建/启停/删除入口在那）。
+ * 切换视图一律 nav() 产生历史条目，返回统一 nav(-1)，来路由历史栈表达：
+ * 对话→插件→返回=对话页；清单→编辑→返回=清单（实测诉求：配置页返回不经停清单页）。 */
 export function SettingsPage() {
   const nav = useNavigate();
   const { instanceId } = useParams();
