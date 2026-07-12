@@ -49,6 +49,14 @@ def test_agui_full_flow_standard_and_custom_events(client):
     assert types[0] == "RUN_STARTED"
     assert types[-1] == "RUN_FINISHED"
     assert "TOOL_CALL_START" in types and "TOOL_CALL_END" in types and "TOOL_CALL_RESULT" in types
+    # 工具入参 → TOOL_CALL_ARGS（内网实测缺口：不发它前端工具卡 arguments 恒空）
+    args_evs = [e for e in evs if e["type"] == "TOOL_CALL_ARGS"]
+    assert args_evs, "tool.call.started 带 arguments 时必须翻译出 TOOL_CALL_ARGS"
+    import json as _json
+
+    assert isinstance(_json.loads(args_evs[0]["delta"]), dict)  # delta 是可解析的 JSON 入参
+    start_ids = {e["toolCallId"] for e in evs if e["type"] == "TOOL_CALL_START"}
+    assert all(a["toolCallId"] in start_ids for a in args_evs)  # 与所属调用配对
     # 对话主区有文本（mock 无增量 → task.completed 合成结论消息）
     assert "TEXT_MESSAGE_START" in types and "TEXT_MESSAGE_CONTENT" in types and "TEXT_MESSAGE_END" in types
     # openops.* 自定义事件透传（活动线 / RCA）

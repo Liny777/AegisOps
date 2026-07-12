@@ -32,6 +32,19 @@ class ToolBlocked(Exception):
         self.message = message
 
 
+def _args_for_event(arguments: dict[str, Any]) -> dict[str, Any]:
+    """工具入参转事件 payload：序列化超 2000 字则截断为占位（防大参数撑爆事件/审计行）。"""
+    import json
+
+    try:
+        s = json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return {"_unserializable": str(arguments)[:200]}
+    if len(s) <= 2000:
+        return arguments
+    return {"_truncated": s[:2000]}
+
+
 def _extract_appid(arguments: dict[str, Any], path: str | None) -> str | None:
     """按 appid_arg_path（如 `$.appid` / `$.target.appid`）从入参提取 APPID。"""
     if not path:
@@ -166,7 +179,10 @@ async def invoke(
 
     await emit(st, run, "openops.tool.call.started", action=tool_name,
                message=started_msg or f"调用工具 {tool_name}",
-               payload={"tool": tool_name, "source_type": source_type})
+               payload={"tool": tool_name, "source_type": source_type,
+                        # 入参进事件（前端工具卡展示；内网实测缺口：agent 真带参但界面显示空）。
+                        # Secret 不在 arguments（gateway 在调用边界注 header，28.2 不破）；超长截断防事件膨胀
+                        "arguments": _args_for_event(arguments)})
     try:
         result = await http_mcp_client.call_tool(tool_name, arguments, headers=headers, server_url=server_url)
     except Exception as e:

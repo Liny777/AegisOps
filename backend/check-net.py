@@ -219,6 +219,52 @@ def check_skillhub() -> None:
         print(f"[check-net]   ❌ {type(e).__name__}: {e}")
 
 
+def check_skill_download() -> None:
+    """⑥ Skill 包下载自检（不经对话直接验对接）：list 取首个 skill → 真下载 ZIP →
+    checksum 校验 + 解包 → 打印 entrypoint / 文件清单。走 skill_hub_client 同口径，
+    等价于对话执行 skill 的「下载」半程——这里 ✅ 而对话执行失败，则问题在包内脚本/沙箱侧。"""
+    import asyncio
+
+    from infra.external.mcp_registry_client import console_api_prefix, console_cookie, console_tls_verify, http_trust_env
+    from infra.external.skill_hub_client import download_skill_package, skillhub_base
+
+    mode = os.environ.get("OPENOPS_SKILLHUB", "mock").strip().lower()
+    print(f"[check-net]⑥ skill 包下载自检  skillhub={mode}")
+    if mode != "real" or not skillhub_base():
+        print("[check-net]   （mock 或未配 BASE_URL，跳过）")
+        return
+    cookie = console_cookie("OPENOPS_SKILLHUB_COOKIE")
+    url = f"{skillhub_base()}{console_api_prefix()}/skills/list/query"
+    try:
+        r = httpx.post(url, json={"page": 1, "page_size": 5, "source": "openops"}, timeout=15,
+                       headers={"Cookie": cookie} if cookie else {},
+                       verify=console_tls_verify(), trust_env=http_trust_env())
+        items = ((r.json() or {}).get("data") or {}).get("items") or []
+    except Exception as e:  # noqa: BLE001
+        print(f"[check-net]   ❌ list 失败：{type(e).__name__}: {e}（先看 ⑤）")
+        return
+    if not items:
+        print("[check-net]   ❌ 注册表无 skill（⑤ items=0），无可下载对象")
+        return
+    name = str(items[0].get("name") or "")
+    ver = int(items[0].get("version_no") or items[0].get("version") or 1)
+    print(f"[check-net]   目标：{name} v{ver}")
+    try:
+        pkg = asyncio.run(download_skill_package(name, ver))
+    except Exception as e:  # noqa: BLE001
+        print(f"[check-net]   ❌ 下载/校验失败：{type(e).__name__}: {str(e)[:300]}")
+        print("[check-net]      （JSON 信封→对端 download 返回形状不对；HTML→cookie/BASE_URL；"
+              "BadZipFile→不是裸 ZIP；checksum→X-Checksum-SHA256 不符——把本行贴给 Skill Hub 同事）")
+        return
+    files = pkg.get("files") or {}
+    print(f"[check-net]   ✅ ZIP 下载+checksum 通过  entrypoint={pkg.get('entrypoint')!r}  "
+          f"checksum={str(pkg.get('checksum'))[:12]}…")
+    for fn in sorted(files)[:10]:
+        print(f"[check-net]      - {fn}  ({len(files[fn])} bytes)")
+    if not pkg.get("entrypoint"):
+        print("[check-net]   ⚠ entrypoint 为空——包内缺 SKILL.md/入口声明，执行会失败（找同事补包规范）")
+
+
 if __name__ == "__main__":
     check_console()
     print()
@@ -229,3 +275,5 @@ if __name__ == "__main__":
     check_apptree()
     print()
     check_skillhub()
+    print()
+    check_skill_download()

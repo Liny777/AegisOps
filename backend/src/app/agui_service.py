@@ -159,6 +159,10 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 tool_stack.append(tcid)
                 yield _sse({"type": "TOOL_CALL_START", "toolCallId": tcid,
                             "toolCallName": str(p.get("tool") or "tool")})
+                # 入参 → TOOL_CALL_ARGS（内网实测缺口：不发它 CopilotChat 工具卡 arguments 恒空）
+                if p.get("arguments") is not None:
+                    yield _sse({"type": "TOOL_CALL_ARGS", "toolCallId": tcid,
+                                "delta": json.dumps(p["arguments"], ensure_ascii=False)})
             elif et in ("openops.tool.call.succeeded", "openops.tool.call.failed") and tool_stack:
                 tcid = tool_stack.pop()
                 yield _sse({"type": "TOOL_CALL_END", "toolCallId": tcid})
