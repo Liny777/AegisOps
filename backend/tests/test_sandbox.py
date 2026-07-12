@@ -451,3 +451,17 @@ def test_skill_012_failure_detail_surfaces(client, monkeypatch):
     events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
     failed = next(e for e in events if e["event_type"] == "openops.skill.call.failed")
     assert "401" in _json.dumps(failed, ensure_ascii=False, default=str)  # 审计/活动栏可见根因
+
+
+def test_sbx_003_exec_timeout_flags_timed_out(client):
+    """FakeBackend 线程池+同步 subprocess.run 实现（换掉 asyncio 子进程 API——Windows SelectorEventLoop
+    不支持后者，内网实测 skill 执行抛裸 NotImplementedError）：超时到点自杀 → timed_out=True。"""
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uT", "r1", _CFG)
+        c = sandbox_executor.get("uT")
+        assert c is not None
+        r = await c.backend.exec_shell(["sh", "-lc", "sleep 5"], timeout=0.5, max_output_bytes=1000)
+        assert r.timed_out is True
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())

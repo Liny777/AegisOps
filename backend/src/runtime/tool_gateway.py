@@ -79,7 +79,12 @@ async def _effective_annotation(st: TaskState, run: dict[str, Any], tool_name: s
     if row is None:
         return snap  # 目录无此工具：按快照口径判定
     if row.get("annotation_id") is None:
-        fresh: dict[str, Any] | None = None  # 最新行未标注 → fail-closed
+        # 动态注册表工具（origin=dynamic）：catalog 行只是 reconcile 持久化的「发现」，未标注不推翻
+        # 运行时注入（拍板 i：readOnlyHint 定审批）——否则入库动作本身会把可用工具变不可用（内网实测
+        # 回归：alarm-server 入库后 query_alarm_list 被 TOOL_NOT_ANNOTATED 拦）。管理员显式标注后
+        # （annotation_id 非空）走下方 fresh=catalog 分支，以 catalog 为准（含 blocked 立即生效）。
+        # 平台工具（含 schema 变更后标注软删）仍 fail-closed（28.7 标注不继承铁律）。
+        fresh: dict[str, Any] | None = snap if (snap or {}).get("origin") == "dynamic" else None
     else:
         fresh = {
             "is_approval_required": bool(row["is_approval_required"]),

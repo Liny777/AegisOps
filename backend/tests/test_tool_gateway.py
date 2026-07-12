@@ -161,3 +161,26 @@ async def test_tool_007_scope_optional_mode(quiet_emit):
     with pytest.raises(ToolBlocked) as e:
         await tool_gateway.invoke(_st(ann), _RUN, "tool_y", {"appid": "APP-Z"})
     assert e.value.reason_code == "APPID_OUT_OF_SCOPE"
+
+async def test_tool_008_dynamic_unannotated_catalog_row_keeps_injection(quiet_emit, monkeypatch):
+    """动态注册表工具：reconcile 入库产生的**未标注 catalog 行**不推翻运行时注入（内网实测回归：
+    alarm-server 入库后 query_alarm_list 被 TOOL_NOT_ANNOTATED 拦）；无 origin 标记的快照（平台工具
+    schema 变更标注软删场景）仍 fail-closed——28.7 铁律不破。管理员显式标注后以 catalog 为准（既有
+    hot-update 用例护栏）。"""
+    from infra.repositories import mcp_tools
+
+    async def unannotated_row(_name):
+        return {"annotation_id": None, "tool_name": "query_alarm_list"}
+
+    monkeypatch.setattr(mcp_tools, "get_runtime_annotation", unannotated_row)
+
+    dyn = {"is_approval_required": False, "is_secret_required": False, "scope_mode": "none",
+           "appid_arg_path": None, "status": "allowed", "origin": "dynamic"}
+    st = _st(annotations={"query_alarm_list": dyn})
+    await tool_gateway.invoke(st, _RUN, "query_alarm_list", {"alarm_code": "1"})  # 放行（不抛）
+
+    plat = {k: v for k, v in dyn.items() if k != "origin"}
+    st2 = _st(annotations={"query_alarm_list": plat})
+    with pytest.raises(ToolBlocked) as e:
+        await tool_gateway.invoke(st2, _RUN, "query_alarm_list", {"alarm_code": "1"})
+    assert e.value.reason_code == "TOOL_NOT_ANNOTATED"

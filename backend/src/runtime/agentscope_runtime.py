@@ -402,6 +402,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         st.tool_annotations[spec["name"]] = {
             "is_approval_required": not spec["readonly"], "is_secret_required": False,
             "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",
+            "origin": "dynamic",  # gateway：catalog 未标注行不推翻此注入（管理员显式标注才接管）
         }
         if isinstance(st.template_tools, set):  # 让动态工具过模板集校验（B7·二：否则会被 TOOL_BLOCKED）
             st.template_tools.add(spec["name"])

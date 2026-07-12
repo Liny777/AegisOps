@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -51,21 +52,24 @@ class FakeBackend:
         self.workdir = self._root
 
     async def exec_shell(self, command: list[str], *, timeout: float, max_output_bytes: int) -> ExecResult:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *command, cwd=self._root, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        # 线程池 + 同步 subprocess.run（全平台同一份实现，无 platform 分支）：asyncio 子进程 API 隐式依赖
+        # 事件循环支持子进程传输——Windows SelectorEventLoop（psycopg3 所需，run.py 强制）不支持，
+        # create_subprocess_exec 会抛裸 NotImplementedError（内网实测 skill 执行崩的根因）。
+        # subprocess.run(timeout=) 超时自杀并回收子进程；生产 Linux 沙箱走 DockerContainerBackend 不经此路。
+        def _run() -> subprocess.CompletedProcess[bytes]:
+            return subprocess.run(  # noqa: S603 —— fake 后端本就真跑命令（隔离靠临时目录）
+                command, cwd=self._root, capture_output=True, timeout=timeout,
                 # fake 后端剥除敏感环境：不继承宿主 Cookie/Secret/X-OpenOps-*（真容器天然隔离）
                 env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": self._root},
             )
+
+        try:
+            cp = await asyncio.to_thread(_run)
         except FileNotFoundError as e:
             return ExecResult(127, "", f"command not found: {e}")
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        except subprocess.TimeoutExpired:
             return ExecResult(-1, "", "execution timed out", timed_out=True)
-        return ExecResult(proc.returncode or 0, _truncate(out, max_output_bytes), _truncate(err, max_output_bytes))
+        return ExecResult(cp.returncode or 0, _truncate(cp.stdout, max_output_bytes), _truncate(cp.stderr, max_output_bytes))
 
     async def write_file(self, rel_path: str, data: bytes) -> None:
         path = os.path.join(self._root, rel_path)
