@@ -1000,7 +1000,7 @@ COMMENT ON COLUMN sre_audit_event.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_audit_event.expire_at IS '过期时间，V1 审计保留 30 天';
 
 -- P 块（运行态持久化，2026-07-12）：幂等键跨进程表。新表 CREATE IF NOT EXISTS 天然幂等，
--- 旧库重跑本文件或执行 migrate-2026-07-12-persistence.sql 均可建。
+-- 旧库重跑本文件即可建（增量 migrate 文件已合入本文件并删除，2026-07-12 内网已执行）。
 CREATE TABLE IF NOT EXISTS sre_idempotency_key (
   idempotency_id uuid NOT NULL PRIMARY KEY,
   user_id text NOT NULL,
