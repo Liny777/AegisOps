@@ -72,7 +72,6 @@ export function ActivityRail({ groups }: { groups: ActivityGroup[] }) {
             })}
           </div>
         ))}
-        <div style={{ fontSize: 11.5, color: color.brand, fontWeight: 600, cursor: "pointer", textAlign: "center", padding: 6 }}>显示更早 3 条</div>
       </div>
     </aside>
   );

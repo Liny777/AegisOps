@@ -136,7 +136,7 @@ export function Composer({
             value={text}
             onChange={(e) => { setText(e.target.value); setSlashOpen(/^\/(\S*)$/.test(e.target.value)); }}
             onKeyDown={(e) => { if (e.key === "Enter") send(); }}
-            placeholder="描述你的排障任务，输入 / 选择 Skill…（原型演示）"
+            placeholder="描述你的排障任务，输入 / 选择 Skill…"
             style={{ width: "100%", border: "none", outline: "none", fontSize: 14, padding: "4px 2px 8px", background: "transparent", color: color.ink }}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

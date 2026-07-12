@@ -1,9 +1,11 @@
 """Identity & Admission：/me 聚合（白名单事实在 PG，不看请求头声称）。"""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
-from infra.repositories import agent_teams, users
+from domain.errors import ApiError, Err
+from infra.repositories import agent_teams, audit, users
 
 
 async def resolve_user(user_id: str, display_name: str | None) -> dict[str, Any]:
@@ -46,3 +48,20 @@ async def list_users() -> list[dict[str, Any]]:
 async def add_whitelist(user_id: str, display_name: str, role: str, by: str) -> None:
     await users.upsert_user(user_id, display_name or user_id, role)
     await users.add_whitelist(user_id, by)
+    await audit.insert_event(  # 管理面动作必审计（B7·三）
+        audit_trace_id=str(uuid.uuid4()), event_type="whitelist.granted", user_id=by,
+        action="grant", actor_type="user", payload_redacted={"target_user_id": user_id},
+    )
+
+
+async def revoke_whitelist(user_id: str, by: str) -> None:
+    """移出白名单（B7·三）：软删 active 行；管理员不能移除自己（防锁死管理面）。"""
+    if user_id == by:
+        raise ApiError(Err.VALIDATION_FAILED, "不能移除自己的白名单（防止管理面锁死）")
+    n = await users.revoke_whitelist(user_id, by)
+    if n == 0:
+        raise ApiError(Err.NOT_FOUND, "该用户不在白名单中")
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="whitelist.revoked", user_id=by,
+        action="revoke", actor_type="user", payload_redacted={"target_user_id": user_id},
+    )

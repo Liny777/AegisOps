@@ -84,6 +84,11 @@ export interface OpenOpsApi {
   }>;
   saveTemplateDraft(templateId: string, content: Record<string, unknown>): Promise<Record<string, unknown>>;
   publishTemplateVersion(versionId: string): Promise<void>;
+  disableTemplateVersion(versionId: string): Promise<void>;
+  // admin B7·三：白名单管理动作 + 审计 Trace 串联
+  adminAddWhitelist(userId: string, displayName: string): Promise<void>;
+  adminRevokeWhitelist(userId: string): Promise<void>;
+  getAuditTrace(traceId: string): Promise<AuditNode[]>;
   // admin B7a：模板 drill（资产治理→Tool 标注）+ 标注保存 + 模型资产授权
   getAdminTemplateAssets(): Promise<AdminTableData>;
   getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
@@ -105,6 +110,13 @@ export interface OpenOpsApi {
 
 /* -------------------------------- real -------------------------------- */
 const runByInstance = new Map<string, string>();
+
+/** audit_event 行 → 审计页节点（recent 与 by-trace 共用）。 */
+const auditNode = (e: Record<string, unknown>) => ({
+  event: String(e.event_type),
+  detail: [e.task_id, e.reason_code, e.decision].filter(Boolean).join(" · ") || String(e.action ?? ""),
+  trace: e.audit_trace_id ? String(e.audit_trace_id) : undefined,
+});
 
 const realApi: OpenOpsApi = {
   async getMe() {
@@ -386,7 +398,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "用户与白名单",
         primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }],
+        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "88px" }],
         rows: rows.map((r) => ({
           id: String(r.user_id),
           cells: [
@@ -395,6 +407,9 @@ const realApi: OpenOpsApi = {
             { text: String(r.role) },
             { text: String(r.whitelist_status), kind: "badge" as const, tone: r.whitelist_status === "active" ? "good" as const : "neutral" as const },
             { text: String(r.last_login_at ?? "—").slice(11, 16) || "—" },
+            r.whitelist_status === "active"
+              ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
+              : { text: "加入", kind: "action" as const, onClickKey: "wl-add" },
           ],
         })),
       };
@@ -435,6 +450,12 @@ const realApi: OpenOpsApi = {
   },
   async publishTemplateVersion(versionId) {
     await apiFetch(`/openops/v1/admin/template-versions/${versionId}:publish`, {
+      method: "POST",
+      body: { client_request_id: crid() },
+    });
+  },
+  async disableTemplateVersion(versionId) {
+    await apiFetch(`/openops/v1/admin/template-versions/${versionId}:disable`, {
       method: "POST",
       body: { client_request_id: crid() },
     });
@@ -492,6 +513,18 @@ const realApi: OpenOpsApi = {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/users");
     return rows.map((r) => ({ user_id: String(r.user_id), display_name: String(r.display_name ?? "") }));
   },
+  async adminAddWhitelist(userId, displayName) {
+    await apiFetch("/openops/v1/admin/users/whitelist", {
+      method: "POST",
+      body: { client_request_id: crid(), user_id: userId, display_name: displayName },
+    });
+  },
+  async adminRevokeWhitelist(userId) {
+    await apiFetch("/openops/v1/admin/users/whitelist:revoke", {
+      method: "POST",
+      body: { client_request_id: crid(), user_id: userId },
+    });
+  },
   async adminGetModelGrants(modelAssetId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
       `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
@@ -531,10 +564,11 @@ const realApi: OpenOpsApi = {
   },
   async getAuditTimeline() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/audit/recent");
-    return rows.slice(0, 20).map((e) => ({
-      event: String(e.event_type),
-      detail: [e.task_id, e.reason_code, e.decision].filter(Boolean).join(" · ") || String(e.action ?? ""),
-    }));
+    return rows.slice(0, 20).map(auditNode);
+  },
+  async getAuditTrace(traceId) {
+    const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/audit/traces/${traceId}`);
+    return rows.map(auditNode);
   },
 
   async getTemplates() {
@@ -638,6 +672,10 @@ const mockApi: OpenOpsApi = {
   getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
   saveTemplateDraft: () => delay({}),
   publishTemplateVersion: () => delay(undefined as unknown as void),
+  disableTemplateVersion: () => delay(undefined as unknown as void),
+  adminAddWhitelist: () => delay(undefined as unknown as void),
+  adminRevokeWhitelist: () => delay(undefined as unknown as void),
+  getAuditTrace: () => delay(M.auditTimeline),
   getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
   getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
   adminSaveAnnotation: () => delay(undefined as unknown as void),

@@ -21,6 +21,7 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(true); // 数据未回前禁写，防把空表单存成草稿/发布
+  const [disarm, setDisarm] = useState(false); // 禁用版本两步确认（B7·三）
 
   const load = async (tid: string) => {
     setBusy(true);
@@ -44,8 +45,13 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
 
   const buildContent = (): Record<string, unknown> => ({
     ...content,
+    // __new 是编辑器内部标记（新增角色的 key/label 可输入），入库前剥掉
+    sub_agents: ((content.sub_agents ?? []) as Record<string, unknown>[]).map(({ __new: _n, ...rest }) => rest),
     main: { ...((content.main ?? {}) as Record<string, unknown>), role: role.trim(), default_tools: [...tools] },
   });
+  const patchMain = (field: string, value: unknown) =>
+    setContent({ ...content, main: { ...((content.main ?? {}) as Record<string, unknown>), [field]: value } });
+  const mainNum = (field: string, dft: number) => Number(((content.main ?? {}) as Record<string, unknown>)[field] ?? dft);
 
   const saveDraft = () => {
     if (!templateId) return;
@@ -74,6 +80,23 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
         <span style={{ fontSize: 11.5, fontWeight: 600, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm }}>{activeNo} · active</span>
         {draftVer ? <Pill tone="warning">草稿 v{String(draftVer.version_no)}</Pill> : null}
         <div style={{ flex: 1 }} />
+        {activeVer ? (
+          <button
+            onClick={() => {
+              if (!disarm) { setDisarm(true); return; }
+              setBusy(true);
+              api.disableTemplateVersion(String(activeVer.template_version_id))
+                .then(() => (templateId ? load(templateId) : undefined))
+                .then(() => { setMsg("active 版本已禁用：模板暂不可实例化，发布新草稿即恢复。"); setDisarm(false); onChanged(); })
+                .catch((e) => setErr((e as Error).message))
+                .finally(() => setBusy(false));
+            }}
+            disabled={busy}
+            title="禁用当前 active 版本（模板将暂不可实例化；已有实例不受影响）"
+            style={{ height: 32, padding: "0 12px", border: `1px solid ${disarm ? "#e24b4a" : color.border}`, background: disarm ? "#fdecec" : "#fff", borderRadius: radius.md, fontSize: 12, fontWeight: 600, color: disarm ? "#c73835" : color.textNav, cursor: "pointer" }}>
+            {disarm ? "再点确认禁用" : "禁用版本"}
+          </button>
+        ) : null}
         <button onClick={saveDraft} disabled={busy} style={{ height: 32, padding: "0 13px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 12, fontWeight: 600, color: color.textNav, cursor: "pointer" }}>保存草稿</button>
         <button onClick={publish} disabled={busy} title={draftVer ? "" : "发布会先保存当前修改为草稿"} style={{ height: 32, padding: "0 14px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: busy ? 0.7 : 1 }}>发布</button>
         <Icon name="x" size={18} color="#697283" onClick={onClose} style={{ marginLeft: 4 }} />
@@ -85,6 +108,19 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
             onChange={(e) => setRole(e.target.value)}
             style={{ width: "100%", minHeight: 90, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "10px 12px", fontSize: 12.5, lineHeight: 1.6, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }}
           />
+          <div style={{ display: "flex", gap: 16, marginTop: 10, alignItems: "center" }}>
+            <label style={{ fontSize: 11.5, color: color.textSubtle }} title="同时活跃子 Agent 上限（另有单批硬上限 5）">max_children（1..10）
+              <input type="number" min={1} max={10} value={mainNum("max_children", 3)}
+                onChange={(e) => patchMain("max_children", Number(e.target.value) || 3)}
+                style={{ width: 52, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
+            </label>
+            <label style={{ fontSize: 11.5, color: color.textSubtle }} title="单 task 累计派发兜底（防失败重派死循环）">delegation_max_spawns（1..100）
+              <input type="number" min={1} max={100} value={mainNum("delegation_max_spawns", 10)}
+                onChange={(e) => patchMain("delegation_max_spawns", Number(e.target.value) || 10)}
+                style={{ width: 60, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
+            </label>
+            <span style={{ fontSize: 11, color: color.textFaint }}>派发预算（D 块两层模型）</span>
+          </div>
         </Box>
         <Box title="平台 MCP tool 绑定（仅 allowed 标注可绑；模板外工具运行时 fail-closed）">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
@@ -108,11 +144,26 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
               };
               const csv = (v: unknown) => ((v ?? []) as string[]).join(", ");
               const parse = (t: string) => t.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
+              const removeSub = () => {
+                const subs = ((content.sub_agents ?? []) as Record<string, unknown>[]).filter((_, j) => j !== i);
+                setContent({ ...content, sub_agents: subs });
+              };
               return (
-                <div key={String(s.key)} style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+                <div key={i} style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, padding: "10px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 12, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm }}>{String(s.label ?? s.key)}</span>
-                    <span style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace" }}>{String(s.key)}</span>
+                    {s.__new ? (
+                      <>
+                        <input placeholder="key（英文标识）" value={String(s.key ?? "")} onChange={(e) => patch("key", e.target.value.trim())}
+                          style={{ width: 110, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "3px 8px", fontSize: 12, fontFamily: "ui-monospace, monospace" }} />
+                        <input placeholder="label（中文名）" value={String(s.label ?? "")} onChange={(e) => patch("label", e.target.value)}
+                          style={{ width: 96, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "3px 8px", fontSize: 12 }} />
+                      </>
+                    ) : (
+                      <>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm }}>{String(s.label ?? s.key)}</span>
+                        <span style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace" }}>{String(s.key)}</span>
+                      </>
+                    )}
                     <span style={{ flex: 1 }} />
                     <label style={{ fontSize: 11.5, color: color.textSubtle }}>max_iters
                       <input type="number" min={1} max={200} value={Number(s.max_iters ?? 20)}
@@ -124,6 +175,7 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                         onChange={(e) => patch("tool_result_limit", Number(e.target.value) || 24000)}
                         style={{ width: 76, marginLeft: 6, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "2px 6px", fontSize: 12 }} />
                     </label>
+                    <Icon name="trash" size={14} color={color.dangerText} title="删除该角色（存草稿/发布后生效）" onClick={removeSub} />
                   </div>
                   <textarea value={String(s.role ?? "")} onChange={(e) => patch("role", e.target.value)} rows={2}
                     style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 8px", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
@@ -141,7 +193,16 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
               );
             })}
           </div>
-          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>写工具可绑到子 Agent（E1 审批桥）：需人工审批的工具触发时弹审批卡（任务号带子 Agent 后缀），批准后由该子 Agent 继续执行；tool_result_limit 必须小于模型窗口（经验 ≤1/3）。</div>
+          <button
+            onClick={() => setContent({
+              ...content,
+              sub_agents: [...((content.sub_agents ?? []) as Record<string, unknown>[]),
+                { key: "", label: "", role: "", skills: [], mcp_tools: [], max_iters: 20, tool_result_limit: 24000, __new: true }],
+            })}
+            style={{ marginTop: 10, height: 30, padding: "0 12px", border: `1px dashed ${color.brand}`, background: color.brandTintBg, borderRadius: radius.md, fontSize: 12, fontWeight: 600, color: color.brandStrong, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <Icon name="plus" size={13} color={color.brandStrong} />新增角色
+          </button>
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>写工具可绑到子 Agent（E1 审批桥）：需人工审批的工具触发时弹审批卡（任务号带子 Agent 后缀），批准后由该子 Agent 继续执行；tool_result_limit 必须小于模型窗口（经验 ≤1/3）。新增角色的 key/role 必填、key 唯一、绑定工具须已 allowed 标注（发布时校验）。</div>
         </Box>
         <Box title="模板默认 LLM">
           <div style={{ fontSize: 12.5, color: color.textBody, fontFamily: "ui-monospace, monospace" }}>

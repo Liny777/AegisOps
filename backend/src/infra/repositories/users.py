@@ -50,12 +50,30 @@ async def is_whitelisted(user_id: str) -> bool:
 
 
 async def add_whitelist(user_id: str, by: str) -> None:
+    # 幂等（B7·三）：已有 active 行则不再插——重复授权会让 list 的 LEFT JOIN 出重行。
+    # 不用 ON CONFLICT（表无唯一索引，且 GaussDB 偏索引 target 有兼容坑），insert…select 通用。
     await exec1(
         """
         insert into sre_user_whitelist (whitelist_id, user_id, status, granted_by, granted_at, created_by, last_updated_by)
-        values (%(id)s, %(u)s, 'active', %(b)s, now(), %(b)s, %(b)s)
+        select %(id)s, %(u)s, 'active', %(b)s, now(), %(b)s, %(b)s
+        where not exists (
+            select 1 from sre_user_whitelist
+            where user_id=%(u)s and status='active' and deleted_at is null
+        )
         """,
         {"id": str(uuid.uuid4()), "u": user_id, "b": by},
+    )
+
+
+async def revoke_whitelist(user_id: str, by: str) -> int:
+    """移出白名单（B7·三）：软删所有 active 行；返回影响行数（0=本就不在白名单）。"""
+    return await exec1(
+        """
+        update sre_user_whitelist
+        set status='revoked', deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where user_id=%(u)s and status='active' and deleted_at is null
+        """,
+        {"u": user_id, "b": by},
     )
 
 

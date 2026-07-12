@@ -30,6 +30,10 @@ export function AdminConsole() {
   const [registerOpen, setRegisterOpen] = useState(false);
   const [grantsFor, setGrantsFor] = useState<{ id: string; name: string } | null>(null);
   const [tplEdit, setTplEdit] = useState<string | null>(null);
+  // B7·三：白名单添加弹窗 / 表格动作错误横幅 / 审计 Trace 过滤
+  const [wlAddOpen, setWlAddOpen] = useState(false);
+  const [actionErr, setActionErr] = useState("");
+  const [traceFilter, setTraceFilter] = useState("");
 
   const isTable = ["templates", "model-assets", "users"].includes(page);
 
@@ -70,9 +74,9 @@ export function AdminConsole() {
     } else if (isTable) {
       setTable(await api.getAdminTable(page));
     } else if (page === "audit") {
-      setAudit(await api.getAuditTimeline());
+      setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter]);
 
   useEffect(() => { setTplDrill(null); setMcpDrill(null); }, [page]);
   useEffect(() => { void load(); }, [load]);
@@ -87,6 +91,11 @@ export function AdminConsole() {
     else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
     else if (key === "model-grants") setGrantsFor({ id: rowId, name: rowName });
     else if (key === "toggle-bind" && tplDrill) void toggleBind(rowId);
+    else if (key === "wl-revoke" || key === "wl-add") {
+      setActionErr("");
+      const op = key === "wl-revoke" ? api.adminRevokeWhitelist(rowId) : api.adminAddWhitelist(rowId, "");
+      void op.then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
   };
 
   /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
@@ -143,6 +152,9 @@ export function AdminConsole() {
         {page === "model-assets" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setRegisterOpen(true)}>{table.primary.label}</Button>
         ) : null}
+        {page === "users" && table?.primary ? (
+          <Button icon={table.primary.icon} onClick={() => setWlAddOpen(true)}>{table.primary.label}</Button>
+        ) : null}
       </header>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
@@ -153,6 +165,11 @@ export function AdminConsole() {
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: color.brandTintBg, border: "1px solid rgba(22,131,255,.18)", borderRadius: radius.lg, padding: "11px 14px", marginBottom: 14, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
                   <Icon name="info-circle" size={15} color={color.brand} />
                   <span>模板「{tplDrill.name}」的资产治理——此处治理该模板引用的平台资产；<b>Tool 标注为全局配置</b>，修改将影响引用同一 tool 的所有模板（30.6 拍板②）。</span>
+                </div>
+              ) : null}
+              {actionErr ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fdecec", border: "1px solid #f5c2c0", borderRadius: radius.lg, padding: "9px 13px", marginBottom: 12, fontSize: 12, color: color.dangerText }}>
+                  <Icon name="alert-triangle" size={14} color={color.dangerText} />{actionErr}
                 </div>
               ) : null}
               {tabs ? (
@@ -194,7 +211,19 @@ export function AdminConsole() {
 
           {page === "audit" ? (
             <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
-              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>回放时间线 · 最近事件</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>{traceFilter ? "Trace 串联回放" : "回放时间线 · 最近事件"}</div>
+                <div style={{ flex: 1 }} />
+                <input
+                  placeholder="按 audit_trace_id 过滤（或点击事件的 trace 徽标）"
+                  value={traceFilter}
+                  onChange={(e) => setTraceFilter(e.target.value.trim())}
+                  style={{ width: 320, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, fontFamily: "ui-monospace, monospace" }}
+                />
+                {traceFilter ? (
+                  <span onClick={() => setTraceFilter("")} style={{ fontSize: 12, color: color.brand, fontWeight: 600, cursor: "pointer" }}>清除过滤</span>
+                ) : null}
+              </div>
               {audit.map((n, i) => (
                 <div key={i} style={{ display: "grid", gridTemplateColumns: "18px 1fr", gap: 10, paddingBottom: 12 }}>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
@@ -202,7 +231,15 @@ export function AdminConsole() {
                     {i < audit.length - 1 ? <div style={{ width: 2, flex: 1, marginTop: 3, background: color.border }} /> : null}
                   </div>
                   <div style={{ paddingBottom: 2 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, fontFamily: "ui-monospace, monospace" }}>{n.event}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, fontFamily: "ui-monospace, monospace" }}>{n.event}</span>
+                      {n.trace ? (
+                        <span onClick={() => setTraceFilter(n.trace!)} title={`按此 Trace 串联：${n.trace}`}
+                          style={{ fontSize: 10.5, fontFamily: "ui-monospace, monospace", color: color.brandStrong, background: color.brandTintBg, padding: "1px 7px", borderRadius: radius.pill, cursor: "pointer" }}>
+                          {n.trace.slice(0, 8)}
+                        </span>
+                      ) : null}
+                    </div>
                     <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 2 }}>{n.detail}</div>
                   </div>
                 </div>
@@ -222,7 +259,40 @@ export function AdminConsole() {
       {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
       {grantsFor ? <ModelGrantsDialog target={grantsFor} onClose={() => setGrantsFor(null)} onSaved={() => { setGrantsFor(null); void load(); }} /> : null}
       <TemplateEditorModal open={!!tplEdit} templateId={tplEdit} onClose={() => setTplEdit(null)} onChanged={() => void load()} />
+      {wlAddOpen ? <AddWhitelistDialog onClose={() => setWlAddOpen(false)} onSaved={() => { setWlAddOpen(false); void load(); }} /> : null}
     </>
+  );
+}
+
+/** 加入白名单弹窗（B7·三）：user_id 必填；不存在的用户会自动建行（角色默认 user）。 */
+function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const [userId, setUserId] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = () => {
+    if (!userId.trim()) { setErr("user_id 必填（工号，如 0026xxxx）"); return; }
+    setBusy(true);
+    api.adminAddWhitelist(userId.trim(), displayName.trim())
+      .then(onSaved)
+      .catch((e) => setErr((e as Error).message))
+      .finally(() => setBusy(false));
+  };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(21,25,35,.4)", zIndex: 60, display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 380, background: "#fff", borderRadius: radius.xl, padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>加入白名单</div>
+        <input placeholder="user_id（工号，必填）" value={userId} onChange={(e) => setUserId(e.target.value)}
+          style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5, fontFamily: "ui-monospace, monospace" }} />
+        <input placeholder="展示名（选填，缺省用 user_id）" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+          style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5 }} />
+        {err ? <div style={{ fontSize: 12, color: color.dangerText }}>{err}</div> : null}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
+          <button onClick={onClose} style={{ height: 32, padding: "0 13px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 12, fontWeight: 600, color: color.textNav, cursor: "pointer" }}>取消</button>
+          <button onClick={submit} disabled={busy} style={{ height: 32, padding: "0 14px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: busy ? 0.7 : 1 }}>加入</button>
+        </div>
+      </div>
+    </div>
   );
 }
 

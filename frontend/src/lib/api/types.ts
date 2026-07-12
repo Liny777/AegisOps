@@ -241,6 +241,7 @@ export interface SandboxContainer {
 export interface AuditNode {
   event: string;
   detail: string;
+  trace?: string;  // audit_trace_id（B7·三：审计页按 Trace 串联过滤）
 }
 
 /* 初始化向导 */

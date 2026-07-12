@@ -78,6 +78,12 @@ async def add_whitelist(req: WhitelistRequest, admin: Admin):
     return ok({"added": True})
 
 
+@router.post("/users/whitelist:revoke")
+async def revoke_whitelist(req: WhitelistRequest, admin: Admin):
+    await identity_service.revoke_whitelist(req.user_id, admin["user_id"])
+    return ok({"revoked": True})
+
+
 @router.get("/sandbox")
 async def sandbox(_admin: Admin):
     return ok(await runtime_config_service.get_sandbox())

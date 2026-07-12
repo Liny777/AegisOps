@@ -19,19 +19,23 @@
 | B7·二 | 模板版本写闭环 + 模板工具集 enforcement + 28.7 升级自动派生（草稿 upsert/发布切 active 不可变（再发布 409）/禁用摘指针；`_validate_content` 只许 allowed 标注 tool；`TaskState.template_tools` 双 runtime fail-closed（gateway 模板门 + agentscope toolkit 剪枝）；任务边界 `_derive_if_template_upgraded` 结转 overlay+绑定、审计 `config.version.derived`、SSE `config.changed_notice`；前端模板编辑器真表单（载入前禁写防空发布）+ 资产治理「绑定/解绑」草稿写路径；playwright e2e 过） | 见 git log | docs/test/B7-* |
 | B7·补 | GPT B7 报告修复（B7-SEC-001：`template_tools` 哨兵化 `None`/空集——空模板=零平台工具，mock 门与 agentscope 剪枝双 runtime fail-closed，顺带消掉空模板的无意义 `runtime_plan.updated`；顺修 `_validate_content` 误放行 blocked 标注 tool + tool_blocked 收口在 rca 为 None 时结论丢失；B7-TEST-001：补发布期重校验 400 + 模板写面 403 用例；66/70 双绿） | 见 git log | docs/test/B7-* |
 | B8 | Docker Sandbox 执行面（2026-07-09 新口径）：`SandboxExecutor` per-user 容器**会话期常驻**（run 开启边界容量准入 `SANDBOX_CAPACITY_FULL`/strict_ttl 腾位，末 run 关闭→idle→TTL 回收）；`OPENOPS_SANDBOX=fake(默认)\|docker` 双后端（fake=tempdir+subprocess 进程内、docker=aiodocker+agentscope `DockerBackend`，安全基线 非root/只读rootfs/cap_drop=ALL/不注入平台上下文）；`run_skill`（checksum 门+entrypoint shell 执行+超时/2MiB 截断+output.json）；容器内受控 Bash 四层裁决（`command_guard`：平台 deny→agentscope 原生 `Bash.check_permissions` 内置分析→只读放行/非只读 ask→容器隔离，无 agentscope 回退分类器、决策两路径一致）+ `sandbox.command.*` 审计；管理台容器列表(active_run_count)+强制销毁。真容器安全基线（非root/只读rootfs/cap_drop=ALL/不注入上下文/跨用户隔离）实机验证；写盘/run_skill 落盘执行经 B8·补 修复（只读 rootfs 下 tmpfs mode=1777 + exec base64 绕 put_archive）并加实机回归护栏 | 见 git log | docs/test/B8-* |
+| C1-C3 | Skill 真 ZIP 投递 + 安全硬缺口（Fernet/SSRF/回退）+ 外部接真开关（真 MCP 网关/Registry/Skill Hub/oModel；内网 2026-07-11 四件套全真闭环通关：真告警✅/越权拦截✅/ZIP checksum✅） | 见 git log | docs/test/C1-C3-* |
+| P 块 | 运行态持久化三件套全 PG（幂等键 L1+PG / `sre_task_state` 影子快照+启动收敛 / **AgentState 按 `framework_session_id+agent_key` 落 `sre_agent_session_state`——修同 run 第二句失忆**；23 号 D1 Redis 口径翻案为全 PG） | `9a7a68f` | — |
+| D 块 | sub_agents 多 Agent 编排（模板 content_json.sub_agents 权威载体、`dispatch_subagents` gather 派发、`sre_agent_delegation` 账本、两层预算、per-agent 工具白名单隔离、子禁二层派发） | `dd66d59` | — |
+| E 块 | 子 Agent 审批桥（恢复工具绑恢复 Agent：审批带子 task_id、decide 按 task_id 路由、审批等待不吃超时预算）+ 治理（主 env `OPENOPS_MAIN_MAX_ITERS`/`OPENOPS_MAIN_TOOL_RESULT_LIMIT`、子按画像 ReActConfig/ContextConfig）+ 活动栏 agent_key 全事件分组/状态徽标 + 动态工具子白名单裁剪 | `0488ce8` `54fbb65` `e11aa5b` | — |
 
 ## 待办（块序同 33 号）
 
-## B7·三 管理台小尾巴（后置）
+## B7·三 管理台小尾巴 ~~（后置）~~ ✅ S1 已落（2026-07-12）
 
-- 白名单页管理动作、审计 Trace 串联增强、模板「禁用版本」前端入口（后端已具）。
+- ~~白名单页管理动作、审计 Trace 串联增强、模板「禁用版本」前端入口~~ ✅：白名单 加入（弹窗/行内）+移出（`POST /admin/users/whitelist:revoke`，幂等授权+审计 whitelist.granted/revoked+防自锁）；审计页 trace 徽标点击/输入过滤（复用 `GET /audit/traces/{id}`）；模板编辑器「禁用版本」两步确认入口。另：编辑器支持新增/删除 sub 角色 + main 派发预算（max_children/delegation_max_spawns）输入——37 号迁移全程可 UI 化。
 - ⚠ 部署注意：升级到 B7·一 需在既有 PG 上执行两新表 DDL（`model_asset`/`model_access_grant`，schema.sql 幂等可直接重放）；旧 `platform_runtime_config` 的 `platform_model` 域已废弃不再读写。
 
 ## B8 剩余（执行面已落，见上表 B8 行）
 
 - **实机 Docker E2E**：`OPENOPS_SANDBOX=docker` 需装 `pip install -e ".[sandbox]"`（aiodocker）+ compose 挂 Docker socket；生产内网镜像离线预构建 + `docker load`。真容器安全基线 + 写盘 + run_skill 执行 + 跨用户隔离已实机验证（`OPENOPS_SANDBOX_DOCKER_TEST=1` 跑 `test_docker_real_run_skill_write_exec_isolation` 回归护栏）；默认 fake 后端覆盖生命周期/checksum/超时/裁决/审计。
 - ~~**live agent 驱动 Bash-in-conversation**~~ **✅ B8·补2 已接**：`run_container_command` 工具进 agentscope toolkit + mock orchestrator，双 runtime 端到端（BASH-007），四层裁决 + `sandbox.command.*` 审计 + HITL（`_bridge_command_approval` 复用审批流）。真 GLM 无论 demo 开关都可自主调该工具；env `OPENOPS_DEMO_SANDBOX_STEP=1` 让 stub demo 也演示一步。
-- **Skill Hub 真包投递**：`run_skill` 执行原语已就位（fake 注入包字节验证）；真 ZIP 从 Skill Hub 经 29.3 `X-Checksum-SHA256` 下载的装配路径待集成。
+- ~~Skill Hub 真包投递~~ **✅ C1 已接**（真 ZIP 下载装配+checksum 门，内网 check-net ⑥ 实测通过）。残留：对端未实现 `X-Checksum-SHA256` 头时跳过传输校验（C1-CHK-001 P2，等对端补头）。
 - 平台 deny 前缀规则 UI（管理台下发 `bash_deny_prefixes`）、artifact 回传落地、chunk 拆包沿用 ROADMAP 附注。
 
 > 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）、`OPENOPS_LLM_PROBE=mock|real`（用户自定义 LLM 探测：real 发真 `chat/completions` 验 tool-calling 能力，默认 mock 启发式）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。外部依赖接真开关（`OPENOPS_MCP`/`OPENOPS_MCPREGISTRY`/`OPENOPS_SKILLHUB`=mock\|real）见 `backend/docs/EXTERNAL-INTEGRATION.md`。
@@ -45,9 +49,9 @@
 ## 附：已知跨块待办
 
 - 真实 GLM Key 的 live 端到端（B2 runbook §9，待有 Key 环境执行）。
-- AgentState 跨进程 PG 持久化（现 per-run 内存，B1 备注）。
+- ~~AgentState 跨进程 PG 持久化~~ **✅ P3 已做**（`sre_agent_session_state`，构造前恢复/终态回写）。
 - `/me` 返回平铺结构（`data.user_id`），联调按当前实现读（B4-OBS-001）。
-- 前端 npm audit 2 项依赖提示，单独评估升级（B*-DEP-001）。
-- 前端主 chunk >500KB（Vite 提示），后续 code splitting（B5-FE-001/B6-FE-001）。
+- 前端 npm audit（2026-07-12 评估，暂不升）：两条链的修复均为 breaking——①vite≤6 内嵌 esbuild dev-server 漏洞，修复=vite 8 大版本（dev-only 风险面）；②@copilotkit/runtime 传递依赖 @ai-sdk/*/uuid，audit 建议方案是**降级** runtime@1.54.1（会破坏 sidecar 与 @ag-ui 0.0.57 对齐链；受影响 provider google-vertex/anthropic 我们未使用）。等 CopilotKit 上游修复后单独批次升级（B*-DEP-001）。
+- ~~前端主 chunk >500KB~~ **✅ S1 已拆**（路由级 React.lazy：settings/admin/init 独立 chunk，主包 298KB）。
 - lifespan 收口直接遍历 `task_registry._by_run`，可提取为 `task_registry.drain()` 公有入口（B5-BE-001 修复的整洁化跟进）。
 - Tool Gateway 每工具边界一次标注 DB 读（读失败回退快照）；高频循环/多实例场景评估短 TTL 内存缓存（B6-PERF-001）。
