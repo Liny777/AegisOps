@@ -3,7 +3,7 @@
 .env.*
 !.env.example
 # 本地启动脚本（含明文 PG 连接串/密码）——复制自 run-backend.{sh,bat}.example 后填写，勿提交
-run-backend.sh
+# run-backend.sh 已无凭证（凭证在 backend/config/openops.*.env），入库
 run-backend.ps1
 run-backend.bat
 
@@ -41,3 +41,9 @@ pnpm-debug.log*
 
 # ---- Logs ----
 *.log
+
+# 部署实值配置与产物（example 模板入库，实值不入）
+backend/config/openops.*.env
+!backend/config/*.env.example
+deploy/artifacts/
+deploy/sidecar/sidecar.env

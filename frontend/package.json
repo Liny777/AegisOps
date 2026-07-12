@@ -24,6 +24,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.18.1",
+    "tsx": "4.23.0",
     "zod": "^3.25.75"
   },
   "devDependencies": {
@@ -32,7 +33,6 @@
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "tsx": "4.23.0",
     "typescript": "^5.7.3",
     "vite": "^5.4.11"
   }

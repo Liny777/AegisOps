@@ -1,0 +1,17 @@
+# 前端机 sidecar（唯一容器；nginx 用宿主机安装）。
+# 用法：docker load -i openops-sidecar-image.tar
+#      cp sidecar.<env>.env.example sidecar.env 并填后端机地址
+#      docker compose up -d
+services:
+  sidecar:
+    image: openops-sidecar:latest
+    container_name: openops-sidecar
+    env_file: sidecar.env
+    ports:
+      - "127.0.0.1:4002:4002"   # 只暴露给本机 nginx，不对外
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4002/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

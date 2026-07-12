@@ -1,0 +1,21 @@
+# 后端机 systemd 单元。安装：
+#   sudo cp openops-backend.service /etc/systemd/system/
+#   按环境改 EnvironmentFile 指向 openops.test.env 或 openops.prod.env
+#   sudo systemctl daemon-reload && sudo systemctl enable --now openops-backend
+[Unit]
+Description=OpenOps V1 Backend (uvicorn via run.py)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/openops/backend
+EnvironmentFile=/opt/openops/backend/config/openops.prod.env
+ExecStart=/opt/openops/backend/.venv/bin/python run.py
+Restart=always
+RestartSec=5
+# 沙箱切 docker 后需要访问 docker.sock 的话，把运行用户加入 docker 组
+User=openops
+
+[Install]
+WantedBy=multi-user.target
