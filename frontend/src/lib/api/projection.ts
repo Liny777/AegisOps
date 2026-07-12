@@ -105,8 +105,16 @@ export function groupNodes(nodes: ActivityNode[], running: boolean): ActivityGro
       byKey.get(n.agentKey)!.push(n);
     }
   }
-  for (const [k, v] of byKey) groups.push({ label: `子 Agent · ${k}`, items: v });
+  for (const [k, v] of byKey) groups.push({ label: `子 Agent · ${k}`, items: v, roleKey: k, status: subGroupStatus(v, running) });
   return groups;
+}
+
+/** E3：子 Agent 组状态推导（事件即真相）：终态事件优先，任务仍在跑则视为运行中。 */
+function subGroupStatus(items: ActivityNode[], running: boolean): ActivityGroup["status"] {
+  const types = items.map((n) => n.tool ?? "");
+  if (types.some((t) => t.includes("subagent.timeout") || t.includes("subagent.failed"))) return "failed";
+  if (types.some((t) => t.includes("subagent.reported"))) return "done";
+  return running ? "running" : undefined;
 }
 
 /** approval_request 行 → HITL 卡数据。 */

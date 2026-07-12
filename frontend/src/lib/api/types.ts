@@ -139,6 +139,8 @@ export interface ActivityNode {
 export interface ActivityGroup {
   label: string;
   items: ActivityNode[];
+  roleKey?: string;   // E3：子 Agent 组的角色 key（main 组不带）——组头图标/徽标用
+  status?: "running" | "done" | "failed";  // E3：从组内 subagent.* 事件推导的组状态
 }
 
 export interface Conversation {

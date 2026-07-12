@@ -3,6 +3,38 @@ import { toneColor } from "../theme/tokens";
 import { Icon } from "../ui";
 import type { ActivityGroup } from "../lib/api/types";
 
+// E3：角色视觉映射（老项目 roleIcons 口径翻译；未知角色兜底 robot）
+const ROLE_VISUALS: Record<string, string> = {
+  inspect: "radar",
+  diagnose: "stethoscope",
+  recover: "first-aid-kit",
+};
+// 老项目 statusVisual 三态：running=琥珀 spin / done=teal / failed=红
+const GROUP_STATUS = {
+  running: { icon: "loader-2", colorHex: "#EF9F27", text: "运行中", spin: true },
+  done: { icon: "circle-check", colorHex: "#1D9E75", text: "已汇报", spin: false },
+  failed: { icon: "alert-triangle", colorHex: "#E24B4A", text: "异常/超时", spin: false },
+} as const;
+
+function GroupHeader({ g }: { g: ActivityGroup }) {
+  if (!g.roleKey) {
+    return <div style={{ fontSize: 10.5, fontWeight: 700, color: color.textLabel, letterSpacing: 0.4, marginBottom: 8 }}>{g.label}</div>;
+  }
+  const sv = g.status ? GROUP_STATUS[g.status] : null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, padding: "4px 8px", background: color.surface, border: `1px solid ${color.border}`, borderRadius: radius.sm }}>
+      <Icon name={ROLE_VISUALS[g.roleKey] ?? "robot"} size={13} color={color.brand} />
+      <span style={{ fontSize: 11, fontWeight: 700, color: color.textStrong, letterSpacing: 0.3, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.label}</span>
+      {sv ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 700, color: sv.colorHex }}>
+          <Icon name={sv.icon} size={11} color={sv.colorHex} spin={sv.spin} />
+          {sv.text}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 /** 右侧活动时间线：工具 / 子 Agent 动作，进行中置顶。 */
 export function ActivityRail({ groups }: { groups: ActivityGroup[] }) {
   return (
@@ -14,7 +46,7 @@ export function ActivityRail({ groups }: { groups: ActivityGroup[] }) {
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "14px 16px" }}>
         {groups.map((g, gi) => (
           <div key={gi} style={{ marginBottom: 14 }}>
-            <div style={{ fontSize: 10.5, fontWeight: 700, color: color.textLabel, letterSpacing: 0.4, marginBottom: 8 }}>{g.label}</div>
+            <GroupHeader g={g} />
             {g.items.map((n, ni) => {
               const tc = toneColor[n.tone];
               const lastInGroup = ni === g.items.length - 1;

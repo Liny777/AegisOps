@@ -30,19 +30,24 @@ _SNAPSHOT_REFRESH = {"openops.rca.updated", "openops.approval.required",
 
 async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -> None:
     trace = str(run["audit_trace_id"])
+    # E3：agent_key 单点注入（所有事件全覆盖——子 Agent 的 model/skill/bash/tool 事件前端才能分组；
+    # 内网实测：只有两处手动带 key 时，子 Agent 大部分过程事件都落在主时间线里"看不出是谁"）。
+    # 注入只作默认：调用点显式带的 agent_key 优先（dispatch 用主 st 发 dispatched/timeout/failed
+    # 但语义归属子角色组——被 "main" 盖掉就又看不出是谁了）。
+    payload = {"agent_key": st.agent_key, **(kw.get("payload") or {})}
     await audit.insert_event(
         audit_trace_id=trace, event_type=event_type, user_id=st.user_id,
         run_id=st.run_id, instance_id=str(run["agent_team_instance_id"]), task_id=st.task_id,
         action=kw.get("action", ""), decision=kw.get("decision"), reason_code=kw.get("reason_code"),
-        payload_redacted=kw.get("payload"), external_request_id=kw.get("external_request_id"),
+        payload_redacted=payload, external_request_id=kw.get("external_request_id"),
     )
     events.publish(st.run_id, events.envelope(
         st.run_id, event_type, task_id=st.task_id, message=kw.get("message", ""),
         reason_code=kw.get("reason_code"), severity=kw.get("severity", "info"),
-        payload=kw.get("payload"), audit_trace_id=trace,
+        payload=payload, audit_trace_id=trace,
     ))
     if event_type in _SNAPSHOT_STATUS or event_type in _SNAPSHOT_REFRESH:
         try:
             await task_states.upsert_snapshot(st, _SNAPSHOT_STATUS.get(event_type, st.status), trace)
         except Exception:  # noqa: BLE001 —— 旧库未跑 persistence 迁移等，快照降级不阻断
-            log.warning("[OpenOps][snapshot] 任务快照写入失败（见 sql/migrate-2026-07-12-persistence.sql）")
+            log.warning("[OpenOps][snapshot] 任务快照写入失败（旧库重跑 sql/openops_v1_core.sql 补表）")
