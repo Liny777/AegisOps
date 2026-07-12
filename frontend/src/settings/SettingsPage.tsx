@@ -10,22 +10,21 @@ import { AddCustomModelDialog } from "./AddCustomModelDialog";
 type Tab = "skill" | "mcp" | "model" | "prompt";
 type Filter = "all" | "on" | "off";
 
-/** 实例配置（isSettings·新原型）：对话页点「设置」**直达当前 Agent 的配置视图**（Skill/MCP/模型/提示词），
- * 返回箭头才回「我的全部 Agent」清单管理页（新建/启停/删除入口在那）。 */
+/** 实例配置（isSettings·新原型）：视图完全由路由驱动 —— `/agent-teams/:id/settings` = 当前 Agent
+ * 配置详情（对话页「设置」直达），`/agents` = 全部 Agent 清单（picker「全部 Agents」进入，新建/启停/
+ * 删除入口在那）。切换视图一律 nav() 产生历史条目，返回统一 nav(-1)，来路由历史栈表达：
+ * 对话→设置→返回=对话页；清单→编辑→返回=清单（实测诉求：设置返回不再经停清单页）。 */
 export function SettingsPage() {
   const nav = useNavigate();
   const { instanceId } = useParams();
-  useSyncCurrentAgent(instanceId);  // 直链/新建实例进入：全局列表缺它则重拉
+  useSyncCurrentAgent(instanceId);  // 直链/新建实例进入：全局列表缺它则重拉（/agents 时 undefined no-op）
   const { agents, refresh } = useApp();
-  // 初始=路由实例：设置入口带着当前 Agent 进来，直达其配置（实测诉求：不要先看所有 Agent 卡片）
-  const [detailId, setDetailId] = useState<string | null>(instanceId ?? null);
-  const detail = agents.find((a) => a.instance_id === detailId) ?? null;
+  const detail = instanceId ? agents.find((a) => a.instance_id === instanceId) ?? null : null;
 
   return (
     <>
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 12 }}>
-        {/* 返回：detail 态回全部 Agent 清单；清单态回上一页（实测缺口：清单页没有回对话页的入口） */}
-        <Interactive as="button" onClick={() => (detail ? setDetailId(null) : nav(-1))}
+        <Interactive as="button" onClick={() => nav(-1)}
           baseStyle={{ border: `1px solid ${color.border}`, background: "#fff", cursor: "pointer", width: 32, height: 32, borderRadius: radius.md, display: "inline-flex", alignItems: "center", justifyContent: "center", color: "#697283" }}
           hoverStyle={{ background: color.pageBg }}>
           <Icon name="arrow-left" size={17} />
@@ -36,7 +35,7 @@ export function SettingsPage() {
         {!detail ? <Button icon="plus" onClick={() => nav("/init")}>新建 Agent</Button> : null}
       </header>
 
-      {detail ? <AgentDetail instance={detail} /> : <AgentListPage agents={agents} onOpen={setDetailId} onChanged={refresh} />}
+      {detail ? <AgentDetail instance={detail} /> : <AgentListPage agents={agents} onOpen={(id) => nav(`/agent-teams/${id}/settings`)} onChanged={refresh} />}
     </>
   );
 }

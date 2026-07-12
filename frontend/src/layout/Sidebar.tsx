@@ -201,12 +201,12 @@ export function Sidebar() {
                   );
                 })}
                 <Interactive
-                  onClick={() => { setPickerOpen(false); nav("/init"); }}
+                  onClick={() => { setPickerOpen(false); nav("/agents"); }}
                   baseStyle={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 13px", borderTop: `1px solid ${color.borderInner}`, cursor: "pointer", fontSize: 13, fontWeight: 600, color: color.textStrong }}
                   hoverStyle={{ background: "#f5f8ff" }}
                 >
-                  <span style={{ flex: 1 }}>新建 Agent</span>
-                  <Icon name="plus" size={15} color={color.brand} />
+                  <span style={{ flex: 1 }}>全部 Agents</span>
+                  <Icon name="layout-grid" size={15} color={color.brand} />
                 </Interactive>
               </div>
             ) : null}
