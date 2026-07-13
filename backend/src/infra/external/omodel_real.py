@@ -17,9 +17,11 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -47,7 +49,21 @@ def _base() -> str:
     决定。历史 `{host}` 配置在这里 fail-closed，发布环境必须显式写固定绝对地址。
     """
     raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip().rstrip("/")
-    return "" if "{host}" in raw else raw
+    return "" if any(ch in raw for ch in "{}") else raw
+
+
+def _valid_hostname(hostname: str) -> bool:
+    """只允许合法 IP 或 ASCII DNS 主机名，拒绝模板/转义后的伪主机。"""
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    hostname = hostname.rstrip(".")
+    if not hostname or len(hostname) > 253 or not hostname.isascii():
+        return False
+    label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    return all(label.fullmatch(part) for part in hostname.split("."))
 
 
 def _target_info(base: str) -> tuple[Any, str, str]:
@@ -62,9 +78,10 @@ def _target_info(base: str) -> tuple[Any, str, str]:
     except ValueError as e:
         raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 端口无效") from e
     if (target.scheme not in ("http", "https") or not target.hostname
+            or not _valid_hostname(target.hostname)
             or target.username is not None or target.password is not None
             or target.query or target.fragment or target.params
-            or "{host}" in base or "\\" in base or any(ch.isspace() for ch in base)):
+            or any(ch in base for ch in "{}\\") or any(ch.isspace() for ch in base)):
         raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 必须是无凭据、查询或片段的固定绝对地址")
     hostname = target.hostname
     authority = f"[{hostname}]" if ":" in hostname else hostname
@@ -80,13 +97,18 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     """
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
-    _target, origin, target_host = _target_info(base)
+    _target, origin, _target_host = _target_info(base)
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
     headers: dict[str, str] = {"User-Agent": _BROWSER_UA}  # 必带：见 _BROWSER_UA 注释
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         headers["Cookie"] = cookie
+    from infra.request_context import client_ip as _client_ip
+    ip = _client_ip()
+    if ip:  # 华为 IAM 会话绑客户端 IP：带真实浏览器 IP，否则服务器 IP 会被判「Not logged in」
+        headers["IAM-Client-Ip"] = ip
+        headers["X-Forwarded-For"] = ip
     headers.update({
         "Origin": origin,
         "Referer": origin + "/",
@@ -102,9 +124,9 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
-        log.warning("[OpenOps][omodel][debug] target_host=%s cookie_src=%s cookie_len=%d",
-                    target_host, src, len(cookie or ""))
-        kwargs["event_hooks"] = {"request": [_log_outbound_request], "response": [_log_outbound_response]}
+        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d",
+                    src, len(cookie or ""))
+        kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 
 
@@ -112,34 +134,10 @@ def _http_debug() -> bool:
     return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
-def _unsafe_cookie() -> bool:
-    return os.getenv("OPENOPS_UNSAFE_LOG_COOKIE", "").strip() == "1"
-
-
-async def _log_outbound_request(request: Any) -> None:
-    """门控：打完整出站请求——方法/完整 URL/全部头（Cookie 打码为 <len=N>，除非 UNSAFE）/body（入参）。"""
-    lines = [f">>> {request.method} {request.url}"]
-    for k, v in request.headers.items():
-        if k.lower() == "cookie" and not _unsafe_cookie():
-            v = f"<len={len(v)}>"
-        lines.append(f"    {k}: {v}")
-    body = request.content or b""
-    if body:
-        lines.append(f"    body: {body.decode('utf-8', 'replace')[:2000]}")
-    log.warning("[OpenOps][omodel][debug] 出站请求:\n%s", "\n".join(lines))
-
-
 async def _log_outbound_response(response: Any) -> None:
-    """门控：打响应状态 + 响应体（供与 Postman 逐项对比）。"""
-    request = response.request
-    try:
-        await response.aread()
-        body = response.text
-    except Exception:  # noqa: BLE001
-        body = "(读取响应体失败)"
-    log.warning("[OpenOps][omodel][debug] <<< %s %s status=%s request_id=%s\n    resp: %s",
-                request.method, request.url, response.status_code,
-                _response_request_id(response) or "-", (body or "")[:2000])
+    """调试日志只保留状态与请求 ID；绝不读取或记录响应体、URL、请求头。"""
+    log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
+                response.status_code, _response_request_id(response) or "-")
 
 
 def _response_request_id(response: Any) -> str:
@@ -264,20 +262,15 @@ async def list_workspaces() -> list[dict[str, Any]]:
             payload = r.json()
             items = _extract_ws_items(payload)  # 多形状兼容：{items}/裸数组/{data:{items}}/{data:[]}
             if _http_debug():
-                log.warning("[OpenOps][omodel][debug] list status=%s shape=%s count=%d request_id=%s",
-                            r.status_code, type(payload).__name__, len(items),
-                            _response_request_id(r) or "-")
+                log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
+                            r.status_code, _response_request_id(r) or "-")
             return [_map_metadata(md) for md in items if isinstance(md, dict)]
     except Exception as e:  # noqa: BLE001
         if _http_debug():
             resp = getattr(e, "response", None)
-            detail = ""
-            if resp is not None:
-                try:
-                    detail = f" status={resp.status_code} resp={(resp.text or '')[:1000]}"
-                except Exception:  # noqa: BLE001
-                    detail = f" status={getattr(resp, 'status_code', '?')}"
-            log.warning("[OpenOps][omodel][debug] list 失败：%s%s", type(e).__name__, detail)
+            log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
+                        getattr(resp, "status_code", "error"),
+                        _response_request_id(resp) if resp is not None else "-")
         return []
 
 

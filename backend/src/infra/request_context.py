@@ -21,6 +21,16 @@ from contextvars import ContextVar
 _user_cookie: ContextVar[str] = ContextVar("openops_user_cookie", default="")
 _user_id: ContextVar[str] = ContextVar("openops_user_id", default="")
 _request_host: ContextVar[str] = ContextVar("openops_request_host", default="")
+_client_ip: ContextVar[str] = ContextVar("openops_client_ip", default="")
+
+
+def set_client_ip(ip: str) -> None:
+    _client_ip.set(ip or "")
+
+
+def client_ip() -> str:
+    """登录用户的真实客户端 IP（XFF 首跳）——出站给 IAM 绑 IP 的会话校验用（IAM-Client-Ip）。"""
+    return _client_ip.get()
 
 # user_id → (expire_at_monotonic, raw_cookie)
 _cookie_cache: dict[str, tuple[float, str]] = {}
@@ -78,7 +88,7 @@ def request_host() -> str:
 
 
 def capture_request_host(request) -> None:
-    """每请求捕获「浏览器所在域名」（供出站 URL 的 {host} 占位符展开）。
+    """每请求捕获「浏览器所在域名」（供兼容的 console URL 与浏览器回跳占位符展开）。
 
     取值链防网关改写：X-Forwarded-Host（首段）> Origin > Referer > Host。
     公司网关直连后端时 Host 常被改写成 ip:port——浏览器 fetch 自带的 Origin/Referer
@@ -101,8 +111,9 @@ def capture_request_host(request) -> None:
 
 
 def expand_host(url: str) -> str:
-    """出站 URL 的 {host} 占位符展开（BASE_URL 支持 https://{host}/omodel 这类写法，
-    测试/生产双域名共用一份配置，与 IAM URL 的 {host} 机制同口径）。
+    """兼容仍允许动态 host 的非鉴权 console 集成。
+
+    oModel 以及携带 Cookie/token 的 IAM 鉴权端点不调用本函数，二者必须配置固定目标域。
     无请求上下文（后台路径）时保持原样——调用会显式失败而非打错域。"""
     if "{host}" not in url:
         return url

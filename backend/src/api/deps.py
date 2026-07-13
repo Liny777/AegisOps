@@ -31,7 +31,8 @@ async def current_user(
     x_openops_mock_user: Annotated[str | None, Header()] = None,
     x_openops_mock_name: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
-    request_context.capture_request_host(request)  # 出站 BASE_URL 的 {host} 展开源
+    request_context.capture_request_host(request)  # console 系兼容路径及浏览器回跳的域名上下文
+    request_context.set_client_ip(_client_ip(request) or "")  # 出站 omodel 的 IAM 绑 IP 会话校验用
     if iam_client.enabled():  # B9 真 IAM：cookie 双步握手（TokenCache TTL 内不重打）
         host = iam_client.browser_host(request)  # login_url 的 {host} 源：仅 XFH，缺失留占位给前端填
         cookie = request.headers.get("cookie")
@@ -39,7 +40,7 @@ async def current_user(
             raise ApiError(Err.UNAUTHORIZED, "未登录（缺少 IAM Cookie）",
                            extra={"login_url": iam_client.login_url(host)})
         try:
-            ident = await iam_client.verify(cookie, _client_ip(request), iam_client.extract_host(request))
+            ident = await iam_client.verify(cookie, _client_ip(request))
         except iam_client.IamError as e:
             if e.status == 401:
                 raise ApiError(Err.UNAUTHORIZED, e.message,

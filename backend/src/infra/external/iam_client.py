@@ -16,10 +16,13 @@ Cookie / token 绝不入日志与错误信息（SEC-001 同规矩）。
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import logging
 import os
+import re
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -51,14 +54,6 @@ def login_url(host: str = "") -> str | None:
     if not url:
         return None
     return url.replace("{host}", host) if host else url  # 无 host 上下文保持原样（老项目口径）
-
-
-def extract_host(request) -> str:
-    """请求域名提取（后端出站 IAM URL 的 {host} 替换源）：X-Forwarded-Host 优先（逗号取首段），回退 Host。"""
-    xfh = request.headers.get("x-forwarded-host", "")
-    if xfh:
-        return xfh.split(",")[0].strip()
-    return request.headers.get("host", "")
 
 
 def browser_host(request) -> str:
@@ -95,22 +90,54 @@ def clear_cache(cookie_header: str | None = None) -> None:
         _CACHE.pop(hashlib.sha256(cookie_header.encode()).hexdigest(), None)
 
 
-async def verify(cookie_header: str, client_ip: str | None, host: str = "") -> dict[str, str]:
+def _valid_hostname(hostname: str) -> bool:
+    try:
+        ipaddress.ip_address(hostname)
+        return True
+    except ValueError:
+        pass
+    hostname = hostname.rstrip(".")
+    if not hostname or len(hostname) > 253 or not hostname.isascii():
+        return False
+    label = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+    return all(label.fullmatch(part) for part in hostname.split("."))
+
+
+def _fixed_https_target(env_name: str) -> str:
+    """读取并验证会携带 Cookie/token 的 IAM 出站目标，配置漂移时运行时也 fail-closed。"""
+    value = os.getenv(env_name, "").strip()
+    try:
+        parsed = urlsplit(value)
+        _port = parsed.port
+        valid = (
+            parsed.scheme == "https"
+            and bool(parsed.hostname)
+            and _valid_hostname(parsed.hostname or "")
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+            and not any(ch in value for ch in "{}\\")
+            and not any(ch.isspace() for ch in value)
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise IamError(502, f"IAM 配置无效（{env_name} 必须是固定 HTTPS 地址）")
+    return value
+
+
+async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
     """双步校验；返回 {login_key, display_name}。TTL 内同 cookie 直接命中缓存不打 IAM。
-    token/userinfo URL 支持 `{host}` 占位符（随请求域名替换，多域名共用配置）。"""
+    token/userinfo URL 必须是固定 HTTPS 地址；只有浏览器 login/signout 导航允许 `{host}`。"""
+    # 先验配置再查缓存：配置漂移必须立即 fail-closed，不能被旧身份缓存暂时掩盖。
+    token_url = _fixed_https_target("OPENOPS_IAM_ACCESS_TOKEN_URL")
+    userinfo_url = _fixed_https_target("OPENOPS_IAM_USERINFO_URL")
     key = hashlib.sha256(cookie_header.encode()).hexdigest()
     hit = _CACHE.get(key)
     now = time.monotonic()
     if hit and hit[0] > now:
         return hit[1]
-
-    token_url = os.getenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "").strip()
-    userinfo_url = os.getenv("OPENOPS_IAM_USERINFO_URL", "").strip()
-    if host:  # {host} 随请求域名替换（无 host 上下文保持原样）
-        token_url = token_url.replace("{host}", host)
-        userinfo_url = userinfo_url.replace("{host}", host)
-    if not token_url or not userinfo_url:
-        raise IamError(502, "IAM 未配置（OPENOPS_IAM_ACCESS_TOKEN_URL / OPENOPS_IAM_USERINFO_URL）")
 
     base_headers = {"Accept": "application/json", "Cookie": cookie_header}
     if client_ip:

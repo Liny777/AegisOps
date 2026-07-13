@@ -250,6 +250,23 @@ async def test_ext_omodel_sanitizes_upstream_request_id(monkeypatch):
     assert exc.value.request_id == "up-1forged-log"
 
 
+async def test_ext_omodel_list_debug_never_logs_payload(monkeypatch, caplog):
+    import logging
+
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG", "1")
+    _install(monkeypatch, lambda m, u, k: _Resp(
+        200, {"items": [], "sensitive_marker": "must-not-reach-log"},
+        headers={"X-Request-Id": "list-1"}))
+    caplog.set_level(logging.WARNING, logger="openops.omodel")
+
+    assert await omodel_real.list_workspaces() == []
+    assert "status=200" in caplog.text and "request_id=list-1" in caplog.text
+    assert "must-not-reach-log" not in caplog.text
+
+
 async def test_ext_omodel_create_classifies_timeout_and_network(monkeypatch):
     import httpx
 
@@ -653,12 +670,17 @@ async def test_ext_skillhub_download_json_envelope_explicit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ext_omodel_outbound_headers(monkeypatch):
+async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
     """oModel 同时携带登录态、浏览器 UA，以及从 target base 派生的 CSRF 同源头。"""
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example:8443/omodel")
     monkeypatch.delenv("OPENOPS_OMODEL_COOKIE", raising=False)
     monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG", "1")
+    monkeypatch.setenv("OPENOPS_UNSAFE_LOG_COOKIE", "1")  # 即使误设也绝不记录凭据
+    import logging
+
+    caplog.set_level(logging.WARNING, logger="openops.omodel")
     from infra import request_context
     from infra.external.omodel_real import _client_kwargs, _base
 
@@ -671,8 +693,54 @@ async def test_ext_omodel_outbound_headers(monkeypatch):
     assert headers.get("Referer") == "https://console.example:8443/"
     assert headers.get("Sec-Fetch-Site") == "same-origin"
     assert headers.get("Origin") != "https://frontend.example"
+    assert "sid=user-session" not in caplog.text
     request_context.set_request_user("", "")
     request_context.set_request_host("")
+
+
+@pytest.mark.asyncio
+async def test_ext_omodel_response_hook_never_logs_payload(caplog):
+    """真实执行 response hook，锁定 URL/header/body 中的凭据均不进入调试日志。"""
+    import logging
+    from types import SimpleNamespace
+
+    from infra.external.omodel_real import _log_outbound_response
+
+    caplog.set_level(logging.WARNING, logger="openops.omodel")
+    response = SimpleNamespace(
+        status_code=401,
+        headers={"X-Request-Id": "upstream-req-1"},
+        text='{"access_token":"response-secret"}',
+        content=b'{"access_token":"response-secret"}',
+        request=SimpleNamespace(
+            url="https://user:password@console.example/omodel?token=url-secret",
+            headers={"Cookie": "sid=request-secret"},
+            content=b'{"credential":"request-body-secret"}',
+        ),
+    )
+    await _log_outbound_response(response)
+    assert "status=401" in caplog.text and "request_id=upstream-req-1" in caplog.text
+    for secret in ("response-secret", "request-secret", "url-secret", "request-body-secret", "password"):
+        assert secret not in caplog.text
+
+
+def test_ext_omodel_rejects_credentialed_or_ambiguous_base():
+    from infra.external.omodel_client import OModelError
+    from infra.external.omodel_real import _client_kwargs
+
+    for base in (
+        "https://user:secret@console.example/omodel",
+        "https://console.example/omodel?redirect=elsewhere",
+        "https://console.example/omodel#fragment",
+        "https:///omodel",
+        "https://{host}/omodel",
+        "https://console.example/{tenant}/omodel",
+        "https://%7Bhost%7D/omodel",
+        "https://bad_host.example/omodel",
+    ):
+        with pytest.raises(OModelError) as exc:
+            _client_kwargs(base)
+        assert exc.value.kind == "config"
 
 
 def test_ext_omodel_list_multi_shape():
@@ -687,3 +755,106 @@ def test_ext_omodel_list_multi_shape():
     assert _extract_ws_items({"workspaces": [a]}) == [a]
     assert _extract_ws_items({"total": 0}) == []
     assert _extract_ws_items(None) == []
+
+
+def _release_env_file(tmp_path, *, omit=(), **overrides):
+    """生成不含真实凭据的生产门禁输入；避免测试依赖开发机 OPENOPS_* 环境。"""
+    import shlex
+
+    values = {
+        "OPENOPS_ENCRYPTION_KEY": "A" * 43 + "=",
+        "OPENOPS_PLATFORM_GLM_API_KEY": "fake-model-key-at-least-16",
+        "OPENOPS_IAM_ENABLED": "true",
+        "OPENOPS_IAM_ACCESS_TOKEN_URL": "https://iam.example/token",
+        "OPENOPS_IAM_USERINFO_URL": "https://iam.example/userinfo",
+        "OPENOPS_OMODEL": "real",
+        "OPENOPS_OMODEL_BASE_URL": "https://console.example/omodel",
+        "OPENOPS_OMODEL_TENANT_ID": "8888888888888888",
+        "OPENOPS_APPTREE": "real",
+        "OPENOPS_APPTREE_ENTERPRISE_ID": "8888888888888888",
+        "OPENOPS_APPTREE_BASE_URL": "http://apptree.internal/root",
+        "OPENOPS_HTTP_DEBUG": "0",
+        "OPENOPS_TLS_INSECURE": "0",
+        "OPENOPS_HTTP_TRUST_ENV": "0",
+    }
+    values.update(overrides)
+    for key in omit:
+        values.pop(key, None)
+    path = tmp_path / "production.env"
+    path.write_text("\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items()) + "\n")
+    return path
+
+
+def _run_release_gate(env_file, ambient=None):
+    import os
+    import subprocess
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    clean_env = {
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "HOME": os.environ.get("HOME", str(root)),
+        "LC_ALL": "C",
+    }
+    clean_env.update(ambient or {})
+    return subprocess.run(
+        ["bash", "scripts/release_check.sh", "--production-env", str(env_file)],
+        cwd=root, env=clean_env, text=True, capture_output=True, check=False,
+    )
+
+
+def test_release_gate_accepts_fixed_iam_targets(tmp_path):
+    result = _run_release_gate(_release_env_file(tmp_path))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("variable", ["OPENOPS_IAM_ACCESS_TOKEN_URL", "OPENOPS_IAM_USERINFO_URL"])
+@pytest.mark.parametrize("bad_target", [
+    "http://iam.example/iam",
+    "https://{host}/iam",
+    "https://user:secret@iam.example/iam",
+    "https://bad_host.example/iam",
+    "https://iam.example:bad/iam",
+    "https://iam.example\\@attacker.example/iam",
+    "https://%7Bhost%7D/iam",
+])
+def test_release_gate_rejects_unsafe_iam_targets(tmp_path, variable, bad_target):
+    result = _run_release_gate(_release_env_file(tmp_path, **{variable: bad_target}))
+    assert result.returncode != 0
+    assert f"{variable} 必须是" in result.stdout
+
+
+def test_release_gate_accepts_fixed_ipv6_iam_target(tmp_path):
+    result = _run_release_gate(_release_env_file(
+        tmp_path, OPENOPS_IAM_ACCESS_TOKEN_URL="https://[2001:db8::1]/token"))
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("missing", [
+    "OPENOPS_IAM_ACCESS_TOKEN_URL",
+    "OPENOPS_IAM_USERINFO_URL",
+    "OPENOPS_OMODEL_TENANT_ID",
+])
+def test_release_gate_does_not_inherit_openops_values(tmp_path, missing):
+    """目标 env 漏项时，即使调用者导出了同名变量也必须失败。"""
+    ambient_value = "https://iam.example/ambient" if missing.endswith("URL") else "8888888888888888"
+    env_file = _release_env_file(tmp_path, omit=(missing,))
+    result = _run_release_gate(env_file, ambient={missing: ambient_value})
+    assert result.returncode != 0
+    assert f"{missing} 未配置" in result.stdout
+
+
+def test_ext_omodel_sends_client_ip(monkeypatch):
+    """华为 IAM 会话绑 IP：omodel 出站带 IAM-Client-Ip + X-Forwarded-For（用户真实浏览器 IP）。"""
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    from infra import request_context
+    from infra.external.omodel_real import _client_kwargs, _base
+
+    request_context.set_client_ip("10.20.30.40")
+    headers = _client_kwargs(_base()).get("headers", {})
+    assert headers.get("IAM-Client-Ip") == "10.20.30.40"
+    assert headers.get("X-Forwarded-For") == "10.20.30.40"
+    request_context.set_client_ip("")
+    headers2 = _client_kwargs(_base()).get("headers", {})
+    assert "IAM-Client-Ip" not in headers2  # 无 IP 上下文不硬塞

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
 
 
@@ -109,8 +111,8 @@ def _iam_env(monkeypatch, **extra):
     from infra.external import iam_client
 
     monkeypatch.setenv("OPENOPS_IAM_ENABLED", "1")
-    monkeypatch.setenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "http://iam.internal/token")
-    monkeypatch.setenv("OPENOPS_IAM_USERINFO_URL", "http://iam.internal/userinfo")
+    monkeypatch.setenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "https://iam.internal/token")
+    monkeypatch.setenv("OPENOPS_IAM_USERINFO_URL", "https://iam.internal/userinfo")
     for k, v in extra.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(iam_client.httpx, "AsyncClient", _FakeIam)
@@ -213,6 +215,8 @@ def test_iam_cookie_reaches_omodel_create_with_target_origin(client, monkeypatch
     assert post["headers"]["Cookie"] == cookie  # 用户登录态透传
     assert "Mozilla/5.0" in post["headers"].get("User-Agent", "")  # 浏览器 UA（绕网关脚本 UA 拦截）
     assert post["headers"]["Origin"] == "https://console.example"  # CSRF 同源头（从目标 base 派生）
+    assert post["headers"]["Referer"] == "https://console.example/"
+    assert post["headers"]["Sec-Fetch-Site"] == "same-origin"
     assert post["headers"]["Origin"] != "https://frontend.example"
     assert captured["contexts"] == [("0026demo01", cookie)]
     assert post["json"]["config"]["workspace_ui"] == {
@@ -288,8 +292,8 @@ def test_iam_b9_dot_path_fields_and_logout(client, monkeypatch):
     assert _FakeIam.calls["token"] == before + 1
 
 
-def test_iam_host_placeholder_substitution(monkeypatch):
-    """{host} 占位符（老项目 D5.11 口径）：login/signout/token URL 随请求域名替换，多域名共用一份配置。"""
+def test_iam_browser_host_placeholder_substitution(monkeypatch):
+    """{host} 只用于 login/signout 浏览器导航；鉴权出站目标不读取请求 Host。"""
     from types import SimpleNamespace
 
     from infra.external import iam_client
@@ -300,13 +304,50 @@ def test_iam_host_placeholder_substitution(monkeypatch):
         "https://console-a.x.com/epstenant/#/login?redirect=https%3A%2F%2Fconsole-a.x.com%2Faegisops%2F%3F"
     assert "{host}" in (iam_client.login_url("") or "")  # 无 host 上下文保持原样（兜底）
 
-    # extract_host：X-Forwarded-Host 优先（逗号取首段）> Host
+    # browser_host 只信网关写入的 X-Forwarded-Host；不回退可能是后端地址的 Host。
     req = SimpleNamespace(headers={"x-forwarded-host": "console-b.x.com, inner.lb", "host": "backend:18082"})
-    assert iam_client.extract_host(req) == "console-b.x.com"
+    assert iam_client.browser_host(req) == "console-b.x.com"
     req2 = SimpleNamespace(headers={"host": "console-c.x.com"})
-    assert iam_client.extract_host(req2) == "console-c.x.com"
+    assert iam_client.browser_host(req2) == ""
     req3 = SimpleNamespace(headers={})
-    assert iam_client.extract_host(req3) == ""
+    assert iam_client.browser_host(req3) == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_target", [
+    "http://iam.internal/token",
+    "https://{host}/token",
+    "https://user:secret@iam.internal/token",
+    "https://bad_host.internal/token",
+    "https://iam.internal:bad/token",
+    "https://iam.internal/token?redirect=1",
+    "https://iam.internal\\@attacker.example/token",
+])
+async def test_iam_auth_target_runtime_fail_closed(monkeypatch, bad_target):
+    """即使跳过发布门禁，携带 Cookie 的 IAM 请求也不能发往动态/歧义目标。"""
+    from infra.external import iam_client
+
+    _iam_env(monkeypatch, OPENOPS_IAM_ACCESS_TOKEN_URL=bad_target)
+    with pytest.raises(iam_client.IamError) as exc:
+        await iam_client.verify("sid=must-not-leave", "127.0.0.1")
+    assert exc.value.status == 502
+    assert _FakeIam.calls == {"token": 0, "userinfo": 0}
+
+
+@pytest.mark.asyncio
+async def test_iam_cached_identity_does_not_mask_target_drift(monkeypatch):
+    from infra.external import iam_client
+
+    _iam_env(monkeypatch)
+    _FakeIam.script = {
+        "token": (200, {"code": "201", "access_token": "short-lived-test-token"}),
+        "userinfo": (200, {"id": "user-1", "name": "User One"}),
+    }
+    await iam_client.verify("sid=cached", "127.0.0.1")
+    monkeypatch.setenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "https://{host}/token")
+    with pytest.raises(iam_client.IamError) as exc:
+        await iam_client.verify("sid=cached", "127.0.0.1")
+    assert exc.value.status == 502
 
 
 def test_console_cookie_passthrough_priority(monkeypatch):
@@ -350,31 +391,12 @@ def test_omodel_page_base_host_only(monkeypatch):
     assert console_page_base() == ""
 
 
-def test_base_url_host_placeholder_expansion(monkeypatch):
-    """BASE_URL 支持 {host} 占位符：随请求域名展开（双域名共用配置）；无上下文保持原样。"""
-    from types import SimpleNamespace
-
+def test_omodel_base_rejects_request_derived_host(monkeypatch):
+    """携带 IAM Cookie 的 oModel 出站必须固定目标域，不接受请求头派生的 `{host}`。"""
     from app.workspace_service import console_page_base
-    from infra import request_context
     from infra.external.omodel_real import _base
 
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://{host}/omodel")
     monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL", raising=False)
-
-    # 捕获链：XFH > Origin > Referer > Host
-    req = SimpleNamespace(headers={"origin": "https://console-a.x.com", "host": "1.2.3.4:18082"})
-    request_context.capture_request_host(req)
-    assert request_context.request_host() == "console-a.x.com"
-    assert _base() == "https://console-a.x.com/omodel"
-    assert console_page_base() == "https://console-a.x.com/wesee/omodel/index.html?dataSource=api&workspace="
-
-    # 无上下文：保持占位符（显式失败而非打错域）；iframe 前缀退空态
-    request_context.set_request_host("")
-    assert _base() == "https://{host}/omodel"
+    assert _base() == ""
     assert console_page_base() == ""
-
-    # XFH 最高
-    req2 = SimpleNamespace(headers={"x-forwarded-host": "console-b.x.com, lb", "origin": "https://other"})
-    request_context.capture_request_host(req2)
-    assert request_context.request_host() == "console-b.x.com"
-    request_context.set_request_host("")

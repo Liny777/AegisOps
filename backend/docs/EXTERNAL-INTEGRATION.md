@@ -34,10 +34,10 @@ deps 每请求写入 contextvar + 按 user_id 缓存——真实环境**唯一�
 （专属 `OPENOPS_{MCPREGISTRY,OMODEL,APPTREE}_COOKIE` 优先，未设回退共享），过期只换一处。启动横幅每面显示
 `SET(len)`（专属）/`shared(len)`（回退共享）/`unset`。
 
-**BASE_URL 的 `{host}` 占位符（2026-07-14）**：`OPENOPS_{OMODEL,MCPREGISTRY,SKILLHUB,APPTREE}_BASE_URL`
-（及 apptree 的 `_URL`）支持 `{host}`——运行时按请求域名展开（取值链 X-Forwarded-Host > Origin >
-Referer > Host，防网关改写 Host 成 ip:port），测试/生产双域名共用一份配置，与 IAM URL 的 `{host}`
-同口径。无请求上下文（后台路径）保持字面占位符=调用显式失败而非打错域。写死具体域也照常工作。
+**BASE_URL 的 `{host}` 占位符（2026-07-14）**：MCP Registry、Skill Hub、AppTree（及 AppTree
+`_URL`）仍可按请求域名展开。**oModel 例外**：其出站会携带用户 IAM Cookie，
+`OPENOPS_OMODEL_BASE_URL` 必须配置固定绝对地址，`{host}` 会 fail-closed，避免客户端可控 Host 将会话带往
+非预期域。IAM 登录/登出回跳 URL 的 `{host}` 只用于浏览器导航，不作为 oModel 出站目标。
 
 **端点装配规则（文根全 env 可覆盖——测试/生产文根不同、对端改文根只改 env 不改码）**：
 `实际 URL = BASE_URL(host 根) + API_PREFIX(env 可覆盖的文根) + 操作尾段(代码，随契约走)`：
@@ -57,7 +57,7 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 **用户 LLM 探测**（`OPENOPS_LLM_PROBE=mock|real`）：建 llm-config 时 `llm_provider_client.probe` 校验能力。mock（默认）按 model_name 启发式（含 `no-tool` 判失败），测试/demo 不打网；real 向 `{base_url}/chat/completions` 发一次最小请求（带 dummy `tools`+`tool_choice`）验**可达+接受 tools 参数**=支持 tool calling，连接错/超时/4xx → `ok=False`（reason 脱敏，不含 Key/url），探测失败不落 active。probe 前已过 `egress.check_llm_egress`（SSRF 安全）。实例默认模型经 `initial_overlay_json.user_llm_config_id`（InitWizard custom 分支）在起任务时装配（`selected_model` 种子）。
 
 ### oModel(umodel)（真 scope resolve + workspace CRUD）—— 已按 29.7 最终文档对齐
-`OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`（host root）。`omodel_real`（`/api/v1/workspaces...`）：
+`OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`（固定 host root，禁止 `{host}`）。`omodel_real`（`/api/v1/workspaces...`）：
 - **`resolve_scope`** → 29.7「列出 workspace 关联项目」`GET /{ws}/projects`，`effective_appids` = 返回的 `project_id` 列表；
   任何错误/超时/404/空 → fail-closed（`status=failed`/空集，Scope Service 兜 SCOPE_RESOLVE_FAILED/EMPTY_SCOPE，缓存不作失败兜底）。
 - **`get/list/create`** → `WorkspaceMetadata`（无信封，29.7 snake_case `updated_at`）→ OpenOps 词汇映射；`list` 解 `Page.items`
@@ -74,9 +74,11 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
   面板「新窗口打开」兜底，内网实测若拦需同事侧放行或同域反代（二期）。
 - 出站硬化同 console 口径（TLS 三档 + trust_env 默认 off）；可选 `OPENOPS_OMODEL_COOKIE`（umodel 部署
   `omodel.iam.validation.enable=true` 时带 session cookie；真实环境使用当前用户 Cookie 透传）。写操作从最终
-  oModel base 派生同源 `Origin`/`Referer`，不转发浏览器传入的 Origin，避免 CSRF 校验把 POST 误判为未登录。
+  固定 oModel base 派生同源 `Origin`/`Referer`，并带浏览器 UA 与 `Sec-Fetch-*`；不转发浏览器传入的
+  Origin，避免 CSRF/脚本 UA 校验把 POST 误判为未登录。
 - create 上游错误保持结构化：401/403→`OMODEL_AUTH_FAILED`(502，不触发登录跳转)，400/422→
-  `VALIDATION_FAILED`(400)，超时→`OMODEL_UPSTREAM`(504)，网络/5xx→`OMODEL_UPSTREAM`(502)。
+  `VALIDATION_FAILED`(400)，超时→`OMODEL_UPSTREAM`(504)，网络/5xx→`OMODEL_UPSTREAM`(502)；上游
+  任意 message 不回显给浏览器，只保留清洗后的 request ID 和状态码用于定位。
 - `scope_revision` OpenOps 私有派生（范围内容 hash），不映射 umodel 同名列/`resourceVersion`（29.6 §三）；`sync_status` 降级 active→ready（umodel 无动态就绪态/`/status`，29.6 P2-1）。
 - 联调自检：`check-net.py` ③（healthz + list workspaces + 首个 ws 的 /projects）。
 
@@ -163,8 +165,8 @@ real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，�
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `OPENOPS_IAM_ENABLED` | false | true=公司 IAM cookie 双步握手替代 X-OpenOps-Mock-*（mock 头即失效） |
-| `OPENOPS_IAM_ACCESS_TOKEN_URL` | — | 步1：GET，headers=Cookie+IAM-Client-Ip（XFF 首跳），判 `code=="201"` 取 access_token/accessToken |
-| `OPENOPS_IAM_USERINFO_URL` | — | 步2：GET，`Authorization: <裸token>`（无 Bearer 前缀） |
+| `OPENOPS_IAM_ACCESS_TOKEN_URL` | — | 固定 HTTPS（禁止 `{host}`/userinfo/query/fragment）；步1 GET，headers=Cookie+IAM-Client-Ip（XFF 首跳），判 `code=="201"` 取 access_token/accessToken |
+| `OPENOPS_IAM_USERINFO_URL` | — | 固定 HTTPS（禁止 `{host}`/userinfo/query/fragment）；步2 GET，`Authorization: <裸token>`（无 Bearer 前缀） |
 | `OPENOPS_IAM_LOGIN_KEY_FIELD` | id | userinfo 取用户标识的点分路径（如 `data.user.id`）；strip+lower 后作 user_id |
 | `OPENOPS_IAM_DISPLAY_NAME_FIELD` | name | 展示名字段路径；缺失回退 login_key |
 | `OPENOPS_IAM_CACHE_TTL_S` | 300 | 进程内 TokenCache（SHA-256(cookie)→身份，上限 1024 条），TTL 内不重打 IAM |

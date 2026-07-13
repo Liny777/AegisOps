@@ -43,8 +43,17 @@ def test_workspace_create_maps_omodel_errors(client, monkeypatch, kind, upstream
     assert response.status_code == http_status
     assert error["code"] == code and error["retryable"] is retryable
     assert error["upstream_request_id"] == "up-req-1"
+    assert "upstream detail" not in error["message"]
     if upstream_status is not None:
         assert error["upstream_status"] == upstream_status
+
+
+def test_build_id_reads_release_metadata(tmp_path):
+    from main import _build_id
+
+    info = tmp_path / "BUILD_INFO"
+    info.write_text("BUILD_ID=08aa30c-wt12345678\n", encoding="utf-8")
+    assert _build_id(info) == "08aa30c-wt12345678"
 
 
 def test_init_003_blocks_workspace_not_ready(client):

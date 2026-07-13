@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,18 @@ from api.routers import (
 )
 from infra import seed
 from infra.db import close_pool, open_pool
+
+
+def _build_id(info_file: Path | None = None) -> str:
+    """发布包 BUILD_INFO 的稳定标识；本地源码运行显示 dev。"""
+    path = info_file or (Path(__file__).resolve().parents[2] / "BUILD_INFO")
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.startswith("BUILD_ID="):
+                return line.split("=", 1)[1].strip()[:96] or "unknown"
+    except OSError:
+        pass
+    return "dev"
 
 
 @asynccontextmanager
@@ -62,7 +75,8 @@ async def lifespan(_app: FastAPI):
             "INSECURE" if os.environ.get("OPENOPS_TLS_INSECURE") == "1" else
             "truststore" if "truststore" in __import__("sys").modules else "certifi")
     _banner = (
-        f"runtime={_rt}{_agentscope}  model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
+        f"build={_build_id()}  runtime={_rt}{_agentscope}  "
+        f"model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
         f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
         f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  "
         f"omodel_cookie={_cookie_disp('OPENOPS_OMODEL_COOKIE')}  "

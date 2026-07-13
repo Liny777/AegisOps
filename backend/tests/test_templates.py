@@ -180,7 +180,7 @@ def test_template_write_endpoints_forbidden_for_user(client):
     assert r1.status_code == r2.status_code == r3.status_code == 403
 
 def test_omodel_console_page_env_matrix(client, monkeypatch):
-    """设置页 iframe 前缀下发：未配置→空串；BASE_URL 派生（剥 #fragment）；PAGE_URL 覆盖优先。"""
+    """设置页 iframe 前缀下发：未配置→空串；固定 BASE_URL 派生；安全 PAGE_URL 覆盖优先。"""
     from conftest import USER_HEADERS, unwrap
 
     monkeypatch.delenv("OPENOPS_OMODEL_BASE_URL", raising=False)
@@ -188,10 +188,30 @@ def test_omodel_console_page_env_matrix(client, monkeypatch):
     out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
     assert out["page_base"] == ""
 
-    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.x.y/#/some/spa/route")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.x.y/omodel")
     out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
     assert out["page_base"] == "https://console.x.y/wesee/omodel/index.html?dataSource=api&workspace="
 
     monkeypatch.setenv("OPENOPS_OMODEL_PAGE_URL", "https://other.z/custom/page?ws=")
     out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
     assert out["page_base"] == "https://other.z/custom/page?ws="
+
+    monkeypatch.setenv("OPENOPS_OMODEL_PAGE_URL", "https://user:secret@other.z/custom/page?ws=")
+    out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+    assert out["page_base"] == ""
+
+    for unsafe_page in (
+        "https://{host}/custom/page?ws=",
+        "https://%7Bhost%7D/custom/page?ws=",
+        "https://other.z/custom/{workspace}?ws=",
+        "https://other.z/custom/page?ws=#fragment",
+        "https://other.z\\@attacker.example/custom/page?ws=",
+    ):
+        monkeypatch.setenv("OPENOPS_OMODEL_PAGE_URL", unsafe_page)
+        out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+        assert out["page_base"] == ""
+
+    monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://user:secret@console.x.y/omodel")
+    out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+    assert out["page_base"] == ""

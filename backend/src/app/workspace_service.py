@@ -28,7 +28,7 @@ async def list_workspaces() -> list[dict[str, Any]]:
 
 async def create_workspace(name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
-    """失败包成 ApiError 带上游原因（umodel 400 的信封 message 是唯一定位线索），前端对话框直接显示。"""
+    """创建系统范围；上游细节只用于服务端诊断，不向浏览器回显。"""
     try:
         return await omodel_client.create_workspace(name, app_ids, apps=apps, owner=owner)
     except ApiError:
@@ -42,7 +42,8 @@ async def create_workspace(name: str, app_ids: list[str], *,
                            extra=extra) from e
         if e.kind == "validation":
             raise ApiError(Err.VALIDATION_FAILED,
-                           f"oModel 拒绝创建参数：{e.message}", extra=extra) from e
+                           "oModel 拒绝 workspace 参数，请检查范围名称、当前企业和所选应用",
+                           extra=extra) from e
         if e.kind == "timeout":
             raise ApiError(Err.OMODEL_UPSTREAM, "oModel 创建请求超时",
                            retryable=True, status=504, extra=extra) from e
@@ -77,22 +78,33 @@ def console_page_base() -> str:
 
     OPENOPS_OMODEL_PAGE_URL 显式覆盖 > 从 OPENOPS_OMODEL_BASE_URL 域根派生
     `{base}/wesee/omodel/index.html?dataSource=api&workspace=`；两者皆空（mock/未配置）
-    返回 ""——前端显示「内网环境可用」空态。清洗口径与 omodel_real._base 一致
-    （剥地址栏 #fragment + 尾斜杠；用户常整串贴地址栏）。
+    返回 ""——前端显示「内网环境可用」空态。两种地址都拒绝 userinfo 和动态 `{host}`；
+    BASE_URL 还须无 query/fragment，页面只从清洗后的 origin 派生。
     """
+    from infra.external.omodel_client import OModelError
+    from infra.external.omodel_real import _target_info
+
     override = os.environ.get("OPENOPS_OMODEL_PAGE_URL", "").strip()
     if override:
+        from urllib.parse import urlparse
+
+        try:
+            page = urlparse(override)
+            _port = page.port
+            _target_info(f"{page.scheme}://{page.netloc}")
+        except (ValueError, OModelError):
+            return ""
+        if (page.scheme not in ("http", "https") or not page.hostname
+                or page.username is not None or page.password is not None
+                or page.fragment or any(ch in override for ch in "{}\\")
+                or any(ch.isspace() for ch in override)):
+            return ""
         return override
-    from infra.request_context import expand_host
-
-    raw = expand_host(os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip())
-    if not raw or "{host}" in raw:  # 无请求上下文无法展开 → 空态（不下发字面占位符）
+    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip().rstrip("/")
+    if not raw:
         return ""
-    # 只取 scheme://host——BASE_URL 常带 API 路径后缀（如 .../omodel），页面在 host 根的
-    # /wesee/omodel/index.html，不能拼在后缀之后（否则 /omodel/wesee/omodel/... 双前缀）
-    from urllib.parse import urlparse
-
-    u = urlparse(raw)
-    if not u.scheme or not u.netloc:
+    try:
+        _target, origin, _host = _target_info(raw)
+    except OModelError:
         return ""
-    return f"{u.scheme}://{u.netloc}/wesee/omodel/index.html?dataSource=api&workspace="
+    return f"{origin}/wesee/omodel/index.html?dataSource=api&workspace="
