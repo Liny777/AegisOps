@@ -81,7 +81,9 @@ docker compose up -d
 # 3. 验证链（依次；sidecar 不发布宿主机端口，探活走 docker exec）
 docker exec openops-sidecar wget -qO- http://127.0.0.1:4002/healthz   # {"ok":true,...}
 curl -s http://localhost/api/health            # frontend 容器→后端机 → {"status":"ok"}
-curl -sI http://localhost/ | head -1           # 静态 200
+curl -sI http://localhost/ | grep -iE "^HTTP|^location"   # 302 + Location: /aegisops/（文根跳转）
+curl -sI http://localhost/aegisops/ | head -1  # 静态 200（真正的页面入口）
+curl -s http://localhost/aegisback/health      # {"status":"ok"}（IP 直访兜底：剥前缀转后端）
 # 浏览器全链：建 Agent → 对话（CopilotChat 流式回包）→ 活动栏 SSE 持续推送不断流
 ```
 

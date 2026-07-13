@@ -77,8 +77,8 @@ cd /opt/openops/frontend && docker compose up -d     # 只重建镜像变化的�
 docker save openops-frontend:latest | gzip > f.tar.gz    # （单文件 >500MB 才需 split）
 # 前端机：docker load -i f.tar.gz && cd /opt/openops/frontend && docker compose up -d
 
-# 验证
-curl -sI http://localhost/ | head -1 && curl -s http://localhost/api/health
+# 验证（/ 是 302 → /aegisops/，页面入口看 /aegisops/）
+curl -sI http://localhost/aegisops/ | head -1 && curl -s http://localhost/api/health
 ```
 
 **回滚**：每次构建都带 `${VER}` 版本标签，`docker tag openops-frontend:<旧VER>
