@@ -1,21 +1,21 @@
-# OpenOps 前端机 nginx 站点（宿主机 nginx；26/27 号拓扑：同域反代，前端全部相对路径 /api…）。
-# 装载：sed "s/<BACKEND_HOST>/10.x.x.x/" openops.conf > /etc/nginx/conf.d/openops.conf
-#      nginx -t && nginx -s reload
-# 测试/生产同一份模板，仅 <BACKEND_HOST>（与 server_name，如有域名）不同。
+# OpenOps 前端一体镜像站点模板（envsubst 变量：${BACKEND_HOST} ${SIDECAR_HOST}）。
+# 前端全部相对路径（/api、/api/copilotkit），同域反代；测试/生产同镜像仅 env 不同。
 server {
     listen 80;
     server_name _;
 
-    # ---- TLS（拿到内网证书后启用：改 listen 443 ssl 并放开两行，80 段可 return 301）----
-    # listen 443 ssl;
-    # ssl_certificate     /etc/nginx/certs/openops.pem;
-    # ssl_certificate_key /etc/nginx/certs/openops.key;
+    # ---- TLS（内网证书就绪后：挂载证书 + 覆盖本模板改 listen 443 ssl；或前置 LB 终结）----
 
     client_max_body_size 50m;   # Skill ZIP 上传
 
-    # CopilotKit 流（本机 sidecar 容器）：流式响应，关缓冲 + 长超时
+    # compose 网内 DNS + 变量 proxy_pass：按 TTL 重解析——sidecar 单独重建换 IP 无需重启本容器；
+    # 启动期不做静态解析（sidecar 未起时本容器照常起，请求期 502 待其就绪自愈，宿主机重启无顺序依赖）
+    resolver 127.0.0.11 valid=30s ipv6=off;
+    set $sidecar_upstream http://${SIDECAR_HOST}:4002;
+
+    # CopilotKit 流（compose 网内 sidecar 容器）：流式响应，关缓冲 + 长超时
     location /api/copilotkit {
-        proxy_pass http://127.0.0.1:4002;
+        proxy_pass $sidecar_upstream;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
@@ -30,13 +30,13 @@ server {
 
     # 探活便捷路由：后端真实 health 在根路径 /health（不带 /api）
     location = /api/health {
-        proxy_pass http://<BACKEND_HOST>:18082/health;
+        proxy_pass http://${BACKEND_HOST}:18082/health;
     }
 
     # 后端 API（后端机 uvicorn:18082）。SSE/agui 长连接调优（34 号 §三·④ 前置项）；
     # X-Forwarded-For 首跳 = B9 IAM 的 IAM-Client-Ip 来源，必须透传。
     location /api {
-        proxy_pass http://<BACKEND_HOST>:18082;
+        proxy_pass http://${BACKEND_HOST}:18082;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
@@ -51,14 +51,14 @@ server {
 
     # 前端静态（SPA 回退到 index.html；react-router 路由都是前端路由）
     location / {
-        root /opt/openops/frontend/dist;
+        root /usr/share/nginx/html;
         try_files $uri /index.html;
         gzip on;
         gzip_types text/css application/javascript application/json image/svg+xml font/woff2;
         expires 1h;
     }
     location = /index.html {
-        root /opt/openops/frontend/dist;
+        root /usr/share/nginx/html;
         add_header Cache-Control "no-cache";
     }
 }

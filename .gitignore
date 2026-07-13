@@ -46,4 +46,5 @@ pnpm-debug.log*
 backend/config/openops.*.env
 !backend/config/*.env.example
 deploy/artifacts/
-deploy/sidecar/sidecar.env
+deploy/frontend/dist/
+deploy/**/*.env

@@ -41,6 +41,6 @@
 
 ## 7. 部署形态（上线前置，34 号 §三·④）
 
-- [ ] nginx 对 `/agui`/SSE 路径关代理缓冲 + 长连接超时调大
+- [ ] 反代调优已烘焙进 openops-frontend 镜像（/api 与 /api/copilotkit 关缓冲+3600s 超时）——升级镜像后 `docker exec openops-frontend nginx -T` 抽查生效即可
 - [ ] 审计 30 天保留清理任务（DBA 排期）
 - [ ] 沙箱镜像离线预构建 + `docker load`（Linux 阶段）

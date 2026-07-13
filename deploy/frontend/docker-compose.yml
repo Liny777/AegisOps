@@ -1,0 +1,33 @@
+# 前端机整机 compose：frontend（nginx+dist 一体镜像）+ sidecar（CopilotKit runtime）。
+# 用法：docker load -i openops-frontend-image.tar && docker load -i openops-sidecar-image.tar
+#      cp frontend.<env>.env.example frontend.env && cp ../sidecar/sidecar.<env>.env.example sidecar.env
+#      （两个 env 唯一必改项都是后端机地址）
+#      docker compose up -d
+# sidecar 不发布宿主机端口——nginx 经 compose 网内 DNS（服务名 sidecar）直达。
+services:
+  frontend:
+    image: openops-frontend:latest
+    container_name: openops-frontend
+    env_file: frontend.env            # BACKEND_HOST=<后端机内网IP>
+    environment:
+      SIDECAR_HOST: sidecar           # compose 网内服务名，固定不用改
+    ports:
+      - "80:80"
+    depends_on:
+      - sidecar
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+  sidecar:
+    image: openops-sidecar:latest
+    container_name: openops-sidecar
+    env_file: sidecar.env             # OPENOPS_BACKEND_URL=http://<后端机内网IP>:18082
+    restart: always
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:4002/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
