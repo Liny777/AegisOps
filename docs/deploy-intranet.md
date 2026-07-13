@@ -39,6 +39,8 @@ cp config/openops.test.env.example config/openops.test.env   # 测试机
 vi config/openops.test.env             # PG 六件/GLM Key/ENCRYPTION_KEY/console 系/…
 
 # 建表（幂等，26 表；GaussDB 保留字已规避）——每个库/schema 一次
+# 已建过表的旧库升级也重跑本文件：尾部「增量迁移」段幂等补齐（07-13 缺陷批新增
+# sre_idempotency_key.request_hash 列 + result_json 去 NOT NULL/DEFAULT，必须跑）
 psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f sql/openops_v1_core.sql
 
 ./run-backend.sh test                  # 前台验证

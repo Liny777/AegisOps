@@ -119,3 +119,30 @@ tsc/vite/sidecar 编译全通过；后端 `test_agui.py` 锁住了 TOOL_CALL_ARG
 
 - 探针测试 3 个文件 20 用例（`test_probe_0712_p.py` / `test_probe_0712_de.py` / `test_probe_0712_a_misc.py`），已随报告附上——DEF-1..8 修复后可直接改造为回归用例入库；
 - 快照 worktree 用毕已清理；主工作区、数据库 schema 均未做持久修改（测试库按 conftest 惯例被 TRUNCATE 重置）。
+
+
+---
+
+## 八、修复批注（2026-07-13，修复会话回写）
+
+全部 8 项确认缺陷与 §六建议的连带项已修复入库，分两批提交（均双推 feat/workbench-frontend + main）：
+
+| 缺陷 | 修复 | 提交 |
+|---|---|---|
+| DEF-1 审批门旁路（decide fallback 污染主握手） | decide 仅按 task_id 精确命中 st；子任务 finally 级联 cancel_pending_approvals 拔除「终态后卡片仍 pending」前提 | `39048ed` |
+| DEF-2 子 task_id 跨批碰撞 | task_id=`{leader}.{key}-{delegation_id[:8]}` 全局唯一；session_id 同后缀；dispatch 工具 is_concurrency_safe=False | `39048ed` |
+| DEF-3 幂等并发窗口 + request_hash 缺失 | begin（占位抢锁+hash 比对 409）/commit/rollback 三段式；DDL 加 request_hash、result_json 去 NOT NULL/DEFAULT | `a2b94b7` |
+| DEF-4 孤儿 cancel 谎报 | 终态快照返回真实 status+already_terminal；interrupted→cancelled+task.cancelled 审计 | `a2b94b7` |
+| DEF-5 软删 run 审计 404 | get_run(include_deleted=True) 供审计入口；owner/admin 可见 run.deleted | `a2b94b7` |
+| DEF-6 决策事件缺 agent_key | decide 两处 payload 注入；agent_key_of_task 公共化进 emit.py | `a2b94b7` |
+| DEF-7 bash 自愈死代码 | 删「容器在册」前置守卫，缺容器交 executor 自愈；缺会话上下文才 fail-closed | `a2b94b7` |
+| DEF-8 dispatch 静默截断 | >5 直接拒绝并报真实数量 | `a2b94b7` |
+| 连带 A env 钳制 | max_iters 1..200 / tool_result_limit 1000..200000（_clamped_env_int） | `a2b94b7` |
+| 连带 B ASK 超时审计链 | expire RETURNING+approval.timeout 审计/SSE；force_expire_approval 保证循环超时（OPENOPS_ASK_TIMEOUT_S 可配小于行内 5 分钟）该行必达 timeout | `a2b94b7` |
+| 连带 C 断流取消桥 | task 强引用 set+done_callback；GeneratorExit 无 loop 降级 warning | `a2b94b7` |
+| 连带 D 工具入参脱敏 | infra/redact.py key 级打码，应用事件面+三处审批入参（§六⑤） | `a2b94b7` |
+
+回归用例 14 例新增（test_def1/2/3/4/5/7/8 + ASK 超时双路径 + redact + 断流取消桥），
+命名 `test_def_*`（报告所述探针文件未随仓库，全部重写入库）。双解释器全量：
+mock 面 165 passed / agentscope 面 181 passed。§五文档回写项 4 条已同步落
+Obsidian 19 号；内网旧库升级须重跑 `backend/sql/openops_v1_core.sql`（request_hash 增量段）。
