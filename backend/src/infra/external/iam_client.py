@@ -54,11 +54,20 @@ def login_url(host: str = "") -> str | None:
 
 
 def extract_host(request) -> str:
-    """请求域名提取（{host} 替换源）：X-Forwarded-Host 优先（逗号取首段），回退 Host。"""
+    """请求域名提取（后端出站 IAM URL 的 {host} 替换源）：X-Forwarded-Host 优先（逗号取首段），回退 Host。"""
     xfh = request.headers.get("x-forwarded-host", "")
     if xfh:
         return xfh.split(",")[0].strip()
     return request.headers.get("host", "")
+
+
+def browser_host(request) -> str:
+    """浏览器要跳转的 URL（login/signout）的 {host} 替换源：**只信 X-Forwarded-Host**——
+    网关直连后端时 Host 常被改写成 ip:port，用它替换会产出不可访问的登录地址；
+    没有 XFH 就返回空 → URL 保留 {host} 占位符，由前端用 window.location.host 兜底替换
+    （前端永远知道用户实际所在域名，两种网关行为下都正确）。"""
+    xfh = request.headers.get("x-forwarded-host", "")
+    return xfh.split(",")[0].strip() if xfh else ""
 
 
 def _ttl() -> float:

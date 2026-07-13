@@ -33,7 +33,7 @@ async def logout(request: Request):
     cookie = request.headers.get("cookie")
     if cookie:
         iam_client.clear_cache(cookie)
-    host = iam_client.extract_host(request)
+    host = iam_client.browser_host(request)
     signout = os.getenv("OPENOPS_IAM_SIGNOUT_URL", "").strip()
     if host:
         signout = signout.replace("{host}", host)
