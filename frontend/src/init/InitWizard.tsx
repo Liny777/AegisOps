@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
+import { useApp } from "../lib/appState";
 import type { Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm } from "../settings/AddCustomModelDialog";
@@ -212,6 +213,7 @@ function StepConfigure({
   onCustomCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
   onCustomRemoved: () => void;
 }) {
+  const { me } = useApp(); // 身份确认用真实登录账号（IAM 开启=工号/姓名；mock=演示身份）
   const [showAdd, setShowAdd] = useState(false);
   const selectedWs = workspaces.find((w) => w.workspace_id === wsId);
   return (
@@ -237,7 +239,7 @@ function StepConfigure({
           <div>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>身份确认</div>
             <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.6 }}>
-              你将以 <span style={{ fontWeight: 600, color: color.textStrong }}>0026demo01（林一）</span> 的身份创建此 Agent，所有操作将关联到该账号。
+              你将以 <span style={{ fontWeight: 600, color: color.textStrong }}>{me ? `${me.user_id}（${me.display_name}）` : "当前登录账号"}</span> 的身份创建此 Agent，所有操作将关联到该账号。
             </div>
           </div>
         </div>
