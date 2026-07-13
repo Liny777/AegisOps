@@ -123,7 +123,7 @@ async def list_servers() -> list[dict[str, Any]]:
                                    headers=_console_headers())
                 raise_with_body(r)
                 body = r.json()
-                if int(body.get("code", -1)) != 0:
+                if int(body.get("code", -1)) not in (0, 200):  # 2026-07-13 对端统一 200；0 兼容旧版
                     raise RuntimeError(f"mcps/list/query 业务错误：code={body.get('code')} {body.get('message', '')}")
                 data = body.get("data") or {}
                 items = data.get("items") or []
@@ -175,7 +175,7 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
                                    headers=_console_headers())
                 raise_with_body(r)
                 body = r.json()
-            if int(body.get("code", -1)) != 0:  # 29.3 业务信封 {code:0, message, data}
+            if int(body.get("code", -1)) not in (0, 200):  # 29.3 信封；2026-07-13 对端统一 200，0 兼容旧版
                 raise RuntimeError(f"MCP Registry proxy 业务错误：code={body.get('code')} {body.get('message', '')}")
             # data = 上游 JSON-RPC {jsonrpc,id,result:{tools}}；工具在 data.result.tools
             tools = (((body.get("data") or {}).get("result")) or {}).get("tools", [])

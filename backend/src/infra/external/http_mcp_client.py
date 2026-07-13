@@ -75,7 +75,7 @@ async def call_tool(
                                    headers=hdrs)
                 raise_with_body(r)
                 body = r.json()
-            if int(body.get("code", -1)) != 0:  # 29.3 业务信封
+            if int(body.get("code", -1)) not in (0, 200):  # 29.3 信封；2026-07-13 对端统一 200，0 兼容旧版
                 raise RuntimeError(f"MCP proxy tools/call 业务错误：code={body.get('code')} {body.get('message', '')}")
             result = (((body.get("data") or {}).get("result")) or {})  # 上游 JSON-RPC result
             if result.get("isError"):

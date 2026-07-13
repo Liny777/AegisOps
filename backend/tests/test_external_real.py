@@ -211,7 +211,7 @@ async def test_ext_skillhub_list_unwraps_and_maps(monkeypatch):
 
     monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
     monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "http://skillhub")
-    body = {"code": 0, "message": "success", "data": {"total": 1, "items": [
+    body = {"code": 200, "message": "success", "data": {"total": 1, "items": [
         {"skill_id": "inspection", "name": "巡检", "is_system": True, "latest_version": "2.1.0",
          "checksum_sha256": "abc", "source": "openops", "created_by": "sys", "status": "active"}]}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
@@ -267,7 +267,7 @@ async def test_ext_mcpregistry_discover_unwraps_result_tools(monkeypatch):
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "http://registry")
     monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")  # 本用例锚定 console proxy 契约（默认已切 direct）
-    body = {"code": 0, "message": "ok", "data": {"jsonrpc": "2.0", "id": 1, "result": {"tools": [
+    body = {"code": 200, "message": "ok", "data": {"jsonrpc": "2.0", "id": 1, "result": {"tools": [
         {"name": "query_resource", "description": "查资源", "inputSchema": {"type": "object"}}]}}}
     cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
 
