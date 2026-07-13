@@ -24,12 +24,12 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 `OPENOPS_LLM_EGRESS_BLOCK_PRIVATE=1`、`OPENOPS_LLM_EGRESS_DENY`、联调缝 `OPENOPS_SCOPE_OVERRIDE_APPIDS`（跳过 oModel 用指定 appid 当 scope，切真 oModel 后应删）。
 **出站硬化（内网教训，全部 real client 生效）**：`OPENOPS_HTTP_TRUST_ENV=0(默认)|1`（默认不信任环境/Windows 注册表代理——公司 SWG 会劫内网出站）；
 TLS 三档 `OPENOPS_TLS_CA_FILE` > `OPENOPS_TLS_INSECURE=1` > certifi（正解：`pip install truststore`，run.py 自动用系统证书库）。
-**cookie 三档优先级（2026-07-14 定案）**：`console_cookie()` = 专属 env（`OPENOPS_{OMODEL,MCPREGISTRY,APPTREE}_COOKIE`，
-**跨域部署显式覆盖**，最高）＞ **用户 cookie 透传**（IAM 开启时 deps 每请求写入 + 按 user_id 缓存；
-同域部署默认——对端与 OpenOps 同域时用户浏览器 cookie 有效，免维护服务态 cookie，权限=操作者本人）
-＞ 共享 `OPENOPS_CONSOLE_COOKIE`（后台无用户路径兜底：reconcile/启动收敛，最低）。
-**同域部署（如 console.his-op-beta.huawei.com/omodel）无需配任何 cookie**，透传即用；仅跨域才配专属 env。
-—— 以下共享 env 说明适用于后台/跨域场景 ——
+**cookie 三档优先级（2026-07-14 终版）**：`console_cookie()` = **用户登录态透传**（IAM 开启时
+deps 每请求写入 contextvar + 按 user_id 缓存——真实环境**唯一正道**：umodel/console 校验的就是
+这份，权限=操作者本人，无过期维护）＞ 专属 env（`OPENOPS_{OMODEL,MCPREGISTRY,APPTREE}_COOKIE`）
+＞ 共享 `OPENOPS_CONSOLE_COOKIE`。**env 两档仅本地调试缝**（无 IAM 登录态时手工贴浏览器会话联调），
+生产环境一律不配（上线核对清单有此条）。
+—— 以下共享 env 说明仅适用于本地调试 ——
 **共享登录态 `OPENOPS_CONSOLE_COOKIE`**：mcpregistry / omodel / apptree 三面实为同一份 IAM 会话 cookie——设这一个即可
 （专属 `OPENOPS_{MCPREGISTRY,OMODEL,APPTREE}_COOKIE` 优先，未设回退共享），过期只换一处。启动横幅每面显示
 `SET(len)`（专属）/`shared(len)`（回退共享）/`unset`。

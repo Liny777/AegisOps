@@ -41,7 +41,7 @@ pip install -e ".[agentscope]"          # 内网 pip 源；沙箱切 docker 再�
 # 双环境配置（含凭证，已 gitignore；模板内有全量分组注释）
 cp config/openops.test.env.example config/openops.test.env   # 测试机
 # cp config/openops.prod.env.example config/openops.prod.env # 生产机
-vi config/openops.test.env             # PG 六件/GLM Key/ENCRYPTION_KEY/console 系/…
+vi config/openops.test.env             # PG 六件/GLM Key/ENCRYPTION_KEY/…（⚠*_COOKIE 全部留空——真实环境用 IAM 透传用户登录态，env cookie 仅本地调试）
 
 # 建表（幂等，26 表；GaussDB 保留字已规避）——每个库/schema 一次
 # 已建过表的旧库升级也重跑本文件：尾部「增量迁移」段幂等补齐（07-13 缺陷批新增

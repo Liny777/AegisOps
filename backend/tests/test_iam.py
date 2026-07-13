@@ -199,7 +199,8 @@ def test_iam_host_placeholder_substitution(monkeypatch):
 
 
 def test_console_cookie_passthrough_priority(monkeypatch):
-    """B9 cookie 三档（2026-07-14 定案）：专属 env override > 用户透传(缓存优先) > 共享 env 兜底。"""
+    """B9 cookie 三档终版（2026-07-14）：用户透传(缓存优先)最高 > 专属 env > 共享 env——
+    env 两档仅本地调试缝，生产不配。"""
     from infra import request_context
     from infra.external.mcp_registry_client import console_cookie
 
@@ -207,20 +208,21 @@ def test_console_cookie_passthrough_priority(monkeypatch):
     request_context.set_request_user("l00833445", "iam=user-cookie")
     monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "svc-shared")
 
-    # 同域默认：透传赢过共享 env（历史坑：曾被共享 env 盖死→同域 401）
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam=user-cookie"
-    # 跨域：专属 env 显式覆盖，最高
+    # 真实环境唯一正道：透传最高——即使配了专属/共享调试 env 也不生效（2026-07-14 终版）
     monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "svc-omodel")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam=user-cookie"
     monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
 
     # 缓存反查（无 contextvar 但已知 user_id 的路径）
     assert request_context.cached_user_cookie("l00833445") == "iam=user-cookie"
     assert request_context.cached_user_cookie("nobody") == ""
 
-    # 后台无用户路径：透传空 → 共享 env 兜底
+    # 本地调试（无透传）：专属 env > 共享 env
     request_context.set_request_user("", "")
     request_context.clear()
+    monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "svc-omodel")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
     assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"
     monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE")
     assert console_cookie("OPENOPS_OMODEL_COOKIE") == ""
