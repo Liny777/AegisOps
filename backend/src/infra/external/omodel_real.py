@@ -60,13 +60,16 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     if cookie:
         headers["Cookie"] = cookie
     u = urlparse(base)
-    if u.scheme and u.netloc:  # CSRF 同源头：与浏览器一致
+    if u.scheme and u.netloc:  # CSRF 同源头：与浏览器同源 fetch 一致（omodel 写操作校验）
         origin = f"{u.scheme}://{u.netloc}"
         headers["Origin"] = origin
         headers["Referer"] = origin + "/"
+        headers["Sec-Fetch-Site"] = "same-origin"
+        headers["Sec-Fetch-Mode"] = "cors"
+        headers["Sec-Fetch-Dest"] = "empty"
     if headers:
         kwargs["headers"] = headers
-    if os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+    if _http_debug():
         from infra.request_context import current_user_id, request_host, user_cookie
 
         src = ("passthrough" if user_cookie()
@@ -75,7 +78,24 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "none")
         log.warning("[OpenOps][omodel][debug] base=%s  req_host=%s  cookie_src=%s  cookie_len=%d  uid=%s",
                     base, request_host() or "-", src, len(cookie or ""), current_user_id() or "-")
+        kwargs["event_hooks"] = {"request": [_log_outbound]}  # 打完整出站请求
     return kwargs
+
+
+def _http_debug() -> bool:
+    return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+async def _log_outbound(request: Any) -> None:
+    """出站 httpx 请求全量诊断（门控）：方法/完整 URL/全部头（Cookie 只打长度）/请求体。"""
+    lines = [f">>> {request.method} {request.url}"]
+    for k, v in request.headers.items():
+        val = f"<len={len(v)}>" if k.lower() == "cookie" else v
+        lines.append(f"    {k}: {val}")
+    body = request.content or b""
+    if body:
+        lines.append(f"    body: {body.decode('utf-8', 'replace')[:2000]}")
+    log.warning("[OpenOps][omodel][debug] 出站请求:\n%s", "\n".join(lines))
 
 
 def _derive_rev(effective_appids: list[str]) -> str:
