@@ -44,8 +44,21 @@ def enabled() -> bool:
     return os.getenv("OPENOPS_IAM_ENABLED", "false").strip().lower() in ("1", "true", "yes")
 
 
-def login_url() -> str | None:
-    return os.getenv("OPENOPS_IAM_LOGIN_URL", "").strip() or None
+def login_url(host: str = "") -> str | None:
+    """401 引导跳转地址。支持 `{host}` 占位符——运行时替换为请求域名（老项目 D5.11 口径：
+    测试/生产双域名共用一份配置，按用户进来的域名回跳）。"""
+    url = os.getenv("OPENOPS_IAM_LOGIN_URL", "").strip()
+    if not url:
+        return None
+    return url.replace("{host}", host) if host else url  # 无 host 上下文保持原样（老项目口径）
+
+
+def extract_host(request) -> str:
+    """请求域名提取（{host} 替换源）：X-Forwarded-Host 优先（逗号取首段），回退 Host。"""
+    xfh = request.headers.get("x-forwarded-host", "")
+    if xfh:
+        return xfh.split(",")[0].strip()
+    return request.headers.get("host", "")
 
 
 def _ttl() -> float:
@@ -73,8 +86,9 @@ def clear_cache(cookie_header: str | None = None) -> None:
         _CACHE.pop(hashlib.sha256(cookie_header.encode()).hexdigest(), None)
 
 
-async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
-    """双步校验；返回 {login_key, display_name}。TTL 内同 cookie 直接命中缓存不打 IAM。"""
+async def verify(cookie_header: str, client_ip: str | None, host: str = "") -> dict[str, str]:
+    """双步校验；返回 {login_key, display_name}。TTL 内同 cookie 直接命中缓存不打 IAM。
+    token/userinfo URL 支持 `{host}` 占位符（随请求域名替换，多域名共用配置）。"""
     key = hashlib.sha256(cookie_header.encode()).hexdigest()
     hit = _CACHE.get(key)
     now = time.monotonic()
@@ -83,6 +97,9 @@ async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
 
     token_url = os.getenv("OPENOPS_IAM_ACCESS_TOKEN_URL", "").strip()
     userinfo_url = os.getenv("OPENOPS_IAM_USERINFO_URL", "").strip()
+    if host:  # {host} 随请求域名替换（无 host 上下文保持原样）
+        token_url = token_url.replace("{host}", host)
+        userinfo_url = userinfo_url.replace("{host}", host)
     if not token_url or not userinfo_url:
         raise IamError(502, "IAM 未配置（OPENOPS_IAM_ACCESS_TOKEN_URL / OPENOPS_IAM_USERINFO_URL）")
 

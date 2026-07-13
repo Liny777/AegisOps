@@ -35,6 +35,8 @@ export interface OpenOpsApi {
   listAgents(): Promise<AgentInstance[]>;
   /** omodel 控制台页面前缀（设置页 iframe；空串=未配置/mock，显示空态）。 */
   getOmodelPageBase(): Promise<string>;
+  /** 登出（B9）：清后端 IAM 会话缓存，返回 IAM signout/login 地址（未配 IAM 时均为 null）。 */
+  logout(): Promise<{ signout_url: string | null; login_url: string | null }>;
   listConversations(): Promise<Conversation[]>;
   // 运行态（real：ensureRun → state/task/approval/SSE）
   ensureRun(instanceId: string): Promise<string>; // → run_id
@@ -141,6 +143,11 @@ const realApi: OpenOpsApi = {
   async getOmodelPageBase() {
     const d = await apiFetch<{ page_base?: string }>("/openops/v1/omodel/console-page");
     return String(d.page_base ?? "");
+  },
+  async logout() {
+    const d = await apiFetch<{ signout_url?: string | null; login_url?: string | null }>(
+      "/openops/v1/auth/logout", { method: "POST" });
+    return { signout_url: d.signout_url ?? null, login_url: d.login_url ?? null };
   },
   async listConversations() {
     // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」；
@@ -632,6 +639,7 @@ const mockApi: OpenOpsApi = {
   getMe: () => delay(M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user")),
   listAgents: () => delay(M.mockAgents),
   getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
+  logout: () => delay({ signout_url: null, login_url: null }), // mock 无 IAM，登出为空操作
   listConversations: () => delay(M.mockConversations),
   ensureRun: () => delay("run_demo"),
   createRun: () => delay("run_demo_" + Math.random().toString(36).slice(2, 8)),

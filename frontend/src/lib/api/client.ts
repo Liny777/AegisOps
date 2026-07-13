@@ -48,6 +48,8 @@ export async function apiFetch<T = unknown>(
     // B9：IAM 会话失效且后端带了登录地址 → 直接跳公司登录页（老项目 App.tsx 379-430 口径）
     if (res.status === 401 && err?.login_url) {
       window.location.assign(err.login_url);
+      // 浏览器即将跳登录页：抛专用码，启动链据此保持加载态而非闪错误屏
+      throw new ApiError("AUTH_REDIRECT", "正在跳转登录…", false);
     }
     throw new ApiError(err?.code ?? `HTTP_${res.status}`, err?.message ?? res.statusText, err?.retryable);
   }

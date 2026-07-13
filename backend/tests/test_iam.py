@@ -175,3 +175,24 @@ def test_iam_b9_dot_path_fields_and_logout(client, monkeypatch):
     assert "signout_url" in out
     unwrap(client.get("/api/openops/v1/me", headers=hdr))
     assert _FakeIam.calls["token"] == before + 1
+
+
+def test_iam_host_placeholder_substitution(monkeypatch):
+    """{host} 占位符（老项目 D5.11 口径）：login/signout/token URL 随请求域名替换，多域名共用一份配置。"""
+    from types import SimpleNamespace
+
+    from infra.external import iam_client
+
+    monkeypatch.setenv("OPENOPS_IAM_LOGIN_URL",
+                       "https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F")
+    assert iam_client.login_url("console-a.x.com") == \
+        "https://console-a.x.com/epstenant/#/login?redirect=https%3A%2F%2Fconsole-a.x.com%2Faegisops%2F%3F"
+    assert "{host}" in (iam_client.login_url("") or "")  # 无 host 上下文保持原样（兜底）
+
+    # extract_host：X-Forwarded-Host 优先（逗号取首段）> Host
+    req = SimpleNamespace(headers={"x-forwarded-host": "console-b.x.com, inner.lb", "host": "backend:18082"})
+    assert iam_client.extract_host(req) == "console-b.x.com"
+    req2 = SimpleNamespace(headers={"host": "console-c.x.com"})
+    assert iam_client.extract_host(req2) == "console-c.x.com"
+    req3 = SimpleNamespace(headers={})
+    assert iam_client.extract_host(req3) == ""

@@ -137,7 +137,9 @@ location /aegisback/ {
 自剥前缀（网关剥不剥都兼容），并回写 root_path 使重定向/docs URL 带前缀；sidecar 直连
 IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，
 遇不剥前缀的网关变双前缀 404（内网实测）。
-**IAM 回跳**：`OPENOPS_IAM_LOGIN_URL` 的登录完成回跳地址配 `https://xxxx.com/aegisops/`。
+**IAM 回跳**：`OPENOPS_IAM_LOGIN_URL` / `OPENOPS_IAM_SIGNOUT_URL` 及 token/userinfo URL 均支持
+`{host}` 占位符（运行时替换为请求域名，测试/生产双域名共用一份配置），例：
+`OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F`。
 
 **域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；
 `https://xxxx.com/aegisops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。

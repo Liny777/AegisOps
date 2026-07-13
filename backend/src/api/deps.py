@@ -31,16 +31,17 @@ async def current_user(
     x_openops_mock_name: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
     if iam_client.enabled():  # B9 真 IAM：cookie 双步握手（TokenCache TTL 内不重打）
+        host = iam_client.extract_host(request)  # {host} 占位符替换源（多域名共用配置）
         cookie = request.headers.get("cookie")
         if not cookie:
             raise ApiError(Err.UNAUTHORIZED, "未登录（缺少 IAM Cookie）",
-                           extra={"login_url": iam_client.login_url()})
+                           extra={"login_url": iam_client.login_url(host)})
         try:
-            ident = await iam_client.verify(cookie, _client_ip(request))
+            ident = await iam_client.verify(cookie, _client_ip(request), host)
         except iam_client.IamError as e:
             if e.status == 401:
                 raise ApiError(Err.UNAUTHORIZED, e.message,
-                               extra={"login_url": iam_client.login_url()}) from None
+                               extra={"login_url": iam_client.login_url(host)}) from None
             raise ApiError(Err.IAM_UPSTREAM, e.message, retryable=True) from None
         return await identity_service.resolve_user(ident["login_key"], ident["display_name"])
 

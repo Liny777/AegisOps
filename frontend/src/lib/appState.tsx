@@ -21,6 +21,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [agents, setAgents] = useState<AgentInstance[]>([]);
   const [currentAgentId, setCurrentAgentId] = useState<string>("agt_pay_fast_recovery");
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
@@ -36,22 +37,47 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    Promise.all([api.getMe(), api.listAgents()]).then(([m, a]) => {
-      if (!alive) return;
-      setMe(m);
-      setAgents(a);
-      if (m.recent_instance_id) setCurrentAgentId(m.recent_instance_id);
-      setLoading(false);
-    });
+    setBootError(null);
+    (async () => {
+      try {
+        const m = await api.getMe();
+        if (!alive) return;
+        setMe(m);
+        if (m.recent_instance_id) setCurrentAgentId(m.recent_instance_id);
+        // 未开通用户 listAgents 必 403——跳过拉取，守卫按 whitelisted=false 引到开通引导页；
+        // 已开通但列表瞬断也不阻塞进壳（各页面自兜底）
+        if (m.whitelisted) {
+          try {
+            const a = await api.listAgents();
+            if (alive) setAgents(a);
+          } catch { /* 列表失败不阻塞 */ }
+        }
+      } catch (e) {
+        if (!alive) return;
+        const err = e as { code?: string; message?: string };
+        if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，保持加载态
+        setBootError(err.message || "无法连接后端服务");
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
     return () => {
       alive = false;
     };
   }, [tick]);
 
   return (
+    bootError ? (
+      <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14, background: "#f7f8fa" }}>
+        <div style={{ fontSize: 17, fontWeight: 700 }}>服务暂时不可用</div>
+        <div style={{ fontSize: 13, color: "#788192", maxWidth: 420, textAlign: "center", lineHeight: 1.7 }}>{bootError}</div>
+        <button onClick={refresh} style={{ padding: "8px 18px", borderRadius: 8, border: "1px solid #dfe3ea", background: "#fff", cursor: "pointer", fontSize: 13 }}>重试</button>
+      </div>
+    ) : (
     <Ctx.Provider value={{ me, agents, currentAgentId, setCurrentAgentId, loading, toggleRole, refresh }}>
       {children}
     </Ctx.Provider>
+    )
   );
 }
 

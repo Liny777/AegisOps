@@ -339,7 +339,16 @@ export function Sidebar() {
               <div style={{ fontSize: 13, fontWeight: 600, color: color.textStrong }}>{me?.display_name ?? "…"}</div>
               <div style={{ fontSize: 11, color: color.textSubtle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{me?.meta ?? ""}</div>
             </div>
-            <Icon name="logout" size={15} color={color.textFaint} />
+            <Interactive as="button" title="退出登录"
+              onClick={() => { void api.logout().then((r) => {
+                const url = r.signout_url || r.login_url;
+                if (url) window.location.assign(url);
+                else window.location.reload(); // mock/未配 IAM：刷新回到登录判定
+              }).catch(() => window.location.reload()); }}
+              baseStyle={{ border: "none", background: "transparent", cursor: "pointer", padding: 2, display: "inline-flex", color: color.textFaint }}
+              hoverStyle={{ color: color.danger }}>
+              <Icon name="logout" size={15} />
+            </Interactive>
           </>
         ) : null}
       </div>

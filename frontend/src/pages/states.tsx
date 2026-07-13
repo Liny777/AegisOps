@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { useApp } from "../lib/appState";
 import { color } from "../theme/tokens";
 import { Icon, Button } from "../ui";
 
@@ -18,12 +19,14 @@ function Centered({ icon, title, desc, action }: { icon: string; title: string; 
 }
 
 export function NotWhitelisted() {
+  const { me, refresh } = useApp();
+  const who = me ? `${me.display_name}（${me.user_id}）` : "当前账号";
   return (
     <Centered
       icon="lock-access"
       title="尚未开通 OpenOps"
-      desc="你的账号还不在 OpenOps 试点白名单内。请联系平台管理员申请开通后再进入。"
-      action={<Button variant="secondary" icon="mail">联系管理员</Button>}
+      desc={`${who} 还不在 OpenOps 白名单内。请把账号发给平台管理员申请开通；开通后点击下方按钮重新进入。`}
+      action={<Button variant="secondary" icon="refresh" onClick={refresh}>已开通？重新检查</Button>}
     />
   );
 }
