@@ -41,11 +41,13 @@ def _prefix() -> str:
 
 
 def _base() -> str:
-    # 剥 URL fragment：用户常把浏览器地址栏整串贴进来（如 .../omodel/#），`#` 后是前端路由不是路径。
-    # 支持 {host} 占位符（如 https://{host}/omodel）——随请求域名展开，双域名共用一份配置
-    from infra.request_context import expand_host
+    """返回固定 oModel 根地址。
 
-    return expand_host(os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/"))
+    该请求会携带当前用户的 IAM Cookie，目标域不得由 Host/Origin/X-Forwarded-Host 等请求头
+    决定。历史 `{host}` 配置在这里 fail-closed，发布环境必须显式写固定绝对地址。
+    """
+    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    return "" if "{host}" in raw else raw
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:
@@ -103,7 +105,8 @@ def _response_request_id(response: Any) -> str:
     headers = getattr(response, "headers", {}) or {}
     for key, value in headers.items():
         if str(key).lower() in ("x-request-id", "request-id", "x-trace-id"):
-            return str(value)[:128]
+            # 上游头会进入结构化响应和日志；移除 CR/LF/控制字符，避免日志注入。
+            return "".join(ch for ch in str(value) if ch.isprintable())[:128]
     return ""
 
 
@@ -217,10 +220,33 @@ async def list_workspaces() -> list[dict[str, Any]]:
         async with httpx.AsyncClient(**_client_kwargs(base)) as c:
             r = await c.get(_prefix())
             r.raise_for_status()
-            page = r.json() or {}
-            return [_map_metadata(md) for md in page.get("items", [])]  # 解 Page<WorkspaceMetadata>.items
-    except Exception:
+            payload = r.json()
+            items = _extract_ws_items(payload)  # 多形状兼容：{items}/裸数组/{data:{items}}/{data:[]}
+            if _http_debug():
+                log.warning("[OpenOps][omodel][debug] list: status=%s shape=%s count=%d raw=%s",
+                            r.status_code, type(payload).__name__, len(items),
+                            str(payload)[:600] if not items else "(有数据，略)")
+            return [_map_metadata(md) for md in items if isinstance(md, dict)]
+    except Exception as e:  # noqa: BLE001
+        if _http_debug():
+            log.warning("[OpenOps][omodel][debug] list 解析/请求失败：%s", type(e).__name__)
         return []
+
+
+def _extract_ws_items(payload: Any) -> list[Any]:
+    """从 omodel list 响应里取出 workspace 数组，兼容多种信封形状。"""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("items", "workspaces", "data", "list", "records"):
+            v = payload.get(key)
+            if isinstance(v, list):
+                return v
+            if isinstance(v, dict):  # 如 {data:{items:[]}}
+                for k2 in ("items", "list", "records"):
+                    if isinstance(v.get(k2), list):
+                        return v[k2]
+    return []
 
 
 async def create_workspace(name: str, app_ids: list[str], *,

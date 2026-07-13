@@ -236,6 +236,20 @@ async def test_ext_omodel_create_classifies_http_errors(monkeypatch, status, pay
     assert exc.value.request_id == "up-123"
 
 
+async def test_ext_omodel_sanitizes_upstream_request_id(monkeypatch):
+    from infra.external import omodel_real
+    from infra.external.omodel_client import OModelError
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-CURRENT")
+    _install(monkeypatch, lambda m, u, k: _Resp(
+        503, {"code": "UNAVAILABLE"}, headers={"X-Request-Id": "up-1\r\nforged-log"}))
+
+    with pytest.raises(OModelError) as exc:
+        await omodel_real.create_workspace("新域", ["APP-A"])
+    assert exc.value.request_id == "up-1forged-log"
+
+
 async def test_ext_omodel_create_classifies_timeout_and_network(monkeypatch):
     import httpx
 
@@ -659,3 +673,17 @@ async def test_ext_omodel_outbound_headers(monkeypatch):
     assert headers.get("Origin") != "https://frontend.example"
     request_context.set_request_user("", "")
     request_context.set_request_host("")
+
+
+def test_ext_omodel_list_multi_shape():
+    """omodel list 响应多形状兼容：{items}/裸数组/{data:{items}}/{data:[]}/{workspaces}。"""
+    from infra.external.omodel_real import _extract_ws_items
+
+    a, b = {"id": "w1"}, {"id": "w2"}
+    assert _extract_ws_items({"items": [a, b]}) == [a, b]
+    assert _extract_ws_items([a, b]) == [a, b]
+    assert _extract_ws_items({"data": {"items": [a]}}) == [a]
+    assert _extract_ws_items({"data": [a, b]}) == [a, b]
+    assert _extract_ws_items({"workspaces": [a]}) == [a]
+    assert _extract_ws_items({"total": 0}) == []
+    assert _extract_ws_items(None) == []
