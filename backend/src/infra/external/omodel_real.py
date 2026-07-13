@@ -43,15 +43,29 @@ def _base() -> str:
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:
-    """umodel 出站 httpx 客户端参数：TLS/代理与 console 同口径（内网教训），可选 IAM session cookie
-    （OPENOPS_OMODEL_COOKIE，未设回退共享 OPENOPS_CONSOLE_COOKIE——三面同一登录态，过期只换一处）。"""
+    """umodel 出站 httpx 客户端参数：TLS/代理与 console 同口径（内网教训）+ 用户登录态 cookie 透传。
+
+    ⚠Origin/Referer 必带（2026-07-14 内网实锤）：omodel 对 POST/PUT/DELETE 等写操作做 CSRF
+    防护，校验 Origin 同源——只发 Cookie 不发 Origin 会被当跨站/未登录拒（401 "Not logged in"），
+    GET 不校验故列表能通、创建不通。浏览器/手动 curl 自带 Origin 才 201。从 base 域名派生。
+    """
+    from urllib.parse import urlparse
+
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
+    headers: dict[str, str] = {}
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
-        kwargs["headers"] = {"Cookie": cookie}
+        headers["Cookie"] = cookie
+    u = urlparse(base)
+    if u.scheme and u.netloc:  # CSRF 同源头：与浏览器一致
+        origin = f"{u.scheme}://{u.netloc}"
+        headers["Origin"] = origin
+        headers["Referer"] = origin + "/"
+    if headers:
+        kwargs["headers"] = headers
     if os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes"):
         from infra.request_context import current_user_id, request_host, user_cookie
 

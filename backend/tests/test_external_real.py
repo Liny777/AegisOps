@@ -562,3 +562,15 @@ async def test_ext_skillhub_download_json_envelope_explicit(monkeypatch):
     _install(monkeypatch, lambda m, u, k: _JsonResp())
     with _pytest.raises(RuntimeError, match="JSON 信封"):
         await skill_hub_client.download_skill_package("alarm-query", 1)
+
+
+@pytest.mark.asyncio
+async def test_ext_omodel_sends_csrf_origin(monkeypatch):
+    """omodel 写操作 CSRF：出站带 Origin/Referer（同源，从 base 派生）——GET 通 POST 401 的根因。"""
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.his-op-beta.huawei.com/omodel")
+    from infra.external.omodel_real import _client_kwargs, _base
+
+    headers = _client_kwargs(_base()).get("headers", {})
+    assert headers.get("Origin") == "https://console.his-op-beta.huawei.com"
+    assert headers.get("Referer", "").startswith("https://console.his-op-beta.huawei.com")
