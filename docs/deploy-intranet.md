@@ -118,10 +118,10 @@ location /aegisops {
     proxy_set_header Cookie $http_cookie;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 }
-# ② 后端：strip（proxy_pass 带尾斜杠剥 /aegisback）——⚠实测本栈 uvicorn 会把 root_path
-#    拼回请求路径，后端只认剥掉前缀后的裸路径；不 strip 会 404
+# ② 后端：剥不剥前缀均可（后端 RootPathShim 按 OPENOPS_ROOT_PATH 自剥）——
+#    域名系统只支持「ip+端口」直指后端机:18082 也能工作
 location /aegisback/ {
-    proxy_pass http://<后端机IP>:18082/;
+    proxy_pass http://<后端机IP>:18082;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
     proxy_set_header Host $host;
@@ -133,8 +133,10 @@ location /aegisback/ {
 }
 ```
 
-**后端 env**：`OPENOPS_ROOT_PATH=/aegisback`（env 模板已带；管 307 重定向与 /docs 的 URL
-生成——路由本身吃的是网关剥好的裸路径，sidecar 直连 IP:18082 裸路径不受任何影响）。
+**后端 env**：`OPENOPS_ROOT_PATH=/aegisback`（env 模板已带）。后端应用层 RootPathShim 按它
+自剥前缀（网关剥不剥都兼容），并回写 root_path 使重定向/docs URL 带前缀；sidecar 直连
+IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，
+遇不剥前缀的网关变双前缀 404（内网实测）。
 **IAM 回跳**：`OPENOPS_IAM_LOGIN_URL` 的登录完成回跳地址配 `https://xxxx.com/aegisops/`。
 
 **域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；

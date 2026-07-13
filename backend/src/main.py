@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -108,6 +109,35 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="OpenOps V1 Backend", version="0.2.0", lifespan=lifespan)
+
+
+class RootPathShim:
+    """文根自剥（OPENOPS_ROOT_PATH，如 /aegisback）：请求路径带前缀就剥掉再路由，
+    并把 root_path 写回 scope（307 重定向 / docs URL 生成仍带前缀）。
+
+    这样公司网关**剥不剥前缀都能工作**——域名系统只填 ip+端口（不剥）可直指后端；
+    sidecar/内网直连的裸路径不受影响（无前缀分支原样放行）。
+    不用 uvicorn --root-path：新版 uvicorn 会把 root_path 拼回请求路径，遇不剥前缀的
+    网关变双前缀 404（内网实测）。
+    """
+
+    def __init__(self, app, prefix: str):
+        self.app = app
+        self.prefix = "/" + prefix.strip("/")
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] in ("http", "websocket"):
+            path = scope.get("path", "")
+            if path == self.prefix or path.startswith(self.prefix + "/"):
+                scope = dict(scope)
+                scope["path"] = path[len(self.prefix):] or "/"
+                scope["root_path"] = self.prefix
+        await self.app(scope, receive, send)
+
+
+_root_path = os.environ.get("OPENOPS_ROOT_PATH", "").strip().rstrip("/")
+if _root_path:
+    app.add_middleware(RootPathShim, prefix=_root_path)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )

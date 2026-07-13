@@ -140,3 +140,25 @@ def test_def3_rollback_allows_retry(client):
     body["agent_team_instance_id"] = inst_mine["instance_id"]
     r = client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body)
     assert r.status_code == 200  # 同 key 重试成功（异体但占位已释放，不撞 hash）
+
+
+def test_root_path_shim_strips_prefix_only_when_present():
+    """文根自剥（RootPathShim）：带前缀剥掉+root_path 回写；裸路径原样放行（sidecar 直连）。"""
+    import asyncio as _asyncio
+
+    from main import RootPathShim
+
+    seen: dict = {}
+
+    async def dummy(scope, receive, send):
+        seen.clear(); seen.update(scope)
+
+    shim = RootPathShim(dummy, "/aegisback")
+    _asyncio.run(shim({"type": "http", "path": "/aegisback/api/x"}, None, None))
+    assert seen["path"] == "/api/x" and seen["root_path"] == "/aegisback"
+    _asyncio.run(shim({"type": "http", "path": "/aegisback"}, None, None))
+    assert seen["path"] == "/"
+    _asyncio.run(shim({"type": "http", "path": "/api/x"}, None, None))
+    assert seen["path"] == "/api/x" and "root_path" not in seen
+    _asyncio.run(shim({"type": "http", "path": "/aegisbackup/x"}, None, None))  # 相似名不误剥
+    assert seen["path"] == "/aegisbackup/x"

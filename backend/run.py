@@ -47,9 +47,8 @@ async def _serve() -> None:
         port=int(os.environ.get("OPENOPS_PORT", "18082")),
         reload=False,  # 开 reload/workers 会让 uvicorn 改回 ProactorEventLoop 去起子进程
         workers=1,
-        # 文根部署（公司网关不 strip 前缀，如 /aegisback）：Starlette 按 root_path 剥前缀路由；
-        # 不带前缀的直连（sidecar 打 IP:18082 裸路径）不受影响——removeprefix 语义只剥匹配到的
-        root_path=os.environ.get("OPENOPS_ROOT_PATH", ""),
+        # 文根（OPENOPS_ROOT_PATH）不走 uvicorn root_path——新版 uvicorn 会把它拼回请求路径，
+        # 网关不剥前缀时会变双前缀 404。改由 main.RootPathShim 在应用层按需剥（两种网关都兼容）。
         log_level="info",
     )
     # 用 server.serve()（协程），不用 server.run()/uvicorn.run()——后两者会自建 loop、绕开本入口
