@@ -22,6 +22,8 @@ test("mock 发送：回执气泡出现", async ({ page }) => {
 });
 
 test("初始化向导：三步骨架（2/3/4 已合并为「配置 Agent」）", async ({ page }) => {
+  // InitGuard（38f91c8）：有实例访问 /init 会被弹回工作台——本幕用「全新用户」缝进向导
+  await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
   await page.goto("/init");
   await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("配置 Agent").first()).toBeVisible();
@@ -62,4 +64,10 @@ test("审计页：Trace 过滤输入在位", async ({ page }) => {
   await page.getByText("进入管理台").click();
   await page.getByText("审计回放").click();
   await expect(page.getByPlaceholder(/audit_trace_id/)).toBeVisible({ timeout: 15_000 });
+});
+
+test("InitGuard：已有 Agent 访问 /init 直接跳工作台（不重复初始化）", async ({ page }) => {
+  await page.goto("/init"); // 默认 demo 身份自带实例
+  await page.waitForURL(/\/agent-teams\/.+\/chat/, { timeout: 15_000 });
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
 });

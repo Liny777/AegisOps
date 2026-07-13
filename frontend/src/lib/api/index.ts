@@ -636,8 +636,20 @@ const realApi: OpenOpsApi = {
 
 /* -------------------------------- mock -------------------------------- */
 const mockApi: OpenOpsApi = {
-  getMe: () => delay(M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user")),
-  listAgents: () => delay(M.mockAgents),
+  getMe: () => {
+    const me = M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user");
+    // e2e 缝：localStorage 置 openops.mock.fresh=1 模拟全新用户（无实例→进初始化向导）
+    if (typeof localStorage !== "undefined" && localStorage.getItem("openops.mock.fresh") === "1") {
+      return delay({ ...me, has_instances: false, recent_instance_id: undefined });
+    }
+    return delay(me);
+  },
+  listAgents: () => {
+    if (typeof localStorage !== "undefined" && localStorage.getItem("openops.mock.fresh") === "1") {
+      return delay([]); // 全新用户无实例（配合 openops.mock.fresh）
+    }
+    return delay(M.mockAgents);
+  },
   getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
   logout: () => delay({ signout_url: null, login_url: null }), // mock 无 IAM，登出为空操作
   listConversations: () => delay(M.mockConversations),
