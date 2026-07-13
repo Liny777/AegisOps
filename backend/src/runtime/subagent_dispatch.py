@@ -21,7 +21,7 @@ import logging
 import os
 from typing import Any
 
-from infra.repositories import delegations
+from infra.repositories import delegations, runs as runs_repo
 from runtime import task_registry
 from runtime.emit import emit
 from runtime.task_registry import TaskState
@@ -33,13 +33,19 @@ _MAX_BATCH = 5  # 单次派发批大小硬上限（max_children 再往下收）
 _POLL_S = 0.5  # 监控循环步长
 
 
-def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, seq: int) -> TaskState:
+def _sub_task_id(leader_task_id: str, agent_key: str, did: str) -> str:
+    """子 task_id（DEF-2 修）：`{leader}.{key}-{delegation_id前8}` 全局唯一——旧 `{key}{seq}` 用批内
+    下标，跨批同角色必碰撞（registry 覆盖写+第一批 finally 摘掉第二批+审批错路由）。"""
+    return f"{leader_task_id}.{agent_key}-{did[:8]}"
+
+
+def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, did: str) -> TaskState:
     """子 TaskState：继承 leader 的 scope/沙箱/模型，工具面按角色画像白名单裁剪（per-agent 隔离）。
 
     E1：白名单不再剔除需审批工具——恢复类可绑到恢复 Agent，标注的 ask 规则经
     _permission_context 自动生效，审批卡带子 task_id 弹到前端。
     """
-    child = TaskState(task_id=f"{st.task_id}.{agent_key}{seq}", run_id=st.run_id, user_id=st.user_id,
+    child = TaskState(task_id=_sub_task_id(st.task_id, agent_key, did), run_id=st.run_id, user_id=st.user_id,
                       instance_id=st.instance_id, input_text=text)
     child.agent_key = agent_key
     child.scope_ctx = st.scope_ctx
@@ -55,7 +61,7 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
 
 
 async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
-                   agent_key: str, text: str, seq: int) -> str:
+                   agent_key: str, text: str, did: str) -> str:
     """跑一个子 Agent 完整循环（含审批握手，与主循环同构）；返回其汇报文本。"""
     from agentscope.agent import Agent
     from agentscope.event import (
@@ -77,7 +83,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
     from infra.seed import SUB_REPORT_DISCIPLINE
     from runtime import agentscope_runtime as rt  # 惰性：打破与 runtime 主模块的循环 import
 
-    child = _child_state(st, sub, agent_key, text, seq)
+    child = _child_state(st, sub, agent_key, text, did)
     task_registry.register_subtask(child)  # E1：decide_approval 按子 task_id 路由到 child.approval_ev
     try:
         toolkit, _pruned = await rt._build_toolkit(child, run)
@@ -86,7 +92,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
             system_prompt=f"{sub['role']}\n{SUB_REPORT_DISCIPLINE}",
             model=await rt._build_model(child),
             toolkit=toolkit,
-            state=AgentState(session_id=f"{run['framework_session_id']}:{agent_key}",
+            state=AgentState(session_id=f"{run['framework_session_id']}:{agent_key}-{did[:8]}",
                              permission_context=rt._permission_context(child)),
             react_config=ReActConfig(max_iters=int(sub.get("max_iters", 20))),
             context_config=ContextConfig(tool_result_limit=int(sub.get("tool_result_limit", 24000))),
@@ -131,18 +137,23 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
         return report
     finally:
         task_registry.unregister_subtask(child.task_id)
+        try:  # DEF-1 级联收口：子任务任何终止路径都把自己的 pending 审批置 cancelled——
+            # 否则遗留 pending 卡片的迟到 decide 无人认领（旧 fallback 时代会污染主任务握手）
+            await runs_repo.cancel_pending_approvals(child.task_id, st.user_id)
+        except Exception:  # noqa: BLE001 —— 收口失败不改变子任务结果
+            log.warning("[OpenOps][subagent] 子任务 %s pending 审批收口失败", child.task_id)
 
 
 async def _run_with_budget(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
-                           agent_key: str, text: str, seq: int) -> str:
+                           agent_key: str, text: str, did: str) -> str:
     """监控式超时（E1）：审批等待期不计入执行预算——wait_for 硬包会把等人批准的时间算成超时。"""
     child_probe: dict[str, TaskState] = {}
 
     async def _wrapped() -> str:
         # _run_one 内部创建 child；此处经 registry 探测其审批等待态（task_id 可预知）
-        return await _run_one(st, run, sub, agent_key, text, seq)
+        return await _run_one(st, run, sub, agent_key, text, did)
 
-    child_task_id = f"{st.task_id}.{agent_key}{seq}"
+    child_task_id = _sub_task_id(st.task_id, agent_key, did)
     runner = asyncio.create_task(_wrapped())
     spent = 0.0
     try:
@@ -192,18 +203,18 @@ async def dispatch(st: TaskState, run: dict[str, Any], tasks: list[dict[str, Any
         return (f"派发被累计兜底拒绝：本任务已派发 {total} 次，上限 {max_spawns}。"
                 "请基于已有结果收敛结论，不要继续重派。")
 
-    entries: list[tuple[str, str, str, int]] = []
-    for i, t in enumerate(tasks):
+    entries: list[tuple[str, str, str]] = []
+    for t in tasks:
         role, text = str(t["role"]), str(t.get("task") or "")
         did = await delegations.create(st.run_id, st.task_id, role, text, SUB_TIMEOUT_S, st.user_id)
-        entries.append((did, role, text, i))
+        entries.append((did, role, text))
         await emit(st, run, "openops.subagent.dispatched", action=role,
                    message=f"派发子 Agent「{subs[role].get('label', role)}」",
                    payload={"agent_key": role, "delegation_id": did, "task": text[:300]})
 
-    async def _guarded(did: str, role: str, text: str, seq: int) -> tuple[str, str, str]:
+    async def _guarded(did: str, role: str, text: str) -> tuple[str, str, str]:
         try:
-            report = await _run_with_budget(st, run, subs[role], role, text, seq)
+            report = await _run_with_budget(st, run, subs[role], role, text, did)
             await delegations.mark_terminal(did, "completed", report, True, st.user_id)
             return role, "completed", report
         except asyncio.TimeoutError:

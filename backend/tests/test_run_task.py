@@ -498,10 +498,81 @@ def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monke
     monkeypatch.setattr(rt, "_dynamic_mcp_specs", _fake_specs)
     # 子：白名单只放 dyn_alarm_query → dyn_log_query 不得注入
     sub = {"key": "probe", "label": "探针", "role": "只查告警", "skills": [], "mcp_tools": ["dyn_alarm_query"]}
-    child = subagent_dispatch._child_state(st, sub, "probe", "查告警", 0)
+    child = subagent_dispatch._child_state(st, sub, "probe", "查告警", "dddddddd-0001")
     _asyncio.run(rt._build_toolkit(child, run_row))
     assert "dyn_alarm_query" in (child.tool_annotations or {})
     assert "dyn_log_query" not in (child.tool_annotations or {})
     # main：全量注入豁免不变
     _asyncio.run(rt._build_toolkit(st, run_row))
     assert "dyn_alarm_query" in st.tool_annotations and "dyn_log_query" in st.tool_annotations
+
+
+# ---- 缺陷批回归（regression-0712 报告 DEF-1/2，替代未入库的探针文件） ----
+
+def test_def1_late_decide_does_not_pollute_main_handshake(client):
+    """DEF-1：子任务终态后遗留审批的迟到 decide——不得命中主任务握手信号（旧 get_by_run fallback 即旁路）。"""
+    import asyncio as _asyncio
+    from types import SimpleNamespace
+
+    from app import run_state_service as rss
+    from infra.repositories import runs as runs_repo
+    from runtime import task_registry
+
+    st, run_row = _dispatch_env(client)
+    ghost_task = f"{st.task_id}.recover-deadbeef"  # 已注销的子 task（registry 无此项）
+
+    async def _scenario():
+        appr = await runs_repo.create_approval(
+            st.user_id, st.instance_id, st.run_id, ghost_task, "recover_execute",
+            {"appid": "APP-A"}, str(run_row["audit_trace_id"]), str(run_row["framework_session_id"]))
+        assert task_registry.get_by_task(ghost_task) is None
+        before = st.approval_result
+        out = await rss.decide_approval({"user_id": st.user_id}, str(appr["approval_request_id"]),
+                                        SimpleNamespace(decision="approved", reason=""))
+        assert out["decision"] == "approved"          # 决策照常落库
+        assert st.approval_result == before           # 主 st 握手信号未被污染（修复点）
+        return True
+
+    assert _asyncio.run(_scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
+    appr_evs = [e for e in events if e["event_type"] == "approval.approved"]
+    assert appr_evs and appr_evs[-1]["payload_redacted_json"]["agent_key"] == "recover"  # DEF-6
+
+
+def test_def1_cascade_cancels_pending_approvals(client):
+    """DEF-1 级联收口：cancel_pending_approvals 把该 task 的 pending 审批全部置 cancelled。"""
+    import asyncio as _asyncio
+
+    from infra.repositories import runs as runs_repo
+
+    st, run_row = _dispatch_env(client)
+    tid = f"{st.task_id}.inspect-cafe0001"
+
+    async def _scenario():
+        appr = await runs_repo.create_approval(
+            st.user_id, st.instance_id, st.run_id, tid, "recover_execute",
+            {}, str(run_row["audit_trace_id"]), str(run_row["framework_session_id"]))
+        n = await runs_repo.cancel_pending_approvals(tid, st.user_id)
+        fresh = await runs_repo.get_approval(str(appr["approval_request_id"]))
+        return n, fresh["decision"]
+
+    n, decision = _asyncio.run(_scenario())
+    assert n == 1 and decision == "cancelled"
+
+
+def test_def2_cross_batch_task_ids_unique(client):
+    """DEF-2：同角色跨批 task_id 全局唯一（did 后缀）；第一批收尾不摘第二批 registry 项。"""
+    from runtime import subagent_dispatch, task_registry
+
+    st, _run_row = _dispatch_env(client)
+    sub = {"key": "inspect", "label": "巡检", "role": "r", "skills": [], "mcp_tools": []}
+    c1 = subagent_dispatch._child_state(st, sub, "inspect", "t1", "aaaaaaaa-1111")
+    c2 = subagent_dispatch._child_state(st, sub, "inspect", "t2", "bbbbbbbb-2222")
+    assert c1.task_id != c2.task_id
+    assert c1.task_id.startswith(st.task_id + ".inspect-")  # 兼容 leader 前缀过滤断言
+    task_registry.register_subtask(c1)
+    task_registry.register_subtask(c2)
+    assert task_registry.get_by_task(c1.task_id) is c1 and task_registry.get_by_task(c2.task_id) is c2
+    task_registry.unregister_subtask(c1.task_id)  # 第一批收尾
+    assert task_registry.get_by_task(c2.task_id) is c2  # 第二批幸存者不被摘（修复点）
+    task_registry.unregister_subtask(c2.task_id)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import uuid
 from typing import Any
 
@@ -21,6 +22,18 @@ def _auto_title(text: str) -> str:
     """会话自动起名：输入单行化取前 30 字（与前端本地即时显示同规则）。"""
     t = " ".join(text.split())
     return t[:30] + ("…" if len(t) > 30 else "")
+
+
+def _agent_key_of_task(task_id: str, st: TaskState | None) -> str:
+    """事件归属解析（DEF-6）：优先存活 TaskState；已注销时从 task_id 形状推——
+    主任务无 "."；子任务 `{leader}.{key}-{hash8}`（DEF-2 后格式，旧 `{key}{seq}` 也兼容）。"""
+    if st is not None:
+        return st.agent_key
+    if "." not in task_id:
+        return "main"
+    tail = task_id.split(".", 1)[1]
+    tail = re.sub(r"-[0-9a-f]{8}$", "", tail)      # DEF-2 新格式去 -hash8
+    return re.sub(r"\d+$", "", tail) or tail       # 旧 {key}{seq} 格式去尾 seq
 
 
 async def owned_run(user_id: str, run_id: str) -> dict[str, Any]:
@@ -323,22 +336,27 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
     run_id = str(appr["agent_run_id"])
     run = await runs.get_run(run_id)
     assert run is not None
+    # E1 审批桥（DEF-1 修）：只按审批行 task_id 精确路由——旧 get_by_run 兜底会在子任务终态后
+    # 把迟到 decide 错置到主任务握手信号上（审批门旁路）。无人在等时决策只落库，不发握手。
+    task_id = str(appr["task_id"])
+    st = task_registry.get_by_task(task_id)
+    if st is not None and st.task_id != task_id:  # 双保险：registry 语义漂移也不误置
+        st = None
+    agent_key = _agent_key_of_task(task_id, st)  # DEF-6：决策事件带归属，前端活动栏才能归对组
     await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]),
         event_type=f"approval.{req.decision}", user_id=user["user_id"], run_id=run_id,
         instance_id=str(appr["agent_team_instance_id"]), task_id=appr["task_id"],
         action="decide", decision=req.decision, actor_type="user",
-        payload_redacted={"approval_request_id": approval_id, "reason_chars": len(req.reason or "")},
+        payload_redacted={"approval_request_id": approval_id, "reason_chars": len(req.reason or ""),
+                          "agent_key": agent_key},
     )
     events.publish(run_id, events.envelope(
         run_id, f"openops.approval.{req.decision}", task_id=appr["task_id"],
         message="已批准，恢复动作将执行" if req.decision == "approved" else "已拒绝，当前工具调用终止",
-        payload={"approval_request_id": approval_id},
+        payload={"approval_request_id": approval_id, "agent_key": agent_key},
     ))
-    # E1 审批桥：按审批行的 task_id 精确路由（主/子 Agent 各自的 approval_ev）——
-    # 此前按 run 查恒命中主 st，子 Agent 的审批会错置主任务握手信号
-    st = task_registry.get_by_task(str(appr["task_id"])) or task_registry.get_by_run(run_id)
-    if st:
+    if st is not None:
         st.approval_result = req.decision
         st.approval_ev.set()
     return {"approval_request_id": approval_id, "decision": req.decision}

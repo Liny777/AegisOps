@@ -144,12 +144,26 @@ async def decide_approval(approval_id: str, decision: str, decided_by: str) -> i
     )
 
 
-async def expire_stale_approvals(run_id: str) -> int:
-    """ASK 超时（ASK-004）：pending 且过期 → timeout。"""
+async def cancel_pending_approvals(task_id: str, by: str) -> int:
+    """任务终止级联收口（DEF-1）：该 task 的 pending 审批全部置 cancelled——
+    否则子任务终态后遗留 pending 卡片，迟到 decide 会经旧 fallback 污染主任务握手。"""
     return await exec1(
+        """
+        update sre_approval_request
+        set decision='cancelled', decided_by=%(b)s, decided_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where task_id=%(t)s and decision='pending'
+        """,
+        {"t": task_id, "b": by},
+    )
+
+
+async def expire_stale_approvals(run_id: str) -> list[dict[str, Any]]:
+    """ASK 超时（ASK-004）：pending 且过期 → timeout；返回被翻转行（供调用方补审计/SSE，连带 B）。"""
+    return await q_all(
         """
         update sre_approval_request set decision='timeout', last_update_date=now(), last_updated_by='system'
         where agent_run_id=%(r)s and decision='pending' and expire_at is not null and expire_at < now()
+        returning approval_request_id, task_id, agent_run_id, agent_team_instance_id, tool_call_name, audit_trace_id, user_id
         """,
         {"r": run_id},
     )

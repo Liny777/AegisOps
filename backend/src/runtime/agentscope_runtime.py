@@ -419,8 +419,10 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         _dp_desc = (f"把独立子任务并行派发给专职子 Agent（各自只带本角色的工具，只读执行，完成后汇报）。"
                     f"可用角色：{_roles}。互不依赖的查询应一次派一批以并行提效；"
                     f"派发会阻塞至全部子 Agent 完成或超时，汇报在返回值中。")
+        # DEF-2：is_concurrency_safe=False → Agent 层归 sequential 执行（防模型一轮
+        # 双 dispatch 并发跑预算读写竞态）
         tools.append(FunctionTool(dispatch_subagents, name="dispatch_subagents",
-                                  description=_dp_desc, is_read_only=True))
+                                  description=_dp_desc, is_read_only=True, is_concurrency_safe=False))
         st.tool_annotations["dispatch_subagents"] = {"is_approval_required": False, "is_secret_required": False,
                                                      "scope_mode": "none", "appid_arg_path": None, "status": "allowed"}
         if isinstance(st.template_tools, set):
