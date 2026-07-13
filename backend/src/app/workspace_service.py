@@ -59,7 +59,14 @@ def console_page_base() -> str:
     override = os.environ.get("OPENOPS_OMODEL_PAGE_URL", "").strip()
     if override:
         return override
-    base = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/")
-    if not base:
+    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip()
+    if not raw:
         return ""
-    return f"{base}/wesee/omodel/index.html?dataSource=api&workspace="
+    # 只取 scheme://host——BASE_URL 常带 API 路径后缀（如 .../omodel），页面在 host 根的
+    # /wesee/omodel/index.html，不能拼在后缀之后（否则 /omodel/wesee/omodel/... 双前缀）
+    from urllib.parse import urlparse
+
+    u = urlparse(raw)
+    if not u.scheme or not u.netloc:
+        return ""
+    return f"{u.scheme}://{u.netloc}/wesee/omodel/index.html?dataSource=api&workspace="

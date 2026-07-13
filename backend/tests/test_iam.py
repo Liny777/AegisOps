@@ -198,19 +198,40 @@ def test_iam_host_placeholder_substitution(monkeypatch):
     assert iam_client.extract_host(req3) == ""
 
 
-def test_console_cookie_env_over_user_cookie(monkeypatch):
-    """连带（B9 cookie 口径）：专属 env > 共享 env > 用户登录态兜底——跨域现实（OpenOps 与
-    umodel 不同域，用户 cookie 对 umodel 无效）要求 env 显式配置永远赢。"""
+def test_console_cookie_passthrough_priority(monkeypatch):
+    """B9 cookie 三档（2026-07-14 定案）：专属 env override > 用户透传(缓存优先) > 共享 env 兜底。"""
     from infra import request_context
     from infra.external.mcp_registry_client import console_cookie
 
+    request_context.clear()
+    request_context.set_request_user("l00833445", "iam=user-cookie")
     monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "svc-shared")
+
+    # 同域默认：透传赢过共享 env（历史坑：曾被共享 env 盖死→同域 401）
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam=user-cookie"
+    # 跨域：专属 env 显式覆盖，最高
     monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "svc-omodel")
-    request_context.set_user_cookie("iam-session=user-cookie")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"   # 专属 env 永远赢
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"
     monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"   # 共享 env 次之
+
+    # 缓存反查（无 contextvar 但已知 user_id 的路径）
+    assert request_context.cached_user_cookie("l00833445") == "iam=user-cookie"
+    assert request_context.cached_user_cookie("nobody") == ""
+
+    # 后台无用户路径：透传空 → 共享 env 兜底
+    request_context.set_request_user("", "")
+    request_context.clear()
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"
     monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam-session=user-cookie"  # 都没配才用用户态
-    request_context.set_user_cookie("")
     assert console_cookie("OPENOPS_OMODEL_COOKIE") == ""
+
+
+def test_omodel_page_base_host_only(monkeypatch):
+    """iframe 页面前缀只取 scheme://host——BASE_URL 带 /omodel 后缀不产双前缀。"""
+    from app.workspace_service import console_page_base
+
+    monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL", raising=False)
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.his-op-beta.huawei.com/omodel")
+    assert console_page_base() == "https://console.his-op-beta.huawei.com/wesee/omodel/index.html?dataSource=api&workspace="
+    monkeypatch.delenv("OPENOPS_OMODEL_BASE_URL")
+    assert console_page_base() == ""

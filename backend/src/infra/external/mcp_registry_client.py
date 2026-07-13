@@ -38,16 +38,24 @@ def console_api_prefix() -> str:
 
 
 def console_cookie(specific_env: str) -> str:
-    """console 系 IAM 会话 cookie 统一读取：专属 env ＞共享 `OPENOPS_CONSOLE_COOKIE` ＞
-    请求内用户登录态（IAM 开启时 deps 写入 contextvar）。
+    """console 系 IAM 会话 cookie 统一读取，三档语义（2026-07-14 内网定案：omodel 与 OpenOps
+    同域，用户浏览器 cookie 对它有效）：
 
-    env 优先是**跨域现实**（2026-07-13 内网实锤）：OpenOps 挂 console.his-op-beta、umodel 挂
-    wesee.console.hissit——用户浏览器带的是前者的 cookie，对后者就是 Not logged in，必须用
-    运维配置的对端域会话（env）。用户 cookie 只在「目标与 OpenOps 同域且未配 env」时作兜底
-    （免维护服务态 cookie）；后台无请求上下文路径（reconcile/启动收敛）天然只有 env 可用。"""
-    from infra.request_context import user_cookie
+      ① 专属 env（如 OPENOPS_OMODEL_COOKIE）—— 显式覆盖，**跨域部署**用（对端异域时用户 cookie
+         无效，运维配对端域会话）。最高，配了就用。
+      ② 用户 cookie 透传（缓存优先）—— **同域部署默认**：请求内 contextvar，或按 user_id 缓存
+         （无上下文但已知用户的路径）。免维护服务态 cookie，权限口径 = 操作者本人。
+      ③ 共享 OPENOPS_CONSOLE_COOKIE —— 后台无用户路径兜底（reconcile 循环、启动收敛）。垫底。
 
-    return os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or user_cookie() or ""
+    历史坑：曾把共享 env 排在透传前，配了共享 cookie（mcp/skillhub 需要）就把 omodel 的用户
+    透传盖死 → 同域也 401。现共享 env 降为兜底，同域 omodel 无需任何 cookie 配置。"""
+    from infra.request_context import cached_user_cookie, current_user_id, user_cookie
+
+    dedicated = os.getenv(specific_env)
+    if dedicated:
+        return dedicated
+    passthrough = user_cookie() or cached_user_cookie(current_user_id())
+    return passthrough or os.getenv("OPENOPS_CONSOLE_COOKIE") or ""
 
 
 def _console_headers() -> dict[str, str]:

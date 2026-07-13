@@ -44,8 +44,9 @@ async def current_user(
                 raise ApiError(Err.UNAUTHORIZED, e.message,
                                extra={"login_url": iam_client.login_url(host)}) from None
             raise ApiError(Err.IAM_UPSTREAM, e.message, retryable=True) from None
-        request_context.set_user_cookie(cookie)  # 出站 console 系调用透传用户登录态（同一 IAM 体系）
-        return await identity_service.resolve_user(ident["login_key"], ident["display_name"])
+        user = await identity_service.resolve_user(ident["login_key"], ident["display_name"])
+        request_context.set_request_user(user["user_id"], cookie)  # 出站 console 系透传+按用户缓存登录态
+        return user
 
     if not x_openops_mock_user:
         raise ApiError(Err.UNAUTHORIZED, "未登录")  # IAM-001
