@@ -32,8 +32,11 @@ def _prefix() -> str:
 
 
 def _base() -> str:
-    # 剥 URL fragment：用户常把浏览器地址栏整串贴进来（如 .../omodel/#），`#` 后是前端路由不是路径
-    return os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/")
+    # 剥 URL fragment：用户常把浏览器地址栏整串贴进来（如 .../omodel/#），`#` 后是前端路由不是路径。
+    # 支持 {host} 占位符（如 https://{host}/omodel）——随请求域名展开，双域名共用一份配置
+    from infra.request_context import expand_host
+
+    return expand_host(os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/"))
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:

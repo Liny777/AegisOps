@@ -29,7 +29,9 @@ from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三
 def skillhub_base() -> str:
     """Skill Hub host 根：`OPENOPS_SKILLHUB_BASE_URL`，未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`——
     skills 与 mcps 是同一 console 网关（29.3 同文根），联调少配一个变量（与共享 cookie 同思路）。"""
-    return (os.getenv("OPENOPS_SKILLHUB_BASE_URL") or os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "").rstrip("/")
+    from infra.request_context import expand_host
+
+    return expand_host((os.getenv("OPENOPS_SKILLHUB_BASE_URL") or os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "").rstrip("/"))
 
 
 def _headers() -> dict[str, str]:

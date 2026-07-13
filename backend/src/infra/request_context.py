@@ -20,6 +20,7 @@ from contextvars import ContextVar
 
 _user_cookie: ContextVar[str] = ContextVar("openops_user_cookie", default="")
 _user_id: ContextVar[str] = ContextVar("openops_user_id", default="")
+_request_host: ContextVar[str] = ContextVar("openops_request_host", default="")
 
 # user_id → (expire_at_monotonic, raw_cookie)
 _cookie_cache: dict[str, tuple[float, str]] = {}
@@ -66,3 +67,44 @@ def cached_user_cookie(user_id: str) -> str:
 def clear() -> None:
     """测试钩子：清缓存（contextvar 由 pytest 各用例自然隔离）。"""
     _cookie_cache.clear()
+
+
+def set_request_host(host: str) -> None:
+    _request_host.set(host or "")
+
+
+def request_host() -> str:
+    return _request_host.get()
+
+
+def capture_request_host(request) -> None:
+    """每请求捕获「浏览器所在域名」（供出站 URL 的 {host} 占位符展开）。
+
+    取值链防网关改写：X-Forwarded-Host（首段）> Origin > Referer > Host。
+    公司网关直连后端时 Host 常被改写成 ip:port——浏览器 fetch 自带的 Origin/Referer
+    才是用户实际域名（同域部署下也正是 console 系服务所在域名）。
+    """
+    from urllib.parse import urlparse
+
+    xfh = request.headers.get("x-forwarded-host", "")
+    if xfh:
+        set_request_host(xfh.split(",")[0].strip())
+        return
+    for h in ("origin", "referer"):
+        v = request.headers.get(h, "")
+        if v:
+            netloc = urlparse(v).netloc
+            if netloc:
+                set_request_host(netloc)
+                return
+    set_request_host(request.headers.get("host", ""))
+
+
+def expand_host(url: str) -> str:
+    """出站 URL 的 {host} 占位符展开（BASE_URL 支持 https://{host}/omodel 这类写法，
+    测试/生产双域名共用一份配置，与 IAM URL 的 {host} 机制同口径）。
+    无请求上下文（后台路径）时保持原样——调用会显式失败而非打错域。"""
+    if "{host}" not in url:
+        return url
+    host = request_host()
+    return url.replace("{host}", host) if host else url

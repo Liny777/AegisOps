@@ -237,3 +237,33 @@ def test_omodel_page_base_host_only(monkeypatch):
     assert console_page_base() == "https://console.his-op-beta.huawei.com/wesee/omodel/index.html?dataSource=api&workspace="
     monkeypatch.delenv("OPENOPS_OMODEL_BASE_URL")
     assert console_page_base() == ""
+
+
+def test_base_url_host_placeholder_expansion(monkeypatch):
+    """BASE_URL 支持 {host} 占位符：随请求域名展开（双域名共用配置）；无上下文保持原样。"""
+    from types import SimpleNamespace
+
+    from app.workspace_service import console_page_base
+    from infra import request_context
+    from infra.external.omodel_real import _base
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://{host}/omodel")
+    monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL", raising=False)
+
+    # 捕获链：XFH > Origin > Referer > Host
+    req = SimpleNamespace(headers={"origin": "https://console-a.x.com", "host": "1.2.3.4:18082"})
+    request_context.capture_request_host(req)
+    assert request_context.request_host() == "console-a.x.com"
+    assert _base() == "https://console-a.x.com/omodel"
+    assert console_page_base() == "https://console-a.x.com/wesee/omodel/index.html?dataSource=api&workspace="
+
+    # 无上下文：保持占位符（显式失败而非打错域）；iframe 前缀退空态
+    request_context.set_request_host("")
+    assert _base() == "https://{host}/omodel"
+    assert console_page_base() == ""
+
+    # XFH 最高
+    req2 = SimpleNamespace(headers={"x-forwarded-host": "console-b.x.com, lb", "origin": "https://other"})
+    request_context.capture_request_host(req2)
+    assert request_context.request_host() == "console-b.x.com"
+    request_context.set_request_host("")

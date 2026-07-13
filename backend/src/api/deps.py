@@ -31,6 +31,7 @@ async def current_user(
     x_openops_mock_user: Annotated[str | None, Header()] = None,
     x_openops_mock_name: Annotated[str | None, Header()] = None,
 ) -> dict[str, Any]:
+    request_context.capture_request_host(request)  # 出站 BASE_URL 的 {host} 展开源
     if iam_client.enabled():  # B9 真 IAM：cookie 双步握手（TokenCache TTL 内不重打）
         host = iam_client.browser_host(request)  # login_url 的 {host} 源：仅 XFH，缺失留占位给前端填
         cookie = request.headers.get("cookie")

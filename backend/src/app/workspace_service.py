@@ -59,8 +59,10 @@ def console_page_base() -> str:
     override = os.environ.get("OPENOPS_OMODEL_PAGE_URL", "").strip()
     if override:
         return override
-    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip()
-    if not raw:
+    from infra.request_context import expand_host
+
+    raw = expand_host(os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip())
+    if not raw or "{host}" in raw:  # 无请求上下文无法展开 → 空态（不下发字面占位符）
         return ""
     # 只取 scheme://host——BASE_URL 常带 API 路径后缀（如 .../omodel），页面在 host 根的
     # /wesee/omodel/index.html，不能拼在后缀之后（否则 /omodel/wesee/omodel/... 双前缀）

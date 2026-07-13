@@ -115,7 +115,9 @@ async def list_servers() -> list[dict[str, Any]]:
     """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
     real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。"""
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
-        base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
+        from infra.request_context import expand_host
+
+        base = expand_host(os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "")
         if not base:
             raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
         import httpx
@@ -172,7 +174,9 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
                 raise RuntimeError(f"MCP tools/list 错误：{str(rpc['error'])[:200]}")
             tools = (rpc.get("result") or {}).get("tools", [])
         else:  # proxy：经 console mcps/proxy 转发（console 侧上游转发待修）
-            base = os.getenv("OPENOPS_MCPREGISTRY_BASE_URL")
+            from infra.request_context import expand_host
+
+            base = expand_host(os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "")
             if not base:
                 raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
             url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/proxy"

@@ -34,6 +34,11 @@ deps 每请求写入 contextvar + 按 user_id 缓存——真实环境**唯一�
 （专属 `OPENOPS_{MCPREGISTRY,OMODEL,APPTREE}_COOKIE` 优先，未设回退共享），过期只换一处。启动横幅每面显示
 `SET(len)`（专属）/`shared(len)`（回退共享）/`unset`。
 
+**BASE_URL 的 `{host}` 占位符（2026-07-14）**：`OPENOPS_{OMODEL,MCPREGISTRY,SKILLHUB,APPTREE}_BASE_URL`
+（及 apptree 的 `_URL`）支持 `{host}`——运行时按请求域名展开（取值链 X-Forwarded-Host > Origin >
+Referer > Host，防网关改写 Host 成 ip:port），测试/生产双域名共用一份配置，与 IAM URL 的 `{host}`
+同口径。无请求上下文（后台路径）保持字面占位符=调用显式失败而非打错域。写死具体域也照常工作。
+
 **端点装配规则（文根全 env 可覆盖——测试/生产文根不同、对端改文根只改 env 不改码）**：
 `实际 URL = BASE_URL(host 根) + API_PREFIX(env 可覆盖的文根) + 操作尾段(代码，随契约走)`：
 - console 系（mcps 列表/代理、skills 列表/下载同一网关文根）：`OPENOPS_CONSOLE_API_PREFIX`（默认 `/obsv/agent/management`）；

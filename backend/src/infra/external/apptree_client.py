@@ -9,6 +9,8 @@ appid 多行）。出站硬化与 console/omodel 同口径（TLS 三档 + trust_
 from __future__ import annotations
 
 import os
+
+from infra.request_context import expand_host
 import re
 from typing import Any
 
@@ -42,7 +44,7 @@ def resolve_url() -> tuple[str, str]:
        测试/生产不同环境各配各的，代码零改动）；
     ② `OPENOPS_APPTREE_BASE_URL`（host 根）+ 内置模板 + enterprise/project 段组装（贴整条 URL 也会被识别）。
     未配任一 → ("", "")，调用方报缺配置。"""
-    verbatim = os.environ.get("OPENOPS_APPTREE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    verbatim = expand_host(os.environ.get("OPENOPS_APPTREE_URL", "").split("#", 1)[0].strip().rstrip("/"))
     if verbatim:
         return verbatim, "url(原样)"
     base, enterprise, project = _endpoint()
@@ -57,7 +59,7 @@ def _endpoint() -> tuple[str, str, str]:
     ① host 根（推荐）；② 整条 curl URL——自动截回 host 根并提取 enterprise/project 两段（否则路径双拼，
     网关 200+status=ERROR，实测坑）；③ 带部分路径——截到 /observe/unifieduery 前。#fragment 照剥。
     env OPENOPS_APPTREE_ENTERPRISE_ID/_PROJECT_ID 优先级最高，其次 URL 提取段，最后内置默认。"""
-    raw = os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    raw = expand_host(os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].strip().rstrip("/"))
     url_ent = url_proj = ""
     m = _FULL_URL_RE.match(raw)
     if m:
