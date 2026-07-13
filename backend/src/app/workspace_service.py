@@ -1,6 +1,7 @@
 """Workspace（oModel 契约面，EXT-001/002）：包 omodel_client，router 只调本服务（22 号分层）。"""
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from domain.errors import ApiError, Err
@@ -45,3 +46,20 @@ async def status(workspace_id: str) -> dict[str, Any]:
         "sync_status": ws["sync_status"],
         "scope_revision": ws["scope_revision"],
     }
+
+
+def console_page_base() -> str:
+    """omodel 控制台页面前缀（设置页 iframe 用，前端追加 workspace_id）。
+
+    OPENOPS_OMODEL_PAGE_URL 显式覆盖 > 从 OPENOPS_OMODEL_BASE_URL 域根派生
+    `{base}/wesee/omodel/index.html?dataSource=api&workspace=`；两者皆空（mock/未配置）
+    返回 ""——前端显示「内网环境可用」空态。清洗口径与 omodel_real._base 一致
+    （剥地址栏 #fragment + 尾斜杠；用户常整串贴地址栏）。
+    """
+    override = os.environ.get("OPENOPS_OMODEL_PAGE_URL", "").strip()
+    if override:
+        return override
+    base = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].rstrip("/")
+    if not base:
+        return ""
+    return f"{base}/wesee/omodel/index.html?dataSource=api&workspace="

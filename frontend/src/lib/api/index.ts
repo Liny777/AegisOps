@@ -33,6 +33,8 @@ const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(
 export interface OpenOpsApi {
   getMe(): Promise<Me>;
   listAgents(): Promise<AgentInstance[]>;
+  /** omodel 控制台页面前缀（设置页 iframe；空串=未配置/mock，显示空态）。 */
+  getOmodelPageBase(): Promise<string>;
   listConversations(): Promise<Conversation[]>;
   // 运行态（real：ensureRun → state/task/approval/SSE）
   ensureRun(instanceId: string): Promise<string>; // → run_id
@@ -135,6 +137,10 @@ const realApi: OpenOpsApi = {
   async listAgents() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams");
     return rows.map(projectInstance);
+  },
+  async getOmodelPageBase() {
+    const d = await apiFetch<{ page_base?: string }>("/openops/v1/omodel/console-page");
+    return String(d.page_base ?? "");
   },
   async listConversations() {
     // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」；
@@ -625,6 +631,7 @@ const realApi: OpenOpsApi = {
 const mockApi: OpenOpsApi = {
   getMe: () => delay(M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user")),
   listAgents: () => delay(M.mockAgents),
+  getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
   listConversations: () => delay(M.mockConversations),
   ensureRun: () => delay("run_demo"),
   createRun: () => delay("run_demo_" + Math.random().toString(36).slice(2, 8)),

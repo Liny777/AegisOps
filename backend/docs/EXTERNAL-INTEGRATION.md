@@ -55,6 +55,11 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
   **真实租户 ID**（优先级：`OPENOPS_OMODEL_TENANT_ID` > scopes 首个租户 > apptree 默认企业 ID）且**不带
   projectId**（服务端取首个 scope 自回填）；scopes=object[]{projectId, projectCn, tenantId}（per-项目租户，
   apptree 的 tenant_id 经前端一路带下来，缺失省略该键）；status:"running"+owner；scopes 读取兼容 string[] 旧格式。
+- 设置页 OModel 菜单 iframe：`GET /api/openops/v1/omodel/console-page` 下发页面前缀
+  （`OPENOPS_OMODEL_PAGE_URL` 覆盖 > 由 `OPENOPS_OMODEL_BASE_URL` 域根派生
+  `/wesee/omodel/index.html?dataSource=api&workspace=`；未配置返回空串前端空态）。
+  iframe 可用性依赖对端 X-Frame-Options/CSP frame-ancestors 与 cookie SameSite——被拒时用
+  面板「新窗口打开」兜底，内网实测若拦需同事侧放行或同域反代（二期）。
 - 出站硬化同 console 口径（TLS 三档 + trust_env 默认 off）；可选 `OPENOPS_OMODEL_COOKIE`（umodel 部署
   `omodel.iam.validation.enable=true` 时带 session cookie；29.7 显示 workspace 端点匿名可用「未登录=system」，默认不带）。
 - `scope_revision` OpenOps 私有派生（范围内容 hash），不映射 umodel 同名列/`resourceVersion`（29.6 §三）；`sync_status` 降级 active→ready（umodel 无动态就绪态/`/status`，29.6 P2-1）。

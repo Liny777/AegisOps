@@ -178,3 +178,20 @@ def test_template_write_endpoints_forbidden_for_user(client):
     r3 = client.post(f"/api/openops/v1/admin/template-versions/{fake_ver}:disable", headers=USER_HEADERS,
                      json={"client_request_id": "u3"})
     assert r1.status_code == r2.status_code == r3.status_code == 403
+
+def test_omodel_console_page_env_matrix(client, monkeypatch):
+    """设置页 iframe 前缀下发：未配置→空串；BASE_URL 派生（剥 #fragment）；PAGE_URL 覆盖优先。"""
+    from conftest import USER_HEADERS, unwrap
+
+    monkeypatch.delenv("OPENOPS_OMODEL_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL", raising=False)
+    out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+    assert out["page_base"] == ""
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.x.y/#/some/spa/route")
+    out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+    assert out["page_base"] == "https://console.x.y/wesee/omodel/index.html?dataSource=api&workspace="
+
+    monkeypatch.setenv("OPENOPS_OMODEL_PAGE_URL", "https://other.z/custom/page?ws=")
+    out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
+    assert out["page_base"] == "https://other.z/custom/page?ws="

@@ -36,6 +36,12 @@ async def create_workspace(req: CreateWorkspaceRequest, _user: User):
     ))
 
 
+@router.get("/omodel/console-page")
+async def omodel_console_page(_user: User):
+    """omodel 控制台页面前缀（设置页 iframe；空串=未配置，前端显示空态）。"""
+    return ok({"page_base": workspace_service.console_page_base()})
+
+
 @router.get("/workspaces/{workspace_id}/status")
 async def workspace_status(workspace_id: str, _user: User):
     return ok(await workspace_service.status(workspace_id))
