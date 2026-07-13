@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from conftest import USER_HEADERS, unwrap
 
 
@@ -12,6 +14,37 @@ def test_init_002_lists_template_and_ready_workspaces(client):
 
     models = unwrap(client.get("/api/openops/v1/models/platform", headers=USER_HEADERS))
     assert any(m["model_id"] == "glm-5.1" and m["status"] == "active" for m in models)
+
+
+@pytest.mark.parametrize(
+    ("kind", "upstream_status", "http_status", "code", "retryable"),
+    [
+        ("auth", 401, 502, "OMODEL_AUTH_FAILED", False),
+        ("validation", 422, 400, "VALIDATION_FAILED", False),
+        ("timeout", None, 504, "OMODEL_UPSTREAM", True),
+        ("upstream", 503, 502, "OMODEL_UPSTREAM", True),
+    ],
+)
+def test_workspace_create_maps_omodel_errors(client, monkeypatch, kind, upstream_status,
+                                             http_status, code, retryable):
+    from infra.external import omodel_client
+
+    async def _fail(*_args, **_kwargs):
+        raise omodel_client.OModelError(kind, "upstream detail", status_code=upstream_status,
+                                        request_id="up-req-1")
+
+    monkeypatch.setattr(omodel_client, "create_workspace", _fail)
+    response = client.post(
+        "/api/openops/v1/workspaces",
+        headers=USER_HEADERS,
+        json={"client_request_id": f"err-{kind}", "name": "错误映射", "app_ids": ["APP-A"]},
+    )
+    error = response.json()["error"]
+    assert response.status_code == http_status
+    assert error["code"] == code and error["retryable"] is retryable
+    assert error["upstream_request_id"] == "up-req-1"
+    if upstream_status is not None:
+        assert error["upstream_status"] == upstream_status
 
 
 def test_init_003_blocks_workspace_not_ready(client):

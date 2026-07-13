@@ -9,10 +9,11 @@ appid 多行）。出站硬化与 console/omodel 同口径（TLS 三档 + trust_
 from __future__ import annotations
 
 import os
-
-from infra.request_context import expand_host
 import re
 from typing import Any
+from urllib.parse import urlsplit
+
+from infra.request_context import expand_host
 
 # {enterprise}/{project} 由 env 配置（联调环境用默认值）；path/键的拼写是对端真实契约（见模块 docstring）
 _PATH_TMPL = "/observe/unifieduery/verification/api/v1/{enterprise}/{project}/userid_search_appid"
@@ -24,6 +25,34 @@ _FULL_URL_RE = re.compile(
     r"^(?P<root>.+?)/observe/unifieduery/verification/api/v1/(?P<ent>[^/]+)/(?P<proj>[^/]+)/userid_search_appid$",
     re.IGNORECASE,
 )
+
+
+def _enterprise_from_url(raw: str) -> str:
+    """从 AppTree 端点末尾 `/{enterprise}/{project}/userid_search_appid` 提取企业。"""
+    try:
+        parts = [p for p in urlsplit(raw).path.rstrip("/").split("/") if p]
+    except ValueError:
+        return ""
+    if len(parts) >= 3 and parts[-1].lower() == "userid_search_appid":
+        return parts[-3]
+    return ""
+
+
+def current_enterprise_id() -> str:
+    """当前企业：显式配置 > 生效 AppTree URL 中的企业段 > 联调默认值。
+
+    `OPENOPS_APPTREE_URL` 是实际请求的最高优先端点；一旦设置，即使无法解析也不回看已被它
+    遮蔽的 BASE_URL，避免 workspace tenant 与应用查询所属企业不一致。
+    """
+    explicit = os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", "").strip()
+    if explicit:
+        return explicit
+    verbatim = expand_host(os.environ.get("OPENOPS_APPTREE_URL", "").split("#", 1)[0].strip())
+    if verbatim:
+        return _enterprise_from_url(verbatim) or _DEFAULT_ENTERPRISE
+    base = expand_host(os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].strip())
+    return _enterprise_from_url(base) or _DEFAULT_ENTERPRISE
+
 
 # mock 应用集（前端 mock 模式 + real facade 未配端点时的兜底，让向导无真环境也能演示平铺选择）
 _MOCK_APPS: list[dict[str, str]] = [
@@ -60,15 +89,15 @@ def _endpoint() -> tuple[str, str, str]:
     网关 200+status=ERROR，实测坑）；③ 带部分路径——截到 /observe/unifieduery 前。#fragment 照剥。
     env OPENOPS_APPTREE_ENTERPRISE_ID/_PROJECT_ID 优先级最高，其次 URL 提取段，最后内置默认。"""
     raw = expand_host(os.environ.get("OPENOPS_APPTREE_BASE_URL", "").split("#", 1)[0].strip().rstrip("/"))
-    url_ent = url_proj = ""
+    url_proj = ""
     m = _FULL_URL_RE.match(raw)
     if m:
-        raw, url_ent, url_proj = m.group("root"), m.group("ent"), m.group("proj")
+        raw, url_proj = m.group("root"), m.group("proj")
     else:
         i = raw.lower().find("/observe/unifieduery")
         if i > 0:
             raw = raw[:i]
-    enterprise = os.environ.get("OPENOPS_APPTREE_ENTERPRISE_ID", "").strip() or url_ent or _DEFAULT_ENTERPRISE
+    enterprise = current_enterprise_id()
     project = os.environ.get("OPENOPS_APPTREE_PROJECT_ID", "").strip() or url_proj or _DEFAULT_PROJECT
     return raw.rstrip("/"), enterprise, project
 

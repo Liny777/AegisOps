@@ -11,7 +11,7 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 | 依赖 | 开关 env | 端点/凭证 env | 默认 | 状态 |
 |---|---|---|---|---|
 | 平台 LLM（GLM 驱动 RCA） | —（有 Key 即真） | `OPENOPS_PLATFORM_GLM_API_KEY`（base_url 在 DB `sre_model_asset`） | 无 Key→stub | ✅ **内网已通**（2026-07-11） |
-| oModel(umodel)（scope resolve + workspace CRUD） | `OPENOPS_OMODEL=real` | `OPENOPS_OMODEL_BASE_URL` + 登录态 cookie（hissit 部署 /api/v1 要登录态，401 即缺；共享 `OPENOPS_CONSOLE_COOKIE` 即可，`OPENOPS_OMODEL_COOKIE` 仅登录态不同一份时单独配） | mock | ✅ **内网已通**（2026-07-11：3 真 workspace、真 scope 拦截 APPID_OUT_OF_SCOPE 实测；安全口径见下） |
+| oModel(umodel)（scope resolve + workspace CRUD） | `OPENOPS_OMODEL=real` | `OPENOPS_OMODEL_BASE_URL` + `OPENOPS_OMODEL_TENANT_ID`；登录态由当前 IAM 用户透传（静态 Cookie 仅本地调试） | mock | ✅ **内网已通**（写操作需同源 Origin/Referer；安全口径见下） |
 | 应用目录（初始化「从应用创建系统范围」选源） | `OPENOPS_APPTREE=real` | `OPENOPS_APPTREE_BASE_URL` + `OPENOPS_APPTREE_COOKIE`（可选，IAM 会话态）；`OPENOPS_APPTREE_ENTERPRISE_ID`/`OPENOPS_APPTREE_PROJECT_ID`（联调默认值）；联调缝 `OPENOPS_APPTREE_USER_ID`（mock 头非 W3 账号时覆盖） | mock | **已按 verification 契约对齐**（`userid_search_appid`；内网待联调） |
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
@@ -63,7 +63,8 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 - **`get/list/create`** → `WorkspaceMetadata`（无信封，29.7 snake_case `updated_at`）→ OpenOps 词汇映射；`list` 解 `Page.items`
   （29.7 仅支持 `include_deleted` 参数）；`create` 请求体**镜像 umodel 新版 UI 实抓包**（2026-07-11 对端部署
   「id 服务端生成」后再抓）：**id 不传**（服务端生成 `{W3}-ws-{hex8}`）；labels/workspace_ui 的 tenantId=
-  **真实租户 ID**（优先级：`OPENOPS_OMODEL_TENANT_ID` > scopes 首个租户 > apptree 默认企业 ID）且**不带
+    **当前企业租户 ID**（优先级：`OPENOPS_OMODEL_TENANT_ID` > AppTree 当前企业配置/生效端点 > 默认企业 ID；
+    禁止从首个跨租 scope 推导）且**不带
   projectId**（服务端取首个 scope 自回填）；scopes=object[]{projectId, projectCn, tenantId}（per-项目租户，
   apptree 的 tenant_id 经前端一路带下来，缺失省略该键）；status:"running"+owner；scopes 读取兼容 string[] 旧格式。
 - 设置页 OModel 菜单 iframe：`GET /api/openops/v1/omodel/console-page` 下发页面前缀
@@ -72,7 +73,10 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
   iframe 可用性依赖对端 X-Frame-Options/CSP frame-ancestors 与 cookie SameSite——被拒时用
   面板「新窗口打开」兜底，内网实测若拦需同事侧放行或同域反代（二期）。
 - 出站硬化同 console 口径（TLS 三档 + trust_env 默认 off）；可选 `OPENOPS_OMODEL_COOKIE`（umodel 部署
-  `omodel.iam.validation.enable=true` 时带 session cookie；29.7 显示 workspace 端点匿名可用「未登录=system」，默认不带）。
+  `omodel.iam.validation.enable=true` 时带 session cookie；真实环境使用当前用户 Cookie 透传）。写操作从最终
+  oModel base 派生同源 `Origin`/`Referer`，不转发浏览器传入的 Origin，避免 CSRF 校验把 POST 误判为未登录。
+- create 上游错误保持结构化：401/403→`OMODEL_AUTH_FAILED`(502，不触发登录跳转)，400/422→
+  `VALIDATION_FAILED`(400)，超时→`OMODEL_UPSTREAM`(504)，网络/5xx→`OMODEL_UPSTREAM`(502)。
 - `scope_revision` OpenOps 私有派生（范围内容 hash），不映射 umodel 同名列/`resourceVersion`（29.6 §三）；`sync_status` 降级 active→ready（umodel 无动态就绪态/`/status`，29.6 P2-1）。
 - 联调自检：`check-net.py` ③（healthz + list workspaces + 首个 ws 的 /projects）。
 
@@ -81,7 +85,7 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 > （29.7 有 `GET /api/v1/wesee/user-projects` 按登录用户搜项目，但需 IAM session，且语义是「用户的项目」非「workspace∩用户」，暂不采用）。
 
 ### 应用目录（初始化「从应用创建系统范围」选源）—— 已按 verification 契约对齐
-`apptree_client.list_user_apps(user_id)`（`OPENOPS_APPTREE=real` 启用）：`POST {base}/observe/unifieduery/verification/api/v1/{enterprise}/{project}/userid_search_appid`，body `{"uesrId": <W3>}`（⚠path 段 `unifieduery`、body 键 `uesrId` 均为**对端真实拼写**，勿"修正"）；解 `data.datas[]` → 平铺 `{app_id=dimension_code, name=current_name_zh, type=dimension_type}`，**按 app_id 去重**（一人多角色→同 appid 多行）。**失败不静默**：非 2xx 带响应体报错、HTML=登录页/地址错、200+`status`非 OK 也报错（前端对话框直接显示原因）；每次调用打 `[OpenOps][apptree] POST … rows=N` 日志行；自检跑 `check-net.py` ④。`{enterprise}/{project}` 由 `OPENOPS_APPTREE_ENTERPRISE_ID`/`_PROJECT_ID`（联调默认值）配置；出站硬化与 console/oModel 同口径（TLS 三档 + trust_env 默认 off + 可选 `OPENOPS_APPTREE_COOKIE`）。**联调缝** `OPENOPS_APPTREE_USER_ID`：mock 登录头里的 user_id 未必是 W3 账号（如 `0026demo01`≠`l00833445`），设它可覆盖发给上游的账号（对齐 `OPENOPS_SCOPE_OVERRIDE_APPIDS` 模式，接真 IAM 后删）。前端 `WorkspaceDialog` 平铺展示（名称/APPID/类型 + 搜索），勾选后 `POST /workspaces` 真落库为范围。此接口**天然按用户过滤**（比 oModel `/{ws}/projects` 的「发现集」更接近授权集），但初始化选源与运行时 scope resolve 仍是两条链（后者的 per-user 化待 umodel P0-1）。
+`apptree_client.list_user_apps(user_id)`（`OPENOPS_APPTREE=real` 启用）：`POST {base}/observe/unifieduery/verification/api/v1/{enterprise}/{project}/userid_search_appid`，body `{"uesrId": <W3>}`（⚠path 段 `unifieduery`、body 键 `uesrId` 均为**对端真实拼写**，勿"修正"）；解 `data.datas[]` → 平铺 `{app_id=dimension_code, name=current_name_zh, type=dimension_type}`，**按 app_id 去重**（一人多角色→同 appid 多行）。**失败不静默**：非 2xx 带响应体报错、HTML=登录页/地址错、200+`status`非 OK 也报错（前端对话框直接显示原因）；每次调用打 `[OpenOps][apptree] POST … rows=N` 日志行；自检跑 `check-net.py` ④。当前企业按 `OPENOPS_APPTREE_ENTERPRISE_ID` > 生效完整 URL 的 enterprise 段 > 默认值解析，同时作为未显式配置 oModel tenant 时的 workspace 企业。出站硬化与 console/oModel 同口径（TLS 三档 + trust_env 默认 off + 可选 `OPENOPS_APPTREE_COOKIE`）。**联调缝** `OPENOPS_APPTREE_USER_ID`：mock 登录头里的 user_id 未必是 W3 账号（如 `0026demo01`≠`l00833445`），设它可覆盖发给上游的账号（对齐 `OPENOPS_SCOPE_OVERRIDE_APPIDS` 模式，接真 IAM 后删）。前端 `WorkspaceDialog` 平铺展示（名称/APPID/类型 + 搜索），勾选后 `POST /workspaces` 真落库为范围。此接口**天然按用户过滤**（比 oModel `/{ws}/projects` 的「发现集」更接近授权集），但初始化选源与运行时 scope resolve 仍是两条链（后者的 per-user 化待 umodel P0-1）。
 
 ### 平台 HTTP MCP / MCP Registry / Skill Hub —— 已按 28.2 / 29.3 对齐
 real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，不静默降级）：

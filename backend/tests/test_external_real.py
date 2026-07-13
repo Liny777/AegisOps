@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 
 class _Resp:
     def __init__(self, status: int = 200, payload: Any = None, headers: dict | None = None,
@@ -149,9 +151,9 @@ async def test_ext_omodel_cookie_and_outbound_hardening(monkeypatch):
 
 async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     """create body 镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后）：
-    id 不传；labels/workspace_ui 的 tenantId=真实租户（scopes 首个租户推导，env 覆盖优先）且**不带
+    id 不传；labels/workspace_ui 的 tenantId=当前企业（与 scope 顺序无关，env 覆盖优先）且**不带
     projectId**（服务端自回填）；scopes=object[]{projectId,projectCn,tenantId}（per-项目租户）；
-    status:running + owner；400 必须透出响应体（内网定位教训）。"""
+    status:running + owner。"""
     import pytest as _pytest
 
     from infra.external import omodel_real
@@ -159,6 +161,9 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
     monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
+    monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "T-CURRENT")
+    monkeypatch.delenv("OPENOPS_APPTREE_URL", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_BASE_URL", raising=False)
     md = {"id": "l0001-ws-d5d17150", "name": "pay 域", "status": "active",
           "config": {"workspace_ui": {"scopes": [{"projectId": "APP-A", "projectCn": "应用甲"},
                                                  {"projectId": "APP-B", "projectCn": "APP-B"}]}}}
@@ -167,21 +172,21 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     ws = await omodel_real.create_workspace(
         "pay 域", ["APP-A", "APP-B"],
         apps=[{"app_id": "APP-A", "name": "应用甲", "tenant_id": "T-1111"},
-              {"app_id": "APP-B", "name": "", "tenant_id": ""}],
+              {"app_id": "APP-B", "name": "", "tenant_id": "T-CURRENT"}],
         owner="林一")
     body = cap[0][2]["json"]
     assert body["name"] == "pay 域" and body["description"] == ""
     assert "id" not in body  # 拍板：id 由 umodel 服务端生成（{W3}-ws-{hex8}），调用方不传
-    assert body["labels"] == {"tenantId": "T-1111"}  # 首个 scope 租户推导；不带 projectId（服务端自回填）
+    assert body["labels"] == {"tenantId": "T-CURRENT"}  # 当前企业；不带 projectId（服务端自回填）
     assert body["config"]["workspace_ui"] == {
-        "tenantId": "T-1111",
+        "tenantId": "T-CURRENT",
         "scopes": [{"projectId": "APP-A", "projectCn": "应用甲", "tenantId": "T-1111"},
-                   {"projectId": "APP-B", "projectCn": "APP-B"}],  # 无租户的项省略 tenantId 键
+                   {"projectId": "APP-B", "projectCn": "APP-B", "tenantId": "T-CURRENT"}],
         "status": "running", "owner": "林一",
     }
     assert ws["workspace_id"] == "l0001-ws-d5d17150" and ws["app_ids"] == ["APP-A", "APP-B"]
 
-    # tenant env 覆盖推导值；未传 owner 不带；无 apps 信息时 projectCn=app_id、tenant 落 apptree 默认企业
+    # oModel tenant env 覆盖 AppTree 当前企业；未传 owner 不带
     monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-ENV")
     cap2 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
     await omodel_real.create_workspace("观测联调域", ["APP-A"])
@@ -192,15 +197,63 @@ async def test_ext_omodel_create_workspace_scopes(monkeypatch):
     assert "owner" not in b2["config"]["workspace_ui"]
 
     monkeypatch.delenv("OPENOPS_OMODEL_TENANT_ID", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_ENTERPRISE_ID", raising=False)
     cap3 = _install(monkeypatch, lambda m, u, k: _Resp(201, md))
     await omodel_real.create_workspace("无租户信息域", ["APP-C"])
     from infra.external.apptree_client import _DEFAULT_ENTERPRISE
     assert cap3[0][2]["json"]["labels"]["tenantId"] == _DEFAULT_ENTERPRISE
 
-    # 400 必须透出响应体（umodel 错误信封 message 是唯一定位线索；内网 400 教训）
+    # 400 结构化为 validation，并只提取已知 code/message 字段
+    from infra.external.omodel_client import OModelError
+
     _install(monkeypatch, lambda m, u, k: _Resp(400, None, text='{"code":"INVALID_ARGUMENT","message":"missing x"}'))
-    with _pytest.raises(RuntimeError, match="INVALID_ARGUMENT"):
+    with _pytest.raises(OModelError, match="INVALID_ARGUMENT") as exc:
         await omodel_real.create_workspace("新域", ["APP-A"])
+    assert exc.value.kind == "validation" and exc.value.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "expected_kind"),
+    [
+        (401, {"error": {"code": "Auth401", "message": "Not logged in"}}, "auth"),
+        (403, {"error": {"code": "Auth403", "message": "Forbidden"}}, "auth"),
+        (422, {"code": "INVALID_ARGUMENT", "message": "bad scope"}, "validation"),
+        (503, {"code": "UNAVAILABLE", "message": "maintenance"}, "upstream"),
+    ],
+)
+async def test_ext_omodel_create_classifies_http_errors(monkeypatch, status, payload, expected_kind):
+    from infra.external import omodel_real
+    from infra.external.omodel_client import OModelError
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-CURRENT")
+    _install(monkeypatch, lambda m, u, k: _Resp(status, payload, headers={"X-Request-Id": "up-123"}))
+
+    with pytest.raises(OModelError) as exc:
+        await omodel_real.create_workspace("新域", ["APP-A"])
+    assert exc.value.kind == expected_kind
+    assert exc.value.status_code == status
+    assert exc.value.request_id == "up-123"
+
+
+async def test_ext_omodel_create_classifies_timeout_and_network(monkeypatch):
+    import httpx
+
+    from infra.external import omodel_real
+    from infra.external.omodel_client import OModelError
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-CURRENT")
+    for failure, expected_kind in ((httpx.ReadTimeout("slow"), "timeout"),
+                                   (httpx.ConnectError("down"), "upstream")):
+        def _raise(_m, _u, _k, error=failure):
+            raise error
+
+        _install(monkeypatch, _raise)
+        with pytest.raises(OModelError) as exc:
+            await omodel_real.create_workspace("新域", ["APP-A"])
+        assert exc.value.kind == expected_kind
+        assert exc.value.status_code is None
 
 
 # ============================ Skill Hub（29.3） ============================
@@ -321,7 +374,6 @@ def test_ext_platform_headers_include_audit_trace(monkeypatch):
 
 
 # ====================== 应用目录 apptree（"从应用创建系统范围"选源） ======================
-import pytest
 
 
 @pytest.mark.asyncio
@@ -466,6 +518,28 @@ async def test_ext_apptree_full_url_paste_truncates_and_extracts(monkeypatch):
     assert (base, ent, proj) == ("http://wesee.console.hissit.huawei.com", "E-ENV", "PPP")
 
 
+def test_ext_apptree_current_enterprise_precedence(monkeypatch):
+    from infra.external import apptree_client
+
+    monkeypatch.delenv("OPENOPS_APPTREE_ENTERPRISE_ID", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_URL", raising=False)
+    monkeypatch.delenv("OPENOPS_APPTREE_BASE_URL", raising=False)
+    assert apptree_client.current_enterprise_id() == apptree_client._DEFAULT_ENTERPRISE
+
+    monkeypatch.setenv(
+        "OPENOPS_APPTREE_BASE_URL",
+        "https://base.example/observe/unifieduery/verification/api/v1/E-BASE/P-BASE/userid_search_appid",
+    )
+    assert apptree_client.current_enterprise_id() == "E-BASE"
+
+    # 生效的 verbatim URL 优先于 BASE，且兼容自定义文根
+    monkeypatch.setenv("OPENOPS_APPTREE_URL", "https://api.example/custom/v9/E-URL/P-URL/userid_search_appid")
+    assert apptree_client.current_enterprise_id() == "E-URL"
+
+    monkeypatch.setenv("OPENOPS_APPTREE_ENTERPRISE_ID", "E-ENV")
+    assert apptree_client.current_enterprise_id() == "E-ENV"
+
+
 @pytest.mark.asyncio
 async def test_ext_api_prefix_env_overrides(monkeypatch):
     """文根全 env 可覆盖（测试/生产文根不同、对端改文根只改 env 不改码）：
@@ -565,12 +639,23 @@ async def test_ext_skillhub_download_json_envelope_explicit(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ext_omodel_sends_csrf_origin(monkeypatch):
-    """omodel 写操作 CSRF：出站带 Origin/Referer（同源，从 base 派生）——GET 通 POST 401 的根因。"""
+async def test_ext_omodel_outbound_headers(monkeypatch):
+    """oModel 同时携带登录态、浏览器 UA，以及从 target base 派生的 CSRF 同源头。"""
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
-    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.his-op-beta.huawei.com/omodel")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example:8443/omodel")
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    from infra import request_context
     from infra.external.omodel_real import _client_kwargs, _base
 
+    request_context.set_request_user("u1", "sid=user-session")
+    request_context.set_request_host("frontend.example")
     headers = _client_kwargs(_base()).get("headers", {})
-    assert headers.get("Origin") == "https://console.his-op-beta.huawei.com"
-    assert headers.get("Referer", "").startswith("https://console.his-op-beta.huawei.com")
+    assert headers.get("Cookie") == "sid=user-session"  # 用户透传
+    assert "Mozilla/5.0" in headers.get("User-Agent", "")  # 浏览器 UA
+    assert headers.get("Origin") == "https://console.example:8443"
+    assert headers.get("Referer") == "https://console.example:8443/"
+    assert headers.get("Sec-Fetch-Site") == "same-origin"
+    assert headers.get("Origin") != "https://frontend.example"
+    request_context.set_request_user("", "")
+    request_context.set_request_host("")

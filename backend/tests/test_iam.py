@@ -118,6 +118,55 @@ def _iam_env(monkeypatch, **extra):
     _FakeIam.calls = {"token": 0, "userinfo": 0}
 
 
+def _install_iam_omodel_http(monkeypatch, *, token_code: str = "201"):
+    """同一 httpx 桩贯穿 IAM 双步校验与 oModel create，捕获最终请求上下文。"""
+    import httpx
+
+    from infra import request_context
+
+    captured = {"inits": [], "gets": [], "posts": [], "contexts": []}
+
+    class _OModelResp(_FakeResp):
+        def __init__(self):
+            super().__init__(201, {
+                "id": "0026demo01-ws-api0001", "name": "API 链路范围", "status": "active",
+                "config": {"workspace_ui": {"scopes": [
+                    {"projectId": "APP-A"}, {"projectId": "APP-B"},
+                ]}},
+            })
+            self.headers = {"X-Request-Id": "omodel-up-1"}
+            self.text = ""
+
+    class _UnifiedClient:
+        def __init__(self, *args, **kwargs):
+            self.base = str(kwargs.get("base_url") or "")
+            self.default_headers = dict(kwargs.get("headers") or {})
+            captured["inits"].append(dict(kwargs))
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def get(self, url, headers=None):
+            captured["gets"].append({"url": str(url), "headers": dict(headers or {})})
+            if "token" in str(url):
+                return _FakeResp(200, {"code": token_code, "access_token": "fake-access"})
+            return _FakeResp(200, {"id": "0026demo01", "name": "林一"})
+
+        async def post(self, url, **kwargs):
+            effective_headers = {**self.default_headers, **dict(kwargs.get("headers") or {})}
+            full_url = self.base.rstrip("/") + "/" + str(url).lstrip("/")
+            captured["posts"].append({"url": full_url, "headers": effective_headers,
+                                      "json": kwargs.get("json")})
+            captured["contexts"].append((request_context.current_user_id(), request_context.user_cookie()))
+            return _OModelResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _UnifiedClient)
+    return captured
+
+
 def test_iam_b9_double_step_and_cache(client, monkeypatch):
     """成功路径：cookie→token→userinfo→login_key 小写化；TTL 内二次请求命中缓存不重打 IAM。"""
     _iam_env(monkeypatch)
@@ -132,6 +181,68 @@ def test_iam_b9_double_step_and_cache(client, monkeypatch):
     assert _FakeIam.calls["token"] == 1  # 命中 TokenCache
     # 未带 cookie → 401
     assert client.get("/api/openops/v1/me").status_code == 401
+
+
+def test_iam_cookie_reaches_omodel_create_with_target_origin(client, monkeypatch):
+    _iam_env(monkeypatch)
+    captured = _install_iam_omodel_http(monkeypatch)
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-CURRENT")
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    cookie = "iam_sess=valid-api; EnterpriseId=T-CURRENT"
+    response = client.post(
+        "/api/openops/v1/workspaces",
+        headers={"Cookie": cookie, "Origin": "https://frontend.example"},
+        json={
+            "client_request_id": "api-cookie-chain", "name": "API 链路范围",
+            "app_ids": ["APP-A", "APP-B"],
+            "apps": [
+                {"app_id": "APP-A", "name": "应用甲", "tenant_id": "T-OTHER"},
+                {"app_id": "APP-B", "name": "应用乙", "tenant_id": "T-CURRENT"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["workspace_id"] == "0026demo01-ws-api0001"
+    assert captured["gets"][0]["headers"]["Cookie"] == cookie
+    post = captured["posts"][0]
+    assert post["url"] == "https://console.example/omodel/api/v1/workspaces"
+    assert post["headers"]["Cookie"] == cookie  # 用户登录态透传
+    assert "Mozilla/5.0" in post["headers"].get("User-Agent", "")  # 浏览器 UA（绕网关脚本 UA 拦截）
+    assert post["headers"]["Origin"] == "https://console.example"  # CSRF 同源头（从目标 base 派生）
+    assert post["headers"]["Origin"] != "https://frontend.example"
+    assert captured["contexts"] == [("0026demo01", cookie)]
+    assert post["json"]["config"]["workspace_ui"] == {
+        "tenantId": "T-CURRENT",
+        "scopes": [
+            {"projectId": "APP-A", "projectCn": "应用甲", "tenantId": "T-OTHER"},
+            {"projectId": "APP-B", "projectCn": "应用乙", "tenantId": "T-CURRENT"},
+        ],
+        "status": "running", "owner": "林一",
+    }
+    assert "client_request_id" not in post["json"]
+
+
+def test_invalid_iam_session_never_calls_omodel(client, monkeypatch):
+    _iam_env(monkeypatch)
+    captured = _install_iam_omodel_http(monkeypatch, token_code="403")
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+
+    response = client.post(
+        "/api/openops/v1/workspaces",
+        headers={"Cookie": "iam_sess=expired"},
+        json={"client_request_id": "expired", "name": "不会创建", "app_ids": ["APP-A"]},
+    )
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+    assert len(captured["gets"]) == 1
+    assert captured["posts"] == []
+    assert not any(init.get("base_url") for init in captured["inits"])
 
 
 def test_iam_b9_rejects_and_upstream(client, monkeypatch):

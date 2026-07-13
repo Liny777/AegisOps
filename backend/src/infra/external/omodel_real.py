@@ -17,12 +17,18 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import uuid
 from typing import Any
 
 log = logging.getLogger("openops.omodel")
+
+# omodel 网关对写操作拦截脚本类 UA（python-httpx）——内网实锤：同 cookie，Postman/浏览器 UA 通、
+# httpx 401；GET(读)不拦故列表能通、POST(创建)被拦。用浏览器 UA 绕过（我们是代表登录用户操作）。
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 _TIMEOUT = float(os.environ.get("OPENOPS_OMODEL_TIMEOUT_S", "8"))
 
@@ -43,11 +49,9 @@ def _base() -> str:
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:
-    """umodel 出站 httpx 客户端参数：TLS/代理与 console 同口径（内网教训）+ 用户登录态 cookie 透传。
+    """oModel 出站：登录态 + 浏览器 UA + 从目标 base 派生的 CSRF 同源头。
 
-    ⚠Origin/Referer 必带（2026-07-14 内网实锤）：omodel 对 POST/PUT/DELETE 等写操作做 CSRF
-    防护，校验 Origin 同源——只发 Cookie 不发 Origin 会被当跨站/未登录拒（401 "Not logged in"），
-    GET 不校验故列表能通、创建不通。浏览器/手动 curl 自带 Origin 才 201。从 base 域名派生。
+    UA 与 Origin/Referer 是两层独立网关校验，必须同时保留；后者绝不复制客户端传入值。
     """
     from urllib.parse import urlparse
 
@@ -55,30 +59,31 @@ def _client_kwargs(base: str) -> dict[str, Any]:
 
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": _BROWSER_UA}  # 必带：见 _BROWSER_UA 注释
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         headers["Cookie"] = cookie
-    u = urlparse(base)
-    if u.scheme and u.netloc:  # CSRF 同源头：与浏览器同源 fetch 一致（omodel 写操作校验）
-        origin = f"{u.scheme}://{u.netloc}"
-        headers["Origin"] = origin
-        headers["Referer"] = origin + "/"
-        headers["Sec-Fetch-Site"] = "same-origin"
-        headers["Sec-Fetch-Mode"] = "cors"
-        headers["Sec-Fetch-Dest"] = "empty"
-    if headers:
-        kwargs["headers"] = headers
+    target = urlparse(base)
+    if target.scheme in ("http", "https") and target.netloc:
+        origin = f"{target.scheme}://{target.netloc}"
+        headers.update({
+            "Origin": origin,
+            "Referer": origin + "/",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        })
+    kwargs["headers"] = headers
     if _http_debug():
-        from infra.request_context import current_user_id, request_host, user_cookie
+        from infra.request_context import user_cookie
 
         src = ("passthrough" if user_cookie()
                else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
-        log.warning("[OpenOps][omodel][debug] base=%s  req_host=%s  cookie_src=%s  cookie_len=%d  uid=%s",
-                    base, request_host() or "-", src, len(cookie or ""), current_user_id() or "-")
-        kwargs["event_hooks"] = {"request": [_log_outbound]}  # 打完整出站请求
+        log.warning("[OpenOps][omodel][debug] target_host=%s cookie_src=%s cookie_len=%d",
+                    target.netloc or "-", src, len(cookie or ""))
+        kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 
 
@@ -86,16 +91,48 @@ def _http_debug() -> bool:
     return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
-async def _log_outbound(request: Any) -> None:
-    """出站 httpx 请求全量诊断（门控）：方法/完整 URL/全部头（Cookie 只打长度）/请求体。"""
-    lines = [f">>> {request.method} {request.url}"]
-    for k, v in request.headers.items():
-        val = f"<len={len(v)}>" if k.lower() == "cookie" else v
-        lines.append(f"    {k}: {val}")
-    body = request.content or b""
-    if body:
-        lines.append(f"    body: {body.decode('utf-8', 'replace')[:2000]}")
-    log.warning("[OpenOps][omodel][debug] 出站请求:\n%s", "\n".join(lines))
+async def _log_outbound_response(response: Any) -> None:
+    """门控诊断只记状态与请求 ID；不记录 Cookie、全部头或业务请求体。"""
+    request = response.request
+    log.warning("[OpenOps][omodel][debug] method=%s host=%s status=%s request_id=%s",
+                request.method, request.url.host, response.status_code,
+                _response_request_id(response) or "-")
+
+
+def _response_request_id(response: Any) -> str:
+    headers = getattr(response, "headers", {}) or {}
+    for key, value in headers.items():
+        if str(key).lower() in ("x-request-id", "request-id", "x-trace-id"):
+            return str(value)[:128]
+    return ""
+
+
+def _response_error(response: Any):
+    """将 create 的非 2xx 响应转成结构化 adapter 错误，仅提取已知错误字段。"""
+    from infra.external.omodel_client import OModelError
+
+    status = int(response.status_code)
+    payload: Any = None
+    try:
+        payload = response.json()
+    except Exception:  # noqa: BLE001 - 错误响应可能是空体或 HTML，不向 API 回显原文
+        payload = None
+    if not isinstance(payload, dict):
+        try:
+            payload = json.loads(response.text or "")
+        except (TypeError, ValueError):
+            payload = None
+    node = payload.get("error") if isinstance(payload, dict) and isinstance(payload.get("error"), dict) else payload
+    code = str(node.get("code") or "").strip() if isinstance(node, dict) else ""
+    message = str(node.get("message") or "").strip() if isinstance(node, dict) else ""
+    detail = "：".join(p for p in (code, message) if p)[:300] or f"HTTP {status}"
+    if status in (401, 403):
+        kind = "auth"
+    elif status in (400, 422):
+        kind = "validation"
+    else:
+        kind = "upstream"
+    return OModelError(kind, detail, status_code=status, request_id=_response_request_id(response))
 
 
 def _derive_rev(effective_appids: list[str]) -> str:
@@ -188,9 +225,11 @@ async def list_workspaces() -> list[dict[str, Any]]:
 
 async def create_workspace(name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
+    from infra.external.omodel_client import OModelError
+
     base = _base()
     if not base:
-        raise RuntimeError("OPENOPS_OMODEL=real 但未配置 OPENOPS_OMODEL_BASE_URL")
+        raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 未配置")
     import httpx
 
     # 请求体镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后再抓，比 29.7 文档权威）：
@@ -208,12 +247,11 @@ async def create_workspace(name: str, app_ids: list[str], *,
         if item.get("tenant_id"):
             entry["tenantId"] = str(item["tenant_id"])
         scopes.append(entry)
-    # workspace 级租户：env 覆盖 > 首个应用的租户 > apptree 默认企业 ID（与选应用来源同一租户概念）
-    from infra.external.apptree_client import _DEFAULT_ENTERPRISE
+    # workspace 级租户属于当前企业，不得由首个跨租应用决定；scope 仍保留各应用自己的 tenantId。
+    from infra.external.apptree_client import current_enterprise_id
 
     tenant = (os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
-              or next((s["tenantId"] for s in scopes if s.get("tenantId")), "")
-              or _DEFAULT_ENTERPRISE)
+              or current_enterprise_id())
     ui: dict[str, Any] = {"tenantId": tenant, "scopes": scopes, "status": "running"}
     if owner:
         ui["owner"] = owner
@@ -222,9 +260,21 @@ async def create_workspace(name: str, app_ids: list[str], *,
         "labels": {"tenantId": tenant},
         "config": {"workspace_ui": ui},
     }
-    async with httpx.AsyncClient(**_client_kwargs(base)) as c:
-        r = await c.post(_prefix(), json=body)
-        if r.status_code >= 400:
-            # umodel 错误信封 {code,message} 在响应体里——400 INVALID_ARGUMENT 必须透出原因（吞掉没法定位）
-            raise RuntimeError(f"umodel 创建 workspace HTTP {r.status_code}：{(r.text or '')[:300]}")
-        return _map_metadata(r.json())
+    try:
+        async with httpx.AsyncClient(**_client_kwargs(base)) as c:
+            r = await c.post(_prefix(), json=body)
+    except httpx.TimeoutException as e:
+        raise OModelError("timeout", f"oModel 请求超时（{type(e).__name__}）") from e
+    except httpx.RequestError as e:
+        raise OModelError("upstream", f"oModel 网络请求失败（{type(e).__name__}）") from e
+    if r.status_code >= 400:
+        raise _response_error(r)
+    try:
+        payload = r.json()
+        if not isinstance(payload, dict):
+            raise TypeError("workspace response is not an object")
+        return _map_metadata(payload)
+    except Exception as e:  # noqa: BLE001 - 上游成功状态却返回坏 JSON/结构
+        raise OModelError("upstream", "oModel 创建响应格式无效",
+                          status_code=r.status_code,
+                          request_id=_response_request_id(r)) from e

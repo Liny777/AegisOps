@@ -33,6 +33,30 @@ async def create_workspace(name: str, app_ids: list[str], *,
         return await omodel_client.create_workspace(name, app_ids, apps=apps, owner=owner)
     except ApiError:
         raise
+    except omodel_client.OModelError as e:
+        extra = {"upstream_status": e.status_code or None,
+                 "upstream_request_id": e.request_id or None}
+        if e.kind == "auth":
+            raise ApiError(Err.OMODEL_AUTH_FAILED,
+                           "oModel 鉴权或同源校验失败，请刷新登录后重试；若持续失败请联系管理员",
+                           extra=extra) from e
+        if e.kind == "validation":
+            raise ApiError(Err.VALIDATION_FAILED,
+                           f"oModel 拒绝创建参数：{e.message}", extra=extra) from e
+        if e.kind == "timeout":
+            raise ApiError(Err.OMODEL_UPSTREAM, "oModel 创建请求超时",
+                           retryable=True, status=504, extra=extra) from e
+        if e.kind == "config":
+            raise ApiError(Err.OMODEL_UPSTREAM, f"oModel 配置错误：{e.message}",
+                           extra=extra) from e
+        retryable = e.status_code is None or e.status_code >= 500 or e.status_code < 400
+        if e.status_code is not None and 400 <= e.status_code < 500:
+            message = f"oModel 拒绝创建请求（HTTP {e.status_code}）"
+        elif e.status_code is not None and e.status_code >= 500:
+            message = f"oModel 服务暂时不可用（HTTP {e.status_code}）"
+        else:
+            message = e.message
+        raise ApiError(Err.OMODEL_UPSTREAM, message, retryable=retryable, extra=extra) from e
     except Exception as e:  # noqa: BLE001
         raise ApiError(Err.INTERNAL_ERROR, f"创建系统范围失败：{str(e)[:300]}", retryable=True) from e
 

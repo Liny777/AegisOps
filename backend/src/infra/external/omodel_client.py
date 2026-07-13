@@ -8,6 +8,18 @@ import os
 from typing import Any
 
 
+class OModelError(RuntimeError):
+    """oModel adapter 的结构化失败，供 app 层稳定映射 HTTP 语义。"""
+
+    def __init__(self, kind: str, message: str, *, status_code: int | None = None,
+                 request_id: str = ""):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.status_code = status_code
+        self.request_id = request_id
+
+
 def _impl() -> Any:
     if os.environ.get("OPENOPS_OMODEL", "mock").strip().lower() == "real":
         from infra.external import omodel_real
