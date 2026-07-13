@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 
-from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
+from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
 
 
 def _run_input(text: str = "支付延迟突增，帮我定位") -> dict:
@@ -113,3 +113,36 @@ def test_agui_requires_user_text(client):
                     headers=USER_HEADERS, json=body)
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_agui_disconnect_triggers_cancel_bridge(client):
+    """连带 C：消费流后 aclose()（客户端断流的 GeneratorExit 路径）→ 取消桥收口任务。
+
+    经 TestClient 关流不触发 ASGI 断连（实测阻塞至编排 ASK 超时），故直测 service 层生成器。
+    """
+    import asyncio
+
+    from app import agui_service
+    from runtime import task_registry
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+    user = {"user_id": "0026demo01"}
+    body = {"threadId": rid, "runId": "r-def-c", "messages": [{"role": "user", "content": "断流测试"}]}
+
+    async def scenario() -> str:
+        ctx = await agui_service.start(user, rid, body)
+        agen = agui_service.stream(ctx)
+        first = await asyncio.wait_for(agen.__anext__(), timeout=5)
+        assert "RUN_STARTED" in first
+        await agen.aclose()  # 断流 → GeneratorExit → _schedule_cancel_on_disconnect
+        for _ in range(100):  # 等 fire-and-forget 的取消桥落地
+            st = task_registry.get_by_task(ctx["task_id"])
+            if st is None or st.status != "running":
+                break
+            await asyncio.sleep(0.05)
+        return st.status if st else "unregistered"
+
+    status = asyncio.run(scenario())
+    assert status == "cancelled"

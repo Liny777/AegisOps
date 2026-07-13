@@ -186,7 +186,8 @@ async def dispatch(st: TaskState, run: dict[str, Any], tasks: list[dict[str, Any
         return "当前模板未配置 sub agents，无法派发。"
     if not isinstance(tasks, list) or not tasks:
         return "派发清单为空：tasks 需为 [{role, task}] 数组。"
-    tasks = tasks[:_MAX_BATCH]
+    if len(tasks) > _MAX_BATCH:  # DEF-8：超限直接拒绝（旧行为静默截断，第 6 个任务无声丢弃）
+        return f"单批最多 {_MAX_BATCH} 个子任务（本次提交 {len(tasks)} 个）；请拆成多批派发。"
     bad = sorted({str(t.get("role")) for t in tasks if t.get("role") not in subs})
     if bad:
         return f"未知角色 {bad}；可用角色：{sorted(subs)}。"

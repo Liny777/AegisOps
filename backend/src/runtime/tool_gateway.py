@@ -18,6 +18,7 @@ import os
 from typing import Any
 
 from infra.external import http_mcp_client
+from infra.redact import redact_args
 from infra.repositories import mcp_tools
 from runtime.emit import emit
 from runtime.task_registry import TaskState
@@ -34,6 +35,7 @@ class ToolBlocked(Exception):
 
 def _args_for_event(arguments: dict[str, Any]) -> dict[str, Any]:
     """工具入参转事件 payload：序列化超 2000 字则截断为占位（防大参数撑爆事件/审计行）。"""
+    arguments = redact_args(arguments)  # 连带 D：key 级脱敏先于长度截断
     import json
 
     try:

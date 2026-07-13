@@ -12,6 +12,7 @@ from infra import idempotency
 from infra.db import row_json
 from infra.repositories import agent_teams, audit, runs, runtime_config, secrets, task_states, templates
 from runtime import events, task_registry
+from runtime.emit import expire_stale_approvals_and_audit
 from runtime.task_registry import TaskState
 from sandbox.executor import executor as sandbox_executor
 
@@ -53,9 +54,20 @@ async def list_pending(user: dict[str, Any], run_id: str) -> list[dict[str, Any]
 
 async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
     uid = user["user_id"]
-    cached = await idempotency.get(uid, "create_run", req.client_request_id)
+    # DEF-3：先占位抢锁（并发同 key 只有一个赢家；同 key 异体 409；重放命中缓存）
+    cached = await idempotency.begin(uid, "create_run", req.client_request_id,
+                                     req.model_dump(exclude={"client_request_id"}))
     if cached is not None:
         return cached
+    try:
+        return await _create_run_body(user, req)
+    except Exception:
+        await idempotency.rollback(uid, "create_run", req.client_request_id)  # 失败放行重试
+        raise
+
+
+async def _create_run_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
+    uid = user["user_id"]
     inst = await agent_teams.get_instance(req.agent_team_instance_id)
     if inst is None or inst["owner_user_id"] != uid:
         raise ApiError(Err.FORBIDDEN, "无权在该 AgentTeam 上创建 Run")  # RUN-002
@@ -79,7 +91,7 @@ async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
         actor_type="system",
     )
     result = {"run": row_json(run)}
-    return await idempotency.put(uid, "create_run", req.client_request_id, result)
+    return await idempotency.commit(uid, "create_run", req.client_request_id, result)
 
 
 async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
@@ -247,7 +259,14 @@ async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
             raise ApiError(Err.FORBIDDEN, "无权取消该任务")
         if snap["task_status"] in ("running", "interrupted"):
             await task_states.mark_status(task_id, "cancelled", user["user_id"])
-        return {"task_id": task_id, "status": "cancelled"}
+            await audit.insert_event(  # DEF-4：改状态必须留审计（审计为事实源）
+                audit_trace_id=str(snap["audit_trace_id"]), event_type="task.cancelled",
+                user_id=user["user_id"], run_id=str(snap["run_id"]), task_id=task_id,
+                action="cancel_orphan", actor_type="user",
+            )
+            return {"task_id": task_id, "status": "cancelled"}
+        # DEF-4：终态行不谎报 cancelled——返回真实状态并标记 already_terminal
+        return {"task_id": task_id, "status": snap["task_status"], "already_terminal": True}
     if st.user_id != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权取消该任务")
     if st.status == "running":
@@ -326,7 +345,7 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
         raise ApiError(Err.FORBIDDEN, "无权处理该审批")
     if appr["decision"] != "pending":
         return {"approval_request_id": approval_id, "decision": appr["decision"]}
-    await runs.expire_stale_approvals(str(appr["agent_run_id"]))
+    await expire_stale_approvals_and_audit(str(appr["agent_run_id"]))  # 连带 B：翻转即审计
     fresh = await runs.get_approval(approval_id)
     assert fresh is not None
     if fresh["decision"] == "timeout":
@@ -365,7 +384,7 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
 async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     """聚合状态（30.7 恢复事实入口）。"""
     run = await owned_run(user["user_id"], run_id)
-    await runs.expire_stale_approvals(run_id)
+    await expire_stale_approvals_and_audit(run_id)
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     st = task_registry.get_by_run(run_id)
     pend = await runs.pending_approvals(run_id)

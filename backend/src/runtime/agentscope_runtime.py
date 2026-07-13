@@ -32,6 +32,19 @@ from runtime.tool_gateway import ToolBlocked
 
 log = logging.getLogger("openops.runtime")
 ASK_TIMEOUT_S = float(os.environ.get("OPENOPS_ASK_TIMEOUT_S", "300"))
+
+
+def _clamped_env_int(name: str, dft: int, lo: int, hi: int) -> int:
+    """治理 env 钳制（缺陷批连带 A）：模板路径有范围校验而 env 路径没有——
+    D7 事故（tool_result_limit 160000>128k 窗口）可经 env 复现，这里堵死。"""
+    try:
+        v = int(os.environ.get(name, str(dft)))
+    except ValueError:
+        return dft
+    if v < lo or v > hi:
+        log.warning("[OpenOps][governance] %s=%s 越界，钳制到 [%s..%s]", name, v, lo, hi)
+        return max(lo, min(hi, v))
+    return v
 _SECRET_RE = re.compile(r"(sk-[A-Za-z0-9_\-]{6,}|Bearer\s+[A-Za-z0-9._\-]+)")
 
 
@@ -492,9 +505,10 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
         ask_msg = f"写类操作待批准：{tool_name}"
         target = str(tool_args.get("project_id") or tool_args.get("appid") or tool_args.get("app_id") or "—")
         impact = "变更类操作，批准后才会执行"
+    from infra.redact import redact_args as _redact_args  # 连带 D：入参进审批行前 key 级脱敏
     appr = await runs.create_approval(
         st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, tool_name,
-        tool_args, str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        _redact_args(tool_args), str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
     st.approval_ev.clear()  # 复用同一 asyncio.Event：等待前清位+清旧结果，避免上一次 ASK（如容器 Bash 审批）的
     st.approval_result = None  # set 未清 → 本次 wait() 立即返回并读到陈旧决策（与 sandbox_bash 同规矩）
@@ -506,7 +520,8 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=ASK_TIMEOUT_S)
     except asyncio.TimeoutError:
-        await runs.expire_stale_approvals(st.run_id)
+        from runtime.emit import expire_stale_approvals_and_audit as _exp
+        await _exp(st.run_id, force_approval_id=st.approval_id)  # 循环超时 ⇒ 本行必达 timeout
         st.approval_result = "timeout"
     return st.approval_result or "rejected"
 
@@ -569,9 +584,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             # E4 治理（limits-and-budgets）：max_iters 防失控狂转；tool_result_limit 必须 < 模型窗口
             # （D7 事故：160000>128000 单条工具结果撑爆窗口→压缩 fallback 删掉用户问题）。
             # 2.0.3 默认 20/50000；主 agent 对齐老经验 ≤1/4 窗口取 24000。
-            react_config=ReActConfig(max_iters=int(os.environ.get("OPENOPS_MAIN_MAX_ITERS", "20"))),
+            react_config=ReActConfig(max_iters=_clamped_env_int("OPENOPS_MAIN_MAX_ITERS", 20, 1, 200)),
             context_config=ContextConfig(
-                tool_result_limit=int(os.environ.get("OPENOPS_MAIN_TOOL_RESULT_LIMIT", "24000"))),
+                tool_result_limit=_clamped_env_int("OPENOPS_MAIN_TOOL_RESULT_LIMIT", 24000, 1000, 200000)),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）

@@ -9,7 +9,8 @@ from infra.repositories import audit, runs
 
 
 async def run_events(user: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
-    run = await runs.get_run(run_id)
+    # DEF-5：含软删行——否则删除会话后 run.deleted 审计对 owner/admin 永久 404（删除无痕）
+    run = await runs.get_run(run_id, include_deleted=True)
     if run is None:
         raise ApiError(Err.NOT_FOUND, "Run 不存在")
     if run["user_id"] != user["user_id"] and user["role"] != "platform_admin":

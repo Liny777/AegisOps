@@ -12,6 +12,7 @@ import asyncio
 import os
 from typing import Any
 
+from infra.redact import redact_args
 from infra.repositories import runs
 from runtime import tool_gateway
 from runtime.emit import emit as _emit
@@ -78,7 +79,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         # ASK：恢复动作需人工批准（标注 is_approval_required=true）
         appr = await runs.create_approval(
             st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "recover_execute",
-            {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"},
+            redact_args({"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"}),
             str(run["audit_trace_id"]), str(run["framework_session_id"]),
         )
         st.approval_id = str(appr["approval_request_id"])
@@ -91,7 +92,8 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         try:
             await asyncio.wait_for(st.approval_ev.wait(), timeout=max(DELAY_MS / 1000 * 40, 300))
         except asyncio.TimeoutError:
-            await runs.expire_stale_approvals(st.run_id)
+            from runtime.emit import expire_stale_approvals_and_audit as _exp
+            await _exp(st.run_id, force_approval_id=st.approval_id)  # 循环超时 ⇒ 本行必达 timeout
             st.approval_result = "timeout"
 
         if st.status != "running":

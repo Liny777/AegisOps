@@ -576,3 +576,63 @@ def test_def2_cross_batch_task_ids_unique(client):
     task_registry.unregister_subtask(c1.task_id)  # 第一批收尾
     assert task_registry.get_by_task(c2.task_id) is c2  # 第二批幸存者不被摘（修复点）
     task_registry.unregister_subtask(c2.task_id)
+
+
+def test_def4_orphan_cancel_terminal_snapshot_truthful(client):
+    """DEF-4：终态快照 cancel 不谎报（already_terminal+真实状态+DB 不变）；interrupted → cancelled+审计。"""
+    import asyncio as _asyncio
+    import uuid as _uuid
+
+    from app import run_state_service as rss
+    from infra.repositories import task_states
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid, trace = run["agent_run_id"], str(run["audit_trace_id"])
+
+    def _snap(status):
+        tid = "tsk_" + _uuid.uuid4().hex[:10]
+        st = TaskState(task_id=tid, run_id=rid, user_id="0026demo01",
+                       instance_id=instance["instance_id"], input_text="x")
+        _asyncio.run(task_states.upsert_snapshot(st, status, trace))
+        return tid
+
+    # 终态快照（completed）→ 返回真实状态，DB 不变
+    tid = _snap("completed")
+    out = _asyncio.run(rss.cancel_task({"user_id": "0026demo01"}, tid))
+    assert out["status"] == "completed" and out.get("already_terminal") is True
+    row = _asyncio.run(task_states.get_by_task(tid))
+    assert row["task_status"] == "completed"
+
+    # interrupted → cancelled + task.cancelled 审计
+    tid2 = _snap("interrupted")
+    out2 = _asyncio.run(rss.cancel_task({"user_id": "0026demo01"}, tid2))
+    assert out2["status"] == "cancelled"
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{rid}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "task.cancelled" and e["task_id"] == tid2 for e in events)
+
+
+def test_def5_soft_deleted_run_audit_visible(client):
+    """DEF-5：软删会话后 owner 仍可查 /audit/runs 且含 run.deleted；他人仍 403。"""
+    from conftest import OTHER_HEADERS
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{rid}:delete", headers=USER_HEADERS))
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{rid}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "run.deleted" for e in events)  # 删除有痕（修复点）
+    assert client.get(f"/api/openops/v1/audit/runs/{rid}", headers=OTHER_HEADERS).status_code == 403
+
+
+def test_def8_dispatch_overflow_rejected(client):
+    """DEF-8：单批 >5 直接拒绝并报真实数量（旧行为静默截断第 6 个）。"""
+    import asyncio as _asyncio
+
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+    tasks = [{"role": "inspect", "task": f"t{i}"} for i in range(6)]
+    out = _asyncio.run(subagent_dispatch.dispatch(st, run_row, tasks))
+    assert "6" in out and "5" in out and "拆" in out

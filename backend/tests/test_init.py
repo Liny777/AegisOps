@@ -65,3 +65,78 @@ def test_init_006_client_request_id_is_idempotent(client):
     one = unwrap(client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS, json=body))
     two = unwrap(client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS, json=body))
     assert one["instance"]["instance_id"] == two["instance"]["instance_id"]
+
+
+# ---- 缺陷批回归：DEF-3 幂等先占位 + IDEMPOTENCY_KEY_CONFLICT ----
+
+def test_def3_concurrent_same_key_creates_single_run(client):
+    """DEF-3：并发同 key create_run 只建 1 个 run（旧「先业务后写键」两并发各建一个）。"""
+    import asyncio as _asyncio
+
+    from app import run_state_service as rss
+    from conftest import create_instance
+    from infra import idempotency
+
+    inst = create_instance(client)
+    idempotency.clear()
+
+    class _Req:
+        client_request_id = "def3_concurrent"
+        agent_team_instance_id = inst["instance_id"]
+
+        def model_dump(self, exclude=None):
+            return {"agent_team_instance_id": self.agent_team_instance_id}
+
+    async def _go():
+        user = {"user_id": "0026demo01"}
+        results = await _asyncio.gather(rss.create_run(user, _Req()), rss.create_run(user, _Req()),
+                                        return_exceptions=True)
+        return results
+
+    results = _asyncio.run(_go())
+    oks = [r for r in results if isinstance(r, dict)]
+    errs = [r for r in results if not isinstance(r, dict)]
+    # 赢家恰一个；输家要么命中缓存（同 run_id）要么 409 处理中
+    assert len(oks) >= 1
+    run_ids = {r["run"]["agent_run_id"] for r in oks}
+    assert len(run_ids) == 1, f"并发建出多个 run: {run_ids}"
+    for e in errs:
+        assert getattr(e, "code", "") == "IDEMPOTENCY_KEY_CONFLICT"
+
+
+def test_def3_same_key_different_body_conflict(client):
+    """INIT-006 补实现：同 client_request_id 不同请求体 → 409 IDEMPOTENCY_KEY_CONFLICT。"""
+    from conftest import USER_HEADERS, create_instance, unwrap
+
+    inst = create_instance(client)
+    body = {"client_request_id": "def3_body", "agent_team_instance_id": inst["instance_id"]}
+    unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body))
+    # 同 key 重放同体 → 命中缓存 200
+    r = client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body)
+    assert r.status_code == 200
+    # 同 key 异体 → 409（幂等判定在业务校验之前，假 id 也行）
+    r = client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                    json={"client_request_id": "def3_body",
+                          "agent_team_instance_id": "00000000-0000-0000-0000-000000000000"})
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+
+
+def test_def3_rollback_allows_retry(client):
+    """DEF-3：业务失败释放占位——首次 403（他人实例）后同 key 重试不被「处理中」卡死。"""
+    from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, unwrap
+
+    # admin 的实例（create_instance 硬编码 USER_HEADERS，这里手写）
+    ws = unwrap(client.post("/api/openops/v1/workspaces", headers=ADMIN_HEADERS,
+                            json={"client_request_id": "def3_ws_a", "name": "admin域", "app_ids": ["APP-A"]}))
+    tv = unwrap(client.get("/api/openops/v1/templates/available", headers=ADMIN_HEADERS))[0]["template_version_id"]
+    inst_admin = unwrap(client.post("/api/openops/v1/agent-teams", headers=ADMIN_HEADERS,
+                                    json={"client_request_id": "def3_agt_a", "template_version_id": tv,
+                                          "name": "admin实例", "workspace_id": ws["workspace_id"]}))["instance"]
+    body = {"client_request_id": "def3_retry", "agent_team_instance_id": inst_admin["instance_id"]}
+    r = client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body)
+    assert r.status_code == 403  # 业务失败 → rollback 释放占位
+    inst_mine = create_instance(client)
+    body["agent_team_instance_id"] = inst_mine["instance_id"]
+    r = client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS, json=body)
+    assert r.status_code == 200  # 同 key 重试成功（异体但占位已释放，不撞 hash）

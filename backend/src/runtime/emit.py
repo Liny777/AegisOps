@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from infra.repositories import audit, task_states
-from runtime import events
+import re
+
+from infra.repositories import audit, runs, task_states
+from runtime import events, task_registry
 from runtime.task_registry import TaskState
 
 log = logging.getLogger("openops.emit")
@@ -51,3 +53,47 @@ async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -
             await task_states.upsert_snapshot(st, _SNAPSHOT_STATUS.get(event_type, st.status), trace)
         except Exception:  # noqa: BLE001 —— 旧库未跑 persistence 迁移等，快照降级不阻断
             log.warning("[OpenOps][snapshot] 任务快照写入失败（旧库重跑 sql/openops_v1_core.sql 补表）")
+
+
+def agent_key_of_task(task_id: str) -> str:
+    """事件归属解析（DEF-6 公共化）：优先存活 TaskState；已注销从 task_id 形状推——
+    主任务无 "."；子任务 `{leader}.{key}-{hash8}`（DEF-2 格式，旧 `{key}{seq}` 兼容）。"""
+    st = task_registry.get_by_task(task_id)
+    if st is not None:
+        return st.agent_key
+    if "." not in task_id:
+        return "main"
+    tail = task_id.split(".", 1)[1]
+    tail = re.sub(r"-[0-9a-f]{8}$", "", tail)
+    return re.sub(r"\d+$", "", tail) or tail
+
+
+async def expire_stale_approvals_and_audit(run_id: str, *, force_approval_id: str | None = None) -> int:
+    """ASK 超时收口（连带 B）：pending→timeout 的翻转行补 approval.timeout 审计+SSE——
+    此前 repo 静默翻转，超时终态在审计链上无痕（31 号 ASK-004）。
+
+    force_approval_id：等待方主循环超时（OPENOPS_ASK_TIMEOUT_S）可能早于行内 expire_at
+    （固定 5 分钟）——等待已放弃但行仍 pending，卡片永悬。传入本次等待的 approval_id
+    先行置过期，保证「循环超时 ⇒ 该行必达 decision=timeout」不依赖两个时钟对齐。"""
+    if force_approval_id:
+        await runs.force_expire_approval(force_approval_id)
+    rows = await runs.expire_stale_approvals(run_id)
+    for r in rows:
+        ak = agent_key_of_task(str(r["task_id"]))
+        try:
+            await audit.insert_event(
+                audit_trace_id=str(r["audit_trace_id"]), event_type="approval.timeout",
+                user_id=str(r["user_id"]), run_id=str(r["agent_run_id"]),
+                instance_id=str(r["agent_team_instance_id"]), task_id=str(r["task_id"]),
+                action="expire", decision="timeout", actor_type="system",
+                payload_redacted={"approval_request_id": str(r["approval_request_id"]),
+                                  "tool": r["tool_call_name"], "agent_key": ak},
+            )
+        except Exception:  # noqa: BLE001 —— 审计失败不阻断超时收口
+            log.warning("[OpenOps][ask] approval.timeout 审计写入失败 task=%s", r["task_id"])
+        events.publish(str(r["agent_run_id"]), events.envelope(
+            str(r["agent_run_id"]), "openops.approval.timeout", task_id=str(r["task_id"]),
+            severity="warning", message="审批超时未处理，按拒绝收口",
+            payload={"approval_request_id": str(r["approval_request_id"]), "agent_key": ak},
+        ))
+    return len(rows)

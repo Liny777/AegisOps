@@ -11,6 +11,7 @@ import asyncio
 import os
 from typing import Any, Awaitable, Callable
 
+from infra.redact import redact_args
 from infra.repositories import runs
 from runtime.emit import emit
 from runtime.task_registry import TaskState
@@ -65,7 +66,7 @@ async def _bridge_command_approval(st: TaskState, run: dict[str, Any], command: 
     st.approval_result = None
     appr = await runs.create_approval(
         st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "run_container_command",
-        {"command": command}, str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        redact_args({"command": command}), str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
     st.approval_id = str(appr["approval_request_id"])
     await emit(st, run, "openops.approval.required", severity="warning", action="bash",
@@ -74,7 +75,8 @@ async def _bridge_command_approval(st: TaskState, run: dict[str, Any], command: 
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=_ASK_TIMEOUT_S)
     except asyncio.TimeoutError:
-        await runs.expire_stale_approvals(st.run_id)
+        from runtime.emit import expire_stale_approvals_and_audit as _exp
+        await _exp(st.run_id, force_approval_id=st.approval_id)  # 循环超时 ⇒ 本行必达 timeout
         st.approval_result = "timeout"
     return st.approval_result == "approved"
 
@@ -85,8 +87,10 @@ async def run_container_command(st: TaskState, run: dict[str, Any], command: str
     只读命令直接执行；非只读经 approval_ev 审批（与恢复 tool 同机制）；deny 拒绝。返回给模型的文本结果。
     容器由 run 开启时会话期常驻就位；缺失（未开 run/已回收）返回错误文本，不崩溃。
     """
-    if sandbox_executor.get(st.user_id) is None:
-        return "容器不可用（会话未就绪），命令未执行"
+    # DEF-7：不再按「容器在册」前置拦截——那恰好短路了唯一需要自愈的场景（重启/idle 回收后
+    # executor.run_command 的 _get_or_revive 会现场重建）。只在缺会话上下文时 fail-closed。
+    if not st.run_id or st.sandbox_cfg is None:
+        return "容器不可用（缺少会话上下文），命令未执行"
 
     async def approver() -> bool:
         return await _bridge_command_approval(st, run, command)

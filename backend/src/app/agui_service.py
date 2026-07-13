@@ -11,6 +11,7 @@ wire 契约对齐 @ag-ui/client(0.0.56)：POST RunAgentInput(threadId/runId/mess
 from __future__ import annotations
 
 import asyncio
+import logging
 import json
 import uuid
 from dataclasses import dataclass
@@ -65,6 +66,11 @@ async def start(user: dict[str, Any], run_id: str, body: dict[str, Any]) -> dict
     }
 
 
+log = logging.getLogger("openops.agui")
+
+_cancel_tasks: set[asyncio.Task] = set()  # 断流取消桥 task 强引用（连带 C）
+
+
 def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
     """客户端断流（CopilotChat 停止按钮 / 关页）→ 停止 Agent 运行（取消桥，Part B）。
 
@@ -81,7 +87,14 @@ def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
         except Exception:  # noqa: BLE001 —— 已终态/权限竞态等，尽力而为
             pass
 
-    asyncio.get_running_loop().create_task(_do())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:  # 连带 C：非事件循环上下文的生成器 close()——放弃取消，勿抛
+        log.warning("[OpenOps][agui] 断流取消桥无事件循环上下文，跳过（task=%s）", ctx["task_id"])
+        return
+    t = loop.create_task(_do())
+    _cancel_tasks.add(t)  # 连带 C：强引用防 GC（fire-and-forget task 无引用可能提前回收）
+    t.add_done_callback(_cancel_tasks.discard)
 
 
 async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:

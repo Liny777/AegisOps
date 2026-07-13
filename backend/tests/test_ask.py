@@ -74,3 +74,45 @@ def test_ask_005_cancel_pending_approval_marks_cancelled(client):
     assert any(e["event_type"] == "openops.task.cancelled" for e in events)
     # Direct row detail is not exposed in the run API; pending list empty proves it left pending.
     assert approval["decision"] == "pending"
+
+
+def test_ask_004_timeout_terminal_with_audit(client):
+    """连带 B（31 号 ASK-004）：过期 pending → decide 返回 timeout + approval.timeout 审计有痕。"""
+    import asyncio as _asyncio
+
+    from infra.db import exec1
+
+    run, _task, approval = _start_and_wait_approval(client)
+    aid = approval["approval_request_id"]
+    _asyncio.run(exec1("update sre_approval_request set expire_at=now() - interval '1 minute' "
+                       "where approval_request_id=%(a)s", {"a": aid}))
+    out = unwrap(client.post(f"/api/openops/v1/approvals/{aid}:decide", headers=USER_HEADERS,
+                             json={"client_request_id": "to1", "decision": "approved"}))
+    assert out["decision"] == "timeout"  # 过期优先于本次决策（ASK-004）
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "approval.timeout" for e in events)  # 翻转有审计（修复点）
+
+
+def test_ask_main_loop_timeout_yields_unexecuted_conclusion(client, runtime_backend, monkeypatch):
+    """连带 B：主循环 ASK 超时 → 任务完成且结论为「未执行恢复」（不放行写工具）。"""
+    import pytest as _pytest
+
+    if runtime_backend != "agentscope":
+        _pytest.skip("主循环超时路径仅 agentscope runtime")
+    from runtime import agentscope_runtime as rt
+
+    monkeypatch.setattr(rt, "ASK_TIMEOUT_S", 1.0)
+    run, _task, _approval = _start_and_wait_approval(client)
+    rid = run["agent_run_id"]
+
+    def _done():
+        s = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+        at = s.get("active_task")
+        return at if at and at["status"] in ("completed", "failed") else None
+
+    final = wait_until(_done, timeout=30.0, interval=0.2)
+    assert final["status"] == "completed"
+    approvals = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/approvals", headers=USER_HEADERS))
+    assert approvals == []  # pending 已全部收口
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{rid}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "approval.timeout" for e in events)

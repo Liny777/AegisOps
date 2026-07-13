@@ -187,3 +187,22 @@ def test_sec_s3_user_llm_no_silent_fallback(client, monkeypatch):
     with _pytest.raises(ApiError) as ei:
         _asyncio.run(model_gateway.resolve_runtime_model(str(_uuid.uuid4()), "0026demo01"))
     assert ei.value.code == "MODEL_NOT_AUTHORIZED"
+
+
+def test_def_d_redact_args_and_gateway_event(client):
+    """连带 D（16/30.4）：工具入参 key 级脱敏——敏感 key 打码、字符串值抹 sk-/Bearer 样式。"""
+    from infra.redact import redact_args
+    from runtime.tool_gateway import _args_for_event
+
+    args = {"password": "p@ssw0rd", "api_key": "sk-abcdef123456", "appid": "APP-A",
+            "note": "auth Bearer abcdef.123456 tail", "nested": {"Cookie": "sid=1", "ok": "v"},
+            "arr": [{"token": "t0k3n"}, "sk-zzzzzzzzzz"]}
+    out = redact_args(args)
+    assert out["password"] == "***" and out["api_key"] == "***"
+    assert out["nested"]["Cookie"] == "***" and out["nested"]["ok"] == "v"
+    assert out["arr"][0]["token"] == "***"
+    assert "sk-zzzzzzzzzz" not in str(out) and "Bearer abcdef" not in str(out)
+    assert out["appid"] == "APP-A"  # 业务字段不受影响
+    ev = _args_for_event(args)  # gateway 事件面（进审计/工具卡）同样干净
+    flat = str(ev)
+    assert "p@ssw0rd" not in flat and "sk-abcdef123456" not in flat

@@ -498,3 +498,29 @@ def test_sbx_revive_after_process_restart(client):
         await sandbox_executor.close_all()
 
     asyncio.run(scenario())
+
+
+def test_def7_bash_tool_entry_revives_after_restart(client):
+    """DEF-7：run_container_command 工具入口在容器缺失时自愈重建（旧守卫把自愈短路成死代码）。"""
+    from runtime.sandbox_bash import run_container_command
+    from runtime.task_registry import TaskState
+    from sandbox.executor import executor as sandbox_executor
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "def7", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk_def7", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.sandbox_cfg = {}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"],
+           "framework_session_id": run_row["framework_session_id"]}
+
+    async def scenario():
+        await sandbox_executor.close_all()  # 模拟进程重启/容器回收
+        assert sandbox_executor.get("0026demo01") is None
+        out = await run_container_command(st, run, "echo revived")
+        return out
+
+    out = asyncio.run(scenario())
+    assert "revived" in out and "容器不可用" not in out  # 自愈重建并执行（修复点）

@@ -1006,7 +1006,8 @@ CREATE TABLE IF NOT EXISTS sre_idempotency_key (
   user_id text NOT NULL,
   op text NOT NULL,
   client_request_id text NOT NULL,
-  result_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  request_hash varchar(64),
+  result_json jsonb,
   expire_at timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
   creation_date timestamptz NOT NULL DEFAULT now(),
   last_update_date timestamptz NOT NULL DEFAULT now(),
@@ -1017,7 +1018,8 @@ CREATE TABLE IF NOT EXISTS sre_idempotency_key (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_idempotency_key
   ON sre_idempotency_key (user_id, op, client_request_id) WHERE deleted_at IS NULL;
 COMMENT ON TABLE sre_idempotency_key IS '幂等键（P 块）：同 (user_id, op, client_request_id) 重放返回首个结果，跨进程持久（内存为 L1）；过期行启动时物理清理';
-COMMENT ON COLUMN sre_idempotency_key.result_json IS '首次执行的结果（row_json 后的 JSON），重放原样返回';
+COMMENT ON COLUMN sre_idempotency_key.result_json IS '首次执行的结果（row_json 后的 JSON），重放原样返回；NULL=占位进行中（DEF-3 先占位后执行）';
+COMMENT ON COLUMN sre_idempotency_key.request_hash IS '请求体 sha256（DEF-3/INIT-006）：同 key 不同体 → 409 IDEMPOTENCY_KEY_CONFLICT';
 COMMENT ON COLUMN sre_idempotency_key.expire_at IS '过期时间（默认 7 天）；过期后允许同 key 重新执行';
 
 -- P 块：任务运行态快照（重启孤儿收敛用；内存 task_registry 为热路径，本表为影子快照）
@@ -1087,3 +1089,8 @@ COMMENT ON COLUMN sre_agent_delegation.delegation_status IS 'running / completed
 -- 2026-07-12 会话名称（独立增量文件：migrate-2026-07-12-run-title.sql）
 ALTER TABLE sre_agent_run ADD COLUMN IF NOT EXISTS run_title text;
 COMMENT ON COLUMN sre_agent_run.run_title IS '会话名称：首个任务输入自动起名（前 30 字），用户可改；NULL=未起名（显示「新对话」）';
+
+-- ---- 增量（2026-07-13 缺陷批 DEF-3）：幂等键先占位后执行 ----
+ALTER TABLE sre_idempotency_key ADD COLUMN IF NOT EXISTS request_hash varchar(64);
+ALTER TABLE sre_idempotency_key ALTER COLUMN result_json DROP NOT NULL;
+ALTER TABLE sre_idempotency_key ALTER COLUMN result_json DROP DEFAULT;  -- 旧默认 '{}' 会让占位行被误判「已有结果」

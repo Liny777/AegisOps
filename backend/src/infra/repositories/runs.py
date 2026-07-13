@@ -24,7 +24,10 @@ async def create_run(
     return (await get_run(rid))  # type: ignore[return-value]
 
 
-async def get_run(run_id: str) -> dict[str, Any] | None:
+async def get_run(run_id: str, include_deleted: bool = False) -> dict[str, Any] | None:
+    """include_deleted=True 供审计入口（DEF-5）：软删会话的 run.deleted 事件不能因过滤而永久不可见。"""
+    if include_deleted:
+        return await q_one("select * from sre_agent_run where agent_run_id=%(r)s", {"r": run_id})
     return await q_one(
         "select * from sre_agent_run where agent_run_id=%(r)s and deleted_at is null", {"r": run_id}
     )
@@ -154,6 +157,17 @@ async def cancel_pending_approvals(task_id: str, by: str) -> int:
         where task_id=%(t)s and decision='pending'
         """,
         {"t": task_id, "b": by},
+    )
+
+
+async def force_expire_approval(approval_id: str) -> None:
+    """等待方主循环超时先于行内 expire_at（连带 B）：把该 pending 行置为已过期，
+    交随后的 expire_stale_approvals 统一翻转（timeout+审计单出口，不在此直改 decision）。"""
+    await exec1(
+        "update sre_approval_request set expire_at=now() - interval '1 second', "
+        "last_update_date=now(), last_updated_by='system' "
+        "where approval_request_id=%(a)s and decision='pending'",
+        {"a": approval_id},
     )
 
 
