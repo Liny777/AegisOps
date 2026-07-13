@@ -118,15 +118,14 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     })
     kwargs["headers"] = headers
     if _http_debug():
-        from infra.request_context import client_ip as _cip_dbg
         from infra.request_context import user_cookie
 
         src = ("passthrough" if user_cookie()
                else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
-        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d client_ip=%s IAM-Client-Ip=%s",
-                    src, len(cookie or ""), _cip_dbg() or "(空)", headers.get("IAM-Client-Ip", "(未带)"))
+        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d",
+                    src, len(cookie or ""))
         kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 

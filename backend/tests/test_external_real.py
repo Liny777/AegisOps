@@ -686,6 +686,7 @@ async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
 
     request_context.set_request_user("u1", "sid=user-session")
     request_context.set_request_host("frontend.example")
+    request_context.set_client_ip("10.20.30.40")
     headers = _client_kwargs(_base()).get("headers", {})
     assert headers.get("Cookie") == "sid=user-session"  # 用户透传
     assert "Mozilla/5.0" in headers.get("User-Agent", "")  # 浏览器 UA
@@ -694,8 +695,10 @@ async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
     assert headers.get("Sec-Fetch-Site") == "same-origin"
     assert headers.get("Origin") != "https://frontend.example"
     assert "sid=user-session" not in caplog.text
+    assert "10.20.30.40" not in caplog.text  # 客户端 IP 也不属于允许日志字段
     request_context.set_request_user("", "")
     request_context.set_request_host("")
+    request_context.set_client_ip("")
 
 
 @pytest.mark.asyncio
@@ -765,6 +768,7 @@ def _release_env_file(tmp_path, *, omit=(), **overrides):
         "OPENOPS_ENCRYPTION_KEY": "A" * 43 + "=",
         "OPENOPS_PLATFORM_GLM_API_KEY": "fake-model-key-at-least-16",
         "OPENOPS_IAM_ENABLED": "true",
+        "OPENOPS_TRUSTED_PROXY_CIDRS": "10.0.0.0/8,fd00:1234::/32",
         "OPENOPS_IAM_ACCESS_TOKEN_URL": "https://iam.example/token",
         "OPENOPS_IAM_USERINFO_URL": "https://iam.example/userinfo",
         "OPENOPS_OMODEL": "real",
@@ -834,14 +838,30 @@ def test_release_gate_accepts_fixed_ipv6_iam_target(tmp_path):
     "OPENOPS_IAM_ACCESS_TOKEN_URL",
     "OPENOPS_IAM_USERINFO_URL",
     "OPENOPS_OMODEL_TENANT_ID",
+    "OPENOPS_TRUSTED_PROXY_CIDRS",
 ])
 def test_release_gate_does_not_inherit_openops_values(tmp_path, missing):
     """目标 env 漏项时，即使调用者导出了同名变量也必须失败。"""
-    ambient_value = "https://iam.example/ambient" if missing.endswith("URL") else "8888888888888888"
+    if missing.endswith("URL"):
+        ambient_value = "https://iam.example/ambient"
+    elif missing == "OPENOPS_TRUSTED_PROXY_CIDRS":
+        ambient_value = "10.0.0.0/8"
+    else:
+        ambient_value = "8888888888888888"
     env_file = _release_env_file(tmp_path, omit=(missing,))
     result = _run_release_gate(env_file, ambient={missing: ambient_value})
     assert result.returncode != 0
     assert f"{missing} 未配置" in result.stdout
+
+
+@pytest.mark.parametrize("unsafe_cidrs", [
+    "", "not-a-cidr", "0.0.0.0/0", "128.0.0.0/1", "::/0", "8000::/1",
+])
+def test_release_gate_rejects_unsafe_trusted_proxy_ranges(tmp_path, unsafe_cidrs):
+    result = _run_release_gate(_release_env_file(
+        tmp_path, OPENOPS_TRUSTED_PROXY_CIDRS=unsafe_cidrs))
+    assert result.returncode != 0
+    assert "OPENOPS_TRUSTED_PROXY_CIDRS" in result.stdout
 
 
 def test_ext_omodel_sends_client_ip(monkeypatch):

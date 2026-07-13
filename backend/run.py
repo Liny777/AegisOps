@@ -35,22 +35,31 @@ except ModuleNotFoundError:
     pass
 
 
+def _uvicorn_config():
+    import uvicorn
+
+    return uvicorn.Config(
+        app="main:app",
+        host="0.0.0.0",
+        port=int(os.environ.get("OPENOPS_PORT", "18082")),
+        reload=False,  # 开 reload/workers 会让 uvicorn 改回 ProactorEventLoop 去起子进程
+        workers=1,
+        # 应用自己按 OPENOPS_TRUSTED_PROXY_CIDRS 解析 XFF；必须保留原始 socket peer，禁止
+        # Uvicorn 按 FORWARDED_ALLOW_IPS 提前改写 request.client 后破坏可信代理边界。
+        proxy_headers=False,
+        # 文根（OPENOPS_ROOT_PATH）不走 uvicorn root_path——新版 uvicorn 会把它拼回请求路径，
+        # 网关不剥前缀时会变双前缀 404。改由 main.RootPathShim 在应用层按需剥（两种网关都兼容）。
+        log_level="info",
+    )
+
+
 async def _serve() -> None:
     import uvicorn
 
     loop = asyncio.get_running_loop()
     print(f"[OpenOps] event loop: {type(loop).__name__}")  # 启动即打印，一眼确认是 Selector
 
-    config = uvicorn.Config(
-        app="main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("OPENOPS_PORT", "18082")),
-        reload=False,  # 开 reload/workers 会让 uvicorn 改回 ProactorEventLoop 去起子进程
-        workers=1,
-        # 文根（OPENOPS_ROOT_PATH）不走 uvicorn root_path——新版 uvicorn 会把它拼回请求路径，
-        # 网关不剥前缀时会变双前缀 404。改由 main.RootPathShim 在应用层按需剥（两种网关都兼容）。
-        log_level="info",
-    )
+    config = _uvicorn_config()
     # 用 server.serve()（协程），不用 server.run()/uvicorn.run()——后两者会自建 loop、绕开本入口
     await uvicorn.Server(config).serve()
 

@@ -90,10 +90,10 @@ openops-frontend:latest && docker compose up -d` 即回。可 `docker images ope
 ## 五、后端更新（无镜像，勿容器化——拓扑定稿是代码包 + uvicorn）
 
 ```bash
-cd /opt/openops/backend
-# 覆盖新代码（git pull 或解开新 openops-backend-src.tar.gz；config/ 与 .venv 不动）
-source .venv/bin/activate && pip install -e ".[agentscope]"   # 依赖有变时才需要
-sudo systemctl restart openops-backend && journalctl -u openops-backend -n 20
+# 构建机生成版本化完整包（不含真实 env/venv），目标机按 docs/deploy-intranet.md：
+bash deploy/build-artifacts.sh --backend-only
+# 目标机：校验 sha256 → 解压到 releases/<BUILD_ID> → 门禁/迁移 → 原子切换 current → 重启
+# 禁止把若干 src 文件逐个覆盖进正在运行的目录。
 ```
 
 DDL 有变时**先库后码**：重跑 `sql/openops_v1_core.sql`（幂等）或该次变更的独立迁移脚本。

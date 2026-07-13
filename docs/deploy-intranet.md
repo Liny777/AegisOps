@@ -17,48 +17,100 @@
 ## 一、Mac 侧打包（一条命令）
 
 ```bash
-bash deploy/build-artifacts.sh          # 产出 deploy/artifacts/ 四件 + SHA256SUMS
+bash deploy/build-artifacts.sh                  # 全量：四件 + SHA256SUMS
+bash deploy/build-artifacts.sh --backend-only   # 仅后端：deploy/artifacts/<BUILD_ID>/ 下完整包 + .sha256
 ```
 
 | 工件 | 投递到 | 说明 |
 |---|---|---|
 | openops-frontend-image.tar.gz | 前端机 | nginx+dist 一体镜像（linux/amd64；构建时强制 real，脚本内有防 mock 烘焙断言） |
 | openops-sidecar-image.tar.gz | 前端机 | sidecar 镜像（linux/amd64）。均 gzip：内网单文件上传限 500MB，`docker load` 原生认 .tar.gz |
-| openops-backend-src.tar.gz | 后端机 | 代码包（不含 venv） |
+| openops-backend-src-`<BUILD_ID>`.tar.gz | 后端机 | 两种模式均生成版本化完整包（不含 venv/真实 env；包内有 `BUILD_INFO`） |
 | openops-deploy-conf.tar.gz | 两机 | compose/env 模板/systemd |
 
-## 二、后端机（Linux x64，python3.11+，可选 docker）
+## 二、后端机（Linux x64，python3.11+，版本目录原子发布）
 
 ```bash
-sudo mkdir -p /opt/openops && cd /opt/openops     # 两个工件（backend-src / deploy-conf）先放这里
-tar xzf openops-backend-src.tar.gz               # → backend/ scripts/ docs/
-tar xzf openops-deploy-conf.tar.gz               # → deploy/（systemd unit 在里面）
-cd backend
+# 以下整段须在 bash 中执行；任一校验失败立即停止，禁止继续解压或切换。
+set -euo pipefail
 
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install -e ".[agentscope]"          # 内网 pip 源；沙箱切 docker 再补 ".[sandbox]"
+# 显式指定本次包；不得用“最新文件”通配选择，保证校验对象就是部署对象。
+PKG=/opt/openops/incoming/openops-backend-src-REPLACE_WITH_BUILD_ID.tar.gz
+SUM="${PKG}.sha256"
+test -f "$PKG" -a -f "$SUM"
+EXPECTED_NAME=$(awk 'NR==1 {sub(/^\*/, "", $2); print $2} END {if (NR != 1) exit 1}' "$SUM")
+test "$EXPECTED_NAME" = "$(basename "$PKG")"
+(cd "$(dirname "$PKG")" && sha256sum -c "$(basename "$SUM")")
 
-# 双环境配置（含凭证，已 gitignore；模板内有全量分组注释）
-cp config/openops.test.env.example config/openops.test.env   # 测试机
-# cp config/openops.prod.env.example config/openops.prod.env # 生产机
-vi config/openops.test.env             # PG 六件/GLM Key/ENCRYPTION_KEY/…（⚠*_COOKIE 全部留空——真实环境用 IAM 透传用户登录态，env cookie 仅本地调试）
+# 文件名、校验文件、包内 BUILD_ID 三者一致；BUILD_ID 必须是安全的直接子目录名。
+BUILD_INFO=$(tar -xOf "$PKG" ./BUILD_INFO)
+test "$(printf '%s\n' "$BUILD_INFO" | grep -c '^BUILD_ID=')" -eq 1
+BUILD_ID=$(printf '%s\n' "$BUILD_INFO" | sed -n 's/^BUILD_ID=//p')
+[[ "$BUILD_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{5,94}[A-Za-z0-9]$ ]]
+test "$(basename "$PKG")" = "openops-backend-src-${BUILD_ID}.tar.gz"
+RELEASES=$(realpath -m /opt/openops/releases)
+RELEASE=$(realpath -m "$RELEASES/$BUILD_ID")
+test "$(dirname "$RELEASE")" = "$RELEASES"
+
+# 目录权限：releases 父目录归 root，避免运行用户删除/替换历史发布；安装阶段临时把
+# 新 release 交给 openops 解包和创建独立 venv。共享真实 env 仅 openops 可读写。
+sudo install -d -o root -g openops -m 0750 "$RELEASES"
+sudo install -d -o openops -g openops -m 0700 /opt/openops/shared/config
+# 不使用 install -d/mkdir -p：root 权限下的排他 mkdir 是最终防线；同名目录或悬空链接
+# 已存在时立即失败，绝不重新授权、overlay 或部分改写旧 release。
+sudo mkdir -m 0750 "$RELEASE"
+sudo chown openops:openops "$RELEASE"
+sudo -u openops tar --no-same-owner -xzf "$PKG" -C "$RELEASE"
+sudo -u openops python3.11 -m venv "$RELEASE/.venv"
+sudo -u openops "$RELEASE/.venv/bin/pip" install "$RELEASE/backend[agentscope]"
+
+# 首次从模板创建共享配置；后续版本不覆盖真实 env，权限固定为 0600。
+if ! sudo test -f /opt/openops/shared/config/openops.prod.env; then
+  sudo install -o openops -g openops -m 0600 \
+    "$RELEASE/backend/config/openops.prod.env.example" \
+    /opt/openops/shared/config/openops.prod.env
+fi
+sudo -u openops vi /opt/openops/shared/config/openops.prod.env
+# 必须：IAM=true；oModel 固定 HTTPS 域；两个 tenant 一致；OMODEL/CONSOLE_COOKIE 空；HTTP_DEBUG=0
+sudo -u openops bash "$RELEASE/scripts/release_check.sh" \
+  --production-env /opt/openops/shared/config/openops.prod.env
 
 # 建表（幂等，26 表；GaussDB 保留字已规避）——每个库/schema 一次
 # 已建过表的旧库升级也重跑本文件：尾部「增量迁移」段幂等补齐（07-13 缺陷批新增
 # sre_idempotency_key.request_hash 列 + result_json 去 NOT NULL/DEFAULT，必须跑）
-psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f sql/openops_v1_core.sql
+psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
 
-./run-backend.sh test                  # 前台验证
-curl -s http://127.0.0.1:18082/health  # → {"status":"ok"}
+# 安装完成后冻结发布源码/元数据；运行用户只保留 release 内 venv 的写权限。
+sudo chown -R root:openops \
+  "$RELEASE/backend" "$RELEASE/scripts" "$RELEASE/docs" "$RELEASE/deploy" "$RELEASE/BUILD_INFO"
+sudo chmod -R a-w \
+  "$RELEASE/backend" "$RELEASE/scripts" "$RELEASE/docs" "$RELEASE/deploy" "$RELEASE/BUILD_INFO"
+sudo chown root:openops "$RELEASE"
+sudo chmod 0550 "$RELEASE"
+
+# 同一文件系统内原子切换 current；失败时旧 release 保持完整，可立即回滚
+sudo rm -f /opt/openops/current.next
+sudo ln -s "$RELEASE" /opt/openops/current.next
+sudo mv -Tf /opt/openops/current.next /opt/openops/current
 ```
 
 常驻（systemd）：
 
 ```bash
-sudo cp /opt/openops/deploy/systemd/openops-backend.service /etc/systemd/system/
-# 编辑：EnvironmentFile 指向本机的 openops.test.env 或 openops.prod.env；User 按实际
-sudo systemctl daemon-reload && sudo systemctl enable --now openops-backend
-journalctl -u openops-backend -f       # 看启动横幅（runtime/omodel/mcp 开关一目了然）
+set -euo pipefail                    # 与上一代码块在同一 bash 会话执行
+sudo cp /opt/openops/current/deploy/systemd/openops-backend.service /etc/systemd/system/
+# 测试机把 EnvironmentFile 改为 shared/config/openops.test.env；User 按实际
+sudo systemctl daemon-reload
+sudo systemctl enable openops-backend
+sudo systemctl restart openops-backend
+
+# 三点必须是同一 BUILD_ID：包内元数据、进程 cwd、启动横幅
+cat /opt/openops/current/BUILD_INFO
+test "$(readlink -f /opt/openops/current)" = "$RELEASE"
+PID=$(systemctl show -p MainPID --value openops-backend)
+test "$(readlink -f "/proc/$PID/cwd")" = "$RELEASE/backend"
+journalctl -u openops-backend -n 50 | grep "build=$BUILD_ID"
+curl -s http://127.0.0.1:18082/health    # → {"status":"ok"}
 ```
 
 ## 三、前端机（Linux x64，仅需 docker）
@@ -137,9 +189,14 @@ location /aegisback/ {
 自剥前缀（网关剥不剥都兼容），并回写 root_path 使重定向/docs URL 带前缀；sidecar 直连
 IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，
 遇不剥前缀的网关变双前缀 404（内网实测）。
-**IAM 回跳**：`OPENOPS_IAM_LOGIN_URL` / `OPENOPS_IAM_SIGNOUT_URL` 及 token/userinfo URL 均支持
-`{host}` 占位符（运行时替换为请求域名，测试/生产双域名共用一份配置），例：
+**IAM 回跳**：仅浏览器导航用的 `OPENOPS_IAM_LOGIN_URL` / `OPENOPS_IAM_SIGNOUT_URL` 支持
+`{host}` 占位符。携带 Cookie/token 的 access-token 与 userinfo URL 必须是固定 HTTPS 地址，禁止
+请求域名替换。回跳示例：
 `OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F`。
+
+**客户端 IP 信任边界**：真实 env 必须把 `OPENOPS_TRUSTED_PROXY_CIDRS` 配成实际网关/反代网段，
+避免过宽范围（门禁要求 IPv4 至少 `/8`、IPv6 至少 `/16`）。后端仅在 peer 属于该列表时解析 XFF，并从右向左剥离可信代理；
+最外层入口仍应覆盖客户端自带 XFF，网络 ACL 应禁止用户直达后端 `18082`。
 
 **域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；
 `https://xxxx.com/aegisops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
@@ -160,6 +217,7 @@ IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版
 ## 六、升级
 
 - 前端/sidecar：`docker load` 新镜像 → `docker compose up -d`（镜像 tag latest 就地翻新；浏览器强刷）；
-- 后端：解压新代码包覆盖（config/ 与 .venv 不动）→ `pip install -e ".[agentscope]"`（依赖有变时）
-  → `systemctl restart openops-backend`；DDL 有新表时先重跑 core.sql（幂等）。
-- 上线前过一遍 `bash scripts/release_check.sh` + docs/release-checklist.md。
+- 后端：新包解压到新的 `/opt/openops/releases/<BUILD_ID>`，生产 env 门禁和迁移通过后再原子切换
+  `/opt/openops/current`，随后 `systemctl restart openops-backend`；禁止逐文件覆盖。回滚只需把 `current`
+  原子指回上一个完整 release 并重启。
+- 上线前过一遍 `bash scripts/release_check.sh --production-env <真实 env>` + docs/release-checklist.md。

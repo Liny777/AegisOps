@@ -1,6 +1,8 @@
 # 发布检查清单（B9，2026-07-13）
 
-自动项跑 `bash scripts/release_check.sh`；下表为完整口径（含手动项）。
+静态自动项跑 `bash scripts/release_check.sh`；上线门禁必须再跑
+`bash scripts/release_check.sh --production-env backend/config/openops.prod.env`。脚本只显示设置状态，
+不输出变量值。下表为完整口径（含手动项）。
 
 ## 1. 数据库
 
@@ -17,11 +19,19 @@
 
 ## 3. IAM（OPENOPS_IAM_ENABLED=true 时）
 
-- [ ] `OPENOPS_IAM_ACCESS_TOKEN_URL` / `OPENOPS_IAM_USERINFO_URL` 已配并连通（curl 带真 cookie 验 code=201）
+- [ ] `OPENOPS_IAM_ACCESS_TOKEN_URL` / `OPENOPS_IAM_USERINFO_URL` 是固定 HTTPS 地址，不含 userinfo/query/fragment、`{host}` 或其他模板，并已连通
+- [ ] `OPENOPS_TRUSTED_PROXY_CIDRS` 只包含实际网关/反代网段（IPv4 至少 `/8`、IPv6 至少 `/16`）；后端从 XFF 右侧剥离可信代理，客户端伪造首段不会用于 IAM/oModel 会话绑 IP
+- [ ] 网络 ACL 禁止用户直达后端 `18082`；最外层网关应覆盖客户端自带 XFF，多层代理均追加自己的 peer 地址
 - [ ] `OPENOPS_IAM_LOGIN_KEY_FIELD` / `OPENOPS_IAM_DISPLAY_NAME_FIELD` 与 IAM userinfo 真实字段对齐（支持点分嵌套）
 - [ ] 可选：`OPENOPS_IAM_LOGIN_URL`（401 引导跳转）/ `OPENOPS_IAM_SIGNOUT_URL`（登出）
 - [ ] 白名单：管理员账号先入库（`sre_user_whitelist`），再由管理台开通其他用户
 - [ ] mock 头在 IAM 开启后不再生效（`X-OpenOps-Mock-*` 只在 disabled 分支读取）
+- [ ] `OPENOPS_OMODEL_TENANT_ID` 与 `OPENOPS_APPTREE_ENTERPRISE_ID` 显式配置为当前企业且一致
+- [ ] 所有静态 `OPENOPS_*_COOKIE` 未设置；oModel/console 系使用当前 IAM 用户 Cookie 透传
+- [ ] `OPENOPS_OMODEL_BASE_URL` 为无 userinfo/query/fragment 的固定 HTTPS 域名且不含 `{host}`
+- [ ] `OPENOPS_HTTP_DEBUG=0`、`OPENOPS_TLS_INSECURE=0`、`OPENOPS_HTTP_TRUST_ENV=0`
+- [ ] `OPENOPS_APPTREE_USER_ID` / `OPENOPS_SCOPE_OVERRIDE_APPIDS` 等联调覆盖项未设置
+- [ ] 初始化页实建 workspace：POST 成功、owner 正确、workspace tenant 为当前企业、跨租 scopes 保留各自 tenant
 
 ## 4. 禁用入口核对（V1 口径）
 
@@ -41,6 +51,10 @@
 
 ## 7. 部署形态（上线前置，34 号 §三·④）
 
+- [ ] `bash deploy/build-artifacts.sh --backend-only` 生成版本化后端包和 `.sha256`；包内 `BUILD_INFO` 与文件名一致
+- [ ] 后端解压到 `/opt/openops/releases/<BUILD_ID>`，原子切换 `/opt/openops/current`；禁止逐文件覆盖旧目录
+- [ ] `/opt/openops/releases` 与发布根目录归 `root:openops` 且运行用户不可写；仅 release 内 `.venv` 保留必要写权限
+- [ ] 重启后进程 cwd 位于同一 release，启动日志 `build=<BUILD_ID>` 与 `BUILD_INFO` 一致
 - [ ] 反代调优已烘焙进 openops-frontend 镜像（/api 与 /api/copilotkit 关缓冲+3600s 超时）——升级镜像后 `docker exec openops-frontend nginx -T` 抽查生效即可
 - [ ] 审计 30 天保留清理任务（DBA 排期）
 - [ ] 沙箱镜像离线预构建 + `docker load`（Linux 阶段）

@@ -108,6 +108,7 @@ class _FakeIam:
 
 
 def _iam_env(monkeypatch, **extra):
+    from api import deps
     from infra.external import iam_client
 
     monkeypatch.setenv("OPENOPS_IAM_ENABLED", "1")
@@ -116,6 +117,7 @@ def _iam_env(monkeypatch, **extra):
     for k, v in extra.items():
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(iam_client.httpx, "AsyncClient", _FakeIam)
+    monkeypatch.setattr(deps, "_client_ip", lambda _request: "127.0.0.1")
     iam_client.clear_cache()
     _FakeIam.calls = {"token": 0, "userinfo": 0}
 
@@ -186,8 +188,11 @@ def test_iam_b9_double_step_and_cache(client, monkeypatch):
 
 
 def test_iam_cookie_reaches_omodel_create_with_target_origin(client, monkeypatch):
+    from api import deps
+
     _iam_env(monkeypatch)
     captured = _install_iam_omodel_http(monkeypatch)
+    monkeypatch.setattr(deps, "_client_ip", lambda _request: "10.20.30.40")
     monkeypatch.setenv("OPENOPS_OMODEL", "real")
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
     monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-CURRENT")
@@ -210,6 +215,7 @@ def test_iam_cookie_reaches_omodel_create_with_target_origin(client, monkeypatch
     assert response.status_code == 200
     assert response.json()["data"]["workspace_id"] == "0026demo01-ws-api0001"
     assert captured["gets"][0]["headers"]["Cookie"] == cookie
+    assert captured["gets"][0]["headers"]["IAM-Client-Ip"] == "10.20.30.40"
     post = captured["posts"][0]
     assert post["url"] == "https://console.example/omodel/api/v1/workspaces"
     assert post["headers"]["Cookie"] == cookie  # 用户登录态透传
@@ -217,6 +223,8 @@ def test_iam_cookie_reaches_omodel_create_with_target_origin(client, monkeypatch
     assert post["headers"]["Origin"] == "https://console.example"  # CSRF 同源头（从目标 base 派生）
     assert post["headers"]["Referer"] == "https://console.example/"
     assert post["headers"]["Sec-Fetch-Site"] == "same-origin"
+    assert post["headers"]["IAM-Client-Ip"] == "10.20.30.40"
+    assert post["headers"]["X-Forwarded-For"] == "10.20.30.40"
     assert post["headers"]["Origin"] != "https://frontend.example"
     assert captured["contexts"] == [("0026demo01", cookie)]
     assert post["json"]["config"]["workspace_ui"] == {
@@ -313,6 +321,41 @@ def test_iam_browser_host_placeholder_substitution(monkeypatch):
     assert iam_client.browser_host(req3) == ""
 
 
+def test_iam_client_ip_uses_trusted_proxy_chain(monkeypatch):
+    from types import SimpleNamespace
+
+    from api.deps import _client_ip
+
+    monkeypatch.setenv("OPENOPS_TRUSTED_PROXY_CIDRS", "10.0.0.0/8,fd00:1234::/32")
+    # 非可信直连：忽略伪造 XFF，使用真实 peer。
+    assert _client_ip(SimpleNamespace(
+        headers={"x-forwarded-for": "192.0.2.99"},
+        client=SimpleNamespace(host="198.51.100.7"))) == "198.51.100.7"
+    # 可信两层代理：从右向左跳过可信段，取实际客户端；最左伪造值不会生效。
+    assert _client_ip(SimpleNamespace(
+        headers={"x-forwarded-for": "192.0.2.99, 198.51.100.7, 10.0.0.9"},
+        client=SimpleNamespace(host="10.0.0.8"))) == "198.51.100.7"
+    # 可信代理但畸形 XFF 无法确定用户 IP，必须 fail-closed。
+    assert _client_ip(SimpleNamespace(
+        headers={"x-forwarded-for": "spoofed.example"},
+        client=SimpleNamespace(host="10.0.0.8"))) is None
+    # IPv6 同样按可信链解析并规范化。
+    assert _client_ip(SimpleNamespace(
+        headers={"x-forwarded-for": "2001:0db8::1, fd00:1234::9"},
+        client=SimpleNamespace(host="fd00:1234::8"))) == "2001:db8::1"
+
+
+def test_iam_missing_trusted_client_ip_fails_before_upstream(client, monkeypatch):
+    from api import deps
+
+    _iam_env(monkeypatch)
+    monkeypatch.setattr(deps, "_client_ip", lambda _request: None)
+    response = client.get("/api/openops/v1/me", headers={"Cookie": "sid=no-trusted-ip"})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "IAM_UPSTREAM"
+    assert _FakeIam.calls == {"token": 0, "userinfo": 0}
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad_target", [
     "http://iam.internal/token",
@@ -348,6 +391,27 @@ async def test_iam_cached_identity_does_not_mask_target_drift(monkeypatch):
     with pytest.raises(iam_client.IamError) as exc:
         await iam_client.verify("sid=cached", "127.0.0.1")
     assert exc.value.status == 502
+
+
+@pytest.mark.asyncio
+async def test_iam_cache_is_bound_to_client_ip(monkeypatch):
+    """同 Cookie 换 IP 必须重新打 IAM，不能复用已绑定其他 IP 的身份缓存。"""
+    from infra.external import iam_client
+
+    _iam_env(monkeypatch)
+    _FakeIam.script = {
+        "token": (200, {"code": "201", "access_token": "ip-bound-test-token"}),
+        "userinfo": (200, {"id": "user-1", "name": "User One"}),
+    }
+    await iam_client.verify("sid=ip-bound", "10.20.30.40")
+    await iam_client.verify("sid=ip-bound", "10.20.30.40")
+    assert _FakeIam.calls["token"] == 1
+
+    _FakeIam.script["token"] = (200, {"code": "403"})
+    with pytest.raises(iam_client.IamError) as exc:
+        await iam_client.verify("sid=ip-bound", "10.20.30.41")
+    assert exc.value.status == 401
+    assert _FakeIam.calls["token"] == 2
 
 
 def test_console_cookie_passthrough_priority(monkeypatch):

@@ -5,6 +5,12 @@ import pytest
 from conftest import USER_HEADERS, unwrap
 
 
+def test_run_disables_uvicorn_proxy_header_rewrite():
+    import run
+
+    assert run._uvicorn_config().proxy_headers is False
+
+
 def test_init_002_lists_template_and_ready_workspaces(client):
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
     assert templates[0]["template_key"] == "sensai_fast_recovery"

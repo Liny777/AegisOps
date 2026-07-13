@@ -68,9 +68,18 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - `POST /api/openops/v1/admin/users/whitelist`
 - `GET /api/openops/v1/admin/sandbox`
 - `PUT /api/openops/v1/admin/sandbox`
+
 - `GET /api/openops/v1/admin/models`
 - `POST /api/openops/v1/admin/models`
 - `GET /api/openops/v1/admin/audit/recent`
+
+### 创建系统范围的上游错误
+
+`POST /api/openops/v1/workspaces` 的成功信封不变。oModel 创建失败按依赖语义返回：
+
+- `OMODEL_AUTH_FAILED`：HTTP 502、不可重试；表示 oModel Cookie/CSRF 同源校验拒绝，不触发 OpenOps 登录跳转。
+- `VALIDATION_FAILED`：HTTP 400、不可重试；表示 oModel 拒绝 workspace 参数。
+- `OMODEL_UPSTREAM`：网络或 5xx 为 HTTP 502，超时为 HTTP 504；可重试。
 
 ## 事件口径
 

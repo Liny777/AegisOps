@@ -8,7 +8,7 @@
   / display_name（OPENOPS_IAM_DISPLAY_NAME_FIELD 默认 `name`，缺失回退 login_key）。
 
 会话模型：无自签 session cookie——每请求都校验，进程内 TokenCache
-（key=SHA-256(cookie)，TTL OPENOPS_IAM_CACHE_TTL_S 默认 300s，上限 1024 条）内免打 IAM。
+（key=SHA-256(cookie)+规范化客户端 IP，TTL OPENOPS_IAM_CACHE_TTL_S 默认 300s，上限 1024 条）内免打 IAM。
 失败语义：401（code≠201 / 未返回用户标识）/ 502（IAM 不可达或非 200）——白名单 403 在 deps 层裁决。
 OPENOPS_IAM_ENABLED=false（默认）时本模块不被调用（deps 走 X-OpenOps-Mock-* 零回归）。
 Cookie / token 绝不入日志与错误信息（SEC-001 同规矩）。
@@ -30,7 +30,7 @@ from infra.external.mcp_registry_client import console_tls_verify, http_trust_en
 
 log = logging.getLogger("openops.iam")
 
-_CACHE: dict[str, tuple[float, dict[str, str]]] = {}  # sha256(cookie) → (expire_at, identity)
+_CACHE: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}  # (sha256(cookie), client_ip) → identity
 _CACHE_MAX = 1024
 
 
@@ -87,7 +87,9 @@ def clear_cache(cookie_header: str | None = None) -> None:
     if cookie_header is None:
         _CACHE.clear()
     else:
-        _CACHE.pop(hashlib.sha256(cookie_header.encode()).hexdigest(), None)
+        digest = hashlib.sha256(cookie_header.encode()).hexdigest()
+        for key in [key for key in _CACHE if key[0] == digest]:
+            _CACHE.pop(key, None)
 
 
 def _valid_hostname(hostname: str) -> bool:
@@ -133,15 +135,19 @@ async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
     # 先验配置再查缓存：配置漂移必须立即 fail-closed，不能被旧身份缓存暂时掩盖。
     token_url = _fixed_https_target("OPENOPS_IAM_ACCESS_TOKEN_URL")
     userinfo_url = _fixed_https_target("OPENOPS_IAM_USERINFO_URL")
-    key = hashlib.sha256(cookie_header.encode()).hexdigest()
+    try:
+        normalized_ip = str(ipaddress.ip_address(client_ip or ""))
+    except ValueError:
+        normalized_ip = ""
+    key = (hashlib.sha256(cookie_header.encode()).hexdigest(), normalized_ip)
     hit = _CACHE.get(key)
     now = time.monotonic()
     if hit and hit[0] > now:
         return hit[1]
 
     base_headers = {"Accept": "application/json", "Cookie": cookie_header}
-    if client_ip:
-        base_headers["IAM-Client-Ip"] = client_ip
+    if normalized_ip:
+        base_headers["IAM-Client-Ip"] = normalized_ip
     try:
         async with httpx.AsyncClient(timeout=10, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             # 步 1：cookie 换 access_token（GET，无 body；code 必须是字符串 "201"）
