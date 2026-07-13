@@ -29,6 +29,17 @@ function WhitelistGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/** 初始化向导守卫：白名单 + **已有 Agent 就跳工作台**（无论怎么进到 /init：刷新/书签/
+ * 向导完成后 URL 残留，只在真无实例时才显示向导，避免老用户重复走初始化）。 */
+function InitGuard({ children }: { children: ReactNode }) {
+  const { me, loading, currentAgentId } = useApp();
+  if (loading || !me) return <Loading />;
+  if (!me.whitelisted) return <Navigate to="/not-whitelisted" replace />;
+  if (me.has_instances)
+    return <Navigate to={`/agent-teams/${me.recent_instance_id ?? currentAgentId}/chat`} replace />;
+  return <>{children}</>;
+}
+
 function RoleGuard({ children }: { children: ReactNode }) {
   const { me, loading } = useApp();
   if (loading || !me) return <Loading />;
@@ -45,7 +56,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomeRedirect />} />
             <Route path="/not-whitelisted" element={<NotWhitelisted />} />
-            <Route path="/init" element={<WhitelistGuard><InitWizard /></WhitelistGuard>} />
+            <Route path="/init" element={<InitGuard><InitWizard /></InitGuard>} />
 
             {/* 鉴权区外壳（左导航 + 主区） */}
             <Route element={<WhitelistGuard><AppShell /></WhitelistGuard>}>
