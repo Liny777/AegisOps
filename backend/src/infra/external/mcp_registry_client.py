@@ -38,13 +38,16 @@ def console_api_prefix() -> str:
 
 
 def console_cookie(specific_env: str) -> str:
-    """console 系 IAM 会话 cookie 统一读取：**请求内用户登录态优先**（IAM 开启时 deps 写入
-    contextvar——umodel/console 校验的正是用户这份 cookie，权限口径天然对齐，且免维护服务态
-    cookie）＞专属 env ＞共享 `OPENOPS_CONSOLE_COOKIE`（后台无请求上下文路径的兜底：reconcile
-    循环、启动收敛等）。"""
+    """console 系 IAM 会话 cookie 统一读取：专属 env ＞共享 `OPENOPS_CONSOLE_COOKIE` ＞
+    请求内用户登录态（IAM 开启时 deps 写入 contextvar）。
+
+    env 优先是**跨域现实**（2026-07-13 内网实锤）：OpenOps 挂 console.his-op-beta、umodel 挂
+    wesee.console.hissit——用户浏览器带的是前者的 cookie，对后者就是 Not logged in，必须用
+    运维配置的对端域会话（env）。用户 cookie 只在「目标与 OpenOps 同域且未配 env」时作兜底
+    （免维护服务态 cookie）；后台无请求上下文路径（reconcile/启动收敛）天然只有 env 可用。"""
     from infra.request_context import user_cookie
 
-    return user_cookie() or os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or ""
+    return os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or user_cookie() or ""
 
 
 def _console_headers() -> dict[str, str]:

@@ -198,17 +198,19 @@ def test_iam_host_placeholder_substitution(monkeypatch):
     assert iam_client.extract_host(req3) == ""
 
 
-def test_console_cookie_prefers_request_user_cookie(monkeypatch):
-    """连带（B9 cookie 透传）：请求内用户登录态 > 专属 env > 共享 env；上下文外回退 env。"""
+def test_console_cookie_env_over_user_cookie(monkeypatch):
+    """连带（B9 cookie 口径）：专属 env > 共享 env > 用户登录态兜底——跨域现实（OpenOps 与
+    umodel 不同域，用户 cookie 对 umodel 无效）要求 env 显式配置永远赢。"""
     from infra import request_context
     from infra.external.mcp_registry_client import console_cookie
 
     monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "svc-shared")
     monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "svc-omodel")
-    request_context.set_user_cookie("")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"   # 无用户上下文 → 专属 env
-    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"   # → 共享 env
     request_context.set_user_cookie("iam-session=user-cookie")
-    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam-session=user-cookie"  # 用户态优先
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"   # 专属 env 永远赢
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"   # 共享 env 次之
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam-session=user-cookie"  # 都没配才用用户态
     request_context.set_user_cookie("")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == ""
