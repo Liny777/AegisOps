@@ -22,8 +22,8 @@ bash deploy/build-artifacts.sh          # 产出 deploy/artifacts/ 四件 + SHA2
 
 | 工件 | 投递到 | 说明 |
 |---|---|---|
-| openops-frontend-image.tar | 前端机 | nginx+dist 一体镜像（linux/amd64；构建时强制 real，脚本内有防 mock 烘焙断言） |
-| openops-sidecar-image.tar | 前端机 | sidecar 镜像（linux/amd64），`docker load` |
+| openops-frontend-image.tar.gz | 前端机 | nginx+dist 一体镜像（linux/amd64；构建时强制 real，脚本内有防 mock 烘焙断言） |
+| openops-sidecar-image.tar.gz | 前端机 | sidecar 镜像（linux/amd64）。均 gzip：内网单文件上传限 500MB，`docker load` 原生认 .tar.gz |
 | openops-backend-src.tar.gz | 后端机 | 代码包（不含 venv） |
 | openops-deploy-conf.tar.gz | 两机 | compose/env 模板/systemd |
 
@@ -67,8 +67,8 @@ journalctl -u openops-backend -f       # 看启动横幅（runtime/omodel/mcp �
 # 0. 若此前用过宿主机 nginx 方案：先 systemctl stop nginx（80 端口让给容器）
 
 # 1. 两个镜像
-docker load -i openops-frontend-image.tar
-docker load -i openops-sidecar-image.tar
+docker load -i openops-frontend-image.tar.gz
+docker load -i openops-sidecar-image.tar.gz
 
 # 2. compose + 两个 env（唯一必改项都是后端机地址）
 mkdir -p /opt/openops/frontend && cd /opt/openops/frontend

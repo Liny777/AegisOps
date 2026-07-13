@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Mac 侧一键打包内网部署工件（deploy/artifacts/）：
-#   ① openops-frontend-image.tar     前端一体镜像 nginx+dist（linux/amd64；测试/生产共用，
+#   ① openops-frontend-image.tar.gz  前端一体镜像 nginx+dist（linux/amd64；测试/生产共用，
 #                                    后端机地址经 env 注入 nginx 模板，不烘焙进镜像）
-#   ② openops-sidecar-image.tar      sidecar 镜像（linux/amd64，内网 docker load）
+#   ② openops-sidecar-image.tar.gz   sidecar 镜像（linux/amd64）
+#   镜像均 gzip（docker load 原生认 .tar.gz）——内网单文件上传限 500MB，sidecar 裸 tar 998M 超限
 #   ③ openops-backend-src.tar.gz     后端代码包（内网 venv + pip 装依赖）
 # 用法：bash deploy/build-artifacts.sh [版本标签，默认 git short sha]
 set -euo pipefail
@@ -24,15 +25,15 @@ rm -rf deploy/frontend/dist && cp -R frontend/dist deploy/frontend/dist
 docker build --platform linux/amd64 -f deploy/frontend/Dockerfile \
   -t "openops-frontend:${VER}" -t openops-frontend:latest deploy/frontend
 rm -rf deploy/frontend/dist
-docker save -o "$OUT/openops-frontend-image.tar" "openops-frontend:${VER}" openops-frontend:latest
-echo "   → $OUT/openops-frontend-image.tar"
+docker save "openops-frontend:${VER}" openops-frontend:latest | gzip > "$OUT/openops-frontend-image.tar.gz"
+echo "   → $OUT/openops-frontend-image.tar.gz"
 
 echo "== ② sidecar 镜像（linux/amd64）=="
 # 用 docker 引擎默认 builder（容器驱动的自建 buildx builder 可能无网导致 DeadlineExceeded）
 docker build --platform linux/amd64 -f deploy/sidecar/Dockerfile \
   -t "openops-sidecar:${VER}" -t openops-sidecar:latest frontend/
-docker save -o "$OUT/openops-sidecar-image.tar" "openops-sidecar:${VER}" openops-sidecar:latest
-echo "   → $OUT/openops-sidecar-image.tar"
+docker save "openops-sidecar:${VER}" openops-sidecar:latest | gzip > "$OUT/openops-sidecar-image.tar.gz"
+echo "   → $OUT/openops-sidecar-image.tar.gz"
 
 echo "== ③ 后端代码包 =="
 tar -czf "$OUT/openops-backend-src.tar.gz" \
