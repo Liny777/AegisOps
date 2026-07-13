@@ -5,8 +5,11 @@
 FROM node:20-alpine
 WORKDIR /app
 COPY package.json package-lock.json ./
-# 内网零外呼：镜像在外网侧构建完成后 docker save/load 投递
-RUN npm ci --omit=dev --no-audit --no-fund
+# 外网侧构建：不传 NPM_REGISTRY，走默认源；
+# 内网侧构建：--build-arg NPM_REGISTRY=<内网 npm 源>（docs/build-images-intranet.md）
+ARG NPM_REGISTRY=
+RUN if [ -n "$NPM_REGISTRY" ]; then npm config set registry "$NPM_REGISTRY"; fi \
+ && npm ci --omit=dev --no-audit --no-fund
 COPY server/ server/
 COPY tsconfig.json ./
 ENV COPILOTKIT_RUNTIME_HOST=0.0.0.0 \
