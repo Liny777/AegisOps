@@ -46,8 +46,30 @@ def _base() -> str:
     该请求会携带当前用户的 IAM Cookie，目标域不得由 Host/Origin/X-Forwarded-Host 等请求头
     决定。历史 `{host}` 配置在这里 fail-closed，发布环境必须显式写固定绝对地址。
     """
-    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").split("#", 1)[0].strip().rstrip("/")
+    raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip().rstrip("/")
     return "" if "{host}" in raw else raw
+
+
+def _target_info(base: str) -> tuple[Any, str, str]:
+    """校验 Cookie 出站目标，并返回 parsed URL、Origin、脱敏 host[:port]。"""
+    from urllib.parse import urlparse
+
+    from infra.external.omodel_client import OModelError
+
+    target = urlparse(base)
+    try:
+        port = target.port
+    except ValueError as e:
+        raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 端口无效") from e
+    if (target.scheme not in ("http", "https") or not target.hostname
+            or target.username is not None or target.password is not None
+            or target.query or target.fragment or target.params):
+        raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 必须是无凭据、查询或片段的固定绝对地址")
+    hostname = target.hostname
+    authority = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        authority = f"{authority}:{port}"
+    return target, f"{target.scheme}://{authority}", authority
 
 
 def _client_kwargs(base: str) -> dict[str, Any]:
@@ -55,26 +77,22 @@ def _client_kwargs(base: str) -> dict[str, Any]:
 
     UA 与 Origin/Referer 是两层独立网关校验，必须同时保留；后者绝不复制客户端传入值。
     """
-    from urllib.parse import urlparse
-
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
+    target, origin, target_host = _target_info(base)
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
     headers: dict[str, str] = {"User-Agent": _BROWSER_UA}  # 必带：见 _BROWSER_UA 注释
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         headers["Cookie"] = cookie
-    target = urlparse(base)
-    if target.scheme in ("http", "https") and target.netloc:
-        origin = f"{target.scheme}://{target.netloc}"
-        headers.update({
-            "Origin": origin,
-            "Referer": origin + "/",
-            "Sec-Fetch-Site": "same-origin",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Dest": "empty",
-        })
+    headers.update({
+        "Origin": origin,
+        "Referer": origin + "/",
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+    })
     kwargs["headers"] = headers
     if _http_debug():
         from infra.request_context import user_cookie
@@ -84,7 +102,10 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
         log.warning("[OpenOps][omodel][debug] target_host=%s cookie_src=%s cookie_len=%d",
-                    target.netloc or "-", src, len(cookie or ""))
+                    target_host, src, len(cookie or ""))
+        # ⚠危险：仅本地联调，把后端实际透传的完整 cookie 打出来供逐字节对比。绝不上生产（会泄露会话）。
+        if os.getenv("OPENOPS_UNSAFE_LOG_COOKIE", "").strip() == "1":
+            log.warning("[OpenOps][omodel][UNSAFE] 完整出站 cookie（%d）：%s", len(cookie or ""), cookie or "")
         kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 
@@ -223,9 +244,9 @@ async def list_workspaces() -> list[dict[str, Any]]:
             payload = r.json()
             items = _extract_ws_items(payload)  # 多形状兼容：{items}/裸数组/{data:{items}}/{data:[]}
             if _http_debug():
-                log.warning("[OpenOps][omodel][debug] list: status=%s shape=%s count=%d raw=%s",
+                log.warning("[OpenOps][omodel][debug] list status=%s shape=%s count=%d request_id=%s",
                             r.status_code, type(payload).__name__, len(items),
-                            str(payload)[:600] if not items else "(有数据，略)")
+                            _response_request_id(r) or "-")
             return [_map_metadata(md) for md in items if isinstance(md, dict)]
     except Exception as e:  # noqa: BLE001
         if _http_debug():
