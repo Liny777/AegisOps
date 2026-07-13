@@ -13,7 +13,9 @@ OUT="deploy/artifacts"
 rm -rf "$OUT" && mkdir -p "$OUT"   # 清旧工件——陈旧命名/中途失败残留不得混进 SHA256SUMS
 
 echo "== ① 前端一体镜像（nginx+dist；构建强制 real——.env.local 的 mock 会被 vite build 读到，进程 env 压制）=="
-( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui npm run build )
+# 文根（域名部署 xxxx.com/aegisops·/aegisback，与 nginx.conf.template 文根段耦合，换文根两处同改）
+( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui \
+  VITE_OPENOPS_BASE=/aegisops/ VITE_OPENOPS_API_BASE=/aegisback/api npm run build )
 # 防 mock 烘焙断言：API_MODE=real 时 mock facade 会被常量折叠+树摇整体移除——
 # dist 里出现 mock 指纹字符串 = 烘焙错了（.env.local 的 mock 污染）
 if grep -rq "mock 演示" frontend/dist/assets 2>/dev/null; then

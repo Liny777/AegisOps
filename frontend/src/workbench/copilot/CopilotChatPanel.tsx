@@ -25,7 +25,7 @@ export function CopilotChatPanel({ runId, instanceId }: { runId: string; instanc
   return (
     <CopilotKit
       key={runId}
-      runtimeUrl="/api/copilotkit"
+      runtimeUrl={`${import.meta.env.BASE_URL}api/copilotkit`}
       agent={AGENT_ID}
       headers={identityHeaders}
       onError={(event) => console.error("[CopilotKit]", event)}

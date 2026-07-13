@@ -7,6 +7,7 @@ import { api, API_MODE } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
 import { approvalToHitl, eventToNode, groupNodes } from "../lib/api/projection";
+import { API_BASE } from "../lib/api/client";
 import type {
   ActivityNode,
   ChatMessage,
@@ -221,7 +222,7 @@ export function Workbench() {
       }
       await refresh(rid);
       // SSE 通道保留：被动更新（他端触发 / 刷新后接续运行中任务）。agui 主动流与之按 event_id 去重。
-      handle = subscribeSse(`/api/openops/v1/agent-runs/${rid}/events/stream`, {
+      handle = subscribeSse(`${API_BASE}/openops/v1/agent-runs/${rid}/events/stream`, {
         onStateChange: setConn,
         onResync: () => void refresh(rid),
         onEvent: (raw) => handleOpenOpsEvent(raw as OpenOpsEvent),

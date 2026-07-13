@@ -38,8 +38,10 @@
 cd <仓库根>
 VER=$(git rev-parse --short HEAD 2>/dev/null || date +%m%d%H%M)
 
-# 1. 构建 dist —— 必须进程 env 强制 real（.env.local 若有 mock 会被 vite 读到烘焙进包）
-( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui npm run build )
+# 1. 构建 dist —— 必须进程 env 强制 real（.env.local 若有 mock 会被 vite 读到烘焙进包）；
+#    文根两 env 与 deploy/frontend/nginx.conf.template 文根段耦合，换文根两处同改
+( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui \
+  VITE_OPENOPS_BASE=/aegisops/ VITE_OPENOPS_API_BASE=/aegisback/api npm run build )
 
 # 2. 防 mock 烘焙断言（命中即构建作废，检查上一步 env）
 if grep -rq "mock 演示" frontend/dist/assets; then echo "✗ dist 含 mock 指纹"; exit 1; fi

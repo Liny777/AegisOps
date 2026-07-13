@@ -100,6 +100,44 @@ TLS：内网证书就绪后挂载证书目录 + 以自有 conf 覆盖模板（co
 规则：`run-backend.sh test|prod` 选文件；systemd 用 `EnvironmentFile` 指同一份；实值 env 文件
 永不入 git（.gitignore 已拦）。frontend 与 sidecar 镜像**不要**按环境重打——地址全在 env 注入层。
 
+## 四½、域名与文根（xxxx.com/aegisops · xxxx.com/aegisback）
+
+镜像 dist 已烘焙前端文根 `base=/aegisops/`、后端 API 前缀 `/aegisback/api`（build-artifacts.sh
+注入；换文根须同改 nginx.conf.template 文根段并重打前端镜像）。IP 直访与域名访问同时可用
+（`http://前端机IP/` 会 302 到 `/aegisops/`）。
+
+**给运维的公司网关规则（两条，注意不对称）**：
+
+```nginx
+# ① 前端：不 strip（前端机 nginx 自己剥前缀）
+location /aegisops {
+    proxy_pass http://<前端机IP>:80;
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+# ② 后端：strip（proxy_pass 带尾斜杠剥 /aegisback）——⚠实测本栈 uvicorn 会把 root_path
+#    拼回请求路径，后端只认剥掉前缀后的裸路径；不 strip 会 404
+location /aegisback/ {
+    proxy_pass http://<后端机IP>:18082/;
+    proxy_http_version 1.1;
+    proxy_set_header Connection "";
+    proxy_set_header Host $host;
+    proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_buffering off;               # ⚠SSE/agui 流经此路：关缓冲 + 长超时缺一不可
+    proxy_read_timeout 3600s;
+    proxy_send_timeout 3600s;
+}
+```
+
+**后端 env**：`OPENOPS_ROOT_PATH=/aegisback`（env 模板已带；管 307 重定向与 /docs 的 URL
+生成——路由本身吃的是网关剥好的裸路径，sidecar 直连 IP:18082 裸路径不受任何影响）。
+**IAM 回跳**：`OPENOPS_IAM_LOGIN_URL` 的登录完成回跳地址配 `https://xxxx.com/aegisops/`。
+
+**域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；
+`https://xxxx.com/aegisops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
+
 ## 五、故障排查
 
 | 症状 | 查什么 |

@@ -10,6 +10,7 @@
  * 协议与适配器边界已按 AG-UI 对齐，后续升 CopilotKit v2 <CopilotChat> 时后端无需再动。
  */
 import { HttpAgent } from "@ag-ui/client";
+import { API_BASE } from "../api/client";
 import { demoIdentity } from "../api/client";
 import type { OpenOpsEvent } from "../api/types";
 
@@ -27,7 +28,7 @@ export interface AguiHandlers {
 
 export function runAguiTask(runId: string, text: string, h: AguiHandlers): { cancel: () => void } {
   const agent = new HttpAgent({
-    url: `/api/openops/v1/agent-runs/${runId}/agui`,
+    url: `${API_BASE}/openops/v1/agent-runs/${runId}/agui`,
     headers: {
       "X-OpenOps-Mock-User": demoIdentity.user,
       "X-OpenOps-Mock-Name": encodeURIComponent(demoIdentity.name),

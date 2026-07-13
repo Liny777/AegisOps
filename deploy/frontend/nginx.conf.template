@@ -13,6 +13,32 @@ server {
     resolver 127.0.0.11 valid=30s ipv6=off;
     set $sidecar_upstream http://${SIDECAR_HOST}:4002;
 
+    absolute_redirect off;   # 302/301 发相对 Location——网关 https/非 80 端口下不丢 scheme 与端口
+
+    # ---- 文根（域名部署 xxxx.com/aegisops · xxxx.com/aegisback）----
+    # 网关规则不对称（实测本栈 uvicorn 会把 root_path 拼回 scope.path，后端只认裸路径）：
+    #   /aegisops/* → 前端机:80 **不 strip**（本文件 rewrite 自己剥）；
+    #   /aegisback/* → 后端机:18082 **strip**（网关 proxy_pass 带尾斜杠）。
+    # dist 打包时已烘焙 base=/aegisops/（换文根须重打前端镜像并同步改这里）。
+    # 下方 /aegisback/ 供 IP 直访兜底，同样剥前缀后转后端。
+    rewrite ^/aegisops/$ /index.html last;
+    rewrite ^/aegisops/(.+)$ /$1 last;
+    rewrite ^/aegisops$ /aegisops/ permanent;
+    location = / { return 302 /aegisops/; }
+    location /aegisback/ {
+        proxy_pass http://${BACKEND_HOST}:18082/;   # 尾斜杠=剥 /aegisback 前缀
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header Cookie $http_cookie;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
     # CopilotKit 流（compose 网内 sidecar 容器）：流式响应，关缓冲 + 长超时
     location /api/copilotkit {
         proxy_pass $sidecar_upstream;

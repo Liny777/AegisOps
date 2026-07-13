@@ -48,3 +48,4 @@ backend/config/openops.*.env
 deploy/artifacts/
 deploy/frontend/dist/
 deploy/**/*.env
+deploy/*.zip
