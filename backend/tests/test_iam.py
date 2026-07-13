@@ -196,3 +196,19 @@ def test_iam_host_placeholder_substitution(monkeypatch):
     assert iam_client.extract_host(req2) == "console-c.x.com"
     req3 = SimpleNamespace(headers={})
     assert iam_client.extract_host(req3) == ""
+
+
+def test_console_cookie_prefers_request_user_cookie(monkeypatch):
+    """连带（B9 cookie 透传）：请求内用户登录态 > 专属 env > 共享 env；上下文外回退 env。"""
+    from infra import request_context
+    from infra.external.mcp_registry_client import console_cookie
+
+    monkeypatch.setenv("OPENOPS_CONSOLE_COOKIE", "svc-shared")
+    monkeypatch.setenv("OPENOPS_OMODEL_COOKIE", "svc-omodel")
+    request_context.set_user_cookie("")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-omodel"   # 无用户上下文 → 专属 env
+    monkeypatch.delenv("OPENOPS_OMODEL_COOKIE")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "svc-shared"   # → 共享 env
+    request_context.set_user_cookie("iam-session=user-cookie")
+    assert console_cookie("OPENOPS_OMODEL_COOKIE") == "iam-session=user-cookie"  # 用户态优先
+    request_context.set_user_cookie("")

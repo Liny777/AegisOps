@@ -342,7 +342,7 @@ export function Sidebar() {
             <Interactive as="button" title="退出登录"
               onClick={() => { void api.logout().then((r) => {
                 const url = r.signout_url || r.login_url;
-                if (url) window.location.assign(url);
+                if (url) window.location.assign(url.replaceAll("{host}", window.location.host));
                 else window.location.reload(); // mock/未配 IAM：刷新回到登录判定
               }).catch(() => window.location.reload()); }}
               baseStyle={{ border: "none", background: "transparent", cursor: "pointer", padding: 2, display: "inline-flex", color: color.textFaint }}

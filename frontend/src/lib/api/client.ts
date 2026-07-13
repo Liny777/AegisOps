@@ -47,7 +47,9 @@ export async function apiFetch<T = unknown>(
     const err = (json as { error?: { code?: string; message?: string; retryable?: boolean; login_url?: string } }).error;
     // B9：IAM 会话失效且后端带了登录地址 → 直接跳公司登录页（老项目 App.tsx 379-430 口径）
     if (res.status === 401 && err?.login_url) {
-      window.location.assign(err.login_url);
+      // {host} 兜底替换：网关直连后端时 Host 头可能被改写成 ip:port，后端替出的域名不可用；
+      // 前端永远知道正确域名（当前地址栏），残留占位符或 ip:port 域都以它为准
+      window.location.assign(err.login_url.replaceAll("{host}", window.location.host));
       // 浏览器即将跳登录页：抛专用码，启动链据此保持加载态而非闪错误屏
       throw new ApiError("AUTH_REDIRECT", "正在跳转登录…", false);
     }

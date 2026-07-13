@@ -38,11 +38,13 @@ def console_api_prefix() -> str:
 
 
 def console_cookie(specific_env: str) -> str:
-    """console 系 IAM 会话 cookie 统一读取：专属 env 优先，未设回退共享 `OPENOPS_CONSOLE_COOKIE`。
+    """console 系 IAM 会话 cookie 统一读取：**请求内用户登录态优先**（IAM 开启时 deps 写入
+    contextvar——umodel/console 校验的正是用户这份 cookie，权限口径天然对齐，且免维护服务态
+    cookie）＞专属 env ＞共享 `OPENOPS_CONSOLE_COOKIE`（后台无请求上下文路径的兜底：reconcile
+    循环、启动收敛等）。"""
+    from infra.request_context import user_cookie
 
-    mcpregistry / omodel / apptree 三个面实为同一份登录态——共享变量让过期只换一处；
-    个别面确需不同 cookie 时用专属变量覆盖。"""
-    return os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or ""
+    return user_cookie() or os.getenv(specific_env) or os.getenv("OPENOPS_CONSOLE_COOKIE") or ""
 
 
 def _console_headers() -> dict[str, str]:
