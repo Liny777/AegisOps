@@ -56,14 +56,15 @@ def _target_info(base: str) -> tuple[Any, str, str]:
 
     from infra.external.omodel_client import OModelError
 
-    target = urlparse(base)
     try:
+        target = urlparse(base)
         port = target.port
     except ValueError as e:
         raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 端口无效") from e
     if (target.scheme not in ("http", "https") or not target.hostname
             or target.username is not None or target.password is not None
-            or target.query or target.fragment or target.params):
+            or target.query or target.fragment or target.params
+            or "{host}" in base or "\\" in base or any(ch.isspace() for ch in base)):
         raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 必须是无凭据、查询或片段的固定绝对地址")
     hostname = target.hostname
     authority = f"[{hostname}]" if ":" in hostname else hostname
@@ -79,7 +80,7 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     """
     from infra.external.mcp_registry_client import console_cookie, console_tls_verify, http_trust_env
 
-    target, origin, target_host = _target_info(base)
+    _target, origin, target_host = _target_info(base)
     kwargs: dict[str, Any] = {"base_url": base, "timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
     headers: dict[str, str] = {"User-Agent": _BROWSER_UA}  # 必带：见 _BROWSER_UA 注释
@@ -103,10 +104,7 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "none")
         log.warning("[OpenOps][omodel][debug] target_host=%s cookie_src=%s cookie_len=%d",
                     target_host, src, len(cookie or ""))
-        # ⚠危险：仅本地联调，把后端实际透传的完整 cookie 打出来供逐字节对比。绝不上生产（会泄露会话）。
-        if os.getenv("OPENOPS_UNSAFE_LOG_COOKIE", "").strip() == "1":
-            log.warning("[OpenOps][omodel][UNSAFE] 完整出站 cookie（%d）：%s", len(cookie or ""), cookie or "")
-        kwargs["event_hooks"] = {"response": [_log_outbound_response]}
+        kwargs["event_hooks"] = {"request": [_log_outbound_request], "response": [_log_outbound_response]}
     return kwargs
 
 
@@ -114,12 +112,34 @@ def _http_debug() -> bool:
     return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
+def _unsafe_cookie() -> bool:
+    return os.getenv("OPENOPS_UNSAFE_LOG_COOKIE", "").strip() == "1"
+
+
+async def _log_outbound_request(request: Any) -> None:
+    """门控：打完整出站请求——方法/完整 URL/全部头（Cookie 打码为 <len=N>，除非 UNSAFE）/body（入参）。"""
+    lines = [f">>> {request.method} {request.url}"]
+    for k, v in request.headers.items():
+        if k.lower() == "cookie" and not _unsafe_cookie():
+            v = f"<len={len(v)}>"
+        lines.append(f"    {k}: {v}")
+    body = request.content or b""
+    if body:
+        lines.append(f"    body: {body.decode('utf-8', 'replace')[:2000]}")
+    log.warning("[OpenOps][omodel][debug] 出站请求:\n%s", "\n".join(lines))
+
+
 async def _log_outbound_response(response: Any) -> None:
-    """门控诊断只记状态与请求 ID；不记录 Cookie、全部头或业务请求体。"""
+    """门控：打响应状态 + 响应体（供与 Postman 逐项对比）。"""
     request = response.request
-    log.warning("[OpenOps][omodel][debug] method=%s host=%s status=%s request_id=%s",
-                request.method, request.url.host, response.status_code,
-                _response_request_id(response) or "-")
+    try:
+        await response.aread()
+        body = response.text
+    except Exception:  # noqa: BLE001
+        body = "(读取响应体失败)"
+    log.warning("[OpenOps][omodel][debug] <<< %s %s status=%s request_id=%s\n    resp: %s",
+                request.method, request.url, response.status_code,
+                _response_request_id(response) or "-", (body or "")[:2000])
 
 
 def _response_request_id(response: Any) -> str:
