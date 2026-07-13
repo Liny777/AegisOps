@@ -11,7 +11,7 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 | 依赖 | 开关 env | 端点/凭证 env | 默认 | 状态 |
 |---|---|---|---|---|
 | 平台 LLM（GLM 驱动 RCA） | —（有 Key 即真） | `OPENOPS_PLATFORM_GLM_API_KEY`（base_url 在 DB `sre_model_asset`） | 无 Key→stub | ✅ **内网已通**（2026-07-11） |
-| oModel(umodel)（scope resolve + workspace CRUD） | `OPENOPS_OMODEL=real` | `OPENOPS_OMODEL_BASE_URL` + `OPENOPS_OMODEL_COOKIE`（hissit 部署 /api/v1 要登录态，401 即缺） | mock | ✅ **内网已通**（2026-07-11：3 真 workspace、真 scope 拦截 APPID_OUT_OF_SCOPE 实测；安全口径见下） |
+| oModel(umodel)（scope resolve + workspace CRUD） | `OPENOPS_OMODEL=real` | `OPENOPS_OMODEL_BASE_URL` + 登录态 cookie（hissit 部署 /api/v1 要登录态，401 即缺；共享 `OPENOPS_CONSOLE_COOKIE` 即可，`OPENOPS_OMODEL_COOKIE` 仅登录态不同一份时单独配） | mock | ✅ **内网已通**（2026-07-11：3 真 workspace、真 scope 拦截 APPID_OUT_OF_SCOPE 实测；安全口径见下） |
 | 应用目录（初始化「从应用创建系统范围」选源） | `OPENOPS_APPTREE=real` | `OPENOPS_APPTREE_BASE_URL` + `OPENOPS_APPTREE_COOKIE`（可选，IAM 会话态）；`OPENOPS_APPTREE_ENTERPRISE_ID`/`OPENOPS_APPTREE_PROJECT_ID`（联调默认值）；联调缝 `OPENOPS_APPTREE_USER_ID`（mock 头非 W3 账号时覆盖） | mock | **已按 verification 契约对齐**（`userid_search_appid`；内网待联调） |
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
