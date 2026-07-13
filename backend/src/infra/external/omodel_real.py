@@ -270,7 +270,14 @@ async def list_workspaces() -> list[dict[str, Any]]:
             return [_map_metadata(md) for md in items if isinstance(md, dict)]
     except Exception as e:  # noqa: BLE001
         if _http_debug():
-            log.warning("[OpenOps][omodel][debug] list 解析/请求失败：%s", type(e).__name__)
+            resp = getattr(e, "response", None)
+            detail = ""
+            if resp is not None:
+                try:
+                    detail = f" status={resp.status_code} resp={(resp.text or '')[:1000]}"
+                except Exception:  # noqa: BLE001
+                    detail = f" status={getattr(resp, 'status_code', '?')}"
+            log.warning("[OpenOps][omodel][debug] list 失败：%s%s", type(e).__name__, detail)
         return []
 
 
