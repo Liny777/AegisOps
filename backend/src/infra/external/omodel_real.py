@@ -17,9 +17,12 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import uuid
 from typing import Any
+
+log = logging.getLogger("openops.omodel")
 
 _TIMEOUT = float(os.environ.get("OPENOPS_OMODEL_TIMEOUT_S", "8"))
 
@@ -49,6 +52,15 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         kwargs["headers"] = {"Cookie": cookie}
+    if os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes"):
+        from infra.request_context import current_user_id, request_host, user_cookie
+
+        src = ("passthrough" if user_cookie()
+               else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
+               else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
+               else "none")
+        log.warning("[OpenOps][omodel][debug] base=%s  req_host=%s  cookie_src=%s  cookie_len=%d  uid=%s",
+                    base, request_host() or "-", src, len(cookie or ""), current_user_id() or "-")
     return kwargs
 
 
