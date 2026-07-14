@@ -10,6 +10,8 @@ import json
 import re
 from typing import Any
 
+from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
+
 _KEY_RE = re.compile(
     r"(pass(word|wd)?|token|secret|api[_-]?key|apikey|authorization|cookie|credential|private[_-]?key)",
     re.I,
@@ -215,13 +217,26 @@ def sanitize_activity_payload(
         if request_id is not None:
             out["request_id"] = redact_text(request_id, max_length=200)
         if "started" in event or event.endswith("tool.call"):
-            argument_summary = _summary(
-                source.get("argument_summary") or source.get("arguments"), max_length=300
-            )
-            if argument_summary:
-                out["argument_summary"] = argument_summary
-                # CopilotKit 标准工具卡仍收到合法 JSON，但不再收到完整参数对象。
-                out["arguments"] = {"summary": argument_summary}
+            # Generative UI 的唯一结构化参数例外。render_chart 是平台内置的纯展示工具，
+            # 先递归脱敏、再按固定契约重新校验；任何未知字段/HTML/style/超限数据都会降级为摘要，
+            # 绝不复用普通工具的完整入参透传能力。
+            chart_arguments = None
+            if source.get("tool") == "render_chart" and source.get("arguments") is not None:
+                try:
+                    chart_arguments = normalize_chart_arguments(redact_args(source["arguments"]))
+                except ChartContractError:
+                    chart_arguments = None
+            if chart_arguments is not None:
+                out["argument_summary"] = chart_result_summary(chart_arguments)
+                out["arguments"] = chart_arguments
+            else:
+                argument_summary = _summary(
+                    source.get("argument_summary") or source.get("arguments"), max_length=300
+                )
+                if argument_summary:
+                    out["argument_summary"] = argument_summary
+                    # CopilotKit 标准工具卡仍收到合法 JSON，但不再收到完整参数对象。
+                    out["arguments"] = {"summary": argument_summary}
         if "succeeded" in event or "completed" in event or "result" in event:
             result_summary = _summary(source.get("result_summary"), max_length=500)
             if result_summary:

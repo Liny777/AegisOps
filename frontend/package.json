@@ -10,6 +10,7 @@
     "runtime": "tsx watch server/copilot-runtime.ts",
     "runtime:start": "node --import tsx server/copilot-runtime.ts",
     "test:activity": "node --import tsx --test src/lib/activity/model.test.ts",
+    "test:rich-ui": "node --import tsx --test src/workbench/copilot/rich-ui/*.test.ts",
     "e2e": "playwright test"
   },
   "dependencies": {

@@ -1,0 +1,359 @@
+/*
+ * OpenOps 对话呈现层。
+ * 在 CopilotKit vendor styles 后导入；仅锚定官方 slot 注入的项目类、官方 data-testid
+ * 与 Streamdown 的 data-streamdown 语义属性，避免依赖 vendor 内部类名。
+ */
+
+.oa-chat-message-list {
+  width: min(100%, 760px);
+  margin-inline: auto;
+  padding: 16px 24px 20px;
+  gap: 20px;
+}
+
+.oa-chat-message {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.52;
+}
+
+.oa-chat-assistant-message,
+.oa-chat-user-message {
+  position: relative;
+}
+
+.oa-chat-assistant-message {
+  padding-right: 36px;
+}
+
+/* CopilotKit 默认给 user turn 40px 顶距；轮次间距统一交给 message list 的 20px gap。 */
+.oa-chat-user-message {
+  padding-top: 0;
+}
+
+.oa-chat-user-content {
+  font-size: 14px;
+  line-height: 1.52;
+  padding: 7px 40px 7px 12px;
+}
+
+.oa-chat-markdown {
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.52;
+  overflow-wrap: anywhere;
+}
+
+.oa-chat-markdown p {
+  margin: 0;
+}
+
+.oa-chat-markdown p + p,
+.oa-chat-markdown p + [data-streamdown="ordered-list"],
+.oa-chat-markdown p + [data-streamdown="unordered-list"],
+.oa-chat-markdown [data-streamdown="ordered-list"] + p,
+.oa-chat-markdown [data-streamdown="unordered-list"] + p {
+  margin-top: 8px;
+}
+
+.oa-chat-markdown [data-streamdown="ordered-list"],
+.oa-chat-markdown [data-streamdown="unordered-list"] {
+  margin-block: 6px;
+}
+
+.oa-chat-markdown [data-streamdown="list-item"] {
+  padding-block: 1px;
+}
+
+.oa-chat-markdown [data-streamdown="heading-1"],
+.oa-chat-markdown [data-streamdown="heading-2"],
+.oa-chat-markdown [data-streamdown="heading-3"],
+.oa-chat-markdown [data-streamdown="heading-4"],
+.oa-chat-markdown [data-streamdown="heading-5"],
+.oa-chat-markdown [data-streamdown="heading-6"] {
+  margin: 12px 0 6px;
+  line-height: 1.35;
+}
+
+.oa-chat-markdown [data-streamdown="heading-1"] {
+  font-size: 18px;
+}
+
+.oa-chat-markdown [data-streamdown="heading-2"] {
+  font-size: 16px;
+}
+
+.oa-chat-markdown [data-streamdown="heading-3"],
+.oa-chat-markdown [data-streamdown="heading-4"],
+.oa-chat-markdown [data-streamdown="heading-5"],
+.oa-chat-markdown [data-streamdown="heading-6"] {
+  font-size: 14.5px;
+}
+
+/* 只收紧富内容外围留白；代码、表格、Mermaid 内部字号与交互保持组件默认值。 */
+.oa-chat-markdown [data-streamdown="table-wrapper"],
+.oa-chat-markdown [data-streamdown="code-block"],
+.oa-chat-markdown [data-streamdown="mermaid-block"],
+.oa-chat-markdown [data-streamdown="blockquote"],
+.oa-chat-markdown [data-streamdown="image-wrapper"] {
+  margin-block: 8px;
+}
+
+.oa-chat-markdown [data-streamdown="horizontal-rule"] {
+  margin-block: 10px;
+}
+
+/* Streamdown 富内容工具条：CopilotKit 使用 cpk 前缀后，Streamdown 自带的无前缀
+   utility class 不一定有对应 CSS；用公开语义属性补齐紧凑布局。 */
+.oa-chat-markdown div[data-streamdown="table-wrapper"] > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 28px;
+}
+
+.oa-chat-markdown div[data-streamdown="table-wrapper"] > div:last-child {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.oa-chat-markdown [data-streamdown="table-wrapper"] table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.oa-chat-markdown [data-streamdown="table-header-cell"],
+.oa-chat-markdown [data-streamdown="table-cell"] {
+  padding: 7px 10px;
+  border-bottom: 1px solid #e6e8ec;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] {
+  position: relative;
+  max-width: 100%;
+  overflow: hidden;
+  padding: 10px 12px 12px;
+  background: #fff;
+  border: 1px solid #e6e8ec;
+  border-radius: 12px;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-height: 28px;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] [role="application"] {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] [aria-label="Mermaid chart"] svg {
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Zoom in"]) {
+  position: absolute;
+  bottom: 8px;
+  left: 8px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e6e8ec;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(20, 24, 31, 0.08);
+}
+
+.oa-chat-markdown [data-streamdown="table-wrapper"] button,
+.oa-chat-markdown [data-streamdown="code-block"] button,
+.oa-chat-markdown [data-streamdown="mermaid-block"] button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #667085;
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.oa-chat-markdown [data-streamdown="table-wrapper"] button:hover,
+.oa-chat-markdown [data-streamdown="code-block"] button:hover,
+.oa-chat-markdown [data-streamdown="mermaid-block"] button:hover {
+  color: #155eef;
+  background: #f0f6ff;
+}
+
+.oa-chat-markdown [data-streamdown="table-wrapper"] button:focus-visible,
+.oa-chat-markdown [data-streamdown="code-block"] button:focus-visible,
+.oa-chat-markdown [data-streamdown="mermaid-block"] button:focus-visible {
+  outline: 2px solid #1683ff;
+  outline-offset: 1px;
+}
+
+/* 消息级复制工具栏悬浮在右上角，不再占据独立一行。 */
+.oa-chat-toolbar {
+  position: absolute;
+  z-index: 2;
+  top: 0;
+  right: 0;
+  width: auto;
+  min-width: 28px;
+  height: 28px;
+  margin: 0;
+  visibility: visible;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.oa-chat-user-toolbar {
+  top: 4px;
+  right: 4px;
+}
+
+.oa-chat-message:hover > .oa-chat-toolbar,
+.oa-chat-message:focus-within > .oa-chat-toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.oa-chat-copy-button,
+.oa-chat-toolbar [data-testid="copilot-copy-button"] {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 7px;
+}
+
+/* fallback 自建消息与官方聊天使用相同的密度和悬浮复制交互。 */
+.oa-fallback-chat-scroll {
+  padding-block: 18px;
+}
+
+.oa-chat-rca-dock {
+  padding: 14px 24px 10px;
+}
+
+.oa-fallback-chat-list {
+  gap: 14px;
+  padding-inline: 24px;
+}
+
+.oa-fallback-user-content,
+.oa-fallback-bot-content {
+  font-size: 14px;
+  line-height: 1.52;
+}
+
+.oa-fallback-bot-body {
+  position: relative;
+  min-width: 0;
+}
+
+.oa-fallback-bot-content {
+  padding: 10px 42px 10px 13px;
+}
+
+.oa-fallback-copy-button {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: #667085;
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.oa-fallback-bot-body:hover .oa-fallback-copy-button,
+.oa-fallback-bot-body:focus-within .oa-fallback-copy-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.oa-fallback-copy-button:hover {
+  color: #155eef;
+  background: #fff;
+  border-color: #dbe3f0;
+}
+
+.oa-fallback-copy-button:focus-visible,
+.oa-chat-copy-button:focus-visible {
+  outline: 2px solid #1683ff;
+  outline-offset: 2px;
+}
+
+/* RCA / HITL 的数据区在窄屏降列，避免每格只剩几个字。 */
+.oa-rca-tiles {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.oa-rca-facts,
+.oa-hitl-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@media (hover: none), (pointer: coarse) {
+  .oa-chat-toolbar,
+  .oa-fallback-copy-button {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .oa-rca-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oa-rca-facts,
+  .oa-hitl-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 480px) {
+  .oa-chat-message-list {
+    padding: 12px 12px 16px;
+  }
+
+  .oa-fallback-chat-scroll {
+    padding-block: 12px;
+  }
+
+  .oa-fallback-chat-list {
+    padding-inline: 12px;
+  }
+
+  .oa-chat-rca-dock {
+    padding: 10px 12px 8px;
+  }
+}

@@ -57,6 +57,35 @@ test("mock 发送：回执气泡出现", async ({ page }) => {
   await expect(page.getByText(/任务已受理/)).toBeVisible({ timeout: 10_000 });
 });
 
+test("紧凑消息：复制按钮可用，窄屏 RCA/HITL 自动降列", async ({ page, context }) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await page.goto("/");
+
+  const botBody = page.locator(".oa-fallback-bot-body").filter({ hasText: "初步定界" });
+  await botBody.hover();
+  const copyButton = botBody.getByRole("button", { name: "复制消息" });
+  await expect(copyButton).toHaveCSS("position", "absolute");
+  await expect(copyButton).toHaveCSS("width", "28px");
+  await copyButton.click();
+  await expect(botBody.getByRole("button", { name: "已复制" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("初步定界");
+
+  await page.setViewportSize({ width: 700, height: 900 });
+  await expect.poll(() => page.locator(".oa-rca-tiles").evaluate((el) =>
+    getComputedStyle(el).gridTemplateColumns.split(" ").length,
+  )).toBe(2);
+  await expect.poll(() => page.locator(".oa-rca-facts").evaluate((el) =>
+    getComputedStyle(el).gridTemplateColumns.split(" ").length,
+  )).toBe(1);
+  await expect.poll(() => page.locator(".oa-hitl-facts").evaluate((el) =>
+    getComputedStyle(el).gridTemplateColumns.split(" ").length,
+  )).toBe(1);
+
+  await page.setViewportSize({ width: 460, height: 900 });
+  await expect(page.locator(".oa-fallback-chat-list")).toHaveCSS("padding-left", "12px");
+  await expect(page.locator(".oa-fallback-chat-list")).toHaveCSS("padding-right", "12px");
+});
+
 test("审批卡：工具名可见 → 点击批准 → 显示已批准 → 自动淡出", async ({ page }) => {
   await page.goto("/"); // mock 工作台自带一张 pending 审批卡（recover_execute）
   await expect(page.getByText("需要人工批准")).toBeVisible({ timeout: 15_000 });

@@ -16,7 +16,7 @@ export function HitlCard({ hitl, onDecide }: { hitl: HitlCardData; onDecide?: (d
 
   const tc = toneColor.warning;
   return (
-    <div style={{ border: `1px solid ${tc.border}`, borderRadius: radius.xl, background: "#fff9ed", boxShadow: "0 1px 3px rgba(20,24,31,.05)", animation: "omPop .25s ease" }}>
+    <div className="oa-hitl-card" style={{ border: `1px solid ${tc.border}`, borderRadius: radius.xl, background: "#fff9ed", boxShadow: "0 1px 3px rgba(20,24,31,.05)", animation: "omPop .25s ease" }}>
       <div style={{ display: "grid", gridTemplateColumns: "28px 1fr", gap: 12, padding: "15px 16px" }}>
         <div style={{ width: 28, height: 28, borderRadius: radius.md, background: "rgba(193,138,32,.14)", display: "flex", alignItems: "center", justifyContent: "center" }}>
           <Icon name="shield-check" size={17} color={tc.text} />
@@ -29,7 +29,7 @@ export function HitlCard({ hitl, onDecide }: { hitl: HitlCardData; onDecide?: (d
           </div>
           <div style={{ fontSize: 13, color: color.textBody, lineHeight: 1.55, marginTop: 6 }}>{hitl.summary}</div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px 16px", marginTop: 11 }}>
+          <div className="oa-hitl-facts" style={{ display: "grid", gap: "8px 16px", marginTop: 11 }}>
             {hitl.facts.map((f, i) => (
               <div key={i}>
                 <div style={{ fontSize: 10.5, color: color.textSubtle }}>{f.label}</div>

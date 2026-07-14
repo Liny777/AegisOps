@@ -23,6 +23,7 @@ import os
 import re
 from typing import Any
 
+from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
 from runtime import events, tool_gateway
 from infra.repositories import agent_session_states, runs
 from runtime.emit import emit
@@ -375,6 +376,60 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             text = "当前工作范围为空（无可用应用）。"
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
+    async def render_chart(
+        chart_type: str,
+        title: str,
+        series: list[dict[str, Any]],
+        description: str = "",
+        unit: str = "",
+    ) -> Any:
+        """把已经取得的数值展示为受控图表；这是纯展示工具，不查询数据也不执行变更。
+
+        仅当折线图、柱状图或饼图能明显提升可读性时调用，数值必须来自本轮已取得的数据，
+        不得臆造。series 的严格形状为
+        [{"name": "序列名", "data": [{"label": "横轴/扇区标签", "value": 12.3}]}]；
+        line/bar 的各序列必须使用相同标签顺序，pie 只能有一个非负序列。不支持颜色、样式或 HTML。
+
+        Args:
+            chart_type: 图表类型，只能是 line、bar 或 pie。
+            title: 简短图表标题。
+            series: 数值序列，使用上述固定 JSON 形状。
+            description: 可选的一句话数据口径或结论。
+            unit: 可选的短单位，例如 ms、%、个。
+        """
+        try:
+            chart = normalize_chart_arguments({
+                "chart_type": chart_type,
+                "title": title,
+                "description": description,
+                "unit": unit,
+                "series": series,
+            })
+        except ChartContractError as exc:
+            return ToolResponse(content=[TextBlock(
+                type="text",
+                text=f"图表参数未通过校验：{exc}。请按工具说明修正，且不要补充样式或 HTML。",
+            )])
+
+        summary = chart_result_summary(chart)
+        await emit(
+            st,
+            run,
+            "openops.tool.call.started",
+            action="render_chart",
+            message=f"生成图表 · {chart['title']}",
+            payload={"tool": "render_chart", "arguments": chart},
+        )
+        await emit(
+            st,
+            run,
+            "openops.tool.call.succeeded",
+            action="render_chart",
+            message=summary,
+            payload={"tool": "render_chart", "result_summary": summary},
+        )
+        return ToolResponse(content=[TextBlock(type="text", text=summary)])
+
     # 动态 MCP 工具先发现（决定 demo 双工具去留）：有真工具时 demo 退场——不再弹假审批卡/脚本 RCA。
     dynamic_specs = await _dynamic_mcp_specs()
     _demo_env = os.environ.get("OPENOPS_DEMO_TOOLS", "").strip()  # 1=恒开 0=恒关 未设=自动
@@ -413,6 +468,20 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     if isinstance(st.template_tools, set):
         st.template_tools.add("list_scope_apps")
     tools.append(FunctionTool(list_scope_apps, name="list_scope_apps", is_read_only=True))
+    # Generative UI 图表：仅主 Agent 可投影到主对话；子 Agent 先把数据汇报给主 Agent，避免
+    # 并行子任务的工具事件交错后把图卡插进错误轮次。该工具只读、无出站，前端按固定 schema 渲染。
+    if st.agent_key == "main":
+        st.tool_annotations["render_chart"] = {"is_approval_required": False, "is_secret_required": False,
+                                                "scope_mode": "none", "appid_arg_path": None, "status": "allowed"}
+        if isinstance(st.template_tools, set):
+            st.template_tools.add("render_chart")
+        tools.append(FunctionTool(
+            render_chart,
+            name="render_chart",
+            description=("把本轮已经取得的数值展示成受控 line/bar/pie 图表；只传 title、description、unit "
+                         "和 series[{name,data[{label,value}]}]，不得臆造数据或传 style/HTML。"),
+            is_read_only=True,
+        ))
     # D 块：派发工具（仅 main 且模板配了 sub_agents；子 st.sub_agents 恒 None → 天然 1 层）
     if st.agent_key == "main" and st.sub_agents:
         from runtime import subagent_dispatch
@@ -578,7 +647,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             from agentscope.agent._config import ContextConfig, ModelConfig, ReActConfig
         agent = Agent(
             name="sre-rca",
-            system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
+            system_prompt=("你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；"
+                           "恢复类动作必须请求人工批准。只有当本轮已取得的数值适合做趋势或对比时，"
+                           "才调用 render_chart 提升可读性；不得为图表臆造数据。"),
             model=await _build_model(st),
             toolkit=toolkit,
             state=agent_state,

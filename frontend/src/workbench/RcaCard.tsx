@@ -7,6 +7,7 @@ import type { RcaCardData, RcaStep } from "../lib/api/types";
 export function RcaCard({ rca, onContinue }: { rca: RcaCardData; onContinue?: () => void }) {
   return (
     <div
+      className="oa-rca-card"
       style={{
         border: "1px solid #dbe3f0",
         borderRadius: radius.xxl,
@@ -40,7 +41,7 @@ export function RcaCard({ rca, onContinue }: { rca: RcaCardData; onContinue?: ()
       </div>
 
       {/* incident tiles */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 1, background: color.borderInner }}>
+      <div className="oa-rca-tiles" style={{ display: "grid", gap: 1, background: color.borderInner }}>
         {rca.tiles.map((t, i) => (
           <div key={i} style={{ background: "#fff", padding: "11px 13px" }}>
             <div style={{ fontSize: 11, color: color.textSubtle, marginBottom: 3 }}>{t.label}</div>
@@ -68,7 +69,7 @@ export function RcaCard({ rca, onContinue }: { rca: RcaCardData; onContinue?: ()
         </div>
 
         {/* facts / unknowns */}
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <div className="oa-rca-facts" style={{ display: "grid", gap: 12 }}>
           <div style={{ border: `1px solid ${color.goodBorder}`, borderRadius: radius.lg, padding: "11px 13px", background: color.goodBg }}>
             <div style={{ fontSize: 11.5, fontWeight: 700, color: color.goodText, marginBottom: 7, display: "flex", alignItems: "center", gap: 5 }}>
               <Icon name="checks" size={14} color={color.goodText} />已确认事实

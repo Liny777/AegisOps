@@ -120,6 +120,7 @@ a {
   word-break: break-word;
   max-width: 100%;
 }
+.copilot-chat-panel [data-copilotkit],
 .copilot-chat-panel [class*="cpk:grid"],
 .copilot-chat-panel [class*="cpk:grid"] > div {
   min-width: 0;

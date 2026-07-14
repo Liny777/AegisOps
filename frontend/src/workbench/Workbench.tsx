@@ -43,6 +43,33 @@ const autoTitle = (t: string) => {
   return s.length > 30 ? s.slice(0, 30) + "…" : s;
 };
 
+/** 优先使用 Clipboard API；非安全上下文/权限被拒时回退到浏览器原生 copy。 */
+async function copyText(text: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // 继续走兼容回退，避免“按钮可点但没有复制”。
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    textarea.remove();
+  }
+}
+
 /** 对话工作台（isChat）：real 模式 = 按 run_id 恢复 或 ensureRun + /state + SSE（30.3/30.4/30.7）。
  *  两个入口：/agent-teams/:instanceId/chat（ensureRun 复用 active run）与 /agent-runs/:runId（按 run 恢复）。 */
 export function Workbench() {
@@ -450,7 +477,7 @@ export function Workbench() {
           // HITL 审批卡是动作项，锚在 composer 正上方（CopilotHitlFloat，用户实测反馈改位）。
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
             {rca ? (
-              <div style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, padding: "14px 24px 10px", background: color.pageBg }}>
+              <div className="oa-chat-rca-dock" style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, background: color.pageBg }}>
                 <div style={{ maxWidth: 760, margin: "0 auto" }}>
                   <RcaCard rca={rca} />
                 </div>
@@ -467,8 +494,8 @@ export function Workbench() {
           </div>
         ) : (
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "24px 0" }}>
-            <div style={{ maxWidth: 760, margin: "0 auto", padding: "0 24px", display: "flex", flexDirection: "column", gap: 18 }}>
+          <div className="oa-fallback-chat-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+            <div className="oa-fallback-chat-list" style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column" }}>
               {messages.length === 0 && !running ? (
                 <div style={{ textAlign: "center", color: color.textSubtle, fontSize: 13, padding: "40px 0" }}>
                   <Icon name="message-2" size={22} color={color.brand} />
@@ -538,23 +565,46 @@ function ConnBadge({ conn, closed }: { conn: ConnState; closed: boolean }) {
 function UserBubble({ text }: { text: string }) {
   return (
     <div style={{ display: "flex", justifyContent: "flex-end", animation: "omMsg .25s ease" }}>
-      <div style={{ maxWidth: "80%", background: color.brand, color: "#fff", fontSize: 14, lineHeight: 1.6, padding: "11px 15px", borderRadius: "14px 14px 4px 14px", whiteSpace: "pre-wrap" }}>{text}</div>
+      <div className="oa-fallback-user-content" style={{ maxWidth: "80%", background: color.brand, color: "#fff", padding: "9px 13px", borderRadius: "14px 14px 4px 14px", whiteSpace: "pre-wrap" }}>{text}</div>
     </div>
   );
 }
 
 function BotBubble({ text, showCopy }: { text: string; showCopy?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => () => {
+    if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+  }, []);
+
+  const handleCopy = async () => {
+    if (!await copyText(text)) return;
+    setCopied(true);
+    if (copiedTimer.current !== null) clearTimeout(copiedTimer.current);
+    copiedTimer.current = setTimeout(() => {
+      setCopied(false);
+      copiedTimer.current = null;
+    }, 2000);
+  };
+
   return (
     <div style={{ display: "flex", gap: 11, animation: "omMsg .25s ease" }}>
       <div style={{ width: 30, height: 30, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 30px" }}>
         <Icon name="robot" size={17} color={color.brand} />
       </div>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ background: "#fff", border: `1px solid ${color.border}`, color: color.textStrong, fontSize: 14, lineHeight: 1.7, padding: "13px 15px", borderRadius: "4px 14px 14px 14px", whiteSpace: "pre-wrap" }}>{text}</div>
+      <div className="oa-fallback-bot-body" style={{ flex: 1 }}>
+        <div className="oa-fallback-bot-content" style={{ background: "#fff", border: `1px solid ${color.border}`, color: color.textStrong, borderRadius: "4px 14px 14px 14px", whiteSpace: "pre-wrap" }}>{text}</div>
         {showCopy ? (
-          <div style={{ display: "flex", gap: 6, marginTop: 6 }}>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, color: color.textSubtle, cursor: "pointer" }}><Icon name="copy" size={13} />复制</span>
-          </div>
+          <button
+            type="button"
+            className="oa-fallback-copy-button"
+            aria-label={copied ? "已复制" : "复制消息"}
+            title={copied ? "已复制" : "复制消息"}
+            onClick={handleCopy}
+          >
+            <Icon name={copied ? "check" : "copy"} size={14} color="currentColor" />
+          </button>
         ) : null}
       </div>
     </div>

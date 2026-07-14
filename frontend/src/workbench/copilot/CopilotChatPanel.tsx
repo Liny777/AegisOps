@@ -9,13 +9,33 @@
 import { useEffect } from "react";
 import { CopilotChat, CopilotKit, useAgent } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
+import "./CopilotChatPanel.css";
 
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
+import { ControlledVisualizationTools } from "./rich-ui";
 
 const AGENT_ID = "sre-agent";
+
+// CopilotKit v2 官方 slots：项目样式只依赖这些 OpenOps class，不绑定 cpk:* 内部实现。
+// 对象放在组件外保持引用稳定，避免流式输出时 slot 组件被不必要地重新解析。
+const OPENOPS_MESSAGE_VIEW = {
+  className: "oa-chat-message-list",
+  assistantMessage: {
+    className: "oa-chat-message oa-chat-assistant-message",
+    markdownRenderer: { className: "oa-chat-markdown" },
+    toolbar: { className: "oa-chat-toolbar oa-chat-assistant-toolbar" },
+    copyButton: { className: "oa-chat-copy-button" },
+  },
+  userMessage: {
+    className: "oa-chat-message oa-chat-user-message",
+    messageRenderer: { className: "oa-chat-user-content" },
+    toolbar: { className: "oa-chat-toolbar oa-chat-user-toolbar" },
+    copyButton: { className: "oa-chat-copy-button" },
+  },
+};
 
 function identityHeaders(): Record<string, string> {
   return {
@@ -41,6 +61,7 @@ export function CopilotChatPanel({ runId, instanceId, autoQuestion, onAutoSent, 
       headers={identityHeaders}
       onError={(event) => console.error("[CopilotKit]", event)}
     >
+      <ControlledVisualizationTools agentId={AGENT_ID} />
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
@@ -49,6 +70,7 @@ export function CopilotChatPanel({ runId, instanceId, autoQuestion, onAutoSent, 
           threadId={runId}
           autoScroll="pin-to-bottom"
           className="copilot-chat-panel"
+          messageView={OPENOPS_MESSAGE_VIEW}
           welcomeScreen={false}
         />
         <CopilotSkillSlash instanceId={instanceId} />
