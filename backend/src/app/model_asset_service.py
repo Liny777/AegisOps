@@ -35,6 +35,7 @@ async def register(req: Any, by: str) -> dict[str, Any]:
     row = await model_assets.create(
         req.display_name, req.protocol, req.model_id, req.base_url,
         req.secret_env_var, req.access_scope, "active", by,
+        context_window_tokens=getattr(req, "context_window_tokens", 128000),
     )
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.registered", user_id=by,
@@ -102,6 +103,36 @@ async def list_available(user: dict[str, Any]) -> list[dict[str, Any]]:
     rows = await model_assets.list_available_for_user(user["user_id"])
     default_id = _default_model_id(rows)
     return [{**row_json(r), "is_default": r.get("model_id") == default_id} for r in rows]
+
+
+async def test_connection(req: Any) -> dict[str, Any]:
+    """平台模型「测试连接」：Key 从服务器环境变量取（secret_env_var 是变量名，客户端不持 Key）。
+    egress SSRF 校验 + tool-calling 探测。返回 {ok, supports_tool_calling, reason}。"""
+    import os
+
+    from infra import egress
+    from infra.external import llm_provider_client
+
+    env_var = (req.secret_env_var or "").strip()
+    if env_var and not _ENV_VAR_RE.match(env_var):
+        return {"ok": False, "supports_tool_calling": False,
+                "reason": "「API Key 环境变量名」应填变量名（大写字母/数字/下划线），此处像是填了 Key 本身"}
+    api_key = os.environ.get(env_var) if env_var else None
+    if env_var and not api_key:
+        return {"ok": False, "supports_tool_calling": False,
+                "reason": f"服务器进程未配置环境变量 {env_var}（Key 未注入，无法测试）"}
+    base_url = (req.base_url or "").strip()
+    if not base_url:
+        return {"ok": False, "supports_tool_calling": False,
+                "reason": "该模型未配置 base_url，无法测试连接（走平台网关的模型可不填而直接保存）"}
+    try:
+        egress.check_llm_egress(base_url)
+    except ApiError as e:
+        return {"ok": False, "supports_tool_calling": False, "reason": e.message}
+    probe = await llm_provider_client.probe(base_url, req.model_id, api_key)
+    return {"ok": bool(probe["ok"] and probe["supports_tool_calling"]),
+            "supports_tool_calling": bool(probe["supports_tool_calling"]),
+            "reason": probe.get("reason")}
 
 
 async def is_authorized(user_id: str, model_id: str) -> bool:

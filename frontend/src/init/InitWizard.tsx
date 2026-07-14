@@ -6,7 +6,7 @@ import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
 import type { Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
-import { submitCustomLlm } from "../settings/AddCustomModelDialog";
+import { submitCustomLlm, useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
 
 // 2026-07-14 改版：删「选择模板」页（感知快恢是唯一模板，默认用它）。三步=配置 → 确认能力清单
@@ -442,17 +442,30 @@ function InlineAddModel({ onCancel, onCreated }: {
   const [baseUrl, setBaseUrl] = useState("https://");
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
+  const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const test = useConnTest();
 
-  const ok = displayName.trim().length > 0 && /^https?:\/\/.+/.test(baseUrl.trim())
-    && modelName.trim().length > 0 && apiKey.trim().length > 0;
+  // 探测相关字段一改即让上次「测试连接」失效，须重测才能保存
+  const onBaseUrl = (v: string) => { setBaseUrl(v); test.reset(); };
+  const onModelName = (v: string) => { setModelName(v); test.reset(); };
+  const onApiKey = (v: string) => { setApiKey(v); test.reset(); };
+
+  const fieldsOk = displayName.trim().length > 0 && /^https?:\/\/.+/.test(baseUrl.trim())
+    && modelName.trim().length > 0 && apiKey.trim().length > 0 && contextWindow > 0;
+  const canSave = fieldsOk && test.state === "ok";
+
+  const runTest = () => {
+    if (!fieldsOk || test.state === "testing") return;
+    void test.run(() => api.testLlmConnection({ base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey.trim() }));
+  };
 
   const submit = () => {
-    if (!ok || busy) return;
+    if (!canSave || busy) return;
     setBusy(true);
     setError("");
-    submitCustomLlm({ displayName, baseUrl, modelName, apiKey })
+    submitCustomLlm({ displayName, baseUrl, modelName, apiKey, contextWindow })
       .then((r) => onCreated(r.id, r.label, { modelName: modelName.trim(), baseUrl: baseUrl.trim() }))
       .catch((e: unknown) => { setError(e instanceof Error ? e.message : "创建失败"); setBusy(false); });
   };
@@ -465,23 +478,41 @@ function InlineAddModel({ onCancel, onCreated }: {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 11 }}>
         <InlineField label="展示名" required><TextInput value={displayName} onChange={setDisplayName} placeholder="例：我的 GPT-4o" /></InlineField>
-        <InlineField label="API 地址" required><TextInput value={baseUrl} onChange={setBaseUrl} placeholder="https://api.example.com/v1" mono /></InlineField>
         <div style={{ display: "flex", gap: 10 }}>
           <div style={{ flex: 1 }}>
-            <InlineField label="模型标识" required><TextInput value={modelName} onChange={setModelName} placeholder="gpt-4o" mono /></InlineField>
+            <InlineField label="接口协议">
+              <div style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 13, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box" }}>{PROTOCOL_LABEL}</div>
+            </InlineField>
+          </div>
+          <div style={{ flex: 1 }}>
+            <InlineField label="上下文长度（token）">
+              <input type="number" min={1} step={1000} value={contextWindow} onChange={(e) => setContextWindow(Number(e.target.value) || 0)} placeholder="128000"
+                style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+            </InlineField>
+          </div>
+        </div>
+        <InlineField label="API 地址" required><TextInput value={baseUrl} onChange={onBaseUrl} placeholder="https://api.example.com/v1" mono /></InlineField>
+        <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ flex: 1 }}>
+            <InlineField label="模型标识" required><TextInput value={modelName} onChange={onModelName} placeholder="gpt-4o" mono /></InlineField>
           </div>
           <div style={{ flex: 1 }}>
             <InlineField label="API Key" required>
-              <input type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" autoComplete="new-password"
+              <input type="text" value={apiKey} onChange={(e) => onApiKey(e.target.value)} placeholder="sk-…" autoComplete="new-password"
                 style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "ui-monospace, monospace" }} />
             </InlineField>
           </div>
         </div>
-        <div style={{ fontSize: 11, color: color.textSubtle }}>接口协议：OpenAI 兼容（须支持 tool calling）；Key 明文仅此刻提交、加密存 user_secret，接口永不回显。</div>
+        <div style={{ fontSize: 11, color: color.textSubtle }}>须先「测试连接」通过（须支持 tool calling）才能添加；Key 明文仅此刻提交、加密存 user_secret，接口永不回显。</div>
         {error ? <div style={{ fontSize: 12, color: color.dangerText }}>{error}</div> : null}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
+            disabled={!fieldsOk || test.state === "testing"} onClick={runTest}>测试连接</Button>
+          <ConnTestResult state={test.state} reason={test.reason} />
+          <div style={{ flex: 1 }} />
           <Button variant="secondary" onClick={onCancel} disabled={busy}>取消</Button>
-          <Button icon={busy ? "loader-2" : "plus"} disabled={!ok || busy} onClick={submit}>{busy ? "创建并探测中…" : "添加"}</Button>
+          <Button icon={busy ? "loader-2" : "plus"} disabled={!canSave || busy} onClick={submit}
+            title={!canSave && fieldsOk ? "请先测试连接通过" : undefined}>{busy ? "创建中…" : "添加"}</Button>
         </div>
       </div>
     </div>

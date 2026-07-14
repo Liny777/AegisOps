@@ -90,6 +90,20 @@ class CreateLlmConfigRequest(BaseModel):
     supports_tool_calling: bool = True
 
 
+class TestConnectionRequest(BaseModel):
+    """用户自带模型「测试连接」（存前探测，不落库）：raw API Key 只在这一次请求内瞬时用于探测。"""
+    base_url: str = Field(min_length=1)
+    model_name: str = Field(min_length=1)
+    api_key: str = ""
+
+
+class TestModelAssetRequest(BaseModel):
+    """平台模型「测试连接」：Key 由服务器读环境变量（secret_env_var 是变量名），客户端不传 Key。"""
+    base_url: str = ""
+    model_id: str = Field(min_length=1)
+    secret_env_var: str = ""
+
+
 class CreateRunRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     agent_team_instance_id: str = Field(min_length=1)
@@ -136,6 +150,7 @@ class RegisterModelAssetRequest(BaseModel):
     protocol: str = "openai_compatible"
     base_url: str | None = None
     secret_env_var: str | None = None
+    context_window_tokens: int = 128000
     access_scope: str = Field(default="all", pattern="^(all|restricted)$")
 
 

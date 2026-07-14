@@ -38,17 +38,18 @@ async def get_by_model_id(model_id: str) -> dict[str, Any] | None:
 async def create(
     display_name: str, protocol: str, model_id: str, base_url: str | None,
     secret_env_var: str | None, access_scope: str, status: str, by: str,
+    context_window_tokens: int = 128000,
 ) -> dict[str, Any]:
     mid = str(uuid.uuid4())
     await exec1(
         """
         insert into sre_model_asset
           (model_asset_id, display_name, protocol, model_id, base_url, secret_env_var,
-           access_scope, status, registered_by, created_by, last_updated_by)
-        values (%(i)s, %(d)s, %(p)s, %(m)s, %(u)s, %(e)s, %(a)s, %(s)s, %(b)s, %(b)s, %(b)s)
+           context_window_tokens, access_scope, status, registered_by, created_by, last_updated_by)
+        values (%(i)s, %(d)s, %(p)s, %(m)s, %(u)s, %(e)s, %(cw)s, %(a)s, %(s)s, %(b)s, %(b)s, %(b)s)
         """,
         {"i": mid, "d": display_name, "p": protocol, "m": model_id, "u": base_url,
-         "e": secret_env_var, "a": access_scope, "s": status, "b": by},
+         "e": secret_env_var, "cw": context_window_tokens, "a": access_scope, "s": status, "b": by},
     )
     return (await get(mid))  # type: ignore[return-value]
 

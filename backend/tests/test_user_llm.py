@@ -107,3 +107,58 @@ async def test_user_llm_004_probe_real_gate_graceful(monkeypatch):
     bad = await llm_provider_client.probe("https://api.example.com/v1", "gpt-4o", "sk-secret")
     assert bad["ok"] is False and "不可达" in bad["reason"]
     assert "sk-secret" not in bad["reason"] and "api.example.com" not in bad["reason"]
+
+
+def test_test_connection_gate_mock(client):
+    """用户自带模型「测试连接」端点（存前探测、不落库）：mock 探测下正常模型 ok=true，
+    含 no-tool 的模型 ok=false 且带 reason；SSRF 地址 ok=false（egress 拦截）。"""
+    good = unwrap(client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
+                              json={"base_url": _BASE, "model_name": "gpt-4o", "api_key": "sk-x"}))
+    assert good["ok"] is True and good["supports_tool_calling"] is True
+
+    bad = unwrap(client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
+                             json={"base_url": _BASE, "model_name": "foo-no-tool", "api_key": "sk-x"}))
+    assert bad["ok"] is False and bad["reason"]
+
+    ssrf = unwrap(client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
+                              json={"base_url": "http://localhost/v1", "model_name": "gpt-4o", "api_key": "sk-x"}))
+    assert ssrf["ok"] is False and ssrf["reason"]  # egress SSRF 拦截，返回原因而非 500
+
+    # 测试连接不落库：调用后 llm-configs 列表不新增
+    assert unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS)) == []
+
+
+def test_admin_model_asset_test_connection(client, monkeypatch):
+    """平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名）；未配变量 / 缺 base_url →
+    ok=false 带清晰 reason；环境变量已注入 + base_url 合法 → mock 探测 ok=true。"""
+    from conftest import ADMIN_HEADERS
+
+    # 环境变量未注入 → 明确 reason（不 500）
+    no_env = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
+                                json={"base_url": _BASE, "model_id": "glm-5.1", "secret_env_var": "OPENOPS_NOT_SET_XYZ"}))
+    assert no_env["ok"] is False and "OPENOPS_NOT_SET_XYZ" in no_env["reason"]
+
+    # 缺 base_url → 明确 reason
+    no_url = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
+                                json={"base_url": "", "model_id": "glm-5.1", "secret_env_var": ""}))
+    assert no_url["ok"] is False and "base_url" in no_url["reason"]
+
+    # 环境变量已注入 + base_url 合法 → mock 探测通过
+    monkeypatch.setenv("OPENOPS_TESTKEY_ENV", "sk-platform")
+    good = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
+                              json={"base_url": _BASE, "model_id": "glm-5.1", "secret_env_var": "OPENOPS_TESTKEY_ENV"}))
+    assert good["ok"] is True
+
+
+def test_register_model_asset_persists_context_window(client):
+    """管理台注册平台模型带上下文长度（新增列）：注册后可见（走 admin/model-assets 列表）。"""
+    from conftest import ADMIN_HEADERS
+
+    unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "CtxTest",
+                             "model_id": f"ctx-test-{time.time_ns()}", "protocol": "openai_compatible",
+                             "base_url": _BASE, "secret_env_var": "OPENOPS_CTX_KEY",
+                             "context_window_tokens": 200000, "access_scope": "all"}))
+    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
+    row = next(r for r in rows if r["display_name"] == "CtxTest")
+    assert row["context_window_tokens"] == 200000

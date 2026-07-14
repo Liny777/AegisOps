@@ -19,6 +19,7 @@ from domain.schemas import (
     ModelGrantsRequest,
     ModelStatusRequest,
     RegisterModelAssetRequest,
+    TestModelAssetRequest,
     SandboxDestroyRequest,
     SaveTemplateVersionRequest,
     SetRoleRequest,
@@ -118,6 +119,12 @@ async def destroy_sandbox_container(target_user_id: str, req: SandboxDestroyRequ
 @router.get("/model-assets")
 async def model_assets_list(_admin: Admin):
     return ok(await model_asset_service.admin_list())
+
+
+@router.post("/model-assets:test-connection")
+async def model_assets_test_connection(req: TestModelAssetRequest, _admin: Admin):
+    """平台模型注册前「测试连接」：Key 由服务器读 secret_env_var 环境变量探测，不落库。"""
+    return ok(await model_asset_service.test_connection(req))
 
 
 @router.post("/model-assets")

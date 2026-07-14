@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from api.deps import User
 from api.responses import ok
 from app import model_asset_service, secret_model_gateway
-from domain.schemas import CreateLlmConfigRequest, CreateSecretRequest
+from domain.schemas import CreateLlmConfigRequest, CreateSecretRequest, TestConnectionRequest
 
 router = APIRouter(prefix="/api/openops/v1", tags=["secrets"])
 
@@ -29,6 +29,12 @@ async def list_llm(user: User):
 async def list_platform_models(user: User):
     """按当前用户授权过滤的平台模型（B7 模型 ACL：scope=all ∪ 有 active grant）。"""
     return ok(await model_asset_service.list_available(user))
+
+
+@router.post("/llm-configs:test-connection")
+async def test_llm_connection(req: TestConnectionRequest, _user: User):
+    """存前「测试连接」：egress 校验 + tool-calling 探测，不落库。返回 {ok, supports_tool_calling, reason}。"""
+    return ok(await secret_model_gateway.test_connection(req))
 
 
 @router.post("/llm-configs")

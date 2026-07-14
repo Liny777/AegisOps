@@ -30,6 +30,13 @@ import { normalizeActivityPage } from "../activity";
 export const API_MODE: "mock" | "real" =
   (import.meta.env.VITE_OPENOPS_API_MODE as "mock" | "real" | undefined) ?? "real";
 
+/** 「测试连接」结果（用户自带 / 平台模型共用）：ok=true 才允许保存。 */
+export interface TestConnResult {
+  ok: boolean;
+  supports_tool_calling: boolean;
+  reason: string | null;
+}
+
 const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
 
 // 后端时间字段是 tz-aware UTC ISO（…+00:00）——统一转本地时区显示（曾用 slice 裸切 UTC 差 8h）。
@@ -87,7 +94,9 @@ export interface OpenOpsApi {
   getModelConfigs(): Promise<ModelOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
   createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
-  createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string }): Promise<{ llm_config_id: string }>;
+  createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string; context_window_tokens?: number }): Promise<{ llm_config_id: string }>;
+  /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。 */
+  testLlmConnection(input: { base_url: string; model_name: string; api_key: string }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
   uploadSkill(name: string): Promise<void>;
   registerMcp(name: string, endpoint: string): Promise<void>;
@@ -125,7 +134,9 @@ export interface OpenOpsApi {
   adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
   adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
-  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string }): Promise<void>;
+  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
+  /** 平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名），客户端不持 Key。 */
+  testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string }): Promise<TestConnResult>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -431,9 +442,24 @@ const realApi: OpenOpsApi = {
       body: {
         client_request_id: crid(), display_name: input.display_name, provider: "openai_compatible",
         base_url: input.base_url, model_name: input.model_name, secret_ref_id: input.secret_ref_id,
+        context_window_tokens: input.context_window_tokens ?? 128000,
       },
     });
     return { llm_config_id: String(d.llm_config_id) };
+  },
+  async testLlmConnection(input) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/llm-configs:test-connection", {
+      method: "POST",
+      body: { base_url: input.base_url, model_name: input.model_name, api_key: input.api_key },
+    });
+    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null };
+  },
+  async testModelAssetConnection(input) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/model-assets:test-connection", {
+      method: "POST",
+      body: { base_url: input.base_url, model_id: input.model_id, secret_env_var: input.secret_env_var },
+    });
+    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null };
   },
 
   async getAdminTable(key) {
@@ -786,6 +812,13 @@ const mockApi: OpenOpsApi = {
   getModelConfigs: () => delay(M.mockModels),
   createSecret: () => delay({ secret_ref_id: "sec_mock", fingerprint: "sk-…mock" }),
   createLlmConfig: () => delay({ llm_config_id: "llm_mock_" + Math.random().toString(36).slice(2, 8) }),
+  // mock「测试连接」：镜像后端 mock 探测（model 含 no-tool → 失败），供离线 UI 验证保存门
+  testLlmConnection: (input) => delay(
+    input.model_name.toLowerCase().includes("no-tool")
+      ? { ok: false, supports_tool_calling: false, reason: "模型不支持 tool calling" }
+      : { ok: true, supports_tool_calling: true, reason: null },
+  ),
+  testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null }),
   getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),

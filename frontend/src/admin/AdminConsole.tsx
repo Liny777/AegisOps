@@ -5,6 +5,7 @@ import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill } from "../ui";
 import { api } from "../lib/api";
 import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
+import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 
@@ -302,15 +303,44 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
   );
 }
 
-/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / access_scope。 */
+/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 / 上下文长度 / access_scope。
+ *  存前须「测试连接」通过（Key 走服务器环境变量探测）；走平台网关的模型（不填 base_url）可跳过测试直接存。 */
 function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [f, setF] = useState({ display_name: "", model_id: "", base_url: "", secret_env_var: "", access_scope: "all" });
+  const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
   const [err, setErr] = useState("");
-  const ok = f.display_name.trim() && f.model_id.trim();
+  const test = useConnTest();
+  // 探测相关字段（base_url/model_id/secret_env_var）一改即让上次测试失效
+  const setField = (key: keyof typeof f, val: string) => {
+    setF((d) => ({ ...d, [key]: val }));
+    if (key === "base_url" || key === "model_id" || key === "secret_env_var") test.reset();
+  };
   const input = (key: keyof typeof f, placeholder: string, mono = false) => (
-    <input value={f[key]} onChange={(e) => setF((d) => ({ ...d, [key]: e.target.value }))} placeholder={placeholder}
+    <input value={f[key]} onChange={(e) => setField(key, e.target.value)} placeholder={placeholder}
       style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", fontFamily: mono ? "ui-monospace, monospace" : undefined, boxSizing: "border-box" }} />
   );
+
+  const fieldsOk = Boolean(f.display_name.trim() && f.model_id.trim() && contextWindow > 0);
+  const hasBaseUrl = Boolean(f.base_url.trim());
+  // 有 base_url 必须测通才能存；走网关（不填 base_url）无端点可测，允许直接存
+  const canSave = fieldsOk && (test.state === "ok" || !hasBaseUrl);
+
+  const runTest = () => {
+    if (!hasBaseUrl || !f.model_id.trim() || test.state === "testing") return;
+    void test.run(() => api.testModelAssetConnection({ base_url: f.base_url.trim(), model_id: f.model_id.trim(), secret_env_var: f.secret_env_var.trim() }));
+  };
+  const save = () => {
+    const env = f.secret_env_var.trim();
+    if (env && !/^[A-Z][A-Z0-9_]{2,63}$/.test(env)) {
+      setErr("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）——看起来填入了 Key 本身：Key 不落库，请配到后端环境变量后在此填变量名");
+      return;
+    }
+    api.adminRegisterModel({
+      display_name: f.display_name.trim(), model_id: f.model_id.trim(),
+      base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
+      context_window_tokens: contextWindow, access_scope: f.access_scope,
+    }).then(onSaved).catch((e) => setErr((e as Error).message));
+  };
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 460, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
@@ -318,11 +348,20 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {input("display_name", "展示名，如：交易大模型-TX")}
           {input("model_id", "model_id，如：tx-llm-v2", true)}
+          <div style={{ display: "flex", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box" }}>接口协议：{PROTOCOL_LABEL}</div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <input type="number" min={1} step={1000} value={contextWindow} onChange={(e) => setContextWindow(Number(e.target.value) || 0)} placeholder="上下文长度，默认 128000"
+                style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", boxSizing: "border-box" }} />
+            </div>
+          </div>
           {input("base_url", "OpenAI 兼容 endpoint（可空，用平台网关时）", true)}
           {input("secret_env_var", "API Key 环境变量名，如 OPENOPS_PLATFORM_GLM_API_KEY", true)}
           <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.5, marginTop: -4 }}>
             ⚠ 此处填<b>环境变量名</b>，不是 Key 本身——真实 Key 配在后端进程环境变量（run-backend 里
-            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。
+            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。填了 base_url 须「测试连接」通过（Key 从环境变量取）才能注册。
           </div>
         </div>
         <div style={{ display: "flex", gap: 14, marginTop: 12, fontSize: 12.5 }}>
@@ -333,21 +372,16 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
             </label>
           ))}
         </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
+          <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
+            disabled={!hasBaseUrl || !f.model_id.trim() || test.state === "testing"} onClick={runTest}>测试连接</Button>
+          <ConnTestResult state={test.state} reason={test.reason} />
+        </div>
         {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose}>取消</Button>
-          <Button disabled={!ok} onClick={() => {
-            const env = f.secret_env_var.trim();
-            if (env && !/^[A-Z][A-Z0-9_]{2,63}$/.test(env)) {
-              setErr("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）——看起来填入了 Key 本身：Key 不落库，请配到后端环境变量后在此填变量名");
-              return;
-            }
-            api.adminRegisterModel({
-              display_name: f.display_name.trim(), model_id: f.model_id.trim(),
-              base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
-              access_scope: f.access_scope,
-            }).then(onSaved).catch((e) => setErr((e as Error).message));
-          }}>注册</Button>
+          <Button disabled={!canSave} onClick={save}
+            title={!canSave && fieldsOk && hasBaseUrl ? "请先测试连接通过" : undefined}>注册</Button>
         </div>
       </div>
     </div>
