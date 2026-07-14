@@ -21,6 +21,7 @@ from domain.schemas import (
     RegisterModelAssetRequest,
     SandboxDestroyRequest,
     SaveTemplateVersionRequest,
+    SetRoleRequest,
     TemplateVersionActionRequest,
     UpdateRuntimeConfigRequest,
     WhitelistRequest,
@@ -82,6 +83,12 @@ async def add_whitelist(req: WhitelistRequest, admin: Admin):
 async def revoke_whitelist(req: WhitelistRequest, admin: Admin):
     await identity_service.revoke_whitelist(req.user_id, admin["user_id"])
     return ok({"revoked": True})
+
+
+@router.post("/users/{user_id}:set-role")
+async def set_role(user_id: str, req: SetRoleRequest, admin: Admin):
+    """升/降级已有用户（B7·三补链）：role ∈ user|platform_admin；不能改自己；写 role.changed 审计。"""
+    return ok(await identity_service.set_role(user_id, req.role, admin["user_id"]))
 
 
 @router.get("/sandbox")

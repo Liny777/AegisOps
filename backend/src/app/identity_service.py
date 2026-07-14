@@ -55,6 +55,27 @@ async def check_whitelist(user_id: str) -> bool:
     return await users.is_whitelisted(user_id)
 
 
+async def set_role(user_id: str, role: str, by: str) -> dict[str, Any]:
+    """改角色（B7·三补链）：升/降级已有用户。此前 set_role 仓储无人调用——
+    加白名单的 upsert 对已存在用户不改 role（防重复授权时误降级），升级老用户
+    只能直改库且绕审计。守卫：不能改自己的角色（唯一管理员自降会锁死管理面，
+    与 revoke_whitelist 同思路）。"""
+    if user_id == by:
+        raise ApiError(Err.VALIDATION_FAILED, "不能修改自己的角色（防止管理面锁死）")
+    row = await users.get_user(user_id)
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, f"用户不存在：{user_id}（先加入白名单会自动建行）")
+    old_role = row["role"]
+    if old_role != role:
+        await users.set_role(user_id, role, by)
+        await audit.insert_event(  # 管理面动作必审计（B7·三）
+            audit_trace_id=str(uuid.uuid4()), event_type="role.changed", user_id=by,
+            action="set_role", actor_type="user",
+            payload_redacted={"target_user_id": user_id, "from": old_role, "to": role},
+        )
+    return {"user_id": user_id, "role": role, "changed": old_role != role}
+
+
 async def add_whitelist(user_id: str, display_name: str, role: str, by: str) -> None:
     await users.upsert_user(user_id, display_name or user_id, role)
     await users.add_whitelist(user_id, by)

@@ -93,6 +93,7 @@ export interface OpenOpsApi {
   // admin B7·三：白名单管理动作 + 审计 Trace 串联
   adminAddWhitelist(userId: string, displayName: string): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
+  adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
   getAuditTrace(traceId: string): Promise<AuditNode[]>;
   // admin B7a：模板 drill（资产治理→Tool 标注）+ 标注保存 + 模型资产授权
   getAdminTemplateAssets(): Promise<AdminTableData>;
@@ -423,7 +424,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "用户与白名单",
         primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "88px" }],
+        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }],
         rows: rows.map((r) => ({
           id: String(r.user_id),
           cells: [
@@ -435,6 +436,10 @@ const realApi: OpenOpsApi = {
             r.whitelist_status === "active"
               ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
               : { text: "加入", kind: "action" as const, onClickKey: "wl-add" },
+            // 角色升/降（set-role 补链）：改自己会被后端 400 拦（防锁死），错误显示在动作横幅
+            r.role === "platform_admin"
+              ? { text: "撤销管理员", kind: "action" as const, onClickKey: "role-user" }
+              : { text: "设为管理员", kind: "action" as const, onClickKey: "role-admin" },
           ],
         })),
       };
@@ -548,6 +553,12 @@ const realApi: OpenOpsApi = {
     await apiFetch("/openops/v1/admin/users/whitelist:revoke", {
       method: "POST",
       body: { client_request_id: crid(), user_id: userId },
+    });
+  },
+  async adminSetRole(userId, role) {
+    await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}:set-role`, {
+      method: "POST",
+      body: { client_request_id: crid(), role },
     });
   },
   async adminGetModelGrants(modelAssetId) {
@@ -739,6 +750,7 @@ const mockApi: OpenOpsApi = {
   disableTemplateVersion: () => delay(undefined as unknown as void),
   adminAddWhitelist: () => delay(undefined as unknown as void),
   adminRevokeWhitelist: () => delay(undefined as unknown as void),
+  adminSetRole: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),
   getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
   getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),

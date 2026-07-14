@@ -1,7 +1,7 @@
 """请求模型（Pydantic，21 号 API 详设口径）。响应 DTO 由 service 组装 dict。"""
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -166,3 +166,9 @@ class WhitelistRequest(BaseModel):
     user_id: str = Field(min_length=1)
     display_name: str = ""
     role: str = "user"
+
+
+class SetRoleRequest(BaseModel):
+    """管理台改角色（B7·三补链）：升/降级已有用户。role 只收两枚举值。"""
+    client_request_id: str = Field(min_length=1)
+    role: Literal["user", "platform_admin"]

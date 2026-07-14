@@ -480,3 +480,48 @@ def test_whitelist_open_query_reflects_revoke(client):
     assert client.get("/api/openops/v1/whitelist", params={"user_id": "0088temp"}).json()["data"]["whitelisted"] is False
     users = client.get("/api/openops/v1/whitelist").json()["data"]["users"]
     assert not any(u["user_id"] == "0088temp" for u in users)
+
+
+# ---- 管理台改角色 set-role（B7·三补链：升/降级已有用户 + role.changed 审计） ----
+
+def test_set_role_promotes_existing_user(client):
+    """管理员升级已有用户 → changed:true 且 /admin/users 反映新角色；重复设置 → changed:false。"""
+    from conftest import ADMIN_HEADERS, unwrap
+
+    r = unwrap(client.post("/api/openops/v1/admin/users/0026demo01:set-role",
+                           json={"client_request_id": "sr-1", "role": "platform_admin"},
+                           headers=ADMIN_HEADERS))
+    assert r == {"user_id": "0026demo01", "role": "platform_admin", "changed": True}
+    rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))
+    assert next(u for u in rows if u["user_id"] == "0026demo01")["role"] == "platform_admin"
+
+    again = unwrap(client.post("/api/openops/v1/admin/users/0026demo01:set-role",
+                               json={"client_request_id": "sr-2", "role": "platform_admin"},
+                               headers=ADMIN_HEADERS))
+    assert again["changed"] is False  # 幂等：同角色不写审计不更新
+
+
+def test_set_role_guards(client):
+    """守卫三件：非管理员 403 / 改自己 400（防锁死） / 未知用户 404 / 非法角色 422。"""
+    from conftest import ADMIN_HEADERS, USER_HEADERS
+
+    forbidden = client.post("/api/openops/v1/admin/users/0026demo01:set-role",
+                            json={"client_request_id": "sr-3", "role": "platform_admin"},
+                            headers=USER_HEADERS)
+    assert forbidden.status_code == 403
+
+    self_change = client.post("/api/openops/v1/admin/users/admin:set-role",
+                              json={"client_request_id": "sr-4", "role": "user"},
+                              headers=ADMIN_HEADERS)
+    assert self_change.status_code == 400
+    assert self_change.json()["error"]["code"] == "VALIDATION_FAILED"
+
+    missing = client.post("/api/openops/v1/admin/users/0077ghost:set-role",
+                          json={"client_request_id": "sr-5", "role": "platform_admin"},
+                          headers=ADMIN_HEADERS)
+    assert missing.status_code == 404
+
+    bad_role = client.post("/api/openops/v1/admin/users/0026demo01:set-role",
+                           json={"client_request_id": "sr-6", "role": "root"},
+                           headers=ADMIN_HEADERS)
+    assert bad_role.status_code == 422  # pydantic Literal 枚举拒收

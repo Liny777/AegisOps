@@ -96,6 +96,12 @@ export function AdminConsole() {
       const op = key === "wl-revoke" ? api.adminRevokeWhitelist(rowId) : api.adminAddWhitelist(rowId, "");
       void op.then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "role-admin" || key === "role-user") {
+      // 角色升/降（set-role 补链）：改自己后端 400（防管理面锁死），错误进动作横幅
+      setActionErr("");
+      void api.adminSetRole(rowId, key === "role-admin" ? "platform_admin" : "user")
+        .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
   };
 
   /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
