@@ -55,7 +55,15 @@ function meta(t: string) {
   return EVENT_META[t] ?? { icon: "info-circle", tone: "neutral" as Tone, title: t };
 }
 
-const hhmm = (iso?: string) => (iso ? iso.slice(11, 16) : "");
+// 后端 occurred_at 是 tz-aware UTC ISO（…+00:00）——必须转本地时区显示。
+// 曾用 iso.slice(11,16) 裸切 UTC 时分，CST 浏览器全部差 8 小时（17:13 显示 09:13）。
+const hhmm = (iso?: string): string => {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return isNaN(d.getTime())
+    ? iso.slice(11, 16)  // 非法串（如已是 "10:02" 字面量）回退原样
+    : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+};
 
 /** audit_event 行 → 活动节点。 */
 export function auditToNode(e: Record<string, unknown>): ActivityNode {

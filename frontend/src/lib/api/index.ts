@@ -30,6 +30,21 @@ export const API_MODE: "mock" | "real" =
 
 const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
 
+// 后端时间字段是 tz-aware UTC ISO（…+00:00）——统一转本地时区显示（曾用 slice 裸切 UTC 差 8h）。
+const fmtLocal = (v: unknown): string => {
+  const s = String(v ?? "");
+  if (!s) return "";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s.replace("T", " ").slice(0, 16)
+    : d.toLocaleString([], { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false });
+};
+const fmtLocalTime = (v: unknown): string => {
+  const s = String(v ?? "");
+  if (!s || s === "—") return "";
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? s.slice(11, 16) : d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+};
+
 /* ------------------------------ 接口面 ------------------------------ */
 export interface OpenOpsApi {
   getMe(): Promise<Me>;
@@ -360,7 +375,7 @@ const realApi: OpenOpsApi = {
       status: String(r.status),
       change_reason: String(r.change_reason ?? ""),
       created_by: String(r.created_by ?? ""),
-      creation_date: String(r.creation_date ?? "").replace("T", " ").slice(0, 16),
+      creation_date: fmtLocal(r.creation_date),
     }));
   },
   async getModelConfigs() {
@@ -432,7 +447,7 @@ const realApi: OpenOpsApi = {
             { text: String(r.display_name ?? "") },
             { text: String(r.role) },
             { text: String(r.whitelist_status), kind: "badge" as const, tone: r.whitelist_status === "active" ? "good" as const : "neutral" as const },
-            { text: String(r.last_login_at ?? "—").slice(11, 16) || "—" },
+            { text: fmtLocalTime(r.last_login_at) || "—" },
             r.whitelist_status === "active"
               ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
               : { text: "加入", kind: "action" as const, onClickKey: "wl-add" },

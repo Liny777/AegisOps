@@ -505,16 +505,18 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
         target = str(tool_args.get("project_id") or tool_args.get("appid") or tool_args.get("app_id") or "—")
         impact = "变更类操作，批准后才会执行"
     from infra.redact import redact_args as _redact_args  # 连带 D：入参进审批行前 key 级脱敏
+    args = _redact_args(tool_args)  # 同一份脱敏入参：入审批行 + 进事件 payload（真实 MCP 工具入参在此路径才完整）
     appr = await runs.create_approval(
         st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, tool_name,
-        _redact_args(tool_args), str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        args, str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
     st.approval_ev.clear()  # 复用同一 asyncio.Event：等待前清位+清旧结果，避免上一次 ASK（如容器 Bash 审批）的
     st.approval_result = None  # set 未清 → 本次 wait() 立即返回并读到陈旧决策（与 sandbox_bash 同规矩）
     st.approval_id = str(appr["approval_request_id"])
+    # payload 带 args（脱敏入参字典）供审批卡逐项展示；保留 target/impact 兼容旧前端
     await emit(st, run, "openops.approval.required", severity="warning",
                message=ask_msg,
-               payload={"approval_request_id": st.approval_id, "tool": tool_name,
+               payload={"approval_request_id": st.approval_id, "tool": tool_name, "args": args,
                         "target": target, "impact": impact})
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=ASK_TIMEOUT_S)
@@ -571,9 +573,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         if agent_state is None:
             agent_state = AgentState(session_id=fsid, permission_context=_permission_context(st))
         try:  # E4：治理 config（2.0.3 公开导出优先，私有路径兜底）
-            from agentscope.agent import ContextConfig, ReActConfig
+            from agentscope.agent import ContextConfig, ModelConfig, ReActConfig
         except ImportError:  # pragma: no cover
-            from agentscope.agent._config import ContextConfig, ReActConfig
+            from agentscope.agent._config import ContextConfig, ModelConfig, ReActConfig
         agent = Agent(
             name="sre-rca",
             system_prompt="你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；恢复类动作必须请求人工批准。",
@@ -586,6 +588,9 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             react_config=ReActConfig(max_iters=_clamped_env_int("OPENOPS_MAIN_MAX_ITERS", 20, 1, 200)),
             context_config=ContextConfig(
                 tool_result_limit=_clamped_env_int("OPENOPS_MAIN_TOOL_RESULT_LIMIT", 24000, 1000, 200000)),
+            # agent-loop 模型重试（默认 0=现状单次；网关 LB 节点漂移致间歇 401 时，设 >0 换连接重试
+            # 可能命中好节点。上限 3 防慢失败。openai SDK 层 max_retries 是另一档，见 _build_model）
+            model_config=ModelConfig(max_retries=_clamped_env_int("OPENOPS_MODEL_LOOP_RETRIES", 0, 0, 3)),
         )
         inputs: Any = Msg(name="user", role="user", content=[TextBlock(type="text", text=st.input_text)])
         recovery_denied = False  # 恢复被拒绝/超时/取消 → 不让模型最终文本覆盖「未执行」结论（B2-RUNTIME-001）
@@ -667,11 +672,17 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         await _finish_cancel(st, run)
         raise
     except Exception as e:  # 模型/工具异常：结构化脱敏错误 + 任务失败（不外泄凭证；B2-LOG-001 降噪不打堆栈）
-        log.warning("agentscope run_task failed task=%s run=%s: %s", st.task_id, st.run_id, _redact(str(e)))
+        reason = _redact(str(e))  # 已挡 sk-/Bearer 形串；上游「401 Invalid API key」等非密文原样透出
+        log.warning("agentscope run_task failed task=%s run=%s: %s", st.task_id, st.run_id, reason)
         st.status = "failed"
+        # 真原因进 message（活动栏 detail 只读 message）+ payload（全文）——此前 message 是干巴巴
+        # 「模型调用失败」、task.failed 连 payload/reason_code 都没有，用户只能翻后端日志（内网教训）
         await emit(st, run, "openops.model.call.failed", severity="error", action="model_call",
-                   message="模型调用失败", reason_code="MODEL_CALL_FAILED", payload={"error": _redact(str(e))})
-        await emit(st, run, "openops.task.failed", severity="error", message="任务失败，请重试或联系管理员", action="task")
+                   message=f"模型调用失败：{reason[:160]}", reason_code="MODEL_CALL_FAILED",
+                   payload={"error": reason})
+        await emit(st, run, "openops.task.failed", severity="error", action="task",
+                   message=f"任务失败：{reason[:160]}", reason_code="MODEL_CALL_FAILED",
+                   payload={"error": reason})
     finally:
         # P3：终态回写 AgentState（completed/failed/cancelled 均落）——同 run 下一个 task 恢复记忆
         if agent is not None:

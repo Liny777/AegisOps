@@ -188,7 +188,14 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
 
             # 终态（completed/cancelled 已在上方先文本后 CUSTOM 提前返回）
             elif et == "openops.task.failed":
-                err: dict[str, Any] = {"type": "RUN_ERROR", "message": str(e.get("message") or "任务失败")}
+                # 先合成失败文本气泡再发 RUN_ERROR（对齐 completed/cancelled）：CopilotChat 只渲染
+                # TEXT_MESSAGE_*，此前只发 RUN_ERROR → onError=console → 聊天区空白「没响应」（内网教训）
+                fail_text = str(e.get("message") or (p.get("error") and f"任务失败：{p['error']}") or "任务失败，请重试或联系管理员")
+                mid = str(e.get("event_id") or uuid.uuid4())
+                yield text_start(mid)
+                yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": fail_text})
+                yield text_end(mid)
+                err: dict[str, Any] = {"type": "RUN_ERROR", "message": fail_text}
                 if e.get("reason_code"):
                     err["code"] = str(e["reason_code"])  # zod optional：无值时不带 key
                 yield _sse(err)

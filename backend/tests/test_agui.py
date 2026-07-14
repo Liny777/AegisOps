@@ -86,6 +86,47 @@ def test_agui_tool_call_pairing(client):
     assert starts and starts == ends  # 顺序执行、一一配对
 
 
+def test_agui_task_failed_synthesizes_chat_bubble(client):
+    """任务失败→先合成 TEXT_MESSAGE 失败气泡再发 RUN_ERROR（对齐 completed/cancelled）：
+    此前只发 RUN_ERROR，CopilotChat 只渲染 TEXT_MESSAGE_* → 聊天区空白「没响应」（内网 401 教训）。
+    直测 service 层翻译（手喂 task.failed envelope，不依赖真失败的模型）。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import events
+
+    async def scenario() -> list[dict]:
+        rid = "run-fail-test"
+        q, _replay, _ = events.subscribe(rid, None)
+        ctx = {"queue": q, "run_id": rid, "task_id": "tsk-fail", "thread_id": "th", "agui_run_id": "ar", "user": {}}
+        # 手喂一条带真原因的 task.failed（模拟 401 透出）
+        events.publish(rid, events.envelope(
+            rid, "openops.task.failed", task_id="tsk-fail", severity="error",
+            message="任务失败：Error code: 401 - Invalid API key", reason_code="MODEL_CALL_FAILED",
+            payload={"error": "Error code: 401 - Invalid API key"}))
+        frames: list[dict] = []
+        agen = agui_service.stream(ctx)
+        for _ in range(20):
+            line = await asyncio.wait_for(agen.__anext__(), timeout=5)
+            if line.startswith("data:"):
+                f = json.loads(line[5:].strip())
+                frames.append(f)
+                if f.get("type") == "RUN_ERROR":
+                    break
+        await agen.aclose()
+        return frames
+
+    frames = asyncio.run(scenario())
+    types = [f["type"] for f in frames]
+    # 失败气泡先于 RUN_ERROR：三件套齐全且带原因文本
+    assert "TEXT_MESSAGE_START" in types and "TEXT_MESSAGE_END" in types
+    content = next(f for f in frames if f["type"] == "TEXT_MESSAGE_CONTENT")
+    assert "401" in content["delta"] and "Invalid API key" in content["delta"]
+    assert types.index("TEXT_MESSAGE_START") < types.index("RUN_ERROR")
+    run_err = next(f for f in frames if f["type"] == "RUN_ERROR")
+    assert run_err["code"] == "MODEL_CALL_FAILED" and "401" in run_err["message"]
+
+
 def test_agui_owner_isolation(client):
     instance = create_instance(client)
     run = create_run(client, instance["instance_id"])
