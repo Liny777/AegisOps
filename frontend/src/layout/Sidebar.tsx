@@ -176,7 +176,6 @@ export function Sidebar() {
                 gap: 9,
                 padding: "9px 11px",
                 borderRadius: radius.lg,
-                border: `1px solid ${color.borderInput}`,
                 background: "#fff",
                 cursor: "pointer",
               }}
@@ -233,7 +232,7 @@ export function Sidebar() {
                   hoverStyle={{ background: "#f5f8ff" }}
                 >
                   <span style={{ flex: 1 }}>全部 Agents</span>
-                  <Icon name="layout-grid" size={15} color={color.brand} />
+                  <Icon name="layout-grid" size={15} color={color.textFainter} />
                 </Interactive>
               </div>
             ) : null}
@@ -243,10 +242,10 @@ export function Sidebar() {
             <Interactive
               title="新对话"
               onClick={newChat}
-              baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", background: "#fff", border: `1px solid ${color.border}`, boxShadow: shadow.card, fontSize: 13.5, fontWeight: 700, color: color.textStrong }}
-              hoverStyle={{ borderColor: color.brandTintBorder, background: "#f9fbff" }}
+              baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "pointer", fontSize: 13.5, fontWeight: 700, color: color.textStrong }}
+              hoverStyle={{ borderColor: color.brandTintBorder, background: "rgb(233,236,241)" }}
             >
-              <Icon name="edit" size={18} color={color.brand} />
+              <Icon name="message" size={18} color={color.textFainter} />
               {showText ? <span style={{ flex: 1 }}>新对话</span> : null}
             </Interactive>
           </div>
