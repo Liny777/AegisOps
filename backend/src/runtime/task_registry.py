@@ -29,7 +29,11 @@ class TaskState:
     template_tools: set[str] | None = None
     sandbox_cfg: dict[str, Any] | None = None  # 沙箱运行配置（容量/deny 前缀）；容器内 Bash 工具用（B8·补2）
     # Agent 可调 Skill：{skill_key: {version_no, checksum}}（平台 active + 用户绑定；C1 run_skill 作 agent 工具）
+    # main task 上=已过 main.skills 模板白名单的集合（main 自身可执行面）
     available_skills: dict[str, dict[str, Any]] | None = None
+    # 未过滤全集（平台 active ∪ 实例绑定）：子 Agent 画像切片源——main.skills 收窄只管 main 自己，
+    # 不得掐子角色的技能池（老 D6：主从技能面各自独立）
+    skills_pool: dict[str, dict[str, Any]] | None = None
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

@@ -474,6 +474,23 @@ def test_e1_approval_wait_excluded_from_timeout_budget(client, runtime_backend, 
     assert "超时" not in report
 
 
+def test_child_skills_slice_from_unfiltered_pool():
+    """编排对称化连带：main.skills 白名单只收窄 main 自己——子 Agent 画像切片必须来自
+    skills_pool 未过滤全集，否则 main 一收窄就掐死子角色技能（主从技能面独立，老 D6 口径）。"""
+    from runtime.subagent_dispatch import _child_state
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.skills_pool = {"inspection": {"version_no": 1}, "log-query": {"version_no": 1}}
+    st.available_skills = {"inspection": {"version_no": 1}}  # main.skills=["inspection"] 收窄后
+    child = _child_state(st, {"key": "log", "skills": ["log-query"], "mcp_tools": []}, "log", "查日志", "dddddddd-0002")
+    assert set(child.available_skills or {}) == {"log-query"}  # 不受 main 收窄影响
+    # 兼容路径：无 skills_pool（旧快照恢复）回退 available_skills
+    st.skills_pool = None
+    child2 = _child_state(st, {"key": "ins", "skills": ["inspection"], "mcp_tools": []}, "ins", "巡检", "dddddddd-0003")
+    assert set(child2.available_skills or {}) == {"inspection"}
+
+
 def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monkeypatch):
     """per-agent 隔离（编排对称化）：动态 MCP 工具对 main/sub 统一按白名单裁剪——
     子按画像 mcp_tools，main 按模板 default_tools；模板没勾的动态工具对 main 也不注入。"""

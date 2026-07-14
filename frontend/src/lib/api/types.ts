@@ -207,6 +207,7 @@ export interface AssetRow {
   kind?: "skill" | "mcp"; // 库行：资产类型（绑定/删除用）
   versionId?: string; // 库行：最新版本 id（绑定用）
   assetId?: string; // 已绑行：底层资产 id（与库行对照「已绑定」态）
+  skillKey?: string; // skill 行：运行时白名单键（模板编辑器勾选用；display_name 只是展示名）
 }
 export interface ConfigVersionRow {
   version_no: string;

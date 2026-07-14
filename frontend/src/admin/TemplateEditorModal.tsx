@@ -19,6 +19,7 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   const [role, setRole] = useState("");
   const [tools, setTools] = useState<Set<string>>(new Set());
   const [allowedTools, setAllowedTools] = useState<string[]>([]);
+  const [skillKeys, setSkillKeys] = useState<string[]>([]); // 技能目录（active 行的 skill_key）：main/sub skills 勾选源
   const [content, setContent] = useState<Record<string, unknown>>({});
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
@@ -39,6 +40,9 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
     setTools(new Set(((main.default_tools ?? []) as string[])));
     const toolsData = await api.getAdminMcpTools(null);
     setAllowedTools(toolsData.raw.filter((r) => r.annotation_id != null && r.annotation_status === "allowed").map((r) => String(r.tool_name)));
+    // 技能目录（SkillHub 对账后的资产）：skills 白名单从这里勾选，键=skill_key（运行时同键）
+    const skills = await api.getSkillLibrary().catch(() => []);
+    setSkillKeys([...new Set(skills.filter((s) => s.status === "active" && s.skillKey).map((s) => String(s.skillKey)))]);
     setMsg("");
     setErr("");
     setBusy(false);
@@ -123,14 +127,15 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
             </label>
             <span style={{ fontSize: 11, color: color.textFaint }}>派发预算（D 块两层模型）</span>
           </div>
-          <label style={{ display: "block", fontSize: 11.5, color: color.textSubtle, marginTop: 10 }}>
-            main skills 白名单（逗号分隔 skill_key；<b>空=不限</b>，沿用 平台 active ∪ 实例绑定）
-            <input
-              value={((((content.main ?? {}) as Record<string, unknown>).skills ?? []) as string[]).join(", ")}
-              onChange={(e) => patchMain("skills", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
-              placeholder="如：inspection, log-query（留空则不限制）"
-              style={{ display: "block", width: "100%", marginTop: 5, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 9px", fontSize: 12, fontFamily: "ui-monospace, monospace", boxSizing: "border-box" }} />
-          </label>
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 10 }}>
+            main skills 白名单（勾选 skill_key；<b>全不勾=不限</b>，沿用 平台 active ∪ 实例绑定）
+            <div style={{ marginTop: 6 }}>
+              <ChipPicker options={skillKeys}
+                selected={(((content.main ?? {}) as Record<string, unknown>).skills ?? []) as string[]}
+                onChange={(next) => patchMain("skills", next)}
+                emptyHint="技能目录为空——先在设置页上传 Skill 或等 SkillHub 对账（status=active 才可勾）。" />
+            </div>
+          </div>
         </Box>
         <Box title="main 平台 MCP tool 绑定（仅 allowed 标注可绑，含动态注册表工具；空=零工具纯编排派发，模板外工具运行时 fail-closed）">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
@@ -158,8 +163,6 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                 subs[i] = { ...subs[i], [field]: value };
                 setContent({ ...content, sub_agents: subs });
               };
-              const csv = (v: unknown) => ((v ?? []) as string[]).join(", ");
-              const parse = (t: string) => t.split(/[,，]/).map((x) => x.trim()).filter(Boolean);
               const removeSub = () => {
                 const subs = ((content.sub_agents ?? []) as Record<string, unknown>[]).filter((_, j) => j !== i);
                 setContent({ ...content, sub_agents: subs });
@@ -195,15 +198,21 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                   </div>
                   <textarea value={String(s.role ?? "")} onChange={(e) => patch("role", e.target.value)} rows={2}
                     style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 8px", fontSize: 12, resize: "vertical", fontFamily: "inherit" }} />
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <label style={{ flex: 1, fontSize: 11.5, color: color.textSubtle }}>skills（逗号分隔）
-                      <input value={csv(s.skills)} onChange={(e) => patch("skills", parse(e.target.value))}
-                        style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "4px 8px", fontSize: 12, fontFamily: "ui-monospace, monospace" }} />
-                    </label>
-                    <label style={{ flex: 1, fontSize: 11.5, color: color.textSubtle }}>mcp_tools（逗号分隔）
-                      <input value={csv(s.mcp_tools)} onChange={(e) => patch("mcp_tools", parse(e.target.value))}
-                        style={{ width: "100%", border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "4px 8px", fontSize: 12, fontFamily: "ui-monospace, monospace" }} />
-                    </label>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 11.5, color: color.textSubtle }}>skills（勾选；该子 Agent 的技能白名单）
+                      <div style={{ marginTop: 4 }}>
+                        <ChipPicker options={skillKeys} selected={(s.skills ?? []) as string[]}
+                          onChange={(next) => patch("skills", next)}
+                          emptyHint="技能目录为空——先上传 Skill / 等 SkillHub 对账。" />
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: color.textSubtle }}>mcp_tools（勾选；仅 allowed 标注可选）
+                      <div style={{ marginTop: 4 }}>
+                        <ChipPicker options={allowedTools} selected={(s.mcp_tools ?? []) as string[]}
+                          onChange={(next) => patch("mcp_tools", next)}
+                          emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注。" />
+                      </div>
+                    </div>
                   </div>
                 </div>
               );
@@ -237,6 +246,29 @@ function Box({ title, children }: { title: string; children: React.ReactNode }) 
     <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: 14 }}>
       <div style={{ fontSize: 12.5, fontWeight: 700, color: color.textNav, marginBottom: 8 }}>{title}</div>
       {children}
+    </div>
+  );
+}
+
+/** 目录勾选器（skills/mcp_tools 白名单通用）：渲染 目录 ∪ 已选 的并集——已选但不在目录的旧值
+ * 也显示为可取消 chip（标「不在目录」），绝不静默丢数据；目录与已选都空时显示引导文案。 */
+function ChipPicker({ options, selected, onChange, emptyHint }: {
+  options: string[]; selected: string[]; onChange: (next: string[]) => void; emptyHint: string;
+}) {
+  const all = [...new Set([...options, ...selected])];
+  if (!all.length) return <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.7 }}>{emptyHint}</div>;
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      {all.map((k) => {
+        const on = selected.includes(k);
+        return (
+          <label key={k} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontFamily: "ui-monospace, monospace", border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", padding: "4px 9px", borderRadius: radius.sm, cursor: "pointer" }}>
+            <input type="checkbox" checked={on}
+              onChange={(e) => onChange(e.target.checked ? [...selected, k] : selected.filter((x) => x !== k))} />
+            {k}{!options.includes(k) ? <span style={{ color: color.dangerText, fontSize: 10 }}>（不在目录）</span> : null}
+          </label>
+        );
+      })}
     </div>
   );
 }

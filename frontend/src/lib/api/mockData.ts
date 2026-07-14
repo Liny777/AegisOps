@@ -184,9 +184,9 @@ export const mockBoundSkills: AssetRow[] = [
   { id: "bind_logscan", name: "日志聚类 logscan", version: "v2", status: "enabled", statusTone: "good", meta: "Skill · 我的 · main", bound: true, kind: "skill", assetId: "skill_user_logscan" },
 ];
 export const mockSkillLibrary: AssetRow[] = [
-  { id: "skill_inspection", name: "巡检 inspection", version: "v2", status: "active", statusTone: "good", meta: "平台 Skill · 更新于 07-06", bound: false, kind: "skill" },
-  { id: "skill_user_logscan", name: "日志聚类 logscan", version: "v2", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-06", bound: true, kind: "skill" },
-  { id: "skill_user_traceparse", name: "链路解析 traceparse", version: "v1", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-01", bound: false, kind: "skill" },
+  { id: "skill_inspection", name: "巡检 inspection", version: "v2", status: "active", statusTone: "good", meta: "平台 Skill · 更新于 07-06", bound: false, kind: "skill", skillKey: "inspection" },
+  { id: "skill_user_logscan", name: "日志聚类 logscan", version: "v2", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-06", bound: true, kind: "skill", skillKey: "logscan" },
+  { id: "skill_user_traceparse", name: "链路解析 traceparse", version: "v1", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-01", bound: false, kind: "skill", skillKey: "traceparse" },
 ];
 export const mockMcpLibrary: AssetRow[] = [
   { id: "mcp_alarm_server", name: "alarm-server", version: "v1", status: "active", statusTone: "good", meta: "平台 MCP · 告警列表/详情查询", bound: false, kind: "mcp" },

@@ -57,8 +57,9 @@ test("管理台：普通用户 403 → SPA 内切管理员 → 模板编辑器�
   await page.getByText("编辑", { exact: false }).last().click();
   await expect(page.getByRole("button", { name: "新增角色" })).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText("max_children（1..10）")).toBeVisible();
-  // 编排对称化：main skills 白名单输入 + main MCP 绑定区在位（目录空时显引导文案）
+  // 编排对称化：main skills 白名单（目录勾选 chips，mock 技能目录 3 键）+ main MCP 绑定区在位
   await expect(page.getByText(/main skills 白名单/)).toBeVisible();
+  await expect(page.getByText("inspection", { exact: true }).first()).toBeVisible(); // 技能目录 chip
   await expect(page.getByText(/main 平台 MCP tool 绑定/)).toBeVisible();
   // 禁用版本按钮仅 active 版本存在时显示（mock detail 无 active_version）——real 面已浏览器实测
   await expect(page.getByRole("button", { name: "保存草稿" })).toBeVisible();

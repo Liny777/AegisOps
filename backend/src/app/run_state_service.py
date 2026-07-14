@@ -179,10 +179,11 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         t for s in _subs if isinstance(s, dict) for t in (s.get("mcp_tools") or [])}
     st.tool_annotations = {k: v for k, v in anns.items() if k in _all_tools}
     st.sandbox_cfg = cfg  # 容器内 Bash 工具的 deny 前缀/配置（B8·补2）
-    # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）；
-    # 再按模板 main.skills 白名单收窄（编排对称化）——available-skills 端点吃同一过滤，展示=可执行
-    st.available_skills = filter_main_skills(
-        await resolve_available_skills(uid, str(inst["active_config_version_id"])), _content)
+    # Agent 可调 Skill（C1）：平台 active + 该实例 main 绑定的用户 Skill（skill_key→版本/checksum）。
+    # skills_pool=未过滤全集（子 Agent 画像切片源）；available_skills=再过 main.skills 白名单
+    # （只收窄 main 自己；available-skills 端点吃同一过滤，展示=可执行）
+    st.skills_pool = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
+    st.available_skills = filter_main_skills(st.skills_pool, _content)
     # P2：初始 running 快照（task.started 审计在上方直发不走 emit，此处补单点落盘）；失败降级不阻断
     try:
         await task_states.upsert_snapshot(st, "running", trace)

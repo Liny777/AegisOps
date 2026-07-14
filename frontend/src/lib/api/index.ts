@@ -286,6 +286,7 @@ const realApi: OpenOpsApi = {
       bound: false,
       kind: "skill" as const,
       versionId: r.skill_version_id ? String(r.skill_version_id) : undefined,
+      skillKey: r.skill_key ? String(r.skill_key) : undefined, // 模板编辑器勾选用（运行时白名单键）
     }));
   },
   async getMcpLibrary() {

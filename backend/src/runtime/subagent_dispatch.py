@@ -53,7 +53,10 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
     child.model_spec = st.model_spec
     child.selected_model = st.selected_model
     allowed_sk = set(sub.get("skills") or [])
-    child.available_skills = {k: v for k, v in (st.available_skills or {}).items() if k in allowed_sk}
+    # 切片源=skills_pool 未过滤全集：main.skills 白名单只收窄 main 自己，不得掐子角色技能池
+    # （老 D6 主从技能面独立；skills_pool 缺省回退 available_skills 兼容旧快照恢复路径）
+    _pool = st.skills_pool if st.skills_pool is not None else (st.available_skills or {})
+    child.available_skills = {k: v for k, v in _pool.items() if k in allowed_sk}
     anns = st.tool_annotations or {}
     child.template_tools = set(sub.get("mcp_tools") or [])
     child.tool_annotations = {k: v for k, v in anns.items() if k in child.template_tools}
