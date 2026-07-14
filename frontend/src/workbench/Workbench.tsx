@@ -23,6 +23,7 @@ import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
 import { CopilotChatPanel } from "./copilot/CopilotChatPanel";
+import { CopilotHitlFloat } from "./copilot/CopilotHitlFloat";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { consumeAutoQuestion } from "../lib/autosend";
 
@@ -119,10 +120,14 @@ export function Workbench() {
           title: "需要人工批准",
           tool: String(p.tool ?? "recover_execute"),
           summary: e.message,
-          facts: [
-            { label: "目标", value: String(p.target ?? "—") },
-            { label: "影响说明", value: String(p.impact ?? "—") },
-          ],
+          // 按工具付形状取事实：bash（run_container_command）payload 带 command，
+          // 恢复类带 target/impact——此前硬取 target/impact，bash 审批两栏全"—"没法判断
+          facts: p.command
+            ? [{ label: "命令", value: String(p.command) }]
+            : [
+                { label: "目标", value: String(p.target ?? "—") },
+                { label: "影响说明", value: String(p.impact ?? "—") },
+              ],
           countdown: "5:00",
           status: "pending",
           tone: "warning",
@@ -372,19 +377,13 @@ export function Workbench() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {USE_COPILOT_CHAT && runId && runStatus !== "closed" ? (
           // Part B：CopilotChat 接管对话区（含输入框/发送按钮原生两态/停止=取消桥）。
-          // RCA/HITL 卡不进消息流——由 SSE 通道驱动，浮在面板上方（30.4 三层模型不变）。
+          // RCA 卡不进消息流——由 SSE 通道驱动，浮在面板上方（30.4 三层模型不变）；
+          // HITL 审批卡是动作项，锚在 composer 正上方（CopilotHitlFloat，用户实测反馈改位）。
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-            {rca || hitl ? (
+            {rca ? (
               <div style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, padding: "14px 24px 10px", background: color.pageBg }}>
-                <div style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
-                  {rca ? <RcaCard rca={rca} /> : null}
-                  {hitl ? (
-                    <HitlCard
-                      key={hitl.approval_request_id + hitl.status}
-                      hitl={hitl}
-                      onDecide={(d) => api.decideApproval(hitl.approval_request_id, d)}
-                    />
-                  ) : null}
+                <div style={{ maxWidth: 760, margin: "0 auto" }}>
+                  <RcaCard rca={rca} />
                 </div>
               </div>
             ) : null}
@@ -393,6 +392,10 @@ export function Workbench() {
               instanceId={instanceId || currentAgentId || ""}
               autoQuestion={autoQuestion}
               onAutoSent={() => setAutoQuestion(null)}
+            />
+            <CopilotHitlFloat
+              hitl={hitl}
+              onDecide={(d) => hitl && api.decideApproval(hitl.approval_request_id, d)}
             />
           </div>
         ) : (

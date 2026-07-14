@@ -124,17 +124,27 @@ export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
   const remainMs = expire ? expire.getTime() - Date.now() : 0;
   const mm = Math.max(0, Math.floor(remainMs / 60000));
   const ss = Math.max(0, Math.floor((remainMs % 60000) / 1000));
+  // bash（run_container_command）审批的 args 是 {command}，恢复类是 {target/appid/action}
+  // ——按付形状取事实，避免 bash 审批「目标/动作」两栏全"—"没法判断（与 SSE 路径同口径）
+  const facts = args.command
+    ? [
+        { label: "命令", value: String(args.command) },
+        { label: "任务", value: String(a.task_id ?? "—") },
+      ]
+    : [
+        { label: "工具", value: String(a.tool_call_name ?? "") },
+        { label: "目标", value: String(args.target ?? args.appid ?? "—") },
+        { label: "动作", value: String(args.action ?? "—") },
+        { label: "任务", value: String(a.task_id ?? "—") },
+      ];
   return {
     approval_request_id: String(a.approval_request_id),
     title: "需要人工批准",
     tool: String(a.tool_call_name ?? "tool"),
-    summary: "Agent 建议执行受控恢复动作，确认后才会解密凭证并调用工具。",
-    facts: [
-      { label: "工具", value: String(a.tool_call_name ?? "") },
-      { label: "目标", value: String(args.target ?? args.appid ?? "—") },
-      { label: "动作", value: String(args.action ?? "—") },
-      { label: "任务", value: String(a.task_id ?? "—") },
-    ],
+    summary: args.command
+      ? "Agent 请求在你的容器内执行非只读命令，批准后才会真正执行。"
+      : "Agent 建议执行受控恢复动作，确认后才会解密凭证并调用工具。",
+    facts,
     countdown: `${mm}:${String(ss).padStart(2, "0")}`,
     status: "pending",
     tone: "warning",
