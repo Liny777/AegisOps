@@ -13,7 +13,6 @@ import "@copilotkit/react-core/v2/styles.css";
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
-import { CopilotModelFloat } from "./CopilotModelFloat";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 
 const AGENT_ID = "sre-agent";
@@ -44,9 +43,7 @@ export function CopilotChatPanel({ runId, instanceId, autoQuestion, onAutoSent, 
     >
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <div style={{ position: "absolute", top: 8, right: 16, zIndex: 5 }}>
-          <CopilotModelFloat runId={runId} />
-        </div>
+        {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         <CopilotChat
           agentId={AGENT_ID}
           threadId={runId}

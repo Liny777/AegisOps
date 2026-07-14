@@ -16,7 +16,6 @@ import type {
   OpenOpsEvent,
   RcaCardData,
   WorkbenchState,
-  ModelOption,
   Skill,
 } from "../lib/api/types";
 import { RcaCard } from "./RcaCard";
@@ -64,9 +63,7 @@ export function Workbench() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
-  const [models, setModels] = useState<ModelOption[]>(demo.models);
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
-  const [currentModel, setCurrentModel] = useState(demo.currentModel);
   const [nodes, setNodes] = useState<ActivityNode[]>([]);
   const [activityState, dispatchActivity] = useReducer(activityReducer, undefined, createActivityState);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -249,11 +246,7 @@ export function Workbench() {
       if (runGenerationRef.current !== generation) return;
       activeRunRef.current = rid;
       setRunId(rid);
-      api.getModelConfigs().then((ms) => {
-        if (closed || !ms.length) return;
-        setModels(ms);
-        setCurrentModel(ms.find((m) => m.current)?.label ?? ms[0].label);
-      }).catch(() => undefined);
+      // 模型在初始化向导已定，会话内不切换——不再拉 getModelConfigs / 渲染会话级选择器
       if (instanceId) {
         api.getAvailableSkills(instanceId).then((sk) => {
           if (!closed && sk.length) setSkills(sk); // 空装配集回退 demo（mock 演示不受影响）
@@ -503,16 +496,7 @@ export function Workbench() {
               <Icon name="lock" size={14} /> 会话已关闭：只读查看历史与审计，不能再启动新任务。
             </div>
           ) : (
-            <Composer
-              skills={skills}
-              models={models}
-              currentModel={currentModel}
-              onSend={send}
-              onSelectModel={(mo) => {
-                setCurrentModel(mo.label);
-                if (runId) void api.selectModel(runId, mo.llm_config_id);
-              }}
-            />
+            <Composer skills={skills} onSend={send} />
           )}
         </div>
         )}

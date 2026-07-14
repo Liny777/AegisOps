@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
-import type { ModelOption, Skill } from "../lib/api/types";
+import type { Skill } from "../lib/api/types";
 
 /** 审批模式（32 号规范）：请求批准 = 始终询问；替我审批 = 仅对检查到的风险操作请求审批。 */
 export type ApprovalMode = "ask" | "auto";
@@ -10,34 +10,24 @@ const APPROVAL_OPTS: { key: ApprovalMode; label: string; desc: string }[] = [
   { key: "auto", label: "替我审批", desc: "仅对检查到的风险操作请求审批" },
 ];
 
-/** SkillAwareComposer：/ 选 Skill + 会话级模型切换 + 审批模式（32 号）+ 发送。@ 提及 V1 不做。 */
+/** SkillAwareComposer：/ 选 Skill + 审批模式（32 号）+ 发送。@ 提及 V1 不做。
+ *  模型只在初始化向导配置，会话内不提供切换（去掉原「模型：xxx」选择器）。 */
 export function Composer({
   skills,
-  models,
-  currentModel,
   approvalMode = "ask",
   onSend,
-  onSelectModel,
   onApprovalMode,
 }: {
   skills: Skill[];
-  models: ModelOption[];
-  currentModel: string;
   approvalMode?: ApprovalMode;
   onSend?: (text: string) => void;
-  onSelectModel?: (m: ModelOption) => void;
   onApprovalMode?: (m: ApprovalMode) => void;
 }) {
   const [text, setText] = useState("");
   const [slashOpen, setSlashOpen] = useState(false);
-  const [modelOpen, setModelOpen] = useState(false);
   const [approvalOpen, setApprovalOpen] = useState(false);
   const [approval, setApproval] = useState<ApprovalMode>(approvalMode);
-  const [model, setModel] = useState(currentModel);
 
-  useEffect(() => {
-    setModel(currentModel);
-  }, [currentModel]);
   useEffect(() => {
     setApproval(approvalMode);
   }, [approvalMode]);
@@ -81,35 +71,9 @@ export function Composer({
           </Menu>
         ) : null}
 
-        {/* model menu */}
-        {modelOpen ? (
-          <Menu left={96} width={280} title="选择模型（本次会话临时）">
-            {models.map((mo) => (
-              <Interactive
-                key={mo.llm_config_id}
-                onClick={() => {
-                  if (!mo.available) return;
-                  setModel(mo.label.replace(/（.*/, ""));
-                  onSelectModel?.(mo);
-                  setModelOpen(false);
-                }}
-                baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 13px", cursor: mo.available ? "pointer" : "not-allowed", opacity: mo.available ? 1 : 0.55 }}
-                hoverStyle={mo.available ? { background: "#f5f8ff" } : {}}
-              >
-                <Icon name="cpu" size={15} color={mo.available ? color.brand : color.textFaint} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: mo.available ? color.textStrong : color.textFaint }}>{mo.label}</div>
-                  <div style={{ fontSize: 11, color: color.textSubtle }}>{mo.reason ?? mo.note}</div>
-                </div>
-                {mo.current ? <Icon name="check" size={15} color={color.brand} /> : null}
-              </Interactive>
-            ))}
-          </Menu>
-        ) : null}
-
         {/* approval-mode menu (32 号) */}
         {approvalOpen ? (
-          <Menu left={172} width={272} title="审批模式（本次会话）">
+          <Menu left={88} width={272} title="审批模式（本次会话）">
             {APPROVAL_OPTS.map((o) => {
               const on = o.key === approval;
               return (
@@ -140,18 +104,13 @@ export function Composer({
             style={{ width: "100%", border: "none", outline: "none", fontSize: 14, padding: "4px 2px 8px", background: "transparent", color: color.ink }}
           />
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Interactive as="button" onClick={() => { setSlashOpen((v) => !v); setModelOpen(false); setApprovalOpen(false); }}
+            <Interactive as="button" onClick={() => { setSlashOpen((v) => !v); setApprovalOpen(false); }}
               baseStyle={{ border: `1px solid ${color.border}`, background: "#fff", cursor: "pointer", color: color.textNav, fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: radius.md, display: "inline-flex", alignItems: "center", gap: 5 }}
               hoverStyle={{ background: color.brandTintBg, borderColor: color.brandTintBorder }}>
               <Icon name="slash" size={14} />Skill
             </Interactive>
-            <Interactive as="button" onClick={() => { setModelOpen((v) => !v); setSlashOpen(false); setApprovalOpen(false); }}
-              baseStyle={{ border: `1px solid ${color.border}`, background: "#fff", cursor: "pointer", color: color.textNav, fontSize: 12, fontWeight: 600, padding: "5px 10px", borderRadius: radius.md, display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}
-              hoverStyle={{ background: color.brandTintBg, borderColor: color.brandTintBorder }}>
-              <Icon name="cpu" size={14} />模型：{model}<Icon name="chevron-down" size={13} />
-            </Interactive>
             {/* 审批模式选择器（32 号）：32px 高、999px 圆角、蓝字 */}
-            <Interactive as="button" onClick={() => { setApprovalOpen((v) => !v); setSlashOpen(false); setModelOpen(false); }}
+            <Interactive as="button" onClick={() => { setApprovalOpen((v) => !v); setSlashOpen(false); }}
               baseStyle={{ height: 32, border: `1px solid ${color.brandTintBorder}`, background: "#fff", cursor: "pointer", color: color.brand, fontSize: 12, fontWeight: 600, padding: "0 12px", borderRadius: radius.pill, display: "inline-flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}
               hoverStyle={{ background: color.brandTintBg }}>
               <Icon name="shield-check" size={14} color={color.brand} />{approvalLabel}<Icon name="chevron-down" size={13} color={color.brand} />
