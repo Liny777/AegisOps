@@ -135,33 +135,6 @@ export function Sidebar() {
         transition: "width .16s",
       }}
     >
-      {/* brand */}
-      <div style={{ padding: "16px 16px 12px", display: "flex", alignItems: "center", gap: 10 }}>
-        <div
-          style={{
-            width: 32,
-            height: 32,
-            borderRadius: 9,
-            background: color.brandGrad,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            flex: "0 0 32px",
-            boxShadow: shadow.brand,
-          }}
-        >
-          <Icon name="robot" size={19} color="#fff" />
-        </div>
-        {showText ? (
-          <div style={{ lineHeight: 1.15 }}>
-            {/* 用户视角叫产品名「感知快恢 Agent」；管理台保留平台名 OpenOps */}
-            <div style={{ fontSize: 15, fontWeight: 800 }}>{isAdmin ? "OpenOps" : "感知快恢 Agent"}</div>
-            <div style={{ fontSize: 10.5, fontWeight: 600, color: color.textSubtle, letterSpacing: 0.4 }}>
-              {isAdmin ? "SRE Agent 管理台" : "SRE Agent 工作台"}
-            </div>
-          </div>
-        ) : null}
-      </div>
 
       {/* USER MODE */}
       {!isAdmin ? (
