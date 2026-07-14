@@ -146,7 +146,10 @@ def test_console_discovery_sends_cookie(monkeypatch):
 
     monkeypatch.setattr(httpx, "AsyncClient", _Srv)
     asyncio.run(mcp_registry_client.list_servers())
-    assert _FakeClient.captured["headers"].get("Cookie") == "sid=xyz"
+    # console 统一装配后 headers 在客户端构造器（含浏览器 UA；IAM-Client-Ip 无请求上下文不硬塞）
+    ctor_headers = _FakeClient.init_kwargs.get("headers") or {}
+    assert ctor_headers.get("Cookie") == "sid=xyz"
+    assert "Mozilla/5.0" in ctor_headers.get("User-Agent", "")
 
 
 def test_dynamic_specs_scope_from_project_id(monkeypatch):

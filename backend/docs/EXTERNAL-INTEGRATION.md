@@ -94,10 +94,15 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 `apptree_client.list_user_apps(user_id)`（`OPENOPS_APPTREE=real` 启用）：`POST {base}/observe/unifieduery/verification/api/v1/{enterprise}/{project}/userid_search_appid`，body `{"uesrId": <W3>}`（⚠path 段 `unifieduery`、body 键 `uesrId` 均为**对端真实拼写**，勿"修正"）；解 `data.datas[]` → 平铺 `{app_id=dimension_code, name=current_name_zh, type=dimension_type}`，**按 app_id 去重**（一人多角色→同 appid 多行）。**失败不静默**：非 2xx 带响应体报错、HTML=登录页/地址错、200+`status`非 OK 也报错（前端对话框直接显示原因）；每次调用打 `[OpenOps][apptree] POST … rows=N` 日志行；自检跑 `check-net.py` ④。当前企业按 `OPENOPS_APPTREE_ENTERPRISE_ID` > 生效完整 URL 的 enterprise 段 > 默认值解析，同时作为未显式配置 oModel tenant 时的 workspace 企业。出站硬化与 console/oModel 同口径（TLS 三档 + trust_env 默认 off + 可选 `OPENOPS_APPTREE_COOKIE`）。**联调缝** `OPENOPS_APPTREE_USER_ID`：mock 登录头里的 user_id 未必是 W3 账号（如 `0026demo01`≠`l00833445`），设它可覆盖发给上游的账号（对齐 `OPENOPS_SCOPE_OVERRIDE_APPIDS` 模式，接真 IAM 后删）。前端 `WorkspaceDialog` 平铺展示（名称/APPID/类型 + 搜索），勾选后 `POST /workspaces` 真落库为范围。此接口**天然按用户过滤**（比 oModel `/{ws}/projects` 的「发现集」更接近授权集），但初始化选源与运行时 scope resolve 仍是两条链（后者的 per-user 化待 umodel P0-1）。
 
 ### 平台 HTTP MCP / MCP Registry / Skill Hub —— 已按 28.2 / 29.3 对齐
-real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，不静默降级）：
+real 变体经各自 `*_BASE_URL`（host root）发 HTTP（未配 → raise，不静默降级）。console 面
+（mcps/skills）出站与 oModel 同款统一装配（`console_client_kwargs`，88a8fc1 同根因链）：用户登录态
+Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`/`X-Forwarded-For`（华为 IAM
+会话绑客户端 IP，缺头从服务器 IP 出站被判 code=1001 登录态失效）+ base 派生同源头；
+`OPENOPS_HTTP_DEBUG=1` 打门控诊断（出站方法/URL/头/体 + 响应状态/体；Cookie 只打长度、客户端 IP
+只打在场与否，SEC-001）：
 - **Skill Hub**：`list_skills` → `POST /obsv/agent/management/skills/list/query`，解 `{code,message,data:{items}}` 信封 + 字段映射（`skill_id→skill_key`、`is_system→source_type`、`latest_version→version_no` 等，29.4）；`download` → `GET /obsv/agent/management/skills/download?skill_id=`，按 `X-Checksum-SHA256`（ZIP 原始字节 sha256，C1-CHK-001）校验。**V1 下载 latest（省略 version）**——OpenOps 无 semver，精确 pin 待 repo 穿透。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
-  **需 `OPENOPS_MCPREGISTRY_COOKIE`**，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
+  鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或
   proxy（console `mcps/proxy`，**其上游转发 404 待对端修**）；占位 endpoint `http://mock`（seed demo 资产）不外发。
 - **动态 MCP 工具装配（✅内网已通）**：`OPENOPS_MCPREGISTRY=real` 时 run 起点从注册表发现全部 server 工具 →

@@ -8,8 +8,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from typing import Any
+
+log = logging.getLogger("openops.mcpreg")
+
+# console 网关与 omodel 同一套边界策略（omodel_real._BROWSER_UA 内网实锤）：脚本类 UA 会被拦，
+# 出站以浏览器 UA 代表登录用户操作。两处常量保持一致；不从 omodel_real import（它反向依赖本模块）。
+_BROWSER_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
 _TOOLS = [
     {
@@ -56,6 +64,82 @@ def _console_headers() -> dict[str, str]:
     联调用（本地无 IAM 登录）；生产由真 IAM 网关透传用户 cookie。未设=不带（会 401，需配）。cookie 是会话态，会过期。"""
     cookie = console_cookie("OPENOPS_MCPREGISTRY_COOKIE")
     return {"Cookie": cookie} if cookie else {}
+
+
+def _http_debug() -> bool:
+    return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
+
+
+async def _log_outbound_request(request: Any) -> None:
+    """门控诊断（OPENOPS_HTTP_DEBUG=1）：出站的方法/URL/头/体。SEC-001：Cookie 只打长度、
+    IAM-Client-Ip/X-Forwarded-For 只打在场与否——凭据与客户端 IP 不入日志。"""
+    masked = []
+    for k, v in request.headers.items():
+        lk = k.lower()
+        if lk == "cookie":
+            masked.append(f"{k}=<len={len(v)}>")
+        elif lk in ("iam-client-ip", "x-forwarded-for"):
+            masked.append(f"{k}=<set>")
+        else:
+            masked.append(f"{k}={v}")
+    body = request.content.decode("utf-8", "replace")[:500] if request.content else ""
+    log.warning("[OpenOps][mcpreg][debug] → %s %s body=%s", request.method, request.url, body)
+    log.warning("[OpenOps][mcpreg][debug] → headers: %s", "; ".join(masked))
+
+
+async def _log_outbound_response(response: Any) -> None:
+    await response.aread()  # hook 时机在体读取前；先读全才能打响应体
+    ct = str(response.headers.get("content-type", ""))
+    body = ((response.text or "")[:1000] if ("json" in ct or "text" in ct)
+            else f"<{len(response.content)} bytes {ct}>")  # ZIP 等二进制不进日志
+    log.warning("[OpenOps][mcpreg][debug] ← status=%s body=%s", response.status_code, body)
+
+
+def console_client_kwargs(base: str, cookie_env: str, timeout: float = 15) -> dict[str, Any]:
+    """console 系（mcps/skills）出站统一装配——与 omodel_real._client_kwargs 同款（88a8fc1 根因链）：
+
+    登录态 Cookie + 浏览器 UA + IAM-Client-Ip/X-Forwarded-For（华为 IAM 会话绑客户端 IP，
+    只带 Cookie 从服务器 IP 出站会被判「登录态已失效」code=1001）+ 从目标 base 派生的
+    CSRF 同源头 + TLS/代理三档 + OPENOPS_HTTP_DEBUG 门控诊断钩子。"""
+    from urllib.parse import urlparse
+
+    from infra.request_context import cached_user_cookie, client_ip, current_user_id, user_cookie
+
+    kwargs: dict[str, Any] = {"timeout": timeout, "verify": console_tls_verify(),
+                              "trust_env": http_trust_env()}
+    headers: dict[str, str] = {"User-Agent": _BROWSER_UA}
+    cookie = console_cookie(cookie_env)
+    if cookie:
+        headers["Cookie"] = cookie
+    ip = client_ip()
+    if ip:
+        headers["IAM-Client-Ip"] = ip
+        headers["X-Forwarded-For"] = ip
+    try:
+        t = urlparse(base)
+        origin = f"{t.scheme}://{t.netloc}" if t.scheme and t.netloc else ""
+    except ValueError:
+        origin = ""
+    if origin:
+        headers.update({
+            "Origin": origin,
+            "Referer": origin + "/",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+            "Sec-Fetch-Dest": "empty",
+        })
+    kwargs["headers"] = headers
+    if _http_debug():
+        src = ("passthrough" if user_cookie()
+               else "cache" if cached_user_cookie(current_user_id())
+               else f"env:{cookie_env}" if os.getenv(cookie_env)
+               else "env:shared" if cookie
+               else "none")
+        log.warning("[OpenOps][mcpreg][debug] cookie_src=%s cookie_len=%d client_ip=%s",
+                    src, len(cookie or ""), "set" if ip else "missing")
+        kwargs["event_hooks"] = {"request": [_log_outbound_request],
+                                 "response": [_log_outbound_response]}
+    return kwargs
 
 
 def http_trust_env() -> bool:
@@ -124,11 +208,10 @@ async def list_servers() -> list[dict[str, Any]]:
 
         url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/list/query"
         out: list[dict[str, Any]] = []
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
             page, page_size = 1, 50
             while True:
-                r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"},
-                                   headers=_console_headers())
+                r = await cli.post(url, json={"page": page, "page_size": page_size, "source": "openops"})
                 raise_with_body(r)
                 body = r.json()
                 if int(body.get("code", -1)) not in (0, 200):  # 2026-07-13 对端统一 200；0 兼容旧版
@@ -180,9 +263,8 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
             if not base:
                 raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
             url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/proxy"
-            async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
-                r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
-                                   headers=_console_headers())
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+                r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}})
                 raise_with_body(r)
                 body = r.json()
             if int(body.get("code", -1)) not in (0, 200):  # 29.3 信封；2026-07-13 对端统一 200，0 兼容旧版

@@ -17,11 +17,9 @@ import zipfile
 from typing import Any
 
 from domain.skill_package import package_checksum
-from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三档/代理/文根/共享 cookie/带体报错）
+from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三档/代理/文根/出站装配/带体报错）
     console_api_prefix,
-    console_cookie,
-    console_tls_verify,
-    http_trust_env,
+    console_client_kwargs,
     raise_with_body,
 )
 
@@ -32,12 +30,6 @@ def skillhub_base() -> str:
     from infra.request_context import expand_host
 
     return expand_host((os.getenv("OPENOPS_SKILLHUB_BASE_URL") or os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "").rstrip("/"))
-
-
-def _headers() -> dict[str, str]:
-    """console 鉴权 cookie：OPENOPS_SKILLHUB_COOKIE 专属 > 共享 OPENOPS_CONSOLE_COOKIE（mcps 面内网实测必须带）。"""
-    cookie = console_cookie("OPENOPS_SKILLHUB_COOKIE")
-    return {"Cookie": cookie} if cookie else {}
 
 # mock 平台 Skill「inspection」的可执行包（run.py 写 output.json，run_skill 真跑得通）
 _MOCK_RUN_PY = (
@@ -115,8 +107,8 @@ async def list_skills(user_id: str) -> list[dict[str, Any]]:
         import httpx
 
         url = f"{base}{console_api_prefix()}/skills/list/query"
-        async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
-            r = await cli.post(url, json={"page": 1, "page_size": 200, "source": "openops"}, headers=_headers())
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE")) as cli:
+            r = await cli.post(url, json={"page": 1, "page_size": 200, "source": "openops"})
             raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
             items = _unwrap_data(r.json()).get("items", [])  # 分页对象 data.items，非裸 list
         return [_map_skill(it) for it in items]
@@ -152,11 +144,11 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
             raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（或 OPENOPS_MCPREGISTRY_BASE_URL，同 console 网关）")
         import httpx
 
-        async with httpx.AsyncClient(timeout=30, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE", timeout=30)) as cli:
             # 29.3 §2.5：flat `GET /skills/download?skill_id=&version=`。V1 省略 version → 下载 latest
             # （OpenOps 存 version_no(int) 无 semver，精确 pin 待 repo 穿透；latest + ZIP 字节 checksum 校验漂移即 fail-closed）。
             r = await cli.get(f"{base}{console_api_prefix()}/skills/download",
-                              params={"skill_id": skill_key}, headers=_headers())
+                              params={"skill_id": skill_key})
             raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
             raw = r.content
             header_checksum = r.headers.get("X-Checksum-SHA256", "")

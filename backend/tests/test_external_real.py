@@ -36,6 +36,7 @@ def _install(monkeypatch, route):
     class _Client:
         def __init__(self, *a, **k):
             self._base = k.get("base_url") or ""
+            self._ctor = k  # 构造器 kwargs（console 统一装配后 headers 在这里，非每次调用）
 
         async def __aenter__(self):
             return self
@@ -44,11 +45,11 @@ def _install(monkeypatch, route):
             return False
 
         async def get(self, url, **k):
-            captured.append(("GET", self._base + url, k))
+            captured.append(("GET", self._base + url, {**k, "_ctor": self._ctor}))
             return route("GET", self._base + url, k)
 
         async def post(self, url, **k):
-            captured.append(("POST", self._base + url, k))
+            captured.append(("POST", self._base + url, {**k, "_ctor": self._ctor}))
             return route("POST", self._base + url, k)
 
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
@@ -376,6 +377,43 @@ async def test_ext_mcpregistry_discover_code_nonzero_raises(monkeypatch):
         assert "6006" in str(e)
 
 
+async def test_ext_console_client_kwargs_headers(monkeypatch, caplog):
+    """console 系（mcps/skills）出站与 omodel 同款装配：登录态 + 浏览器 UA + IAM-Client-Ip/XFF +
+    从目标 base 派生的同源头（88a8fc1 同根因：华为 IAM 会话绑客户端 IP，只带 Cookie 从服务器 IP
+    出站被判 code=1001 登录态失效）；诊断日志不泄露凭据与客户端 IP。"""
+    import logging
+
+    from infra import request_context
+    from infra.external.mcp_registry_client import console_client_kwargs
+
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG", "1")
+    caplog.set_level(logging.WARNING, logger="openops.mcpreg")
+    request_context.set_request_user("u1", "sid=user-session")
+    request_context.set_client_ip("10.20.30.40")
+    try:
+        kw = console_client_kwargs("https://console.example:8443", "OPENOPS_MCPREGISTRY_COOKIE")
+        headers = kw["headers"]
+        assert headers.get("Cookie") == "sid=user-session"  # 用户登录态透传
+        assert "Mozilla/5.0" in headers.get("User-Agent", "")  # 浏览器 UA
+        assert headers.get("IAM-Client-Ip") == "10.20.30.40"
+        assert headers.get("X-Forwarded-For") == "10.20.30.40"
+        assert headers.get("Origin") == "https://console.example:8443"
+        assert headers.get("Referer") == "https://console.example:8443/"
+        assert headers.get("Sec-Fetch-Site") == "same-origin"
+        assert kw.get("event_hooks")  # HTTP_DEBUG=1 时诊断钩子已挂
+        assert "sid=user-session" not in caplog.text  # 凭据不入日志
+        assert "10.20.30.40" not in caplog.text  # 客户端 IP 不入日志（SEC-001 同规矩）
+        request_context.set_client_ip("")
+        headers2 = console_client_kwargs("https://console.example", "OPENOPS_MCPREGISTRY_COOKIE")["headers"]
+        assert "IAM-Client-Ip" not in headers2  # 无 IP 上下文不硬塞
+    finally:
+        request_context.set_request_user("", "")
+        request_context.set_client_ip("")
+        request_context.clear()
+
+
 # ============================ 平台 MCP + Tool Gateway header（28.2） ============================
 
 async def test_ext_platform_mcp_body_has_tool_name(monkeypatch):
@@ -627,7 +665,9 @@ async def test_ext_skillhub_cookie_base_fallback_and_html_guard(monkeypatch):
     await skill_hub_client.list_skills("u1")
     method, url, kwargs = cap[0]
     assert url == "https://console/obsv/agent/management/skills/list/query"  # base 回退 + console 文根
-    assert kwargs["headers"] == {"Cookie": "sid=shared-9"}  # 共享 cookie 回退带出
+    ctor_headers = kwargs["_ctor"]["headers"]  # console 统一装配：headers 在客户端构造器
+    assert ctor_headers["Cookie"] == "sid=shared-9"  # 共享 cookie 回退带出
+    assert "Mozilla/5.0" in ctor_headers["User-Agent"]  # skills 面同吃浏览器 UA 装配
 
     # 成功码兼容：内网实测 skills 面成功返回 code=200/success（29.3 文档写 0，mcps 面实测 0）——两收
     body200 = {"code": 200, "message": "success", "data": {"items": [
