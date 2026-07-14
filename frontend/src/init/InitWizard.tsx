@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
-import { Icon, Interactive, Button, TextInput } from "../ui";
+import { Icon, useHover, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
 import type { Template, Workspace } from "../lib/api/types";
@@ -94,11 +94,11 @@ export function InitWizard() {
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", background: color.pageBg }}>
       {/* header + stepper */}
-      <header style={{ flex: "0 0 auto", height: 60, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 14 }}>
+      <header style={{ flex: "0 0 auto", height: 60, borderBottom: `1px solid  rgb(226, 229, 234)`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 14 }}>
         <div style={{ width: 30, height: 30, borderRadius: 8, background: color.brandGrad, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand }}>
           <Icon name="robot" size={18} color="#fff" />
         </div>
-        <div style={{ fontSize: 15, fontWeight: 800 }}>{editing ? "编辑 Agent" : "初始化 Agent"}</div>
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{"运维Agent"}</div>
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 0, maxWidth: 520, margin: "0 auto" }}>
           {STEPS.map((s, i) => (
             <div key={s} style={{ display: "flex", alignItems: "center", flex: i === STEPS.length - 1 ? "0 0 auto" : 1 }}>
@@ -117,7 +117,7 @@ export function InitWizard() {
 
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "36px 24px" }}>
-        <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ maxWidth: 1280, margin: "0 auto" }}>
           {/* 外链 ?q= 场景：问题已保留，初始化完成进入对话时自动发送（editing 复用向导时不涉及） */}
           {!editing ? <PendingQuestionNotice /> : null}
           {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} locked={editing} /> : null}
@@ -138,7 +138,7 @@ export function InitWizard() {
       </div>
 
       {/* footer */}
-      <div style={{ flex: "0 0 auto", borderTop: `1px solid ${color.border}`, background: "#fff", padding: "14px 24px", display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ flex: "0 0 auto", borderTop: `1px solid rgb(226, 229, 234)`, background: "#fff", padding: "14px 24px", display: "flex", alignItems: "center", gap: 10 }}>
         <div style={{ maxWidth: 720, margin: "0 auto", width: "100%", display: "flex", gap: 10 }}>
           {step > 0 ? <Button variant="secondary" icon="arrow-left" onClick={() => setStep((s) => s - 1)}>上一步</Button> : null}
           <div style={{ flex: 1 }} />
@@ -197,33 +197,38 @@ function StepTemplate({ templates, tplId, onPick, locked }: { templates: Templat
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {templates.map((tpl) => {
           const on = tpl.template_version_id === tplId;
-          return (
-            <Interactive key={tpl.template_version_id} onClick={() => { if (!locked) onPick(tpl.template_version_id); }}
-              baseStyle={{ border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xxl, padding: 18, cursor: locked ? "default" : "pointer", display: "flex", gap: 14, alignItems: "flex-start", opacity: locked && !on ? 0.55 : 1 }}
-              hoverStyle={on || locked ? {} : { borderColor: color.brandTintBorder }}>
-              <div style={{ width: 42, height: 42, borderRadius: radius.lg, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 42px" }}>
-                <Icon name="robot" size={22} color={color.brand} />
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 15, fontWeight: 700 }}>{tpl.name}</span>
-                  <span style={{ fontSize: 11, fontWeight: 600, color: color.brandStrong, background: "#fff", border: `1px solid ${color.brandTintBorder}`, padding: "2px 8px", borderRadius: radius.sm }}>{tpl.active_version} · active</span>
-                </div>
-                <div style={{ fontSize: 12.5, color: color.textMuted, margin: "5px 0 9px", lineHeight: 1.6 }}>{tpl.desc}</div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  {tpl.capabilities.map((c) => (
-                    <span key={c} style={{ fontSize: 11.5, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.border}`, padding: "3px 9px", borderRadius: radius.pill }}>{c}</span>
-                  ))}
-                </div>
-              </div>
-              <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 4 }}>
-                {on ? <div style={{ width: 9, height: 9, borderRadius: "50%", background: color.brand }} /> : null}
-              </div>
-            </Interactive>
-          );
+          return <TemplateCard key={tpl.template_version_id} tpl={tpl} on={on} locked={locked} onPick={onPick} />;
         })}
       </div>
     </>
+  );
+}
+
+function TemplateCard({ tpl, on, locked, onPick }: { tpl: Template; on: boolean; locked?: boolean; onPick: (id: string) => void }) {
+  const { hovered, bind } = useHover();
+  const borderColor = on ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={() => { if (!locked) onPick(tpl.template_version_id); }} {...(locked ? {} : bind)}
+      style={{ border: `1px solid ${borderColor}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xxl, padding: 18, cursor: locked ? "default" : "pointer", display: "flex", gap: 14, alignItems: "flex-start", opacity: locked && !on ? 0.55 : 1 }}>
+      <div style={{ width: 42, height: 42, borderRadius: radius.lg, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 42px" }}>
+        <Icon name="robot" size={22} color={color.brand} />
+      </div>
+      <div style={{ flex: 1 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 15, fontWeight: 700 }}>{tpl.name}</span>
+          <span style={{ fontSize: 11, fontWeight: 600, color: color.brandStrong, background: "#fff", border: `1px solid ${color.brandTintBorder}`, padding: "2px 8px", borderRadius: radius.sm }}>{tpl.active_version} · active</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: color.textMuted, margin: "5px 0 9px", lineHeight: 1.6 }}>{tpl.desc}</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          {tpl.capabilities.map((c) => (
+            <span key={c} style={{ fontSize: 11.5, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: "1px solid rgb(226, 229, 234)", padding: "3px 9px", borderRadius: radius.pill }}>{c}</span>
+          ))}
+        </div>
+      </div>
+      <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 4 }}>
+        {on ? <div style={{ width: 9, height: 9, borderRadius: "50%", background: color.brand }} /> : null}
+      </div>
+    </div>
   );
 }
 
@@ -255,9 +260,11 @@ function StepConfigure({
   const selectedWs = workspaces.find((w) => w.workspace_id === wsId);
   return (
     <>
-      <Title t="配置 Agent" d="一页完成：名称、模型与看护范围；身份使用你当前的登录账号。" />
-      <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
-
+      <div style={{ background: "#fff", border: "1px solid rgb(226, 229, 234)", borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
+      <div style={{ marginBottom: 2 }}>
+          <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>配置 Agent</h2>
+          <div style={{ fontSize: 13, color: color.textSubtle }}>一页完成：名称、模型与看护范围；身份使用你当前的登录账号。</div>
+        </div>
         {/* ① 名称 */}
         <div>
           <SectionLabel text="Agent 名称" required />
@@ -269,7 +276,7 @@ function StepConfigure({
         </div>
 
         {/* ② 身份确认 */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, border: `1px solid ${color.border}`, borderRadius: radius.xl, background: "rgba(247,248,250,.5)", padding: 14 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, background: "rgba(247,248,250,.5)", padding: 14 }}>
           <div style={{ width: 32, height: 32, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
             <Icon name="user" size={17} color={color.brand} />
           </div>
@@ -286,38 +293,16 @@ function StepConfigure({
           <SectionLabel text="模型供应商" />
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 10px" }}>选择 Agent 使用的模型：可用平台提供的模型，也可接入自带模型（OpenAI 兼容，须支持 tool calling）。</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <Interactive onClick={() => onLlm("platform")}
-              baseStyle={{ border: `1px solid ${llm === "platform" ? color.brand : color.border}`, background: llm === "platform" ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-              hoverStyle={llm === "platform" ? {} : { borderColor: color.brandTintBorder }}>
-              <div style={{ width: 34, height: 34, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
-                <Icon name="sparkles" size={17} color={color.brand} />
-              </div>
-              <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 13, fontWeight: 600 }}>平台默认模型（Qwen3.5）</span>
-                <span style={{ fontSize: 10, color: color.textSubtle, background: color.neutralBg, padding: "2px 6px", borderRadius: 5 }}>平台提供</span>
-              </div>
-              <RadioDot on={llm === "platform"} />
-            </Interactive>
+            <LlmCard selected={llm === "platform"} onClick={() => onLlm("platform")}
+              icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
+              label="平台默认模型（Qwen3.5）" badge="平台提供" />
 
             {customLlmId ? (
-              <Interactive onClick={() => onLlm("custom")}
-                baseStyle={{ border: `1px solid ${llm === "custom" ? color.brand : color.border}`, background: llm === "custom" ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}
-                hoverStyle={llm === "custom" ? {} : { borderColor: color.brandTintBorder }}>
-                <div style={{ width: 34, height: 34, borderRadius: radius.md, background: color.neutralBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
-                  <Icon name="cpu" size={17} color={color.textNav} />
-                </div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                    <span style={{ fontSize: 13, fontWeight: 600 }}>{customLlmLabel}</span>
-                    {customLlmMeta ? <span style={{ fontSize: 10, color: color.textSubtle, background: color.neutralBg, padding: "2px 6px", borderRadius: 5, fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.modelName}</span> : null}
-                    <span style={{ fontSize: 10, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, fontWeight: 600 }}>可用</span>
-                  </div>
-                  {customLlmMeta ? <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.baseUrl}</div> : null}
-                </div>
-                <Icon name="trash" size={16} color={color.textFaint} title="删除该自定义模型（回退平台默认）"
-                  onClick={onCustomRemoved} />
-                <RadioDot on={llm === "custom"} />
-              </Interactive>
+              <LlmCard selected={llm === "custom"} onClick={() => onLlm("custom")}
+                icon="cpu" iconBg={color.neutralBg} iconColor={color.textNav}
+                label={customLlmLabel} badge="可用" badgeTone="good"
+                extra={customLlmMeta ? <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.baseUrl}</div> : null}
+                trailing={<Icon name="trash" size={16} color={color.textFaint} title="删除该自定义模型（回退平台默认）" onClick={onCustomRemoved} />} />
             ) : null}
 
             {showAdd ? (
@@ -326,11 +311,7 @@ function StepConfigure({
                 onCreated={(id, label, meta) => { setShowAdd(false); onCustomCreated(id, label, meta); }}
               />
             ) : !customLlmId ? (
-              <Interactive as="button" onClick={() => setShowAdd(true)}
-                baseStyle={{ width: "100%", border: `2px dashed ${color.borderInput}`, background: "#fff", borderRadius: radius.xl, padding: "11px 0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: color.brand, fontSize: 13, fontWeight: 600 }}
-                hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.02)" }}>
-                <Icon name="plus" size={16} color={color.brand} />添加自定义模型
-              </Interactive>
+ <AddModelButton onClick={() => setShowAdd(true)} />
             ) : null}
           </div>
         </div>
@@ -341,39 +322,84 @@ function StepConfigure({
             right={<span style={{ fontSize: 12, color: color.textSubtle }}>已选：{selectedWs?.name ?? "—"}</span>} />
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择 Agent 看护的系统范围（workspace = 命名的 APPID 集合）；运行时范围由 oModel 按你的授权解析。</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
-            {workspaces.map((ws) => {
-              const on = ws.workspace_id === wsId;
-              return (
-                <Interactive key={ws.workspace_id} onClick={() => onPickWs(ws.workspace_id)}
-                  baseStyle={{ position: "relative", border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: 14, cursor: "pointer" }}
-                  hoverStyle={on ? {} : { borderColor: color.brandTintBorder }}>
-                  {on ? (
-                    <div style={{ position: "absolute", top: 12, right: 12, width: 20, height: 20, borderRadius: "50%", background: color.brand, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                      <Icon name="check" size={13} color="#fff" />
-                    </div>
-                  ) : null}
-                  <div style={{ fontSize: 14, fontWeight: 600, paddingRight: 24 }}>{ws.name}</div>
-                  <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{ws.workspace_id}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9 }}>
-                    <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 7px", borderRadius: radius.pill }}>{ws.sync_status}</span>
-                    <span style={{ fontSize: 11, color: color.textSubtle, background: color.neutralBg, padding: "2px 7px", borderRadius: 5 }}>{ws.scope_revision}</span>
-                  </div>
-                </Interactive>
-              );
-            })}
-            <Interactive as="button" onClick={onCreateWs}
-              baseStyle={{ minHeight: 104, border: `2px dashed ${color.borderInput}`, background: "rgba(247,248,250,.5)", borderRadius: radius.xl, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}
-              hoverStyle={{ borderColor: "rgba(22,131,255,.4)", background: "rgba(22,131,255,.05)" }}>
-              <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#fff", border: `1px solid ${color.border}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                <Icon name="plus" size={17} color={color.brand} />
-              </div>
-              <span style={{ fontSize: 13, fontWeight: 600, color: color.brand }}>新建系统范围</span>
-            </Interactive>
+                     {workspaces.map((ws) => (
+              <WorkspaceCard key={ws.workspace_id} ws={ws} on={ws.workspace_id === wsId} onPick={onPickWs} />
+            ))}
+            <NewWsButton onClick={onCreateWs} />
           </div>
           {!wsId ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 8 }}>请选择或新建一个系统范围</div> : null}
         </div>
       </div>
     </>
+  );
+}
+
+function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, badge, badgeTone, extra, trailing }: {
+  selected: boolean; onClick: () => void; icon: string; iconBg: string; iconColor: string;
+  label: string; badge?: string; badgeTone?: "good"; extra?: React.ReactNode; trailing?: React.ReactNode;
+}) {
+  const { hovered, bind } = useHover();
+  const borderColor = selected ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={onClick} {...bind}
+      style={{ border: `1px solid ${borderColor}`, background: selected ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 34, height: 34, borderRadius: radius.md, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
+        <Icon name={icon} size={17} color={iconColor} />
+      </div>
+      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
+        {badge ? <span style={{ fontSize: 10, color: badgeTone === "good" ? color.goodText : color.textSubtle, background: badgeTone === "good" ? color.goodBg : color.neutralBg, padding: "2px 6px", borderRadius: 5 }}>{badge}</span> : null}
+      </div>
+      {extra}
+      {trailing}
+      <RadioDot on={selected} />
+    </div>
+  );
+}
+ 
+function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; onPick: (id: string) => void }) {
+  const { hovered, bind } = useHover();
+  const borderColor = on ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={() => onPick(ws.workspace_id)} {...bind}
+      style={{ position: "relative", border: `1px solid ${borderColor}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: 14, cursor: "pointer" }}>
+      {on ? (
+        <div style={{ position: "absolute", top: 12, right: 12, width: 20, height: 20, borderRadius: "50%", background: color.brand, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <Icon name="check" size={13} color="#fff" />
+        </div>
+      ) : null}
+      <div style={{ fontSize: 14, fontWeight: 600, paddingRight: 24 }}>{ws.name}</div>
+      <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{ws.workspace_id}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9 }}>
+        <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 7px", borderRadius: radius.pill }}>{ws.sync_status}</span>
+        <span style={{ fontSize: 11, color: color.textSubtle, background: color.neutralBg, padding: "2px 7px", borderRadius: 5 }}>{ws.scope_revision}</span>
+      </div>
+    </div>
+  );
+}
+ 
+function NewWsButton({ onClick }: { onClick: () => void }) {
+  const { hovered, bind } = useHover();
+  const borderColor = hovered ? "rgba(22,131,255,.4)" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={onClick} {...bind}
+      style={{ minHeight: 104, border: `2px dashed ${borderColor}`, background: hovered ? "rgba(22,131,255,.05)" : "rgba(247,248,250,.5)", borderRadius: radius.xl, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8 }}>
+      <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#fff", border: "1px solid rgb(226, 229, 234)", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Icon name="plus" size={17} color={color.brand} />
+      </div>
+      <span style={{ fontSize: 13, fontWeight: 600, color: color.brand }}>新建系统范围</span>
+    </div>
+  );
+}
+ 
+function AddModelButton({ onClick }: { onClick: () => void }) {
+  const { hovered, bind } = useHover();
+  const borderColor = hovered ? "rgba(22,131,255,.4)" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={onClick} {...bind}
+      style={{ width: "100%", border: `2px dashed ${borderColor}`, background: hovered ? "rgba(22,131,255,.02)" : "#fff", borderRadius: radius.xl, padding: "11px 0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: color.brand, fontSize: 13, fontWeight: 600 }}>
+      <Icon name="plus" size={16} color={color.brand} />添加自定义模型
+    </div>
   );
 }
 
@@ -416,7 +442,7 @@ function InlineAddModel({ onCancel, onCreated }: {
           </div>
           <div style={{ flex: 1 }}>
             <InlineField label="API Key" required>
-              <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" autoComplete="off"
+              <input type="text" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder="sk-…" autoComplete="new-password"
                 style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 13, outline: "none", boxSizing: "border-box", fontFamily: "ui-monospace, monospace" }} />
             </InlineField>
           </div>
@@ -467,7 +493,7 @@ function StepActivate({ name, activating, capabilities, editing }: { name: strin
             {capabilities.map((c) => {
               const meta = CAP_META[c] ?? { icon: "bolt", desc: "平台内置能力。" };
               return (
-                <div key={c} style={{ border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
+                <div key={c} style={{ border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
                   <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
                     <Icon name={meta.icon} size={21} color={color.brand} />
                   </div>
