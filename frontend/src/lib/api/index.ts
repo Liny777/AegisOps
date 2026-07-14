@@ -98,7 +98,8 @@ export interface OpenOpsApi {
   /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。 */
   testLlmConnection(input: { base_url: string; model_name: string; api_key: string }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
-  uploadSkill(name: string): Promise<void>;
+  /** 上传 Skill ZIP（29.3 §2.1 multipart）：file 必填、category 必填、tags 可选。 */
+  uploadSkill(file: File, category: string, tags?: string[]): Promise<{ skill_key: string; action: string }>;
   registerMcp(name: string, endpoint: string): Promise<void>;
   deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
   bindAsset(instanceId: string, row: AssetRow): Promise<void>;
@@ -351,11 +352,13 @@ const realApi: OpenOpsApi = {
     }));
   },
   // ---- settings 写闭环（B6） ----
-  async uploadSkill(name) {
-    await apiFetch("/openops/v1/assets/skills", {
-      method: "POST",
-      body: { client_request_id: crid(), display_name: name, manifest_json: { entrypoint: "run.py" }, checksum_sha256: "" },
-    });
+  async uploadSkill(file, category, tags) {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("category", category);
+    if (tags && tags.length) fd.append("tags", JSON.stringify(tags));
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/assets/skills:upload", { method: "POST", body: fd });
+    return { skill_key: String(d.skill_key ?? ""), action: String(d.action ?? "created") };
   },
   async registerMcp(name, endpoint) {
     await apiFetch("/openops/v1/assets/mcps", {
@@ -800,7 +803,7 @@ const mockApi: OpenOpsApi = {
   getAvailableSkills: () => delay(M.mockWorkbenchState().skills),
   getSkillLibrary: () => delay(M.mockSkillLibrary),
   getMcpLibrary: () => delay(M.mockMcpLibrary),
-  uploadSkill: () => delay(undefined as unknown as void),
+  uploadSkill: (file) => delay({ skill_key: file.name.replace(/\.zip$/i, "").toLowerCase(), action: "created" }),
   registerMcp: () => delay(undefined as unknown as void),
   deleteAsset: () => delay(undefined as unknown as void),
   bindAsset: () => delay(undefined as unknown as void),

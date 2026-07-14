@@ -235,3 +235,56 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     third = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert "console down" in third.get("mcp_ingest_error", "")
     assert "skills_created" in third and "failed" not in third  # 注册表不可达不炸整轮
+
+
+def _make_skill_zip(name: str = "uploaded-skill", with_skill_md: bool = True) -> bytes:
+    """内存造一个 Skill ZIP：含 SKILL.md（frontmatter name=<name>）+ run.py。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        if with_skill_md:
+            z.writestr("SKILL.md", f"---\nname: {name}\nversion: 0.0.1\nentrypoint: python3 run.py\n---\n# {name}\n")
+        z.writestr("run.py", "print('hello')\n")
+    return buf.getvalue()
+
+
+def test_skill_zip_upload_writes_local_catalog(client):
+    """真 ZIP 上传（29.3 §2.1，mock 转发）：写本地目录、真 checksum、UI 立即可见；重复上传加版本。"""
+    data = _make_skill_zip("zip-upload-demo")
+    res = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("demo.zip", data, "application/zip")},
+        data={"category": "运维", "tags": "监控,告警"},
+    ))
+    assert res["skill_key"] == "zip-upload-demo" and res["action"] == "created"
+    # 本地目录立即出现（skill_key 命中），checksum 为 ZIP 字节真 sha256（非名称假造）
+    import hashlib
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    row = next(s for s in skills if s["skill_key"] == "zip-upload-demo")
+    assert row["checksum_sha256"] == hashlib.sha256(data).hexdigest()
+
+    # 重复上传同 skill_key → 加版本
+    again = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("demo.zip", _make_skill_zip("zip-upload-demo"), "application/zip")},
+        data={"category": "运维"},
+    ))
+    assert again["action"] == "version_updated"
+
+
+def test_skill_zip_upload_rejects_bad_package(client):
+    """守卫：非 zip → SKILL_PACKAGE_INVALID；缺 SKILL.md → SKILL_PACKAGE_INVALID；缺分类 → 400。"""
+    not_zip = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                          files={"file": ("x.zip", b"not a zip", "application/zip")}, data={"category": "运维"})
+    assert not_zip.status_code == 400 and not_zip.json()["error"]["code"] == "SKILL_PACKAGE_INVALID"
+
+    no_md = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                        files={"file": ("x.zip", _make_skill_zip("x", with_skill_md=False), "application/zip")},
+                        data={"category": "运维"})
+    assert no_md.status_code == 400 and no_md.json()["error"]["code"] == "SKILL_PACKAGE_INVALID"
+
+    no_cat = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                        files={"file": ("x.zip", _make_skill_zip("x"), "application/zip")}, data={"category": "  "})
+    assert no_cat.status_code == 400

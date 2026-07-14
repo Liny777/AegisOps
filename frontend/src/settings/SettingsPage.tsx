@@ -335,8 +335,11 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
           kind={kind}
           busy={busy}
           onClose={() => setDialog(false)}
-          onSubmit={(name, endpoint) => {
-            run((isSkill ? api.uploadSkill(name) : api.registerMcp(name, endpoint)).then(() => setDialog(false)));
+          onSubmit={(p) => {
+            const promise = p.kind === "skill"
+              ? api.uploadSkill(p.file, p.category, p.tags)
+              : api.registerMcp(p.name, p.endpoint);
+            run(promise.then(() => setDialog(false)));
           }}
         />
       ) : null}
@@ -367,32 +370,80 @@ function ConfigVersionsBlock({ versions }: { versions: ConfigVersionRow[] }) {
   );
 }
 
-/** 上传 Skill / 注册 HTTP MCP 弹窗（30.5：V1 仅 HTTP MCP；Skill 包上传后台校验 checksum）。 */
+/** AssetDialog 提交载荷：skill = ZIP 包上传（29.3 §2.1）；mcp = HTTP MCP 注册。 */
+type AssetSubmit =
+  | { kind: "skill"; file: File; category: string; tags: string[] }
+  | { kind: "mcp"; name: string; endpoint: string };
+
+const _MAX_SKILL_ZIP = 50 * 1024 * 1024;  // 29.3 §2.1：ZIP ≤ 50MB
+
+/** 上传 Skill（真 ZIP 上传，29.3 §2.1）/ 注册 HTTP MCP 弹窗（30.5：V1 仅 HTTP MCP）。 */
 function AssetDialog({ kind, busy, onClose, onSubmit }: {
-  kind: "skill" | "mcp"; busy: boolean; onClose: () => void; onSubmit: (name: string, endpoint: string) => void;
+  kind: "skill" | "mcp"; busy: boolean; onClose: () => void; onSubmit: (p: AssetSubmit) => void;
 }) {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("https://");
-  const ok = name.trim().length > 0 && (kind === "skill" || endpoint.trim().length > 8);
+  const [file, setFile] = useState<File | null>(null);
+  const [category, setCategory] = useState("");
+  const [tags, setTags] = useState("");
+  const [fileErr, setFileErr] = useState("");
+
+  const pickFile = (f: File | null) => {
+    setFileErr("");
+    if (f && !/\.zip$/i.test(f.name)) { setFileErr("请选择 .zip 包"); setFile(null); return; }
+    if (f && f.size > _MAX_SKILL_ZIP) { setFileErr("ZIP 超过 50MB 上限"); setFile(null); return; }
+    setFile(f);
+  };
+  const ok = kind === "skill"
+    ? Boolean(file && category.trim())
+    : name.trim().length > 0 && endpoint.trim().length > 8;
+  const submit = () => {
+    if (!ok || busy) return;
+    if (kind === "skill" && file) {
+      const tagList = tags.replace(/，/g, ",").split(",").map((t) => t.trim()).filter(Boolean);
+      onSubmit({ kind: "skill", file, category: category.trim(), tags: tagList });
+    } else {
+      onSubmit({ kind: "mcp", name: name.trim(), endpoint: endpoint.trim() });
+    }
+  };
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center", animation: "omFade .16s ease" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 440, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px", animation: "omPop .2s ease" }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>{kind === "skill" ? "上传 Skill" : "注册 HTTP MCP"}</div>
-        <SectionLabel>名称</SectionLabel>
-        <TextInput value={name} onChange={setName} placeholder={kind === "skill" ? "例：日志聚类分析" : "例：CMDB 查询 MCP"} />
-        {kind === "mcp" ? (
+        {kind === "skill" ? (
           <>
+            <SectionLabel>Skill 包（.zip，含 SKILL.md）</SectionLabel>
+            <label style={{ display: "flex", alignItems: "center", gap: 10, border: `1px dashed ${color.borderInput}`, borderRadius: radius.md, padding: "12px 14px", cursor: "pointer", background: color.neutralBg }}>
+              <Icon name="upload" size={16} color={color.brand} />
+              <span style={{ fontSize: 12.5, color: file ? color.textStrong : color.textSubtle, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {file ? `${file.name}（${(file.size / 1024).toFixed(0)} KB）` : "点击选择 ZIP 文件"}
+              </span>
+              <input type="file" accept=".zip,application/zip" style={{ display: "none" }}
+                onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
+            </label>
+            {fileErr ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 6 }}>{fileErr}</div> : null}
+            <div style={{ height: 12 }} />
+            <SectionLabel>分类（必填）</SectionLabel>
+            <TextInput value={category} onChange={setCategory} placeholder="例：运维 / 日志 / 告警" />
+            <div style={{ height: 12 }} />
+            <SectionLabel>标签（可选，逗号分隔）</SectionLabel>
+            <TextInput value={tags} onChange={setTags} placeholder="例：监控,告警" />
+          </>
+        ) : (
+          <>
+            <SectionLabel>名称</SectionLabel>
+            <TextInput value={name} onChange={setName} placeholder="例：CMDB 查询 MCP" />
             <div style={{ height: 12 }} />
             <SectionLabel>Endpoint（仅 HTTP）</SectionLabel>
             <TextInput value={endpoint} onChange={setEndpoint} placeholder="https://mcp.example.com/mcp" mono />
           </>
-        ) : null}
+        )}
         <div style={{ marginTop: 12, fontSize: 11.5, color: color.textSubtle, lineHeight: 1.6 }}>
-          {kind === "skill" ? "V1 演示以名称建包（checksum 由后台生成）；绑定到 main 后在沙箱执行（B8）。" : "用户 MCP 不透传 Cookie、不注入平台 header，范围自担（28.2）。"}
+          {kind === "skill" ? "ZIP 内须含 SKILL.md（其 name 字段即 skill_id）；上传经 SkillHub 校验并入库，绑定到 main 后在沙箱执行（B8）。" : "用户 MCP 不透传 Cookie、不注入平台 header，范围自担（28.2）。"}
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
-          <Button variant="secondary" onClick={onClose}>取消</Button>
-          <Button disabled={!ok || busy} onClick={() => ok && onSubmit(name.trim(), endpoint.trim())}>{kind === "skill" ? "上传" : "注册"}</Button>
+          <Button variant="secondary" onClick={onClose} disabled={busy}>取消</Button>
+          <Button icon={busy ? "loader-2" : undefined} disabled={!ok || busy} onClick={submit}>{busy ? "上传中…" : (kind === "skill" ? "上传" : "注册")}</Button>
         </div>
       </div>
     </div>

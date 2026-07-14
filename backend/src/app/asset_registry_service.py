@@ -20,6 +20,41 @@ async def upload_skill(user: dict[str, Any], req: Any) -> dict[str, Any]:
     return await assets.create_skill(user["user_id"], "user", req.display_name, key, req.manifest_json, checksum)
 
 
+async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: bytes,
+                               category: str, tags: list[str]) -> dict[str, Any]:
+    """上传 Skill ZIP（29.3 §2.1）：转发 SkillHub（real 真传 / mock 合成）+ 写本地目录即时可见。
+    本地按 skill_key 幂等（已存在→加版本）；reconcile 后续按 skill_key 收敛，避免重复行。"""
+    from infra.external import skill_hub_client
+
+    try:
+        meta = skill_hub_client.parse_skill_meta(zip_bytes)
+    except ValueError as e:
+        raise ApiError(Err.SKILL_PACKAGE_INVALID, str(e)) from None
+    checksum = hashlib.sha256(zip_bytes).hexdigest()  # ZIP 原始字节 sha256（真 checksum，非名称假造）
+    try:
+        result = await skill_hub_client.upload_skill(
+            filename, zip_bytes, category, tags, source="openops", is_system=False)
+    except RuntimeError as e:
+        raise ApiError(Err.IAM_UPSTREAM, f"SkillHub 上传失败：{e}") from None
+
+    skill_key = meta["skill_key"]
+    manifest = {"entrypoint": meta.get("entrypoint") or "python3 run.py",
+                "category": category, "tags": tags, "synced_from": "upload"}
+    existing = await assets.get_skill_by_key("user", skill_key)
+    if existing is None:
+        row = await assets.create_skill(user["user_id"], "user", meta["name"], skill_key, manifest, checksum)
+        action = "created"
+    else:
+        latest = await assets.latest_skill_version(str(existing["skill_id"]))
+        next_no = int(latest["version_no"]) + 1 if latest else 1
+        vid = await assets.add_skill_version(str(existing["skill_id"]), next_no, manifest, checksum, user["user_id"])
+        row = {"skill_id": str(existing["skill_id"]), "skill_version_id": vid}
+        action = "version_updated"
+    # action 以本地目录实际动作为准（UI 反映的就是本地行）；SkillHub 侧动作另附参考
+    return {**row, "skill_key": skill_key, "display_name": meta["name"],
+            "action": action, "skillhub_action": result.get("action")}
+
+
 async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
     row = await assets.get_skill(skill_id)
     if row is None:

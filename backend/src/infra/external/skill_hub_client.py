@@ -145,6 +145,52 @@ def _entrypoint_from(files: dict[str, bytes]) -> str | None:
     return "python3 run.py" if "run.py" in files else None
 
 
+def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
+    """从 ZIP 的 SKILL.md frontmatter 解析 {name, skill_key, entrypoint}。
+    29.3 §2.1：SKILL.md 的 `name` 字段即 skill_id；无 SKILL.md 或缺 name → ValueError（上层转 SKILL_PACKAGE_INVALID）。"""
+    files = _unzip(zip_bytes)
+    if "SKILL.md" not in files:
+        raise ValueError("ZIP 包内必须包含 SKILL.md（29.3 §2.1）")
+    name = ""
+    for line in files["SKILL.md"].decode("utf-8", "replace").splitlines():
+        s = line.strip()
+        if s.startswith("name:"):
+            name = s.split(":", 1)[1].strip()
+            break
+    if not name:
+        raise ValueError("SKILL.md frontmatter 缺少 name 字段")
+    return {"name": name, "skill_key": name, "entrypoint": _entrypoint_from(files)}
+
+
+async def upload_skill(filename: str, zip_bytes: bytes, category: str, tags: list[str],
+                       source: str = "openops", is_system: bool = False) -> dict[str, Any]:
+    """上传 Skill ZIP（29.3 §2.1 multipart）。real 转发 console `/skills/upload`；mock 合成成功信封。
+    返回 29.3 §2.1 的 data：{skill_id, name, version, status, action}。"""
+    if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
+        base = skillhub_base()
+        if not base:
+            raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（或 OPENOPS_MCPREGISTRY_BASE_URL，同 console 网关）")
+        import json as _json
+
+        import httpx
+
+        # multipart：console_client_kwargs 从不设 Content-Type，httpx 的 files= 自动带 boundary（无冲突）；
+        # cookie / 浏览器 UA / IAM-Client-Ip 透传同 list/download。
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE", timeout=60)) as cli:
+            r = await cli.post(
+                f"{base}{console_api_prefix()}/skills/upload",
+                files={"file": (filename, zip_bytes, "application/zip")},
+                data={"category": category, "tags": _json.dumps(tags, ensure_ascii=False),
+                      "source": source, "is_system": "true" if is_system else "false"},
+            )
+            raise_with_body(r)  # 非 2xx 带响应体前 300 字（401 cookie 失效 / 2003 发布冲突等）
+            return _unwrap_data(r.json())
+    # mock：从包解析 skill_id/name，合成成功信封（供离线端到端可跑）
+    meta = parse_skill_meta(zip_bytes)
+    return {"skill_id": meta["skill_key"], "name": meta["name"], "version": "0.0.1",
+            "status": "active", "action": "created"}
+
+
 async def download_skill_package(skill_key: str, version_no: int) -> dict[str, Any]:
     """取 Skill 包（真 ZIP 投递）：返回 {files, entrypoint, checksum}。checksum 供 run_skill 完整性校验。
 

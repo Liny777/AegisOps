@@ -30,17 +30,21 @@ export async function apiFetch<T = unknown>(
   path: string,
   opts: { method?: string; body?: unknown } = {},
 ): Promise<T> {
+  // FormData（文件上传）：不设 Content-Type（浏览器自带 multipart boundary）、不 JSON.stringify；
+  // 其余（鉴权头 / credentials / 信封 / 401 跳登录）与 JSON 路径完全一致。
+  const isMultipart = typeof FormData !== "undefined" && opts.body instanceof FormData;
+  const headers: Record<string, string> = {
+    "X-OpenOps-Mock-User": demoIdentity.user,
+    // HTTP 头仅限 ISO-8859-1：中文名须 URI 编码，后端 unquote
+    "X-OpenOps-Mock-Name": encodeURIComponent(demoIdentity.name),
+  };
+  if (!isMultipart) headers["Content-Type"] = "application/json";
   const res = await fetch(`${BASE}${path}`, {
     method: opts.method ?? "GET",
     // B9：带上公司 IAM cookie（后端 OPENOPS_IAM_ENABLED=true 时据此双步校验；mock 模式无害）
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      "X-OpenOps-Mock-User": demoIdentity.user,
-      // HTTP 头仅限 ISO-8859-1：中文名须 URI 编码，后端 unquote
-      "X-OpenOps-Mock-Name": encodeURIComponent(demoIdentity.name),
-    },
-    body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    headers,
+    body: opts.body === undefined ? undefined : isMultipart ? (opts.body as FormData) : JSON.stringify(opts.body),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
