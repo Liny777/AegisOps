@@ -43,8 +43,8 @@ export function NotWhitelisted() {
   return (
     <Centered
       icon="lock-access"
-      title="尚未开通 OpenOps"
-      desc={`${who} 还不在 OpenOps 白名单内。请把账号发给平台管理员申请开通；开通后点击下方按钮重新进入。`}
+      title="尚未开通 运维Agent"
+      desc={`${who} 还不在 运维Agent 白名单内。请把账号发给平台管理员申请开通；开通后点击下方按钮重新进入。`}
       extra={<PendingQuestionNotice />}
       action={<Button variant="secondary" icon="refresh" onClick={refresh}>已开通？重新检查</Button>}
     />
