@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
@@ -25,10 +26,39 @@ from domain.errors import ApiError, Err
 from domain.skill_package import package_checksum
 from sandbox.backends import SandboxBackend, create_backend
 
+log = logging.getLogger("openops.sandbox")
+
 _DEFAULT_IMAGE = "python:3.11-slim"
+_NETWORK_MODES = {"bridge", "none"}
 # 单次 Skill/命令执行限额（09/28.3 号；env 可调，同其他 B 块的 SRE_* 旋钮风格）
 _SKILL_TIMEOUT_S = float(os.getenv("OPENOPS_SKILL_TIMEOUT_S", "600"))
 _OUTPUT_MAX_BYTES = int(os.getenv("OPENOPS_SKILL_OUTPUT_MAX_BYTES", str(2 * 1024 * 1024)))
+
+
+def _as_int(v: Any, default: int) -> int:
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(v: Any, default: float) -> float:
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+@dataclass(frozen=True)
+class ResolvedCfg:
+    """从 runtime_config sandbox 域解析出的强类型运行配置（全部带兜底，容忍字符串/脏值）。"""
+    max_containers: int
+    ttl_minutes: int
+    cpu: float
+    mem_mib: int
+    image: str
+    network_mode: str
+    pids_limit: int
 
 
 @dataclass
@@ -62,6 +92,7 @@ class Container:
             "image_version": self.image,
             "active_run_count": self.active_run_count,
             "idle_seconds": None if self.idle_since is None else round(time.monotonic() - self.idle_since, 1),
+            "container_name": getattr(self.backend, "container_name", None),  # fake 后端无此属性→None
         }
 
 
@@ -70,12 +101,21 @@ class SandboxExecutor:
         self._by_user: dict[str, Container] = {}
         self._lock = asyncio.Lock()
 
-    def _cfg(self, cfg: dict[str, Any]) -> tuple[int, int, float, int]:
-        return (
-            int(cfg.get("max_user_containers_per_host", 26)),
-            int(cfg.get("user_container_idle_ttl_minutes", 15)),
-            float(cfg.get("container_cpu_limit", 0.5)),
-            int(cfg.get("container_memory_limit_mib", 2048)),
+    def _cfg(self, cfg: dict[str, Any]) -> ResolvedCfg:
+        image = str(cfg.get("container_image") or "").strip() or _DEFAULT_IMAGE
+        net = str(cfg.get("container_network_mode") or "bridge").strip().lower() or "bridge"
+        if net not in _NETWORK_MODES:  # 历史脏值/直改 DB：落回 bridge（网络是 skill 外呼的功能依赖，收紧应显式）
+            log.warning("[sandbox] 非法 container_network_mode=%r，回退 bridge", net)
+            net = "bridge"
+        pids = _as_int(cfg.get("container_pids_limit"), 256)
+        return ResolvedCfg(
+            max_containers=_as_int(cfg.get("max_user_containers_per_host"), 26),
+            ttl_minutes=_as_int(cfg.get("user_container_idle_ttl_minutes"), 15),
+            cpu=_as_float(cfg.get("container_cpu_limit"), 0.5),
+            mem_mib=_as_int(cfg.get("container_memory_limit_mib"), 2048),
+            image=image,
+            network_mode=net,
+            pids_limit=pids if pids > 0 else 256,
         )
 
     def _reap_expired_idle(self, ttl_minutes: int) -> list[Container]:
@@ -89,28 +129,29 @@ class SandboxExecutor:
 
     async def ensure_user_container(self, user_id: str, run_id: str, cfg: dict[str, Any]) -> Container:
         """run 开启边界：容量准入 + 确保该用户容器存在，登记活跃 run。"""
-        max_containers, ttl, cpu, mem = self._cfg(cfg)
+        rc = self._cfg(cfg)
         to_close: list[Container] = []
         async with self._lock:
             c = self._by_user.get(user_id)
             if c is None:
                 # 容量准入：先回收已到 TTL 的 idle 腾位（strict_ttl），再判总数
-                to_close = self._reap_expired_idle(ttl)
-                if len(self._by_user) >= max_containers:
+                to_close = self._reap_expired_idle(rc.ttl_minutes)
+                if len(self._by_user) >= rc.max_containers:
                     for dead in to_close:  # 锁内先 close 掉腾位容器再判，避免误拒
                         await dead.backend.close()
                     to_close = []
-                    if len(self._by_user) >= max_containers:
+                    if len(self._by_user) >= rc.max_containers:
                         raise ApiError(
                             Err.SANDBOX_CAPACITY_FULL,
-                            f"当前沙箱资源已满（{len(self._by_user)}/{max_containers} 个用户容器占用中），请稍后或低峰期再开启会话",
+                            f"当前沙箱资源已满（{len(self._by_user)}/{rc.max_containers} 个用户容器占用中），请稍后或低峰期再开启会话",
                             retryable=True,
                         )
                 try:
-                    backend = await create_backend(user_id, image=_DEFAULT_IMAGE, cpu=cpu, mem_mib=mem)
+                    backend = await create_backend(user_id, image=rc.image, cpu=rc.cpu, mem_mib=rc.mem_mib,
+                                                   network_mode=rc.network_mode, pids_limit=rc.pids_limit)
                 except Exception as e:  # noqa: BLE001 — 守护进程/镜像不可用等
                     raise ApiError(Err.SANDBOX_CONTAINER_FAILED, f"用户容器创建失败：{type(e).__name__}") from e
-                c = Container(user_id=user_id, backend=backend, image=_DEFAULT_IMAGE)
+                c = Container(user_id=user_id, backend=backend, image=rc.image)
                 self._by_user[user_id] = c
             c.active_run_ids.add(run_id)
             c.active_run_count = len(c.active_run_ids)
@@ -134,9 +175,9 @@ class SandboxExecutor:
 
     async def sweep_idle(self, cfg: dict[str, Any]) -> int:
         """后台/边界回收：删除已到 idle TTL 的容器。返回回收数。"""
-        _, ttl, _, _ = self._cfg(cfg)
+        rc = self._cfg(cfg)
         async with self._lock:
-            expired = self._reap_expired_idle(ttl)
+            expired = self._reap_expired_idle(rc.ttl_minutes)
         for c in expired:
             await c.backend.close()
         return len(expired)

@@ -6,19 +6,44 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 from typing import Any
 
 from infra.redact import redact_text, sanitize_activity_payload
-from infra.repositories import audit, runs
+from infra.repositories import audit, runs, runtime_config
 from runtime import events
 from sandbox.executor import executor
+
+log = logging.getLogger("openops.sandbox")
 
 
 async def list_containers() -> list[dict[str, Any]]:
     """当前用户容器列表（含容量口径：并发活跃 run 用户数 + idle 未回收）。"""
     items = executor.list_containers()
     return items
+
+
+async def sweep_once() -> int:
+    """按 DB 里当前 idle TTL 回收一次过期容器（后台循环与手工触发共用）。"""
+    cfg = {c["config_key"]: c["config_value_json"]
+           for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+    return await executor.sweep_idle(cfg)
+
+
+async def background_sweep_loop(interval_s: float) -> None:
+    """后台定时回收 idle 沙箱容器（现有懒回收只在关会话/容量满触发，静默期需定时器兜底）。"""
+    while True:
+        await asyncio.sleep(interval_s)  # 先睡后扫：启动风暴/测试进程友好
+        try:
+            n = await sweep_once()
+            if n:
+                log.info("[sandbox] 后台回收 idle 容器 %d 个", n)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — DB 抖动等：本轮跳过，绝不退出循环
+            log.warning("[sandbox] 后台回收失败，本轮跳过", exc_info=True)
 
 
 async def destroy_container(target_user_id: str, reason: str, by: str) -> dict[str, Any]:

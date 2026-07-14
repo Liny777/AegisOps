@@ -62,4 +62,7 @@
 - [ ] 重启后进程 cwd 位于同一 release，启动日志 `build=<BUILD_ID>` 与 `BUILD_INFO` 一致
 - [ ] 反代调优已烘焙进 openops-frontend 镜像（/api 与 /api/copilotkit 关缓冲+3600s 超时）——升级镜像后 `docker exec openops-frontend nginx -T` 抽查生效即可
 - [ ] 审计 30 天保留清理任务（DBA 排期）
-- [ ] 沙箱镜像离线预构建 + `docker load`（Linux 阶段）
+- [ ] 沙箱 docker 档就绪（Linux 阶段，详见 docs/sandbox-docker-runbook.md）：
+  - [ ] 沙箱镜像离线预构建 + `docker load`（`bash deploy/sandbox/build-sandbox-image.sh` → 传 `openops-sandbox-image.tar.gz` → 后端机 `docker load`）
+  - [ ] 运行用户可读写 `/var/run/docker.sock`（systemd 取消注释 `SupplementaryGroups=docker` 或 `usermod -aG docker openops`）
+  - [ ] `OPENOPS_SANDBOX=docker` 且管理台 `container_image` 已指向 `openops-sandbox:<ver>`（改值填原因走审计）

@@ -12,7 +12,26 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "capacity_full_policy": ("strict_ttl", "容量满策略"),
     "container_cpu_limit": (0.5, "新建容器 CPU 限额"),
     "container_memory_limit_mib": (2048, "新建容器内存限额"),
+    # docker 档产品化（2026-07-15）：镜像/网络/进程数/Bash deny 前缀，新建容器生效
+    "container_image": ("python:3.11-slim", "沙箱容器镜像（须已在宿主 docker load）"),
+    "container_network_mode": ("bridge", "容器网络模式：bridge（默认，可出网）/ none（断网）"),
+    "container_pids_limit": (256, "容器内进程数上限（防 fork 炸弹）"),
+    # 逗号分隔字符串（管理台编辑框按字符串回传，数组一经编辑必被打成字符串）；token 词边界匹配防串联绕过
+    "bash_deny_prefixes": ("docker,sudo,su,mount,umount,mkfs,shutdown,reboot,halt,poweroff",
+                           "容器内 Bash 平台 deny 前缀（逗号分隔；即便用户批准也不放行的纵深项）"),
 }
+
+
+async def ensure_sandbox_defaults() -> None:
+    """每次启动补缺沙箱配置键：只 insert 缺失键，绝不覆盖已有值。
+
+    seed() 有「模板存在即早退」守卫，老库重启不会重跑种子——新增键须靠本函数在守卫**之前**补种；
+    又因 runtime_config.upsert 对已存在键是覆盖，故先 select 现有键集、只补缺失键，保护管理员改过的值。
+    """
+    existing = {r["config_key"] for r in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+    for key, (val, desc) in SANDBOX_DEFAULTS.items():
+        if key not in existing:
+            await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, key, val, description=desc, reason="seed")
 
 # 模型资产（B7：sre_model_asset 表；替代旧 sre_platform_runtime_config platform_model 域）
 # (display_name, model_id, base_url, secret_env_var, access_scope, status)
@@ -68,6 +87,8 @@ TEMPLATE_CONTENT = {
 
 
 async def seed() -> None:
+    # 沙箱配置补缺（守卫之前）：老库重启也能自动补新增键，不覆盖管理员改过的值
+    await ensure_sandbox_defaults()
     # 已播种则跳过（以模板存在为标志）
     if await q_one("select 1 ok from sre_agent_team_template where template_key='sensai_fast_recovery'"):
         return
@@ -104,9 +125,7 @@ async def seed() -> None:
             by="system",
         )
 
-    # 沙箱运行配置
-    for key, (val, desc) in SANDBOX_DEFAULTS.items():
-        await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, key, val, description=desc, reason="seed")
+    # 沙箱运行配置已由 ensure_sandbox_defaults()（守卫前）补齐，此处不再重复种
 
     # 模型资产（管理台「模型资产」页数据源；restricted 演示模型授权 demo 用户）
     for display_name, model_id, base_url, env_var, scope, status in MODEL_ASSETS:

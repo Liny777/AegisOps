@@ -11,6 +11,40 @@ from domain.errors import ApiError, Err
 from infra.repositories import audit, runtime_config
 
 
+def _pos_int(v: Any) -> bool:
+    try:
+        return int(str(v).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _nonneg_int(v: Any) -> bool:
+    try:
+        return int(str(v).strip()) >= 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _pos_float(v: Any) -> bool:
+    try:
+        return float(str(v).strip()) > 0
+    except (TypeError, ValueError):
+        return False
+
+
+# 已知沙箱键写时校验（管理台编辑值按字符串回传，校验函数须容忍字符串形态）；未列键仍放行不变。
+_SANDBOX_CHECKS = {
+    "container_network_mode": lambda v: str(v).strip().lower() in {"bridge", "none"},
+    "container_pids_limit": _pos_int,
+    "container_memory_limit_mib": _pos_int,
+    "max_user_containers_per_host": _pos_int,
+    "per_user_running_task_limit": _pos_int,
+    "user_container_idle_ttl_minutes": _nonneg_int,
+    "container_cpu_limit": _pos_float,
+    "container_image": lambda v: bool(str(v).strip()),
+}
+
+
 async def get_sandbox() -> list[dict[str, Any]]:
     rows = await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)
     return [
@@ -22,6 +56,11 @@ async def get_sandbox() -> list[dict[str, Any]]:
 async def update_sandbox(updates: dict[str, Any], reason: str, by: str) -> None:
     if not reason.strip():
         raise ApiError(Err.VALIDATION_FAILED, "配置修改必须填写变更原因（写入审计）")
+    # 先整批校验再落库：一个非法键不落任何库，避免半应用
+    for key, val in updates.items():
+        check = _SANDBOX_CHECKS.get(key)
+        if check is not None and not check(val):
+            raise ApiError(Err.VALIDATION_FAILED, f"沙箱配置项 {key} 取值非法：{val!r}")
     for key, val in updates.items():
         await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, key, val, reason=reason, by=by)
     await audit.insert_event(

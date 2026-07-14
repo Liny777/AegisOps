@@ -16,8 +16,10 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/opt/openops/current/.venv/bin/python run.py
 Restart=always
 RestartSec=5
-# 沙箱切 docker 后需要访问 docker.sock 的话，把运行用户加入 docker 组
 User=openops
+# 沙箱切 docker（OPENOPS_SANDBOX=docker）须让运行用户能读写 /var/run/docker.sock。取消下一行注释即可
+# （声明式、随单元走）；注意宿主须已有 docker 组，否则 systemd 会因 SupplementaryGroups 不存在拒绝启动。
+# SupplementaryGroups=docker
 
 [Install]
 WantedBy=multi-user.target

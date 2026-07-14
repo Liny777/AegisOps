@@ -12,12 +12,83 @@ stdout/stderr 已按 `max_output_bytes` 脱敏截断（命令行与产物不含�
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+log = logging.getLogger("openops.sandbox")
+
+# 容器标签（对账 / 多环境隔离）：LABEL_MANAGED 标记平台托管；LABEL_USER 存原始 user_id（label 无字符集
+# 限制，供审计/排障）；LABEL_SCOPE 隔离同宿主多环境（test/prod 各自只清自己的孤儿，互不误删）。
+LABEL_MANAGED = "com.openops.sandbox"
+LABEL_USER = "com.openops.sandbox.user"
+LABEL_SCOPE = "com.openops.sandbox.scope"
+
+
+def _label_scope() -> str:
+    return os.getenv("OPENOPS_SANDBOX_LABEL_SCOPE", "default").strip() or "default"
+
+
+def container_name(user_id: str) -> str:
+    """确定性容器名（每用户恒一名，兼作宿主侧互斥）：消毒非法字符 + sha256 短哈希保唯一。
+
+    docker 容器名字符集为 [a-zA-Z0-9][a-zA-Z0-9_.-]*——user_id 可能含中文/@//，消毒后可能同名碰撞，
+    附 8 位哈希兜唯一；前缀 openops-sbx- 保证首字符合法且便于宿主侧按名过滤。
+    """
+    digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:8]
+    safe = re.sub(r"[^a-zA-Z0-9_.-]", "-", user_id)[:24].lstrip("-_.") or "u"
+    return f"openops-sbx-{safe}-{digest}"
+
+
+def build_container_config(*, user_id: str, image: str, cpu: float, mem_mib: int,
+                           network_mode: str, pids_limit: int) -> dict[str, Any]:
+    """构造 aiodocker 容器 config（抽纯便于单测断言安全基线，不碰真 docker）。
+
+    安全基线（09 号）：非 root(uid 1000) / 只读 rootfs / cap_drop=ALL / no-new-privileges /
+    资源限额(cpu·mem·pids) / 仅 workspace·tmp 可写 tmpfs / Env 不注入平台上下文。
+    """
+    workdir = DockerContainerBackend.CONTAINER_WORKDIR
+    return {
+        "Image": image,
+        "Cmd": ["sleep", "infinity"],
+        "Tty": False,
+        "WorkingDir": workdir,
+        "User": "1000:1000",  # 非 root（09 号安全基线）
+        "Env": [],  # 不注入 Cookie/Secret/X-OpenOps-*/effective_appids（09 号铁律）
+        "Labels": {LABEL_MANAGED: "1", LABEL_USER: user_id, LABEL_SCOPE: _label_scope()},
+        "HostConfig": {
+            "AutoRemove": True,
+            "ReadonlyRootfs": True,  # 只读 root，仅 workspace/tmp 可写
+            "CapDrop": ["ALL"],
+            "SecurityOpt": ["no-new-privileges=true"],
+            "NetworkMode": network_mode,
+            "Memory": mem_mib * 1024 * 1024,
+            "NanoCpus": int(cpu * 1e9),
+            "PidsLimit": int(pids_limit),  # 防 fork 炸弹
+            # mode=1777：非 root（uid 1000）可写 workspace/tmp（B8-SBX-001：默认 root:root 755 写不了）
+            "Tmpfs": {workdir: "rw,size=256m,mode=1777", "/tmp": "rw,size=64m,mode=1777"},
+        },
+    }
+
+
+def orphan_container_ids(rows: list[dict[str, Any]], scope: str) -> list[str]:
+    """从 docker 容器清单里挑出本 scope 的平台托管容器 Id（纯决策，便于单测）。
+
+    启动时进程内注册表必空 → 本 scope 下所有带管理 label 的容器都是上次进程遗留的孤儿。
+    """
+    out: list[str] = []
+    for r in rows:
+        labels = r.get("Labels") or {}
+        if labels.get(LABEL_MANAGED) == "1" and labels.get(LABEL_SCOPE, "default") == scope:
+            out.append(str(r.get("Id") or ""))
+    return [i for i in out if i]
 
 
 @dataclass
@@ -90,12 +161,16 @@ class DockerContainerBackend:
 
     CONTAINER_WORKDIR = "/openops/workspace"
 
-    def __init__(self, user_id: str, image: str, cpu: float, mem_mib: int) -> None:
+    def __init__(self, user_id: str, image: str, cpu: float, mem_mib: int, *,
+                 network_mode: str = "bridge", pids_limit: int = 256) -> None:
         self.user_id = user_id
         self.image = image
         self._cpu = cpu
         self._mem_mib = mem_mib
+        self._network_mode = network_mode
+        self._pids_limit = pids_limit
         self.workdir = self.CONTAINER_WORKDIR
+        self.container_name = container_name(user_id)
         self._docker = None
         self._container = None
 
@@ -103,26 +178,21 @@ class DockerContainerBackend:
         import aiodocker
 
         self._docker = aiodocker.Docker()
-        cfg = {
-            "Image": self.image,
-            "Cmd": ["sleep", "infinity"],
-            "Tty": False,
-            "WorkingDir": self.CONTAINER_WORKDIR,
-            "User": "1000:1000",  # 非 root（09 号安全基线）
-            "Env": [],  # 不注入 Cookie/Secret/X-OpenOps-*/effective_appids（09 号铁律）
-            "HostConfig": {
-                "AutoRemove": True,
-                "ReadonlyRootfs": True,  # 只读 root，仅 workspace/tmp 可写
-                "CapDrop": ["ALL"],
-                "SecurityOpt": ["no-new-privileges=true"],
-                "NetworkMode": "bridge",
-                "Memory": self._mem_mib * 1024 * 1024,
-                "NanoCpus": int(self._cpu * 1e9),
-                # mode=1777：非 root（uid 1000）可写 workspace/tmp（B8-SBX-001：默认 root:root 755 写不了）
-                "Tmpfs": {self.CONTAINER_WORKDIR: "rw,size=256m,mode=1777", "/tmp": "rw,size=64m,mode=1777"},
-            },
-        }
-        self._container = await self._docker.containers.create(config=cfg)
+        cfg = build_container_config(
+            user_id=self.user_id, image=self.image, cpu=self._cpu, mem_mib=self._mem_mib,
+            network_mode=self._network_mode, pids_limit=self._pids_limit,
+        )
+        try:
+            self._container = await self._docker.containers.create(config=cfg, name=self.container_name)
+        except aiodocker.exceptions.DockerError as e:
+            if e.status != 409:  # 409=同名冲突：崩溃残留/AutoRemove 未完成的同名尸体，强删后重试一次
+                raise
+            try:
+                stale = await self._docker.containers.get(self.container_name)
+                await stale.delete(force=True)
+            except aiodocker.exceptions.DockerError:
+                pass
+            self._container = await self._docker.containers.create(config=cfg, name=self.container_name)
         await self._container.start()
 
     async def _exec(self, command: list[str], *, timeout: float) -> Any:
@@ -172,10 +242,33 @@ class DockerContainerBackend:
                 await self._docker.close()
 
 
-async def create_backend(user_id: str, *, image: str, cpu: float, mem_mib: int) -> SandboxBackend:
+async def create_backend(user_id: str, *, image: str, cpu: float, mem_mib: int,
+                         network_mode: str = "bridge", pids_limit: int = 256) -> SandboxBackend:
     """按 OPENOPS_SANDBOX 选后端；docker 创建失败上抛（executor 转 SANDBOX_CONTAINER_FAILED）。"""
     if os.getenv("OPENOPS_SANDBOX", "fake").lower() == "docker":
-        be = DockerContainerBackend(user_id, image, cpu, mem_mib)
+        be = DockerContainerBackend(user_id, image, cpu, mem_mib,
+                                    network_mode=network_mode, pids_limit=pids_limit)
         await be.start()
         return be
     return FakeBackend(user_id)
+
+
+async def purge_orphan_containers() -> int:
+    """启动时清理上次进程遗留的平台托管容器（仅 docker 档由 main 调用；进程内注册表此刻必空）。
+
+    按 LABEL_MANAGED 过滤 + 本 scope 归属，逐个强删。守护进程不可用等异常由调用方兜住不阻断启动。
+    """
+    import aiodocker
+
+    docker = aiodocker.Docker()
+    try:
+        rows = await docker.containers.list(all=True, filters=json.dumps({"label": [f"{LABEL_MANAGED}=1"]}))
+        ids = orphan_container_ids([c._container for c in rows], _label_scope())
+        for cid in ids:
+            try:
+                await (await docker.containers.get(cid)).delete(force=True)
+            except Exception:  # noqa: BLE001 — 单个清理失败不影响其余
+                log.warning("[sandbox] 孤儿容器清理失败 %s", cid[:12])
+        return len(ids)
+    finally:
+        await docker.close()

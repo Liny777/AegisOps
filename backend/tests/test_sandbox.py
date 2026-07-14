@@ -650,3 +650,202 @@ def test_skill_015_entrypoint_missing_structured_error(client, monkeypatch):
     events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
     fails = [e for e in events if e["event_type"] == "openops.skill.call.failed"]
     assert fails and fails[0]["reason_code"] == "SKILL_PACKAGE_INVALID"
+
+
+# ────────────────── docker 档产品化批（2026-07-15）──────────────────
+
+def test_build_container_config_shape():
+    """安全基线核心断言（纯函数，不碰真 docker）：镜像/网络/pids/资源限额/非 root/只读 rootfs/labels。"""
+    from sandbox.backends import LABEL_MANAGED, LABEL_SCOPE, LABEL_USER, build_container_config
+
+    cfg = build_container_config(user_id="u1", image="openops-sandbox:v9", cpu=0.5, mem_mib=512,
+                                 network_mode="none", pids_limit=128)
+    h = cfg["HostConfig"]
+    assert cfg["Image"] == "openops-sandbox:v9"
+    assert h["NetworkMode"] == "none" and h["PidsLimit"] == 128
+    assert h["Memory"] == 512 * 1024 * 1024 and h["NanoCpus"] == int(0.5 * 1e9)
+    assert cfg["User"] == "1000:1000" and cfg["Env"] == []
+    assert h["CapDrop"] == ["ALL"] and h["ReadonlyRootfs"] is True
+    assert "no-new-privileges=true" in h["SecurityOpt"]
+    assert set(h["Tmpfs"]) == {"/openops/workspace", "/tmp"}
+    assert cfg["Labels"][LABEL_MANAGED] == "1" and cfg["Labels"][LABEL_USER] == "u1" and LABEL_SCOPE in cfg["Labels"]
+
+
+def test_cfg_resolution_defaults_and_coercion():
+    """ResolvedCfg 解析：缺省值 + 字符串形态（管理台回传）+ 脏值/非正数兜底。"""
+    from sandbox.executor import SandboxExecutor
+
+    e = SandboxExecutor()
+    rc = e._cfg({})
+    assert rc.image == "python:3.11-slim" and rc.network_mode == "bridge" and rc.pids_limit == 256
+    assert rc.max_containers == 26 and rc.ttl_minutes == 15 and rc.cpu == 0.5 and rc.mem_mib == 2048
+    rc2 = e._cfg({"container_pids_limit": "512", "container_memory_limit_mib": "1024",
+                  "max_user_containers_per_host": "10", "container_cpu_limit": "1.5",
+                  "container_image": "openops-sandbox:v1"})
+    assert rc2.pids_limit == 512 and rc2.mem_mib == 1024 and rc2.max_containers == 10 and rc2.cpu == 1.5
+    assert rc2.image == "openops-sandbox:v1"
+    assert e._cfg({"container_pids_limit": "abc"}).pids_limit == 256   # 非数字 → 兜底
+    assert e._cfg({"container_pids_limit": -1}).pids_limit == 256      # <=0 → 兜底
+    assert e._cfg({"container_image": "  "}).image == "python:3.11-slim"  # 空白 → 默认
+
+
+def test_cfg_network_mode_validation_and_fallback():
+    from sandbox.executor import SandboxExecutor
+
+    e = SandboxExecutor()
+    assert e._cfg({"container_network_mode": "none"}).network_mode == "none"
+    assert e._cfg({"container_network_mode": " NONE "}).network_mode == "none"  # 大小写/空白归一
+    assert e._cfg({}).network_mode == "bridge"
+    assert e._cfg({"container_network_mode": "host"}).network_mode == "bridge"  # 非法 → 回退 bridge
+
+
+def test_container_name_charset_and_determinism():
+    import re
+
+    from sandbox.backends import container_name
+
+    pat = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]*$")
+    ids = ["0026demo01", "用户@x/y", "-lead__", "l" * 96, "l00833445"]
+    names = [container_name(x) for x in ids]
+    for n in names:
+        assert pat.match(n), n
+    assert len(set(names)) == len(names)  # 互异（哈希兜唯一）
+    assert container_name("0026demo01") == container_name("0026demo01")  # 确定性
+
+
+def test_orphan_ids_scope_filter():
+    from sandbox.backends import LABEL_MANAGED, LABEL_SCOPE, orphan_container_ids
+
+    rows = [
+        {"Id": "a", "Labels": {LABEL_MANAGED: "1", LABEL_SCOPE: "default"}},
+        {"Id": "b", "Labels": {LABEL_MANAGED: "1", LABEL_SCOPE: "prod"}},
+        {"Id": "c", "Labels": {}},                       # 非托管
+        {"Id": "d", "Labels": {LABEL_MANAGED: "1"}},     # 无 scope label → 视作 default
+    ]
+    assert orphan_container_ids(rows, "default") == ["a", "d"]
+    assert orphan_container_ids(rows, "prod") == ["b"]
+
+
+def test_deny_prefixes_parse_string_and_list():
+    from sandbox.command_guard import parse_deny_prefixes
+
+    assert parse_deny_prefixes("docker, sudo ,,mkfs") == ["docker", "sudo", "mkfs"]
+    assert parse_deny_prefixes(["rm", "git push"]) == ["rm", "git push"]
+    assert parse_deny_prefixes(None) == [] and parse_deny_prefixes("") == []
+    assert parse_deny_prefixes("docker") == ["docker"]  # 回归：字符串绝不拆成单字符前缀
+
+
+def test_admin_sandbox_put_rejects_bad_values(client):
+    """写时校验：非法网络模式/pids 被拒 400；合法值 200 且回读生效。"""
+    base = "/api/openops/v1/admin/sandbox"
+    r = client.put(base, headers=ADMIN_HEADERS,
+                   json={"client_request_id": "s1", "updates": {"container_network_mode": "host"}, "reason": "x"})
+    assert r.status_code == 400
+    unwrap(client.put(base, headers=ADMIN_HEADERS,
+                      json={"client_request_id": "s2", "updates": {"container_network_mode": "none"}, "reason": "切断网"}))
+    rows = unwrap(client.get(base, headers=ADMIN_HEADERS))
+    assert next(x for x in rows if x["key"] == "container_network_mode")["val"] == "none"
+    r2 = client.put(base, headers=ADMIN_HEADERS,
+                    json={"client_request_id": "s3", "updates": {"container_pids_limit": "-1"}, "reason": "x"})
+    assert r2.status_code == 400
+
+
+def test_sweep_once_reclaims_by_db_ttl(client):
+    """后台回收现读 DB cfg：把 idle TTL 改 0 → sweep_once 回收该容器（区别于直接传 cfg 的 sweep_idle）。"""
+    from app import sandbox_admin_service
+    from infra.repositories import runtime_config
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container("uSweep", "r1", _CFG)
+        await sandbox_executor.release_user_container("uSweep", "r1")  # → idle
+        assert sandbox_executor.get("uSweep") is not None
+        await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, "user_container_idle_ttl_minutes", 0, reason="t")
+        n = await sandbox_admin_service.sweep_once()
+        assert n >= 1 and sandbox_executor.get("uSweep") is None
+
+    asyncio.run(scenario())
+
+
+def test_seeded_deny_blocks_in_run_bash(client):
+    """种子 deny 端到端：从 DB 读 sandbox cfg → sudo 命中层 1 平台 deny（denied+审计），ls 照常放行。"""
+    from infra.repositories import runtime_config
+    from runtime import sandbox_bash
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "deny1", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    run = _run_dict(run_row)
+    st = TaskState(task_id="tk", run_id=str(run["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+
+    async def scenario():
+        cfg = {c["config_key"]: c["config_value_json"]
+               for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+        assert cfg.get("bash_deny_prefixes")  # 种子键已入库
+
+        async def approve():
+            return True
+
+        res = await sandbox_bash.run_bash(st, run, "sudo whoami", cfg=cfg, approver=approve)
+        assert res.status == "denied"
+        res2 = await sandbox_bash.run_bash(st, run, "ls -la", cfg=cfg, approver=approve)
+        assert res2.status == "success"
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    denied = next(e for e in events if e["event_type"] == "openops.sandbox.command.denied")
+    assert denied["payload_redacted_json"]["layer"] == 1  # 层 1 平台 deny
+
+
+def test_seed_ensure_defaults_inserts_missing_keeps_existing(client):
+    """ensure_sandbox_defaults：老库缺新键自动补齐，管理员改过的值不被回写。"""
+    from infra import seed
+    from infra.db import exec1
+    from infra.repositories import runtime_config
+
+    async def scenario():
+        await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, "container_pids_limit", 999, reason="admin")
+        await exec1("delete from sre_platform_runtime_config where config_domain=%(d)s and config_key=%(k)s",
+                    {"d": runtime_config.DOMAIN_SANDBOX, "k": "container_image"})
+        before = {c["config_key"] for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+        assert "container_image" not in before
+        await seed.ensure_sandbox_defaults()
+        cfg = {c["config_key"]: c["config_value_json"]
+               for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+        assert cfg["container_pids_limit"] == 999          # 改值不回写
+        assert cfg["container_image"] == "python:3.11-slim"  # 缺键补齐
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(os.getenv("OPENOPS_SANDBOX_DOCKER_TEST") != "1",
+                    reason="实机 Docker 配置应用：设 OPENOPS_SANDBOX_DOCKER_TEST=1 且本机有 docker + python:3.11-slim 才跑")
+def test_docker_real_config_applied(client):
+    """实机断言：Name/Labels/PidsLimit/NetworkMode 生效 + 409 同名自愈 + purge 归零。"""
+    from sandbox.backends import (
+        LABEL_MANAGED,
+        DockerContainerBackend,
+        container_name,
+        purge_orphan_containers,
+    )
+
+    async def scenario():
+        be = DockerContainerBackend("uCfg", image="python:3.11-slim", cpu=0.5, mem_mib=512,
+                                    network_mode="none", pids_limit=64)
+        await be.start()
+        try:
+            info = await be._container.show()
+            assert info["Name"] == "/" + container_name("uCfg")
+            assert info["Config"]["Labels"][LABEL_MANAGED] == "1"
+            assert info["HostConfig"]["PidsLimit"] == 64
+            assert info["HostConfig"]["NetworkMode"] == "none"
+            # 409 自愈：同名再建应删旧建新成功
+            be2 = DockerContainerBackend("uCfg", image="python:3.11-slim", cpu=0.5, mem_mib=512)
+            await be2.start()
+            await be2.close()
+        finally:
+            await be.close()
+        await purge_orphan_containers()  # 清本 scope 所有托管容器
+
+    asyncio.run(scenario())

@@ -16,6 +16,20 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
+
+
+def parse_deny_prefixes(raw: Any) -> list[str]:
+    """把 runtime_config 的 bash_deny_prefixes 值归一为前缀列表。
+
+    管理台编辑框按字符串回传（逗号分隔），API 直 PUT 可能是 JSON 数组——两种都容忍。
+    关键：字符串值绝不能 `list(str)` 拆成单字符（sandbox_bash 旧隐患，如 "docker" → d/o/c/k/e/r）。
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [p.strip() for p in raw.split(",") if p.strip()]
+    return [str(p).strip() for p in raw if str(p).strip()]
 
 # 回退分类器用（无 agentscope 时）：已知只读命令前缀（自动放行）
 _READONLY_PREFIXES = (

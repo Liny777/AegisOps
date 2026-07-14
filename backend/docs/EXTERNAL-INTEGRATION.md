@@ -138,6 +138,8 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
 | `OPENOPS_MCP_RESULT_CAP` | 24000 字符 | MCP client 网络层对工具返回文本的字符截断（第一层） |
 | `OPENOPS_MCP_TIMEOUT_S` | 30 | MCP tools/call 全程超时 |
 | `OPENOPS_SKILL_TIMEOUT_S` / `OPENOPS_SKILL_OUTPUT_MAX_BYTES` | 600 / 2MiB | 沙箱内 Skill/Bash 执行超时与输出上限 |
+| `OPENOPS_SANDBOX_SWEEP_INTERVAL_S` | 60 | idle 沙箱容器后台回收间隔（秒）；0=关（懒回收仍在关会话/容量满触发） |
+| `OPENOPS_SANDBOX_LABEL_SCOPE` | default | docker 档容器标签 scope，隔离同宿主多环境的孤儿清理范围 |
 | `OPENOPS_MODEL_CONNECT_TIMEOUT_S` / `OPENOPS_MODEL_READ_TIMEOUT_S` / `OPENOPS_MODEL_MAX_RETRIES` | 10 / 300 / 0 | 模型客户端（主+子共用 _build_model） |
 
 ### 模板画像字段（子 Agent / 派发预算，发布后下个任务生效）

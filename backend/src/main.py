@@ -91,18 +91,33 @@ async def lifespan(_app: FastAPI):
         f"trust_env={'on' if os.environ.get('OPENOPS_HTTP_TRUST_ENV') == '1' else 'off'}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"skillhub_cookie={_cookie_disp('OPENOPS_SKILLHUB_COOKIE')}  "
-        f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}"
+        f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}  "
+        f"sandbox_sweep={os.environ.get('OPENOPS_SANDBOX_SWEEP_INTERVAL_S', '60')}s"
     )
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)
     print(f"[OpenOps][startup] {_banner}", flush=True)
 
-    from app import asset_reconcile_service
+    # docker 档启动清理孤儿容器（上次进程遗留：注册表此刻必空，本 scope 带管理 label 的全是孤儿）
+    if os.environ.get("OPENOPS_SANDBOX", "fake").lower() == "docker":
+        try:
+            from sandbox.backends import purge_orphan_containers
+            _n = await purge_orphan_containers()
+            if _n:
+                logging.getLogger("openops.startup").warning("[startup] 清理孤儿沙箱容器 %d 个", _n)
+        except Exception as e:  # noqa: BLE001 — 守护进程未起等：不阻断启动，后续建容器自会报 SANDBOX_CONTAINER_FAILED
+            logging.getLogger("openops.startup").warning("[startup] 孤儿容器清理跳过：%s", e)
+
+    from app import asset_reconcile_service, sandbox_admin_service
 
     interval = float(os.environ.get("OPENOPS_RECONCILE_INTERVAL_S", "0"))
     reconciler = asyncio.create_task(asset_reconcile_service.background_loop(interval)) if interval > 0 else None
+    sweep_s = float(os.environ.get("OPENOPS_SANDBOX_SWEEP_INTERVAL_S", "60"))
+    sweeper = asyncio.create_task(sandbox_admin_service.background_sweep_loop(sweep_s)) if sweep_s > 0 else None
     yield
     if reconciler:
         reconciler.cancel()
+    if sweeper:
+        sweeper.cancel()
     # 先收口 runtime 任务（取消 + 短等审计写完），再关池——避免关闭期 PoolClosed 噪声（B5-BE-001）
     from runtime import task_registry
 

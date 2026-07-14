@@ -27,7 +27,7 @@ async def run_bash(
     cfg: dict[str, Any], approver: Callable[[], Awaitable[bool]],
 ) -> SkillResult:
     """决策 → 审计 → 执行一条容器内 Bash 命令。deny/拒绝审批则不执行。"""
-    deny_prefixes = list(cfg.get("bash_deny_prefixes", []) or [])
+    deny_prefixes = command_guard.parse_deny_prefixes(cfg.get("bash_deny_prefixes"))
     d = await command_guard.decide_async(command, deny_prefixes=deny_prefixes)
 
     if d.action == "deny":
