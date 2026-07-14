@@ -152,6 +152,8 @@ async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
         async with httpx.AsyncClient(timeout=10, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
             # 步 1：cookie 换 access_token（GET，无 body；code 必须是字符串 "201"）
             r1 = await cli.get(token_url, headers=base_headers)
+            if r1.status_code in (401, 403):  # token 过期/会话失效——判 401 引导重新登录（非上游异常）
+                raise IamError(401, "IAM 会话已过期，请重新登录")
             if r1.status_code != 200:
                 raise IamError(502, f"IAM access_token 接口异常（HTTP {r1.status_code}）")
             d1 = r1.json()

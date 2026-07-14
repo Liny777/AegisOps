@@ -267,6 +267,13 @@ def test_iam_b9_rejects_and_upstream(client, monkeypatch):
     assert r.status_code == 401
     assert r.json()["error"]["login_url"] == "https://iam.example/login"
 
+    # token 接口本身 HTTP 401（token 过期）→ 401 带 login_url（跳登录），非 502 服务异常屏
+    iam_client.clear_cache()
+    _FakeIam.script = {"token": (401, {}), "userinfo": (200, {})}
+    r = client.get("/api/openops/v1/me", headers={"Cookie": "iam_sess=expired-http"})
+    assert r.status_code == 401
+    assert r.json()["error"]["login_url"] == "https://iam.example/login"
+
     iam_client.clear_cache()
     _FakeIam.script = {"token": (500, {}), "userinfo": (200, {})}
     r = client.get("/api/openops/v1/me", headers={"Cookie": "iam_sess=x2"})
