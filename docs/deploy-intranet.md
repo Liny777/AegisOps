@@ -146,9 +146,9 @@ docker compose up -d
 # 3. 验证链（依次；sidecar 不发布宿主机端口，探活走 docker exec）
 docker exec openops-sidecar wget -qO- http://127.0.0.1:4002/healthz   # {"ok":true,...}
 curl -s http://localhost/api/health            # frontend 容器→后端机 → {"status":"ok"}
-curl -sI http://localhost/ | grep -iE "^HTTP|^location"   # 302 + Location: /aegisops/（文根跳转）
-curl -sI http://localhost/aegisops/ | head -1  # 静态 200（真正的页面入口）
-curl -s http://localhost/aegisback/health      # {"status":"ok"}（IP 直访兜底：剥前缀转后端）
+curl -sI http://localhost/ | grep -iE "^HTTP|^location"   # 302 + Location: /openops/（文根跳转）
+curl -sI http://localhost/openops/ | head -1  # 静态 200（真正的页面入口）
+curl -s http://localhost/openback/health      # {"status":"ok"}（IP 直访兜底：剥前缀转后端）
 # 浏览器全链：建 Agent → 对话（CopilotChat 流式回包）→ 活动栏 SSE 持续推送不断流
 ```
 
@@ -167,17 +167,17 @@ TLS：内网证书就绪后挂载证书目录 + 以自有 conf 覆盖模板（co
 规则：`run-backend.sh test|prod` 选文件；systemd 用 `EnvironmentFile` 指同一份；实值 env 文件
 永不入 git（.gitignore 已拦）。frontend 与 sidecar 镜像**不要**按环境重打——地址全在 env 注入层。
 
-## 四½、域名与文根（xxxx.com/aegisops · xxxx.com/aegisback）
+## 四½、域名与文根（xxxx.com/openops · xxxx.com/openback）
 
-镜像 dist 已烘焙前端文根 `base=/aegisops/`、后端 API 前缀 `/aegisback/api`（build-artifacts.sh
+镜像 dist 已烘焙前端文根 `base=/openops/`、后端 API 前缀 `/openback/api`（build-artifacts.sh
 注入；换文根须同改 nginx.conf.template 文根段并重打前端镜像）。IP 直访与域名访问同时可用
-（`http://前端机IP/` 会 302 到 `/aegisops/`）。
+（`http://前端机IP/` 会 302 到 `/openops/`）。
 
 **给运维的公司网关规则（两条，注意不对称）**：
 
 ```nginx
 # ① 前端：不 strip（前端机 nginx 自己剥前缀）
-location /aegisops {
+location /openops {
     proxy_pass http://<前端机IP>:80;
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
@@ -185,7 +185,7 @@ location /aegisops {
 }
 # ② 后端：剥不剥前缀均可（后端 RootPathShim 按 OPENOPS_ROOT_PATH 自剥）——
 #    域名系统只支持「ip+端口」直指后端机:18082 也能工作
-location /aegisback/ {
+location /openback/ {
     proxy_pass http://<后端机IP>:18082;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
@@ -198,21 +198,21 @@ location /aegisback/ {
 }
 ```
 
-**后端 env**：`OPENOPS_ROOT_PATH=/aegisback`（env 模板已带）。后端应用层 RootPathShim 按它
+**后端 env**：`OPENOPS_ROOT_PATH=/openback`（env 模板已带）。后端应用层 RootPathShim 按它
 自剥前缀（网关剥不剥都兼容），并回写 root_path 使重定向/docs URL 带前缀；sidecar 直连
 IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，
 遇不剥前缀的网关变双前缀 404（内网实测）。
 **IAM 回跳**：仅浏览器导航用的 `OPENOPS_IAM_LOGIN_URL` / `OPENOPS_IAM_SIGNOUT_URL` 支持
 `{host}` 占位符。携带 Cookie/token 的 access-token 与 userinfo URL 必须是固定 HTTPS 地址，禁止
 请求域名替换。回跳示例：
-`OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F`。
+`OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Fopenops%2F%3F`。
 
-**客户端 IP 透传**（IAM 会话绑 IP）：`/aegisback` 全链（公司网关→前端机→后端）每跳都要
+**客户端 IP 透传**（IAM 会话绑 IP）：`/openback` 全链（公司网关→前端机→后端）每跳都要
 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`——后端取 XFF 首跳作为用户真实
 浏览器 IP 发给 IAM。缺则后端拿到网关 IP、IAM 绑 IP 校验失败 → /me 持续 401 登录横跳。
 
-**域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；
-`https://xxxx.com/aegisops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
+**域名侧验证**：`https://xxxx.com/openback/health` → `{"status":"ok"}`；
+`https://xxxx.com/openops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
 
 ## 五、故障排查
 

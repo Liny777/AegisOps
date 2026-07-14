@@ -126,7 +126,7 @@ app = FastAPI(title="OpenOps V1 Backend", version="0.2.0", lifespan=lifespan)
 
 
 class RootPathShim:
-    """文根自剥（OPENOPS_ROOT_PATH，如 /aegisback）：请求路径带前缀就剥掉再路由，
+    """文根自剥（OPENOPS_ROOT_PATH，如 /openback）：请求路径带前缀就剥掉再路由，
     并把 root_path 写回 scope（307 重定向 / docs URL 生成仍带前缀）。
 
     这样公司网关**剥不剥前缀都能工作**——域名系统只填 ip+端口（不剥）可直指后端；

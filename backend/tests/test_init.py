@@ -342,12 +342,12 @@ def test_root_path_shim_strips_prefix_only_when_present():
     async def dummy(scope, receive, send):
         seen.clear(); seen.update(scope)
 
-    shim = RootPathShim(dummy, "/aegisback")
-    _asyncio.run(shim({"type": "http", "path": "/aegisback/api/x"}, None, None))
-    assert seen["path"] == "/api/x" and seen["root_path"] == "/aegisback"
-    _asyncio.run(shim({"type": "http", "path": "/aegisback"}, None, None))
+    shim = RootPathShim(dummy, "/openback")
+    _asyncio.run(shim({"type": "http", "path": "/openback/api/x"}, None, None))
+    assert seen["path"] == "/api/x" and seen["root_path"] == "/openback"
+    _asyncio.run(shim({"type": "http", "path": "/openback"}, None, None))
     assert seen["path"] == "/"
     _asyncio.run(shim({"type": "http", "path": "/api/x"}, None, None))
     assert seen["path"] == "/api/x" and "root_path" not in seen
-    _asyncio.run(shim({"type": "http", "path": "/aegisbackup/x"}, None, None))  # 相似名不误剥
-    assert seen["path"] == "/aegisbackup/x"
+    _asyncio.run(shim({"type": "http", "path": "/openbackup/x"}, None, None))  # 相似名不误剥
+    assert seen["path"] == "/openbackup/x"

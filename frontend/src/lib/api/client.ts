@@ -1,6 +1,6 @@
 /** 真实后端 HTTP 客户端 —— 解析 envelope / error，注入 mock 登录头（B8 换真 IAM Cookie）。 */
 
-// 后端文根部署（内网 xxxx.com/aegisback）：打包时 VITE_OPENOPS_API_BASE=/aegisback/api；
+// 后端文根部署（内网 xxxx.com/openback）：打包时 VITE_OPENOPS_API_BASE=/openback/api；
 // 本地默认 "/api"（dev proxy / 同机直连不变）。SSE 与 agui 两处绕过 request() 的调用点共用本值。
 export const API_BASE = import.meta.env.VITE_OPENOPS_API_BASE ?? "/api";
 const BASE = API_BASE;

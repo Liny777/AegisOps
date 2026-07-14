@@ -314,9 +314,9 @@ def test_iam_browser_host_placeholder_substitution(monkeypatch):
     from infra.external import iam_client
 
     monkeypatch.setenv("OPENOPS_IAM_LOGIN_URL",
-                       "https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F")
+                       "https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Fopenops%2F%3F")
     assert iam_client.login_url("console-a.x.com") == \
-        "https://console-a.x.com/epstenant/#/login?redirect=https%3A%2F%2Fconsole-a.x.com%2Faegisops%2F%3F"
+        "https://console-a.x.com/epstenant/#/login?redirect=https%3A%2F%2Fconsole-a.x.com%2Fopenops%2F%3F"
     assert "{host}" in (iam_client.login_url("") or "")  # 无 host 上下文保持原样（兜底）
 
     # browser_host 只信网关写入的 X-Forwarded-Host；不回退可能是后端地址的 Host。

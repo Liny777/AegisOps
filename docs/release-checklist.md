@@ -21,7 +21,7 @@
 ## 3. IAM（OPENOPS_IAM_ENABLED=true 时）
 
 - [ ] `OPENOPS_IAM_ACCESS_TOKEN_URL` / `OPENOPS_IAM_USERINFO_URL` 是固定 HTTPS 地址，不含 userinfo/query/fragment、`{host}` 或其他模板，并已连通
-- [ ] `/aegisback` 全链每跳透传 `X-Forwarded-For`（后端取首跳作用户真实 IP 供 IAM 绑 IP 校验；缺则 /me 持续 401 登录横跳）
+- [ ] `/openback` 全链每跳透传 `X-Forwarded-For`（后端取首跳作用户真实 IP 供 IAM 绑 IP 校验；缺则 /me 持续 401 登录横跳）
 - [ ] `OPENOPS_IAM_LOGIN_KEY_FIELD` / `OPENOPS_IAM_DISPLAY_NAME_FIELD` 与 IAM userinfo 真实字段对齐（支持点分嵌套）
 - [ ] 可选：`OPENOPS_IAM_LOGIN_URL`（401 引导跳转）/ `OPENOPS_IAM_SIGNOUT_URL`（登出）
 - [ ] 白名单：管理员账号先入库（`sre_user_whitelist`），再由管理台开通其他用户

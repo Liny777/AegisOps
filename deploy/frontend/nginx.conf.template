@@ -15,18 +15,20 @@ server {
 
     absolute_redirect off;   # 302/301 发相对 Location——网关 https/非 80 端口下不丢 scheme 与端口
 
-    # ---- 文根（域名部署 xxxx.com/aegisops · xxxx.com/aegisback）----
+    # ---- 文根（域名部署 xxxx.com/openops · xxxx.com/openback）----
     # 网关规则不对称（实测本栈 uvicorn 会把 root_path 拼回 scope.path，后端只认裸路径）：
-    #   /aegisops/* → 前端机:80 **不 strip**（本文件 rewrite 自己剥）；
-    #   /aegisback/* → 后端机:18082 **strip**（网关 proxy_pass 带尾斜杠）。
-    # dist 打包时已烘焙 base=/aegisops/（换文根须重打前端镜像并同步改这里）。
-    # 下方 /aegisback/ 供 IP 直访兜底，同样剥前缀后转后端。
-    rewrite ^/aegisops/$ /index.html last;
-    rewrite ^/aegisops/(.+)$ /$1 last;
-    rewrite ^/aegisops$ /aegisops/ permanent;
-    location = / { return 302 /aegisops/; }
-    location /aegisback/ {
-        proxy_pass http://${BACKEND_HOST}:18082/;   # 尾斜杠=剥 /aegisback 前缀
+    #   /openops/* → 前端机:80 **不 strip**（本文件 rewrite 自己剥）；
+    #   /openback/* → 后端机:18082 **strip**（网关 proxy_pass 带尾斜杠）。
+    # dist 打包时已烘焙 base=/openops/（换文根须重打前端镜像并同步改这里）。
+    # 下方 /openback/ 供 IP 直访兜底，同样剥前缀后转后端。
+    rewrite ^/openops/$ /index.html last;
+    rewrite ^/openops/(.+)$ /$1 last;
+    rewrite ^/openops$ /openops/ permanent;
+    location = / { return 302 /openops/; }
+    # 旧文根兼容（老书签/缓存的旧入口带深链与查询串一跳到位；稳定后可删）
+    location ~ ^/aegisops(/.*)?$ { return 302 /openops$1$is_args$args; }
+    location /openback/ {
+        proxy_pass http://${BACKEND_HOST}:18082/;   # 尾斜杠=剥 /openback 前缀
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
