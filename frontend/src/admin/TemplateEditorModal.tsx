@@ -3,8 +3,10 @@ import { color, radius } from "../theme/tokens";
 import { Modal, Icon, Pill } from "../ui";
 import { api } from "../lib/api";
 
-/** 模板编辑器（B7·二真化）：main role + default_tools 勾选（仅 allowed 平台 tool 可绑）、
- *  保存草稿（另存新版本，可反复改）/ 发布（草稿转正不可变；已实例化用户下次任务边界自动派生）。 */
+/** 模板编辑器（B7·二真化 + 编排对称化）：main role + default_tools 勾选（仅 allowed 平台 tool
+ *  可绑，**含动态注册表工具**，空=零工具纯编排派发）+ main skills 白名单（空=不限）、
+ *  sub Agent 组增删角色与逐角色白名单、保存草稿（另存新版本，可反复改）/ 发布（草稿转正不可变；
+ *  已实例化用户下次任务边界自动派生）。 */
 export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   open: boolean;
   templateId: string | null;
@@ -121,8 +123,16 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
             </label>
             <span style={{ fontSize: 11, color: color.textFaint }}>派发预算（D 块两层模型）</span>
           </div>
+          <label style={{ display: "block", fontSize: 11.5, color: color.textSubtle, marginTop: 10 }}>
+            main skills 白名单（逗号分隔 skill_key；<b>空=不限</b>，沿用 平台 active ∪ 实例绑定）
+            <input
+              value={((((content.main ?? {}) as Record<string, unknown>).skills ?? []) as string[]).join(", ")}
+              onChange={(e) => patchMain("skills", e.target.value.split(",").map((x) => x.trim()).filter(Boolean))}
+              placeholder="如：inspection, log-query（留空则不限制）"
+              style={{ display: "block", width: "100%", marginTop: 5, border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "6px 9px", fontSize: 12, fontFamily: "ui-monospace, monospace", boxSizing: "border-box" }} />
+          </label>
         </Box>
-        <Box title="平台 MCP tool 绑定（仅 allowed 标注可绑；模板外工具运行时 fail-closed）">
+        <Box title="main 平台 MCP tool 绑定（仅 allowed 标注可绑，含动态注册表工具；空=零工具纯编排派发，模板外工具运行时 fail-closed）">
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {allowedTools.map((t) => (
               <label key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontFamily: "ui-monospace, monospace", border: `1px solid ${tools.has(t) ? color.brand : color.border}`, background: tools.has(t) ? color.brandTintBg : "#fff", padding: "5px 10px", borderRadius: radius.sm, cursor: "pointer" }}>
@@ -131,8 +141,14 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                 {t}
               </label>
             ))}
+            {!allowedTools.length ? (
+              <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.7 }}>
+                目录暂无 allowed 标注工具——先到 <b>资产治理 → Tool 标注</b> 把工具标为 allowed
+                （动态注册表工具需先经 MCP 对账进目录），标注后这里即可勾选绑定。
+              </div>
+            ) : null}
           </div>
-          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>发布后版本不可原地改；再次修改须另存新草稿。</div>
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>main 直连的动态工具也须在此勾选（未勾=运行时被剪，由子 Agent 承接）。发布后版本不可原地改；再次修改须另存新草稿。</div>
         </Box>
         <Box title="sub Agent 组（D 块：管理员可编辑；skills/mcp_tools 为该子 Agent 的工具白名单）">
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

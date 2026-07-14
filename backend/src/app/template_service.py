@@ -41,6 +41,11 @@ async def _validate_content(content: dict[str, Any]) -> None:
     tools = main.get("default_tools", [])
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise ApiError(Err.VALIDATION_FAILED, "main.default_tools 必须是工具名数组")
+    # main 直连技能白名单（编排对称化）：类型校验同 sub.skills；skills 无标注体系不做门禁
+    # （执行另有装配校验）。语义：空/缺省=不限（存量模板兼容），非空=白名单交集。
+    ms = main.get("skills", [])
+    if not isinstance(ms, list) or not all(isinstance(x, str) for x in ms):
+        raise ApiError(Err.VALIDATION_FAILED, "main.skills 必须是字符串数组")
     subs = content.get("sub_agents", [])
     if not isinstance(subs, list):
         raise ApiError(Err.VALIDATION_FAILED, "sub_agents 必须是数组")

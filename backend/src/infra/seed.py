@@ -39,8 +39,12 @@ SUB_REPORT_DISCIPLINE = (
 TEMPLATE_CONTENT = {
     "main": {
         "role": "理解用户任务，调度巡检/定界/恢复能力，工具调用前遵守平台安全策略。",
-        # B7·二：RuntimePlan 只装配模板 default_tools 内的平台工具（恢复类照常受 ASK 标注管控）
+        # B7·二：RuntimePlan 只装配模板 default_tools 内的平台工具（恢复类照常受 ASK 标注管控）；
+        # 含动态注册表工具——main 与 sub 同为白名单制，空集=零平台工具=纯编排派发（老 D6 效果）
         "default_tools": ["query_resource", "recover_execute"],
+        # main 直连技能白名单（编排对称化）：**空/缺省=不限**（沿用 平台 active ∪ 实例绑定；
+        # 与 default_tools「空=零」语义相反——skills 执行另有装配校验+沙箱受控，白名单是可选收窄）
+        "skills": [],
         # D 块派发预算（老 D6 两层模型）：max_children=同时活跃子 Agent 上限；
         # delegation_max_spawns=单 task 累计派发兜底（防失败重派死循环）
         "max_children": 3,

@@ -149,12 +149,15 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
 
 
 async def available_skills(user: dict[str, Any], instance_id: str) -> list[dict[str, Any]]:
-    """composer「/」列表数据源：与执行门禁**同源**（run_state_service.resolve_available_skills，
-    平台 active ∪ 本实例绑定的用户 Skill）——保证前端展示的即后端可执行的，键=skill_key。"""
-    from app.run_state_service import resolve_available_skills
+    """composer「/」列表数据源：与执行门禁**同源**（run_state_service.resolve_available_skills
+    再过 filter_main_skills 模板白名单，平台 active ∪ 本实例绑定的用户 Skill）——保证前端展示的
+    即后端可执行的，键=skill_key。"""
+    from app.run_state_service import filter_main_skills, resolve_available_skills
 
     row = _owner_check(await agent_teams.get_instance(instance_id), user["user_id"])
     sk = await resolve_available_skills(user["user_id"], str(row["active_config_version_id"]))
+    tpl_ver = await templates.get_version(str(row["template_version_id"]))
+    sk = filter_main_skills(sk, (tpl_ver or {}).get("content_json") or {})
     return [{"skill_key": k, "display_name": v.get("display_name") or k, "source_type": v.get("source_type")}
             for k, v in sk.items()]
 

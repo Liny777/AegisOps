@@ -234,6 +234,9 @@ def test_toolkit_demo_retirement_and_scope_tool(monkeypatch):
 
         monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
         st, run = _toolkit_st_run()
+        # 编排对称化：动态工具对 main 也按模板白名单裁剪（豁免已去除）——本测试关注 demo 退场
+        # 与 list_scope_apps，动态工具入册以白名单放行为前提
+        st.template_tools = set(st.template_tools or set()) | {s["name"] for s in specs}
         tk, pruned = await ar._build_toolkit(st, run)
         names = {n: (await tk.get_tool(n)) is not None
                  for n in ("query_resource", "recover_execute", "list_scope_apps", "query_alarm_list")}

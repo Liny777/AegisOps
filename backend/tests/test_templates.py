@@ -215,3 +215,56 @@ def test_omodel_console_page_env_matrix(client, monkeypatch):
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://user:secret@console.x.y/omodel")
     out = unwrap(client.get("/api/openops/v1/omodel/console-page", headers=USER_HEADERS))
     assert out["page_base"] == ""
+
+
+# ---- 编排对称化：main.skills 白名单（模板编辑器主 Agent 技能面） ----
+
+def test_main_skills_validation(client):
+    """main.skills 类型校验：非字符串数组 400；合法数组可保存（skills 无标注门禁）。"""
+    tid = _template_id(client)
+    bad = _save_draft(client, tid, {**_content(["query_resource"]),
+                                    "main": {"role": "编排", "default_tools": ["query_resource"], "skills": "oops"}})
+    assert bad.status_code == 400
+    assert "main.skills" in bad.json()["error"]["message"]
+    ok = _save_draft(client, tid, {**_content(["query_resource"]),
+                                   "main": {"role": "编排", "default_tools": ["query_resource"],
+                                            "skills": ["inspection"]}})
+    assert ok.status_code == 200
+
+
+def test_filter_main_skills_semantics():
+    """filter_main_skills：空/缺省/非法类型=不过滤（存量模板兼容+编辑器往返安全）；非空=交集。"""
+    from app.run_state_service import filter_main_skills
+
+    sk = {"a": {"display_name": "A"}, "b": {"display_name": "B"}}
+    assert filter_main_skills(sk, {}) == sk                                   # main 缺省
+    assert filter_main_skills(sk, {"main": {}}) == sk                         # skills 缺省
+    assert filter_main_skills(sk, {"main": {"skills": []}}) == sk             # 空表=不限
+    assert filter_main_skills(sk, {"main": {"skills": "oops"}}) == sk         # 非法类型忽略
+    assert filter_main_skills(sk, {"main": {"skills": ["a", "ghost"]}}) == {"a": sk["a"]}  # 交集
+
+
+def test_main_skills_filters_available_skills_endpoint(client):
+    """展示=可执行同源：模板 main.skills 白名单同时收窄 available-skills 端点与 start_task 装配。"""
+    # 基线实例（seed 模板 skills=[]=不限）：绑两个用户 Skill，学到真实 skill_key
+    inst_a = create_instance(client, name="技能面基线")
+    alpha, beta = _upload_skill(client, "skill-alpha"), _upload_skill(client, "skill-beta")
+    _bind_skill(client, inst_a["instance_id"], alpha)
+    _bind_skill(client, inst_a["instance_id"], beta)
+    base = unwrap(client.get(f"/api/openops/v1/agent-teams/{inst_a['instance_id']}/available-skills",
+                             headers=USER_HEADERS))
+    ka = next(x["skill_key"] for x in base if x["display_name"] == "skill-alpha")
+    kb = next(x["skill_key"] for x in base if x["display_name"] == "skill-beta")
+    # 发布 main.skills=[ka] 的新版本 → 新实例（钉新版）绑同样两个 Skill → 端点只见 ka
+    tid = _template_id(client)
+    ver = unwrap(_save_draft(client, tid, {**_content(["query_resource"]),
+                                           "main": {"role": "编排", "default_tools": ["query_resource"],
+                                                    "skills": [ka]}}))
+    assert _publish(client, str(ver["template_version_id"])).status_code == 200
+    inst_b = create_instance(client, name="技能面白名单")
+    _bind_skill(client, inst_b["instance_id"], alpha)
+    _bind_skill(client, inst_b["instance_id"], beta)
+    out = unwrap(client.get(f"/api/openops/v1/agent-teams/{inst_b['instance_id']}/available-skills",
+                            headers=USER_HEADERS))
+    keys = {x["skill_key"] for x in out}
+    assert ka in keys and kb not in keys

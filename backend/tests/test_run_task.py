@@ -475,7 +475,8 @@ def test_e1_approval_wait_excluded_from_timeout_budget(client, runtime_backend, 
 
 
 def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monkeypatch):
-    """per-agent 隔离：动态 MCP 工具在子 Agent 面按画像 mcp_tools 白名单裁剪；main 保持全量注入。"""
+    """per-agent 隔离（编排对称化）：动态 MCP 工具对 main/sub 统一按白名单裁剪——
+    子按画像 mcp_tools，main 按模板 default_tools；模板没勾的动态工具对 main 也不注入。"""
     import asyncio as _asyncio
 
     import pytest as _pytest
@@ -502,9 +503,13 @@ def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monke
     _asyncio.run(rt._build_toolkit(child, run_row))
     assert "dyn_alarm_query" in (child.tool_annotations or {})
     assert "dyn_log_query" not in (child.tool_annotations or {})
-    # main：全量注入豁免不变
+    # main：同样按模板白名单剪（豁免已去除）——种子模板 default_tools 没勾动态工具 → 不注入
     _asyncio.run(rt._build_toolkit(st, run_row))
-    assert "dyn_alarm_query" in st.tool_annotations and "dyn_log_query" in st.tool_annotations
+    assert "dyn_alarm_query" not in st.tool_annotations and "dyn_log_query" not in st.tool_annotations
+    # 模板勾选后（default_tools 含该名）→ main 注入该工具、未勾的仍剪
+    st.template_tools = set(st.template_tools or set()) | {"dyn_alarm_query"}
+    _asyncio.run(rt._build_toolkit(st, run_row))
+    assert "dyn_alarm_query" in st.tool_annotations and "dyn_log_query" not in st.tool_annotations
 
 
 # ---- 缺陷批回归（regression-0712 报告 DEF-1/2，替代未入库的探针文件） ----

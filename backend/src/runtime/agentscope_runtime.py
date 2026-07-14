@@ -443,18 +443,17 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
     # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
     for spec in dynamic_specs:
-        # per-agent 隔离（D/E 块）：子 Agent 的动态工具也按画像 mcp_tools 白名单裁剪——
-        # 不裁则每个子 Agent 都看到注册表全部真工具，角色隔离被击穿。main 保持全量注入
-        # （动态工具对 main 的模板集校验豁免不变，见下方 template_tools.add）。
-        if st.agent_key != "main" and (st.template_tools is None or spec["name"] not in st.template_tools):
+        # per-agent 隔离（D/E 块，编排对称化）：动态工具对 main/sub 统一按白名单裁剪——
+        # main 按模板 main.default_tools，子 Agent 按画像 mcp_tools（否则每个 Agent 都看到
+        # 注册表全部真工具，角色隔离被击穿）。空白名单=纯编排者（main 被迫派发，老 D6 效果）；
+        # main 需要直连的动态工具须在模板编辑器勾进 default_tools（先 allowed 标注）。
+        if st.template_tools is None or spec["name"] not in st.template_tools:
             continue
         st.tool_annotations[spec["name"]] = {
             "is_approval_required": not spec["readonly"], "is_secret_required": False,
             "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",
             "origin": "dynamic",  # gateway：catalog 未标注行不推翻此注入（管理员显式标注才接管）
         }
-        if isinstance(st.template_tools, set):  # 让动态工具过模板集校验（B7·二：否则会被 TOOL_BLOCKED）
-            st.template_tools.add(spec["name"])
         tools.append(_make_dynamic_tool(st, run, spec))
     return Toolkit(tools=tools), pruned
 
