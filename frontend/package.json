@@ -10,8 +10,10 @@
     "runtime": "tsx watch server/copilot-runtime.ts",
     "runtime:start": "node --import tsx server/copilot-runtime.ts",
     "test:activity": "node --import tsx --test src/lib/activity/model.test.ts",
+    "test:workbench-lifecycle": "node --import tsx --test src/layout/workbenchSession.test.ts src/lib/runtime/sse.test.ts",
     "test:rich-ui": "node --import tsx --test src/workbench/copilot/rich-ui/*.test.ts",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "e2e:real": "OPENOPS_E2E_REAL=1 playwright test e2e/real-workbench-persistence.spec.ts"
   },
   "dependencies": {
     "@ag-ui/client": "0.0.57",

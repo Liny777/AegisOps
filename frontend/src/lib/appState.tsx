@@ -23,6 +23,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
+  const hasLoadedIdentity = useRef(false);
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   const toggleRole = useCallback(() => {
@@ -36,12 +37,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let alive = true;
-    setLoading(true);
+    // 首次身份加载阻塞路由；后续切角色/刷新 Agent 列表在后台完成，避免 WhitelistGuard
+    // 临时用 Loading 替换 AppShell，导致正在运行的 Workbench/CopilotKit 被卸载。
+    if (!hasLoadedIdentity.current) setLoading(true);
     setBootError(null);
     (async () => {
       try {
         const m = await api.getMe();
         if (!alive) return;
+        hasLoadedIdentity.current = true;
         setMe(m);
         if (m.recent_instance_id) setCurrentAgentId(m.recent_instance_id);
         // 未开通用户 listAgents 必 403——跳过拉取，守卫按 whitelisted=false 引到开通引导页；
@@ -56,7 +60,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (!alive) return;
         const err = e as { code?: string; message?: string };
         if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，保持加载态
-        setBootError(err.message || "无法连接后端服务");
+        if (hasLoadedIdentity.current) {
+          console.warn("[OpenOps] 后台刷新身份失败，保留当前会话：", err.message || e);
+        } else {
+          setBootError(err.message || "无法连接后端服务");
+        }
       } finally {
         if (alive) setLoading(false);
       }

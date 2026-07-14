@@ -57,6 +57,77 @@ test("mock 发送：回执气泡出现", async ({ page }) => {
   await expect(page.getByText(/任务已受理/)).toBeVisible({ timeout: 10_000 });
 });
 
+test("设置页往返：回复在后台继续且当前对话无损保留", async ({ page }) => {
+  const question = "页内往返保留-支付回归-7f3a";
+  const receiptText = "（mock 演示）任务已受理。";
+
+  await page.goto("/");
+  const input = page.getByPlaceholder(/描述你的排障任务/);
+  await input.waitFor({ timeout: 15_000 });
+  const chatUrl = page.url();
+  const questionBubble = page.getByText(question, { exact: true });
+  const receiptBubble = page.getByText(receiptText, { exact: true });
+  const hitlTitle = page.getByText("需要人工批准", { exact: true });
+  const liveBadge = page.getByText("实时", { exact: true });
+
+  await expect(hitlTitle).toBeVisible();
+  await expect(liveBadge).toBeVisible();
+  await input.fill(question);
+  await input.press("Enter");
+  await expect(questionBubble).toBeVisible();
+  await expect(page.getByText(/Agent 正在调查/)).toBeVisible();
+
+  // 在 900ms mock 回执到来前，通过真实侧栏入口离开对话页。
+  await page.getByTitle("设置").click();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("main").getByText("设置", { exact: true })).toBeVisible();
+
+  // Workbench 仍在 DOM 中继续任务，但消息、连接徽标和 HITL 均不能覆盖设置页。
+  await expect(questionBubble).toHaveCount(1);
+  await expect(questionBubble).toBeHidden();
+  await expect(hitlTitle).toBeHidden();
+  await expect(liveBadge).toBeHidden();
+  await expect(receiptBubble).toHaveCount(1, { timeout: 5_000 });
+  await expect(receiptBubble).toBeHidden();
+
+  // 浏览器返回同一 chat 路由：原消息和后台完成的回执恢复，且没有重复或空白跳点态。
+  await page.goBack();
+  await expect(page).toHaveURL(chatUrl);
+  await expect(page.locator(".oa-fallback-chat-list")).toBeVisible();
+  await expect(questionBubble).toBeVisible();
+  await expect(questionBubble).toHaveCount(1);
+  await expect(receiptBubble).toBeVisible();
+  await expect(receiptBubble).toHaveCount(1);
+  await expect(hitlTitle).toBeVisible();
+  await expect(liveBadge).toBeVisible();
+  await expect(page.getByText("连接中", { exact: true })).toHaveCount(0);
+  await expect(page.getByText(/Agent 正在调查/)).toHaveCount(0);
+});
+
+test("管理台身份切换不会卸载后台运行的对话", async ({ page }) => {
+  const question = "管理台往返保留-4d91";
+  const receipt = page.getByText("（mock 演示）任务已受理。", { exact: true });
+
+  await page.goto("/");
+  const input = page.getByPlaceholder(/描述你的排障任务/);
+  await input.fill(question);
+  await input.press("Enter");
+  await expect(page.getByText(question, { exact: true })).toBeVisible();
+
+  await page.getByTitle("进入管理台").click();
+  await expect(page.getByRole("main").getByText("模板管理")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator(".oa-retained-workbench")).toBeHidden();
+  await expect(receipt).toHaveCount(1, { timeout: 5_000 });
+  await expect(receipt).toBeHidden();
+
+  await page.getByTitle("返回工作台").click();
+  await expect(page.getByText(question, { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(question, { exact: true })).toHaveCount(1);
+  await expect(receipt).toBeVisible();
+  await expect(receipt).toHaveCount(1);
+  await expect(page.getByText("实时", { exact: true })).toBeVisible();
+});
+
 test("紧凑消息：复制按钮可用，窄屏 RCA/HITL 自动降列", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");

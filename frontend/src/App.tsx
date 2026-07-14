@@ -3,7 +3,6 @@ import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } 
 import type { ReactNode } from "react";
 import { AppProvider, useApp } from "./lib/appState";
 import { AppShell } from "./layout/AppShell";
-import { Workbench } from "./workbench/Workbench";
 import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
 import { api } from "./lib/api";
 import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
@@ -98,14 +97,15 @@ export default function App() {
 
             {/* 鉴权区外壳（左导航 + 主区） */}
             <Route element={<WhitelistGuard><AppShell /></WhitelistGuard>}>
-              <Route path="/agent-teams/:instanceId/chat" element={<Workbench />} />
+              {/* 对话工作台由 AppShell 常驻托管；叶路由只负责参与匹配。 */}
+              <Route path="/agent-teams/:instanceId/chat" element={null} />
               <Route path="/agent-teams/:instanceId/settings" element={<SettingsPage />} />
               {/* 全部 Agent 清单（picker「全部 Agents」入口）：同一 SettingsPage，无 instanceId → 列表态 */}
               <Route path="/agents" element={<SettingsPage />} />
               {/* 设置（侧栏「设置」入口）：用户级配置二级菜单，V1 仅 OModel 占位（禁用） */}
               <Route path="/settings/:section?" element={<SettingsHome />} />
               {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
-              <Route path="/agent-runs/:runId" element={<Workbench />} />
+              <Route path="/agent-runs/:runId" element={null} />
               <Route path="/admin" element={<RoleGuard><Navigate to="/admin/templates" replace /></RoleGuard>} />
               <Route path="/admin/:page" element={<RoleGuard><AdminConsole /></RoleGuard>} />
             </Route>
