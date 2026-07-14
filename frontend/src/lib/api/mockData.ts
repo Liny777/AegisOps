@@ -56,6 +56,87 @@ export const mockConversations: Conversation[] = [
   { id: "conv_3", title: "Redis 连接池告警" },
 ];
 
+const mockActivityEvent = (
+  eventId: string,
+  eventType: string,
+  occurredAt: string,
+  message: string,
+  payload: Record<string, unknown> = {},
+) => ({
+  event_id: eventId,
+  audit_event_id: eventId,
+  event_type: eventType,
+  agent_run_id: "run_demo",
+  task_id: "tsk_demo_multiagent",
+  occurred_at: occurredAt,
+  message,
+  payload_redacted_json: { summary: message, ...payload },
+});
+
+/** 新活动栏离线演示：两轮派发、同角色重复 delegation、异常与待审批状态同时覆盖。 */
+export const mockActivitySnapshot = {
+  recent_events: [
+    mockActivityEvent("evt-main-start", "openops.task.started", "2026-07-14T02:00:00Z", "任务已启动"),
+    mockActivityEvent("evt-scope", "openops.scope.resolved", "2026-07-14T02:00:01Z", "范围已解析（3 个 APPID）"),
+    mockActivityEvent("evt-b1-i-dispatch", "openops.subagent.dispatched", "2026-07-14T02:00:02Z", "派发巡检 Agent", {
+      agent_key: "inspect", agent_label: "巡检 Agent", leader_task_id: "tsk_demo_multiagent",
+      child_task_id: "tsk_demo_multiagent.inspect-a1", delegation_id: "dlg-inspect-a1",
+      dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, task_summary: "检查支付链路指标与健康状态",
+    }),
+    mockActivityEvent("evt-b1-i-tool", "openops.tool.call.succeeded", "2026-07-14T02:00:05Z", "指标查询完成", {
+      agent_key: "inspect", agent_label: "巡检 Agent", delegation_id: "dlg-inspect-a1",
+      dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, tool: "query_metrics",
+      display_label: "查询指标", result_summary: "P99 升至 1.4s，Redis active 连接 1000/1000",
+      // 防御性 E2E：旧事件即使混入非白名单字段，活动组件也不得把 payload 整包 dump 到 DOM。
+      arguments: { authorization: "Bearer dom-secret-must-not-render" },
+      raw_response: "Cookie: dom-cookie-must-not-render",
+    }),
+    mockActivityEvent("evt-b1-i-report", "openops.subagent.reported", "2026-07-14T02:00:08Z", "巡检 Agent 已汇报", {
+      agent_key: "inspect", agent_label: "巡检 Agent", delegation_id: "dlg-inspect-a1",
+      dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, report_summary: "确认 Redis 连接池饱和，流量未明显增长",
+    }),
+    mockActivityEvent("evt-b1-d-fail", "openops.subagent.failed", "2026-07-14T02:00:09Z", "日志 Agent 执行异常", {
+      agent_key: "diagnose", agent_label: "日志 Agent", delegation_id: "dlg-diagnose-a1",
+      dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, reason_code: "MCP_TEMPORARY_UNAVAILABLE",
+    }),
+    mockActivityEvent("evt-b1-r-timeout", "openops.subagent.timeout", "2026-07-14T02:00:10Z", "恢复 Agent 执行超时", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-timeout",
+      dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1,
+    }),
+    mockActivityEvent("evt-b2-i-dispatch", "openops.subagent.dispatched", "2026-07-14T02:01:00Z", "派发巡检 Agent 复核", {
+      agent_key: "inspect", agent_label: "巡检 Agent", delegation_id: "dlg-inspect-a2",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, task_summary: "复核连接池趋势和副本差异",
+    }),
+    mockActivityEvent("evt-b2-i-report", "openops.subagent.reported", "2026-07-14T02:01:05Z", "巡检 Agent 已汇报", {
+      agent_key: "inspect", agent_label: "巡检 Agent", delegation_id: "dlg-inspect-a2",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, report_summary: "问题集中在 svc-a，其他副本连接数正常",
+    }),
+    mockActivityEvent("evt-b2-r-dispatch", "openops.subagent.dispatched", "2026-07-14T02:01:01Z", "派发恢复 Agent", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, task_summary: "准备受控重启 svc-a",
+    }),
+    mockActivityEvent("evt-b2-r-ask", "openops.approval.required", "2026-07-14T02:01:06Z", "等待人工批准重启 svc-a", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, approval_request_id: "appr_1",
+      tool: "recover_execute", display_label: "重启实例", request_id: "req-demo-1",
+    }),
+    mockActivityEvent("evt-b2-d-cancel", "openops.subagent.cancelled", "2026-07-14T02:01:07Z", "日志 Agent 任务已取消", {
+      agent_key: "diagnose", agent_label: "日志 Agent", delegation_id: "dlg-diagnose-cancel",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2,
+    }),
+  ],
+  delegations: [
+    { delegation_id: "dlg-inspect-a1", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.inspect-a1", agent_key: "inspect", agent_label: "巡检 Agent", dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, delegation_status: "completed", had_final_report: true, task_summary: "检查支付链路指标与健康状态", report_summary: "确认 Redis 连接池饱和，流量未明显增长", creation_date: "2026-07-14T02:00:02Z", last_update_date: "2026-07-14T02:00:08Z" },
+    { delegation_id: "dlg-diagnose-a1", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.diagnose-a1", agent_key: "diagnose", agent_label: "日志 Agent", dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, delegation_status: "failed_no_report", had_final_report: false, task_summary: "聚类近 30 分钟错误日志", creation_date: "2026-07-14T02:00:02Z", last_update_date: "2026-07-14T02:00:09Z" },
+    { delegation_id: "dlg-recover-timeout", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.recover-timeout", agent_key: "recover", agent_label: "恢复 Agent", dispatch_batch_id: "batch-demo-1", dispatch_batch_no: 1, delegation_status: "timeout", had_final_report: false, task_summary: "验证恢复前置条件", creation_date: "2026-07-14T02:00:03Z", last_update_date: "2026-07-14T02:00:10Z" },
+    { delegation_id: "dlg-inspect-a2", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.inspect-a2", agent_key: "inspect", agent_label: "巡检 Agent", dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, delegation_status: "completed", had_final_report: true, task_summary: "复核连接池趋势和副本差异", report_summary: "问题集中在 svc-a，其他副本连接数正常", creation_date: "2026-07-14T02:01:00Z", last_update_date: "2026-07-14T02:01:05Z" },
+    { delegation_id: "dlg-recover-a1", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.recover-a1", agent_key: "recover", agent_label: "恢复 Agent", dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, delegation_status: "running", had_final_report: false, task_summary: "准备受控重启 svc-a", creation_date: "2026-07-14T02:01:01Z", last_update_date: "2026-07-14T02:01:06Z" },
+    { delegation_id: "dlg-diagnose-cancel", run_id: "run_demo", leader_task_id: "tsk_demo_multiagent", child_task_id: "tsk_demo_multiagent.diagnose-cancel", agent_key: "diagnose", agent_label: "日志 Agent", dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, delegation_status: "cancelled", had_final_report: false, task_summary: "补充聚类历史日志", creation_date: "2026-07-14T02:01:02Z", last_update_date: "2026-07-14T02:01:07Z" },
+  ],
+  events_next_cursor: "mock-activity-cursor",
+  events_has_more: true,
+};
+
 export const mockWorkbenchState = (): WorkbenchState => ({
   chatTitle: "支付延迟突增定界",
   agentName: "支付域感知快恢",
@@ -160,6 +241,7 @@ export const mockWorkbenchState = (): WorkbenchState => ({
       ],
     },
   ],
+  activitySnapshot: mockActivitySnapshot,
   skills: [
     { skill_id: "skill_inspection", name: "/inspect", desc: "巡检：健康状态与异常信号" },
     { skill_id: "skill_logscan", name: "/logscan", desc: "日志聚类与错误归并" },

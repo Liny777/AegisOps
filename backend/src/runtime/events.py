@@ -11,6 +11,8 @@ from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
+from infra.redact import redact_text
+
 _BUFFER_SIZE = 500
 
 
@@ -40,19 +42,22 @@ def envelope(
     severity: str = "info",
     payload: dict[str, Any] | None = None,
     audit_trace_id: str | None = None,
+    event_id: str | None = None,
+    external_request_id: str | None = None,
 ) -> dict[str, Any]:
     """30.4 统一 envelope（sequence 由 publish 填）。禁入敏感字段由调用方保证。"""
     return {
-        "event_id": str(uuid.uuid4()),
+        "event_id": event_id or str(uuid.uuid4()),
         "event_type": event_type,
         "agent_run_id": run_id,
         "task_id": task_id,
         "sequence": None,
         "severity": severity,
         "user_visible": True,
-        "message": message,
+        "message": redact_text(message, max_length=500),
         "reason_code": reason_code,
         "audit_trace_id": audit_trace_id,
+        "external_request_id": external_request_id,
         "payload_redacted_json": payload or {},
         "occurred_at": datetime.now(timezone.utc).isoformat(),
     }

@@ -79,8 +79,9 @@ sudo -u openops bash "$RELEASE/scripts/release_check.sh" \
 DATABASE_MODE=REPLACE_WITH_existing_OR_new
 case "$DATABASE_MODE" in
   existing)
-    # 存量库：先无损重命名旧对象，再重放 core.sql；两步成功后才能发布新后端。
+    # 存量库：先无损重命名旧对象，再补多 Agent 派发批次列，最后重放 core.sql；全部成功后才能发布新后端。
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-ddl-object-names.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-subagent-activity.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
     ;;
   new)
@@ -149,7 +150,9 @@ curl -s http://localhost/api/health            # frontend 容器→后端机 →
 curl -sI http://localhost/ | grep -iE "^HTTP|^location"   # 302 + Location: /openops/（文根跳转）
 curl -sI http://localhost/openops/ | head -1  # 静态 200（真正的页面入口）
 curl -s http://localhost/openback/health      # {"status":"ok"}（IP 直访兜底：剥前缀转后端）
-# 浏览器全链：建 Agent → 对话（CopilotChat 流式回包）→ 活动栏 SSE 持续推送不断流
+# 浏览器全链：建 Agent → CopilotChat 流式回包 → 子 Agent 两轮派发/审批/汇报。
+# 活动栏需同时验 AG-UI CUSTOM + 备用 SSE 去重、业务/技术切换、刷新恢复、显示更早与窄屏覆盖层；
+# DevTools/DOM 抽查不得出现完整参数/响应、stdout/stderr、Authorization/Cookie/token。
 ```
 
 TLS：内网证书就绪后挂载证书目录 + 以自有 conf 覆盖模板（compose 给 frontend 加

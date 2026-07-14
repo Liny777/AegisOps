@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
+from infra.redact import redact_text, sanitize_activity_payload
 from infra.repositories import audit, runs
 from runtime import events
 from sandbox.executor import executor
@@ -38,7 +39,26 @@ async def destroy_container(target_user_id: str, reason: str, by: str) -> dict[s
     if destroyed:
         for r in await runs.list_runs_by_user(target_user_id):
             if r["run_status"] == "active":
+                message = redact_text(
+                    "管理员已回收你的沙箱容器：当前任务已中断，新任务将重建容器。原因：" + reason,
+                    max_length=500,
+                )
+                payload = sanitize_activity_payload(
+                    "openops.sandbox.container.destroyed_by_admin",
+                    {"summary": message},
+                    message=message,
+                )
+                eid = await audit.insert_event(
+                    audit_trace_id=trace,
+                    event_type="sandbox.container.destroyed_by_admin",
+                    user_id=target_user_id,
+                    run_id=str(r["agent_run_id"]),
+                    instance_id=str(r["agent_team_instance_id"]),
+                    action="destroy",
+                    actor_type="platform_admin",
+                    payload_redacted=payload,
+                )
                 events.publish(str(r["agent_run_id"]), events.envelope(
                     str(r["agent_run_id"]), "openops.sandbox.container.destroyed_by_admin", severity="warning",
-                    message="管理员已回收你的沙箱容器：当前任务已中断，新任务将重建容器。原因：" + reason))
+                    message=message, payload=payload, audit_trace_id=trace, event_id=eid))
     return {"destroyed": destroyed, "target_user_id": target_user_id}

@@ -18,14 +18,17 @@
 | `roles.<worker>.mcps`（enable/disable_tools） | `sub_agents[].mcp_tools` | 子 Agent 平台/动态工具白名单（工具名粒度，等价老 enable_tools） |
 | `roles.<worker>.max_iters` | `sub_agents[].max_iters`（1..200） | ReAct 轮数上限 |
 | `roles.<worker>.tool_result_limit` | `sub_agents[].tool_result_limit`（1000..200000） | 单条工具结果保留 token；**不变式 trl < 模型窗口 ≤1/3**（老版 160000 是 128k 窗口事故源，按新模型窗口换算，如 24000） |
+| （旧前端本地文案） | `activity_labels.tools`（可选） | 活动栏工具业务名称映射；只影响展示，不改变工具名、授权、调用或审计 |
 | `roles.<worker>.system_prompt` 汇报纪律 | 内置 `SUB_REPORT_DISCIPLINE` 自动拼接 | 缺参返 blocker/禁无差别调工具/空结果即完成/一次性汇报——**不用在每个角色重复写** |
 | `permission_mode: accept_edits` | Tool 标注 `is_approval_required` | 审批粒度从「角色」改「工具标注」：写类工具标 ASK → 子 Agent 触发时审批卡带子 task_id 弹前端，批准后精确路由回该子继续（E1 桥；审批等待不吃超时预算） |
 | `can_spawn: false` | 天然单层 | 子 task 的 `sub_agents` 恒空 → 无二层派发，无需配置 |
 | （无 per-role model） | （同样无） | 子 Agent 继承 main 模型；per-role model 两代都不支持 |
 
 运行面等价性：星型派发（`dispatch_subagents` 并行 gather）、delegation 账本、双预算、
-per-agent 工具隔离（skills/mcp_tools 白名单裁剪 toolkit）、活动栏按 agent_key 分组显示子 Agent
-轨迹。差异如实标注：老版 park+逐 TeamSay 唤醒 → 新版 gather 等齐一次性返回（V1 口径）。
+per-agent 工具隔离（skills/mcp_tools 白名单裁剪 toolkit）。每次批量派发生成稳定的
+`dispatch_batch_id` 和任务内递增 `dispatch_batch_no`；同批共享批次、每个 worker 仍有独立
+`delegation_id`/`child_task_id`。右侧活动栏按批次展示轮次、按 delegation 分轨，同一角色重复派发
+不会互相污染状态。差异如实标注：老版 park+逐 TeamSay 唤醒 → 新版 gather 等齐一次性返回（V1 口径）。
 
 ## 二、复刻 37 号 10 角色的操作步骤
 
@@ -48,13 +51,31 @@ per-agent 工具隔离（skills/mcp_tools 白名单裁剪 toolkit）、活动栏
    每角色填：key（如 `log`）、label（日志 Agent）、role（该域职责一两句；汇报纪律已内置）、
    `skills`（如 `log-query`）、`mcp_tools`（如 `get_logs_agg, get_logs_histogram, get_logs_list`）、
    `max_iters`（老版 100 偏大，建议 20-40）、`tool_result_limit`（按模型窗口 ≤1/3）。
-3. 保存草稿 → 发布。新实例即用新版本；存量实例下次起任务自动升级。
+3. 可选在「活动栏工具名称」为已绑定工具填写业务名称，例如 `query_alarm_list → 查询告警`。
+   运行时先匹配完整工具名，再匹配 MCP 内层工具名；留空则回退目录/原始工具名。
+4. 保存草稿 → 发布。新实例即用新版本；存量实例下次起任务自动升级。
 
-**验收**：对话下发跨域任务（如「查支付域最近告警并定界」）→ 活动栏出现按角色分组的子 Agent
-轨迹（agent_key 徽标）→ 恢复类动作弹审批卡（带子 task_id）→ 批准后子 Agent 继续并汇报。
-审计页按 trace 可回放 `subagent.dispatched/reported` 与 `tool.call.*` 全链。
+**验收**：对话下发跨域任务（如「查支付域最近告警并定界」）→ 活动栏自动切到「子 Agent」并出现
+派发轮次 → 每个 delegation 独立显示运行/待审批/汇报/异常/超时/取消状态 → 恢复类动作弹审批卡
+（带子 task_id）→ 批准后子 Agent 继续并汇报。业务视图只展示脱敏里程碑与汇报摘要；技术视图
+展示星型编排和脱敏事件轨迹。审计页按 trace 可回放 `subagent.dispatched/reported` 与
+`tool.call.*` 全链。
 
-## 三、升级注意（2026-07-14 编排对称化行为变更）
+## 三、活动恢复与事实边界（2026-07-14）
+
+- `sre_agent_delegation` 是子 Agent 终态事实源；前端不按文案或静默时长推断终态。
+- `audit_event_id` 同时作为实时 `event_id`。AG-UI CUSTOM、备用 SSE、`/state` 和历史分页按该 ID
+  合并；断线恢复不会重复节点。
+- `/state` 返回最新 100 条事件、脱敏 delegation 摘要和历史游标；「显示更早」调用
+  `GET /agent-runs/{run_id}/events?before=...`，不使用轮询。
+- 存量 delegation 没有批次字段时统一进入「历史派发」，不按时间窗口猜轮次。
+- `task_summary`、`report_summary` 和事件 `summary` 均由后端脱敏并截断；接口和活动栏禁止展示
+  完整任务/汇报正文、原始 prompt、Secret/Cookie、完整工具参数及完整响应。
+- 活动 payload 采用事件类型白名单：工具、Skill、沙箱只返回参数/结果/错误/输出摘要；scope 只返回
+  snapshot/revision/APPID 数量，不返回 `effective_appids` 明细。审批参数是必要例外，但仍做递归脱敏和
+  深度/项数/长度限制；旧审计行在 `/state`、`/events` 和审计 API 出口还会再做一次安全投影。
+
+## 四、升级注意（2026-07-14 编排对称化行为变更）
 
 - **main 的动态注册表工具改为白名单制**（与 sub 一致）：升级后模板 `default_tools` 没勾的
   动态工具对 main 不再注入（此前 main 全量豁免）。存量环境升级后须在模板编辑器把 main 需要

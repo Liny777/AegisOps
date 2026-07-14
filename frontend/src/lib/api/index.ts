@@ -20,10 +20,12 @@ import type {
   ConfigVersionRow,
   ModelOption,
   ActivityNode,
+  ActivityEventsPage,
 } from "./types";
 import * as M from "./mockData";
 import { apiFetch, crid, demoIdentity, setDemoUser } from "./client";
 import { auditToNode, projectInstance } from "./projection";
+import { normalizeActivityPage } from "../activity";
 
 export const API_MODE: "mock" | "real" =
   (import.meta.env.VITE_OPENOPS_API_MODE as "mock" | "real" | undefined) ?? "real";
@@ -65,6 +67,12 @@ export interface OpenOpsApi {
   closeRun(runId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
   selectModel(runId: string, model: string): Promise<void>;
+  /** 脱敏活动事件游标页；before 为空时取最新一页。 */
+  getActivityEvents(
+    runId: string,
+    options?: { before?: string | null; limit?: number },
+  ): Promise<ActivityEventsPage>;
+  /** 旧 ActivityRail 兼容接口；新实现统一使用 getActivityEvents + activity reducer。 */
   getAuditNodes(runId: string): Promise<ActivityNode[]>;
   // 实例管理（新原型清单页）
   toggleInstance(instanceId: string, enabled: boolean): Promise<void>;
@@ -255,6 +263,18 @@ const realApi: OpenOpsApi = {
       ? { client_request_id: crid(), model_source: model.slice("platform:".length) }
       : { client_request_id: crid(), llm_config_id: model };
     await apiFetch(`/openops/v1/agent-runs/${runId}:select-model`, { method: "POST", body });
+  },
+  async getActivityEvents(runId, options) {
+    const params = new URLSearchParams();
+    if (options?.before) params.set("before", options.before);
+    if (options?.limit !== undefined) {
+      params.set("limit", String(Math.max(1, Math.min(200, Math.trunc(options.limit)))));
+    }
+    const query = params.size ? `?${params.toString()}` : "";
+    const page = await apiFetch<Record<string, unknown>>(
+      `/openops/v1/agent-runs/${runId}/events${query}`,
+    );
+    return normalizeActivityPage(page);
   },
   async getAuditNodes(runId) {
     const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/audit/runs/${runId}`);
@@ -734,6 +754,19 @@ const mockApi: OpenOpsApi = {
   closeRun: () => delay(undefined as unknown as void),
   decideApproval: () => delay(undefined as unknown as void),
   selectModel: () => delay(undefined as unknown as void),
+  getActivityEvents: () => delay(normalizeActivityPage({
+    items: [{
+      event_id: "evt-earlier-run-created",
+      audit_event_id: "evt-earlier-run-created",
+      event_type: "agent_run.created",
+      agent_run_id: "run_demo",
+      occurred_at: "2026-07-14T01:59:55Z",
+      action: "create",
+      payload_redacted_json: { summary: "会话已创建" },
+    }],
+    next_cursor: null,
+    has_more: false,
+  })),
   getAuditNodes: () => delay([]),
   toggleInstance: () => delay(undefined as unknown as void),
   deleteInstance: () => delay(undefined as unknown as void),

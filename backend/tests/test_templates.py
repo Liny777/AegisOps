@@ -51,6 +51,20 @@ def test_template_draft_validates_allowed_tools(client):
     assert str(d2["template_version_id"]) == str(d1["template_version_id"])
 
 
+def test_template_activity_tool_labels_are_optional_string_mapping(client):
+    tid = _template_id(client)
+    content = _content(["query_resource"])
+    content["activity_labels"] = {"tools": {"query_resource": "查询资源", "query_alarm": "查询告警"}}
+    saved = unwrap(_save_draft(client, tid, content))
+    assert saved["content_json"]["activity_labels"]["tools"]["query_resource"] == "查询资源"
+
+    invalid = _content(["query_resource"])
+    invalid["activity_labels"] = {"tools": {"query_resource": 123}}
+    response = _save_draft(client, tid, invalid)
+    assert response.status_code == 400
+    assert "activity_labels.tools" in response.json()["error"]["message"]
+
+
 def test_template_publish_switches_active_and_immutable(client):
     """发布：draft→active、旧 active→archived、模板指针切换；发布后不可再发（不可变）。"""
     tid = _template_id(client)

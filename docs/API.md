@@ -52,7 +52,9 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - `POST /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs/{agent_run_id}/state`
+- `GET /api/openops/v1/agent-runs/{agent_run_id}/events?before={audit_event_id}&limit=100`
 - `POST /api/openops/v1/agent-runs/{agent_run_id}/tasks`
+- `POST /api/openops/v1/agent-runs/{agent_run_id}/agui` — CopilotKit 使用的 AG-UI 运行流
 - `POST /api/openops/v1/agent-runs/{agent_run_id}/ag-ui`
 - `GET /api/openops/v1/agent-runs/{agent_run_id}/events/stream`
 - `POST /api/openops/v1/agent-runs/{agent_run_id}:select-model`
@@ -92,3 +94,28 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - 断线且缓冲不足时发送 `event: resync`，前端应调用 `/state` 恢复。
 
 兼容批量端点 `POST /api/openops/v1/agent-runs/{agent_run_id}/ag-ui` 返回当前内存缓冲内的 `openops.*` 事件。
+
+### 活动恢复与历史分页
+
+- `/state` 返回最新 100 条 `recent_events`（页内按发生时间正序）、`events_next_cursor`、
+  `events_has_more`，以及当前 Run 的脱敏 `delegations` 摘要。
+- `/events` 的 `limit` 取值为 1..200，默认 100；`before` 使用上一页最老一条
+  `audit_event_id`。响应为 `{items, next_cursor, has_more}`，每页仍按时间正序。
+- 持久化事件的实时 `event_id` 与审计行 `audit_event_id` 相同；前端可直接合并
+  AG-UI CUSTOM、备用 SSE、`/state` 和 `/events`，无需按文案猜测重复事件。
+
+多 Agent 活动事件在 `payload_redacted_json` 中统一携带可用的关联字段：
+
+- `agent_key`、`agent_label`
+- `leader_task_id`、`child_task_id`
+- `delegation_id`
+- `dispatch_batch_id`、`dispatch_batch_no`
+- `summary`，以及按事件类型可选的 `task_summary`、`report_summary`、`display_label`
+- `argument_summary`、`result_summary`、`error_summary`、`command_summary`、
+  `stdout_summary` / `stderr_summary`
+- `request_id`、`execution_id`；审计行/envelope 顶层另保留 `external_request_id`
+
+不得通过活动接口返回完整 task/report 正文、原始 prompt/messages、Secret、Cookie、完整工具参数、
+完整 MCP 响应或 stdout/stderr。后端按事件类型 deny-by-default 白名单投影：未知 payload 字段不返回；
+`approval.required` 仅为用户决策保留限制深度/项数/长度后的脱敏 `args`，`rca.updated` 只保留
+`RcaCardData` 既定结构。技术视图只消费这些后端已经脱敏和截断的字段。

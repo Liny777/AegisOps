@@ -15,17 +15,20 @@ TERMINAL = ("completed", "failed_no_report", "timeout", "cancelled")
 
 
 async def create(run_id: str, leader_task_id: str, agent_key: str, task_text: str,
-                 deadline_s: float, created_by: str) -> str:
+                 deadline_s: float, created_by: str, dispatch_batch_id: str | None = None,
+                 dispatch_batch_no: int | None = None) -> str:
     did = str(uuid.uuid4())
     await exec1(
         """
         insert into sre_agent_delegation
-          (delegation_id, run_id, leader_task_id, agent_key, task_text, delegation_status,
+          (delegation_id, run_id, leader_task_id, dispatch_batch_id, dispatch_batch_no,
+           agent_key, task_text, delegation_status,
            deadline, created_by, last_updated_by)
-        values (%(d)s, %(r)s, %(l)s, %(k)s, %(t)s, 'running',
+        values (%(d)s, %(r)s, %(l)s, %(bi)s, %(bn)s, %(k)s, %(t)s, 'running',
                 now() + make_interval(secs => %(dl)s), %(u)s, %(u)s)
         """,
-        {"d": did, "r": run_id, "l": leader_task_id, "k": agent_key,
+        {"d": did, "r": run_id, "l": leader_task_id, "bi": dispatch_batch_id,
+         "bn": dispatch_batch_no, "k": agent_key,
          "t": task_text[:2000], "dl": deadline_s, "u": created_by},
     )
     return did
@@ -63,9 +66,61 @@ async def count_total_for_leader(leader_task_id: str) -> int:
     return int(row["n"]) if row else 0
 
 
+async def next_batch_no(leader_task_id: str) -> int:
+    """返回主任务下一个批次号。
+
+    Agent 的 dispatch 工具被声明为 sequential，同一主任务不会并发进入这里；批次号同时落账本，
+    因而进程重启后仍从数据库最大值继续递增。存量 NULL 批次不参与编号。
+    """
+    row = await q_one(
+        "select coalesce(max(dispatch_batch_no), 0) + 1 as n "
+        "from sre_agent_delegation where leader_task_id=%(l)s",
+        {"l": leader_task_id},
+    )
+    return int(row["n"]) if row else 1
+
+
 async def list_by_task(leader_task_id: str) -> list[dict[str, Any]]:
     return await q_all(
         "select * from sre_agent_delegation where leader_task_id=%(l)s and deleted_at is null "
         "order by creation_date",
         {"l": leader_task_id},
+    )
+
+
+async def list_by_run(run_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    """恢复页所需的最近派发账本，返回时按创建时间正序。"""
+    return await q_all(
+        """
+        select * from (
+          select * from sre_agent_delegation
+          where run_id=%(r)s and deleted_at is null
+          order by creation_date desc, delegation_id desc
+          limit %(l)s
+        ) recent
+        order by creation_date asc, delegation_id asc
+        """,
+        {"r": run_id, "l": limit},
+    )
+
+
+async def find_by_child_task_id(task_id: str) -> dict[str, Any] | None:
+    """用 `{leader}.{agent_key}-{delegation_id前8}` 恢复子任务关联上下文。
+
+    进程重启后 TaskState 已不存在，但 pending approval 仍需把 timeout/decide 事件归回原派发轨迹。
+    """
+    if "." not in task_id:
+        return None
+    leader_task_id, tail = task_id.split(".", 1)
+    if "-" not in tail:
+        return None
+    agent_key, delegation_prefix = tail.rsplit("-", 1)
+    if len(delegation_prefix) != 8 or not agent_key:
+        return None
+    return await q_one(
+        "select * from sre_agent_delegation "
+        "where leader_task_id=%(l)s and agent_key=%(k)s "
+        "and left(cast(delegation_id as varchar), 8)=%(p)s and deleted_at is null "
+        "order by creation_date desc limit 1",
+        {"l": leader_task_id, "k": agent_key, "p": delegation_prefix},
     )

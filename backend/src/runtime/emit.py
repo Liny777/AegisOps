@@ -8,11 +8,11 @@ P 块：任务状态转移事件在此单点顺带落影子快照（sre_task_sta
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
-import re
-
-from infra.repositories import audit, runs, task_states
+from infra.redact import redact_text, sanitize_activity_payload
+from infra.repositories import audit, delegations, runs, task_states
 from runtime import events, task_registry
 from runtime.task_registry import TaskState
 
@@ -30,23 +30,83 @@ _SNAPSHOT_REFRESH = {"openops.rca.updated", "openops.approval.required",
                      "openops.approval.approved", "openops.approval.rejected"}
 
 
+def activity_context(st: TaskState) -> dict[str, Any]:
+    """TaskState → 可安全写入事件的多 Agent 关联字段（None 不占 payload）。"""
+    values: dict[str, Any] = {
+        "agent_key": st.agent_key,
+        "agent_label": st.agent_label,
+        "leader_task_id": st.leader_task_id,
+        "child_task_id": st.task_id if st.leader_task_id else None,
+        "delegation_id": st.delegation_id,
+        "dispatch_batch_id": st.dispatch_batch_id,
+        "dispatch_batch_no": st.dispatch_batch_no,
+    }
+    return {k: v for k, v in values.items() if v is not None}
+
+
+async def activity_context_of_task(task_id: str) -> dict[str, Any]:
+    """审批决策/超时等不持有 TaskState 的入口也尽量补齐子 Agent 上下文。"""
+    st = task_registry.get_by_task(task_id)
+    if st is not None:
+        return activity_context(st)
+    ledger = await delegations.find_by_child_task_id(task_id)
+    if ledger is not None:
+        return {
+            "agent_key": str(ledger["agent_key"]),
+            "agent_label": str(ledger["agent_key"]),
+            "leader_task_id": str(ledger["leader_task_id"]),
+            "child_task_id": task_id,
+            "delegation_id": str(ledger["delegation_id"]),
+            **({"dispatch_batch_id": str(ledger["dispatch_batch_id"])}
+               if ledger.get("dispatch_batch_id") else {}),
+            **({"dispatch_batch_no": int(ledger["dispatch_batch_no"])}
+               if ledger.get("dispatch_batch_no") is not None else {}),
+        }
+    return {"agent_key": agent_key_of_task(task_id)}
+
+
+def activity_tool_label(st: TaskState, tool_name: str) -> str:
+    """完整工具名 → MCP 内层工具名 → 原工具名。"""
+    labels = st.activity_tool_labels or {}
+    if labels.get(tool_name):
+        return labels[tool_name]
+    inner = tool_name
+    for sep in ("__", "/", ":", "."):
+        if sep in inner:
+            inner = inner.rsplit(sep, 1)[-1]
+    return labels.get(inner) or tool_name
+
+
 async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -> None:
     trace = str(run["audit_trace_id"])
     # E3：agent_key 单点注入（所有事件全覆盖——子 Agent 的 model/skill/bash/tool 事件前端才能分组；
     # 内网实测：只有两处手动带 key 时，子 Agent 大部分过程事件都落在主时间线里"看不出是谁"）。
     # 注入只作默认：调用点显式带的 agent_key 优先（dispatch 用主 st 发 dispatched/timeout/failed
     # 但语义归属子角色组——被 "main" 盖掉就又看不出是谁了）。
-    payload = {"agent_key": st.agent_key, **(kw.get("payload") or {})}
-    await audit.insert_event(
+    message = redact_text(kw.get("message", ""), max_length=500)
+    raw_payload = {**activity_context(st), **(kw.get("payload") or {})}
+    tool_name = raw_payload.get("tool") or raw_payload.get("skill")
+    if isinstance(tool_name, str) and tool_name:
+        raw_payload.setdefault("display_label", activity_tool_label(st, tool_name))
+    if message:
+        raw_payload.setdefault("summary", message[:300])
+    payload = sanitize_activity_payload(
+        event_type,
+        raw_payload,
+        message=message,
+        external_request_id=kw.get("external_request_id"),
+    )
+    eid = await audit.insert_event(
         audit_trace_id=trace, event_type=event_type, user_id=st.user_id,
         run_id=st.run_id, instance_id=str(run["agent_team_instance_id"]), task_id=st.task_id,
         action=kw.get("action", ""), decision=kw.get("decision"), reason_code=kw.get("reason_code"),
         payload_redacted=payload, external_request_id=kw.get("external_request_id"),
     )
     events.publish(st.run_id, events.envelope(
-        st.run_id, event_type, task_id=st.task_id, message=kw.get("message", ""),
+        st.run_id, event_type, task_id=st.task_id, message=message,
         reason_code=kw.get("reason_code"), severity=kw.get("severity", "info"),
-        payload=payload, audit_trace_id=trace,
+        payload=payload, audit_trace_id=trace, event_id=eid,
+        external_request_id=kw.get("external_request_id"),
     ))
     if event_type in _SNAPSHOT_STATUS or event_type in _SNAPSHOT_REFRESH:
         try:
@@ -79,21 +139,29 @@ async def expire_stale_approvals_and_audit(run_id: str, *, force_approval_id: st
         await runs.force_expire_approval(force_approval_id)
     rows = await runs.expire_stale_approvals(run_id)
     for r in rows:
-        ak = agent_key_of_task(str(r["task_id"]))
+        task_id = str(r["task_id"])
+        ctx = await activity_context_of_task(task_id)
+        message = "审批超时未处理，按拒绝收口"
+        payload = sanitize_activity_payload(
+            "openops.approval.timeout",
+            {"approval_request_id": str(r["approval_request_id"]),
+             "tool": r["tool_call_name"], **ctx, "summary": message},
+            message=message,
+        )
+        eid: str | None = None
         try:
-            await audit.insert_event(
+            eid = await audit.insert_event(
                 audit_trace_id=str(r["audit_trace_id"]), event_type="approval.timeout",
                 user_id=str(r["user_id"]), run_id=str(r["agent_run_id"]),
-                instance_id=str(r["agent_team_instance_id"]), task_id=str(r["task_id"]),
+                instance_id=str(r["agent_team_instance_id"]), task_id=task_id,
                 action="expire", decision="timeout", actor_type="system",
-                payload_redacted={"approval_request_id": str(r["approval_request_id"]),
-                                  "tool": r["tool_call_name"], "agent_key": ak},
+                payload_redacted=payload,
             )
         except Exception:  # noqa: BLE001 —— 审计失败不阻断超时收口
             log.warning("[OpenOps][ask] approval.timeout 审计写入失败 task=%s", r["task_id"])
         events.publish(str(r["agent_run_id"]), events.envelope(
-            str(r["agent_run_id"]), "openops.approval.timeout", task_id=str(r["task_id"]),
-            severity="warning", message="审批超时未处理，按拒绝收口",
-            payload={"approval_request_id": str(r["approval_request_id"]), "agent_key": ak},
+            str(r["agent_run_id"]), "openops.approval.timeout", task_id=task_id,
+            severity="warning", message=message, payload=payload,
+            audit_trace_id=str(r["audit_trace_id"]), event_id=eid,
         ))
     return len(rows)

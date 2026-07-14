@@ -14,6 +14,7 @@ from typing import Any
 
 from domain.errors import ApiError, Err
 from infra.external import omodel_client
+from infra.redact import redact_text
 from infra.repositories import agent_teams, audit, runs
 from runtime import events
 
@@ -29,13 +30,15 @@ def _reset_cache() -> None:  # 测试隔离
 async def _blocked(run_id: str, task_id: str, instance_id: str, trace: str,
                    user_id: str, reason_code: str, msg: str) -> None:
     """fail-closed：写审计 scope.blocked + 推 openops.scope.blocked。"""
-    await audit.insert_event(
+    msg = redact_text(msg, max_length=500)
+    eid = await audit.insert_event(
         audit_trace_id=trace, event_type="scope.blocked", user_id=user_id,
         run_id=run_id, instance_id=instance_id, task_id=task_id, action="scope_block", reason_code=reason_code,
+        payload_redacted={"summary": msg},
     )
     events.publish(run_id, events.envelope(
         run_id, "openops.scope.blocked", task_id=task_id, severity="warning",
-        message=msg, reason_code=reason_code, audit_trace_id=trace,
+        message=msg, reason_code=reason_code, audit_trace_id=trace, event_id=eid,
     ))
 
 
@@ -87,15 +90,16 @@ async def resolve_for_task(
     new_rev = res.get("scope_revision", instance_rev)
     if new_rev != instance_rev:  # 范围有变：回写实例 + 审计 + scope.updated
         await agent_teams.update_scope_revision(instance_id, new_rev, user_id)
-        await audit.insert_event(
+        message = f"工作范围已更新到新版本（{new_rev}）"
+        eid = await audit.insert_event(
             audit_trace_id=audit_trace_id, event_type="scope.updated", user_id=user_id,
             run_id=run_id, instance_id=instance_id, task_id=task_id, action="scope_update",
-            payload_redacted={"from": instance_rev, "to": new_rev},
+            payload_redacted={"from": instance_rev, "to": new_rev, "summary": message},
         )
         events.publish(run_id, events.envelope(
             run_id, "openops.scope.updated", task_id=task_id,
-            message=f"工作范围已更新到新版本（{new_rev}）", payload={"scope_revision": new_rev},
-            audit_trace_id=audit_trace_id,
+            message=message, payload={"scope_revision": new_rev},
+            audit_trace_id=audit_trace_id, event_id=eid,
         ))
 
     snapshot_id = await runs.insert_scope_snapshot(

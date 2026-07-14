@@ -182,7 +182,7 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 # Result 正文优先工具真实输出（succeeded=payload.result_summary / failed=payload.error），
                 # 回退事件 message——内网实测：只发 message 时工具卡 Result 恒为「xxx 返回」占位文案。
                 # result_summary 与回给 LLM 的 ToolResponse 同源（http_mcp_client._summarize）；4000 字防撑卡
-                body = str(p.get("result_summary") or p.get("error") or e.get("message") or "")[:4000]
+                body = str(p.get("result_summary") or p.get("error_summary") or e.get("message") or "")[:4000]
                 yield _sse({"type": "TOOL_CALL_RESULT", "messageId": str(e.get("event_id") or uuid.uuid4()),
                             "toolCallId": tcid, "content": body, "role": "tool"})
 

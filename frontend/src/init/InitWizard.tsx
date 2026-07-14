@@ -396,10 +396,10 @@ function AddModelButton({ onClick }: { onClick: () => void }) {
   const { hovered, bind } = useHover();
   const borderColor = hovered ? "rgba(22,131,255,.4)" : "rgb(226, 229, 234)";
   return (
-    <div onClick={onClick} {...bind}
-      style={{ width: "100%", border: `2px dashed ${borderColor}`, background: hovered ? "rgba(22,131,255,.02)" : "#fff", borderRadius: radius.xl, padding: "11px 0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: color.brand, fontSize: 13, fontWeight: 600 }}>
+    <button type="button" onClick={onClick} {...bind}
+      style={{ width: "100%", border: `2px dashed ${borderColor}`, background: hovered ? "rgba(22,131,255,.02)" : "#fff", borderRadius: radius.xl, padding: "11px 0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7, color: color.brand, fontSize: 13, fontWeight: 600, fontFamily: "inherit" }}>
       <Icon name="plus" size={16} color={color.brand} />添加自定义模型
-    </div>
+    </button>
   );
 }
 

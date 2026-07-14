@@ -9,6 +9,7 @@ import type {
   RcaCardData,
 } from "./types";
 import type { Tone } from "../../theme/tokens";
+import { normalizeActivityEvent } from "../activity";
 
 /* 事件类型 → 活动线节点外观 */
 const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = {
@@ -71,15 +72,18 @@ export function auditToNode(e: Record<string, unknown>): ActivityNode {
   const t = String(e.event_type ?? "");
   const m = meta(t);
   const p = (e.payload_redacted_json ?? {}) as Record<string, unknown>;
+  const normalized = normalizeActivityEvent(e, "audit");
   return {
-    id: String(e.audit_event_id ?? e.event_id ?? Math.random()),
+    id: normalized?.eventId ?? String(e.audit_event_id ?? e.event_id ?? `${t}:${e.occurred_at ?? ""}`),
     title: m.title,
     tool: t,
-    detail: String(p.summary ?? p.reason ?? e.reason_code ?? "") || String(e.action ?? ""),
+    detail: normalized?.message
+      ?? (String(p.summary ?? p.reason ?? e.reason_code ?? "") || String(e.action ?? "")),
     time: hhmm(String(e.occurred_at ?? "")),
     icon: m.icon,
     tone: m.tone,
-    agentKey: (p as Record<string, unknown>).agent_key ? String((p as Record<string, unknown>).agent_key) : undefined,
+    agentKey: normalized?.agentKey !== "main" ? normalized?.agentKey
+      : (p as Record<string, unknown>).agent_key ? String((p as Record<string, unknown>).agent_key) : undefined,
   };
 }
 
@@ -87,15 +91,16 @@ export function auditToNode(e: Record<string, unknown>): ActivityNode {
 export function eventToNode(e: OpenOpsEvent): ActivityNode {
   const m = meta(e.event_type);
   const ak = ((e.payload_redacted_json ?? {}) as Record<string, unknown>).agent_key;
+  const normalized = normalizeActivityEvent(e, "live");
   return {
-    id: e.event_id,
+    id: normalized?.eventId ?? e.event_id,
     title: m.title,
     tool: e.event_type,
-    detail: e.message,
+    detail: normalized?.message ?? e.message,
     time: hhmm(e.occurred_at),
     icon: m.icon,
     tone: m.tone,
-    agentKey: ak ? String(ak) : undefined,
+    agentKey: normalized?.agentKey !== "main" ? normalized?.agentKey : ak ? String(ak) : undefined,
   };
 }
 

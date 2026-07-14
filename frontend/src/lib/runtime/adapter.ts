@@ -8,7 +8,19 @@
  *   openops.* 自定义事件（scope/runtime_plan/tool.blocked/approval/model…）写入下方状态投影，
  *   断线/刷新以 GET /agent-runs/{id}/state 恢复。此文件即该 live adapter 的落点。
  */
-import type { WorkbenchState } from "../api/types";
+import type { OpenOpsApi } from "../api";
+import type {
+  ActivityEventInput,
+  DelegationInput,
+} from "../activity";
+import {
+  activityReducer,
+  createActivityState,
+  mergeActivityEvents,
+  mergeDelegations,
+  prependActivityPage,
+} from "../activity";
+import type { ActivityStoreState, WorkbenchState } from "../api/types";
 
 export interface OpenOpsRuntimeAdapter {
   /** 拉取聚合状态（刷新 / 断线恢复入口）。 */
@@ -28,4 +40,38 @@ export interface OpenOpsRuntimeAdapter {
  *  本聚合接口保留为后续 CopilotKit v2 <CopilotChat> 接入时的边界。 */
 export function createLiveAdapter(): OpenOpsRuntimeAdapter {
   throw new Error("请使用 lib/runtime/agui.ts 的 runAguiTask（B5 已接入）；本聚合接口留给 CopilotKit v2。");
+}
+
+/**
+ * 活动栏的数据通道边界。
+ *
+ * CopilotKit/AG-UI 的具体订阅方式由工作台负责；适配器只处理已收到的 CUSTOM/SSE
+ * 事件与 REST 恢复，因此不依赖未验证的 useAgent.subscribe 行为。
+ */
+export interface OpenOpsActivityRuntimeAdapter {
+  restore(runId: string, current?: ActivityStoreState): Promise<ActivityStoreState>;
+  mergeLive(state: ActivityStoreState, event: ActivityEventInput): ActivityStoreState;
+  mergeLedger(state: ActivityStoreState, rows: DelegationInput[]): ActivityStoreState;
+  loadEarlier(runId: string, state: ActivityStoreState, limit?: number): Promise<ActivityStoreState>;
+}
+
+export function createActivityRuntimeAdapter(
+  client: Pick<OpenOpsApi, "getRunState" | "getActivityEvents">,
+): OpenOpsActivityRuntimeAdapter {
+  return {
+    async restore(runId, current = createActivityState()) {
+      return activityReducer(current, { type: "hydrate", snapshot: await client.getRunState(runId) });
+    },
+    mergeLive(state, event) {
+      return { ...state, events: mergeActivityEvents(state.events, [event], "live") };
+    },
+    mergeLedger(state, rows) {
+      return { ...state, delegations: mergeDelegations(state.delegations, rows) };
+    },
+    async loadEarlier(runId, state, limit = 100) {
+      if (!state.hasMore || !state.nextCursor) return state;
+      const page = await client.getActivityEvents(runId, { before: state.nextCursor, limit });
+      return prependActivityPage(state, page);
+    },
+  };
 }

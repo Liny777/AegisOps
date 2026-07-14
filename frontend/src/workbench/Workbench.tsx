@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
@@ -7,6 +7,7 @@ import { api, API_MODE } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
 import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes } from "../lib/api/projection";
+import { activityReducer, createActivityState, projectRailModel } from "../lib/activity";
 import { API_BASE } from "../lib/api/client";
 import type {
   ActivityNode,
@@ -67,11 +68,15 @@ export function Workbench() {
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
   const [currentModel, setCurrentModel] = useState(demo.currentModel);
   const [nodes, setNodes] = useState<ActivityNode[]>([]);
+  const [activityState, dispatchActivity] = useReducer(activityReducer, undefined, createActivityState);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [conn, setConn] = useState<ConnState>("connecting");
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(true);
   const seen = useRef(new Set<string>());
+  const activeRunRef = useRef<string | null>(null);
+  const runGenerationRef = useRef(0);
   // agui 流活跃期间对话区文本归 agui 独占（TEXT_MESSAGE_*）；SSE 的终态文本仅在无 agui 流（刷新接续）时追加，
   // 否则 SSE task.completed 先到会以同 event_id 建泡，agui 合成文本再追加 → 文本双写（双通道竞态）
   const aguiActive = useRef(false);
@@ -102,7 +107,10 @@ export function Workbench() {
 
   /** openops.* 事件统一处理器：AG-UI CUSTOM 与 SSE 双通道复用（活动线按 event_id 去重）。 */
   const handleOpenOpsEvent = useCallback((e: OpenOpsEvent) => {
+    // 快速切换会话时，旧 SSE/AG-UI 队列里可能仍有一条已出队事件；不得污染新 Run。
+    if (!activeRunRef.current || e.agent_run_id !== activeRunRef.current) return;
     if (e.event_type === "openops.assistant.delta") return; // 文本增量走 TEXT_MESSAGE_*，不进活动线
+    dispatchActivity({ type: "merge_events", events: [e], source: "live" });
     const node = eventToNode(e);
     // 双通道竞态：AG-UI CUSTOM 先到（aguiActive=true 不冒泡），SSE 同 event 迟到时 aguiActive 已复位
     // → 曾把 task.completed 的 message 冒成聊天气泡。首达才允许冒泡（活动线本身仍按 id 去重）。
@@ -169,8 +177,10 @@ export function Workbench() {
     }
   }, [pushNode, appendMessage]);
 
-  const refresh = useCallback(async (rid: string) => {
+  const refresh = useCallback(async (rid: string, generation = runGenerationRef.current) => {
     const d = (await api.getRunState(rid)) as Record<string, any>;
+    // /state 可能在路由已经切换后才返回；按 Run + generation 双重隔离异步回写。
+    if (activeRunRef.current !== rid || runGenerationRef.current !== generation) return;
     // 按 run 恢复入口：state 返回 instance，回填侧栏当前 Agent 使其与该 run 对齐
     const instId = d.instance?.agent_team_instance_id;
     if (instId) setCurrentAgentId(String(instId));
@@ -186,9 +196,12 @@ export function Workbench() {
     const pend = (d.pending_approvals ?? []) as Record<string, unknown>[];
     if (pend.length) setHitl(approvalToHitl(pend[0]));
     else setHitl((h) => (h && h.status !== "pending" ? h : undefined));
-    const audit = await api.getAuditNodes(rid);
-    seen.current = new Set(audit.map((n) => n.id));
-    setNodes(audit);
+    const recent = Array.isArray(d.recent_events) ? d.recent_events as Record<string, unknown>[] : [];
+    for (const event of recent) {
+      const id = event.event_id ?? event.audit_event_id;
+      if (id) seen.current.add(String(id));
+    }
+    dispatchActivity({ type: "hydrate", snapshot: d });
   }, [setCurrentAgentId]);
 
   // 挂载：显式 run_id 优先恢复；否则 ensureRun 复用当前 Agent 的 active run。
@@ -199,11 +212,14 @@ export function Workbench() {
       setRca(demo.rca);
       setHitl(demo.hitl);
       setNodes(demo.activity.flatMap((g) => g.items));
+      if (demo.activitySnapshot) dispatchActivity({ type: "hydrate", snapshot: demo.activitySnapshot });
       setConn("open");
       return;
     }
     let closed = false;
     let handle: { close: () => void } | null = null;
+    const generation = ++runGenerationRef.current;
+    activeRunRef.current = null;
     setRunId(null);
     setRunStatus("active");
     setChatTitle(null);
@@ -215,6 +231,7 @@ export function Workbench() {
     setRca(undefined);
     setHitl(undefined);
     setNodes([]);
+    dispatchActivity({ type: "reset" });
     seen.current = new Set();
     setConn("connecting");
     (async () => {
@@ -229,6 +246,8 @@ export function Workbench() {
         return;
       }
       if (closed) return;
+      if (runGenerationRef.current !== generation) return;
+      activeRunRef.current = rid;
       setRunId(rid);
       api.getModelConfigs().then((ms) => {
         if (closed || !ms.length) return;
@@ -240,19 +259,53 @@ export function Workbench() {
           if (!closed && sk.length) setSkills(sk); // 空装配集回退 demo（mock 演示不受影响）
         }).catch(() => undefined);
       }
-      await refresh(rid);
-      // SSE 通道保留：被动更新（他端触发 / 刷新后接续运行中任务）。agui 主动流与之按 event_id 去重。
+      // 先挂被动 SSE，再拉 /state；连接建立时再补拉一次，覆盖「state 快照后、SSE 注册前」的极小窗口。
+      // CopilotChat 主动流同时经 useAgent.subscribe 进入同一 reducer，四路最终按 event_id 去重。
       handle = subscribeSse(`${API_BASE}/openops/v1/agent-runs/${rid}/events/stream`, {
-        onStateChange: setConn,
-        onResync: () => void refresh(rid),
-        onEvent: (raw) => handleOpenOpsEvent(raw as OpenOpsEvent),
+        onStateChange: (state) => {
+          if (closed || runGenerationRef.current !== generation || activeRunRef.current !== rid) return;
+          setConn(state);
+          if (state === "open") void refresh(rid, generation);
+        },
+        onResync: () => {
+          if (!closed && runGenerationRef.current === generation) void refresh(rid, generation);
+        },
+        onEvent: (raw) => {
+          if (!closed && runGenerationRef.current === generation && activeRunRef.current === rid) {
+            handleOpenOpsEvent(raw as OpenOpsEvent);
+          }
+        },
       });
+      await refresh(rid, generation);
     })();
     return () => {
       closed = true;
       handle?.close();
+      if (runGenerationRef.current === generation) {
+        runGenerationRef.current += 1;
+        activeRunRef.current = null;
+      }
     };
-  }, [instanceId, explicitRunId, refresh, pushNode, demo]);
+  }, [instanceId, explicitRunId, refresh, handleOpenOpsEvent, demo]);
+
+  const railModel = useMemo(() => projectRailModel(activityState), [activityState]);
+  const hasUnifiedActivity = railModel.events.length > 0 || railModel.rounds.length > 0;
+  const loadEarlier = useCallback(async () => {
+    const activityRunId = runId ?? (API_MODE === "mock" ? "run_demo" : null);
+    if (!activityRunId || loadingEarlier || !activityState.hasMore || !activityState.nextCursor) return;
+    setLoadingEarlier(true);
+    try {
+      const page = await api.getActivityEvents(activityRunId, {
+        before: activityState.nextCursor,
+        limit: 100,
+      });
+      dispatchActivity({ type: "prepend_page", page });
+    } catch (error) {
+      console.warn("[OpenOps][activity] 加载更早事件失败", error);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [runId, loadingEarlier, activityState.hasMore, activityState.nextCursor]);
 
   const send = async (text: string) => {
     setMessages((m) => [...m, { id: `u${m.length}`, role: "user", text }]);
@@ -415,6 +468,7 @@ export function Workbench() {
               instanceId={instanceId || currentAgentId || ""}
               autoQuestion={autoQuestion}
               onAutoSent={() => setAutoQuestion(null)}
+              onOpenOps={handleOpenOpsEvent}
             />
             <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
           </div>
@@ -462,7 +516,17 @@ export function Workbench() {
           )}
         </div>
         )}
-        {activityOpen ? <ActivityRail groups={groupNodes(nodes, running)} /> : null}
+        {activityOpen ? (
+          <ActivityRail
+            key={runId ?? explicitRunId ?? "demo"}
+            groups={API_MODE === "real" ? [] : groupNodes(nodes, running)}
+            generalEvents={hasUnifiedActivity ? railModel.events : undefined}
+            rounds={hasUnifiedActivity ? railModel.rounds : undefined}
+            hasMore={hasUnifiedActivity && railModel.hasMore}
+            loadingMore={loadingEarlier}
+            onLoadMore={hasUnifiedActivity ? loadEarlier : undefined}
+          />
+        ) : null}
       </div>
     </>
   );

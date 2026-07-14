@@ -9,10 +9,43 @@ import { test, expect } from "@playwright/test";
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
 
-test("对话工作台：composer 与活动栏渲染", async ({ page }) => {
+test("对话工作台：多 Agent 轮次、双视图与历史分页", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("tab", { name: "全部动态" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "子 Agent" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "子 Agent" }).click();
+  await expect(page.getByText(/子 Agent 编排 · 2 轮/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /第 2 轮/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(page.getByRole("button", { name: /第 1 轮/ })).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("待审批").first()).toBeVisible();
+  await page.getByRole("button", { name: "技术", exact: true }).click();
+  await page.getByRole("button", { name: /第 1 轮/ }).click();
+  await expect(page.getByRole("img", { name: /编排图/ })).toHaveCount(2);
+  await expect(page.getByRole("region", { name: /巡检 Agent 活动轨迹/ })).toHaveCount(2);
+  await expect(page.getByText("已超时").first()).toBeVisible();
+  await expect(page.getByText("已取消").first()).toBeVisible();
+  await page.getByRole("button", { name: /查看 巡检 Agent 的活动轨迹/ }).first().click();
+  await expect(page.getByRole("region", { name: /巡检 Agent 活动轨迹/ }).first()).toBeVisible();
+  await page.getByRole("tab", { name: "全部动态" }).click();
+  await expect(page.locator(".oa-general-events .oa-activity-node-body strong").first()).toHaveText("重启实例");
+  await page.getByRole("button", { name: "显示更早" }).click();
+  await expect(page.getByText("会话已创建")).toBeVisible();
+  await expect(page.getByRole("tab", { name: "全部动态" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByText(/dom-secret-must-not-render|dom-cookie-must-not-render/)).toHaveCount(0);
   await expect(page.getByPlaceholder(/描述你的排障任务/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "子 Agent" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "技术", exact: true }).first()).toHaveAttribute("aria-pressed", "true");
+});
+
+test("窄屏活动栏以右侧覆盖层展示", async ({ page }) => {
+  await page.setViewportSize({ width: 820, height: 900 });
+  await page.goto("/");
+  const rail = page.getByLabel("活动 · 调查时间线");
+  await expect(rail).toBeVisible({ timeout: 15_000 });
+  await expect(rail).toHaveCSS("position", "fixed");
+  await expect(rail).toHaveCSS("right", "0px");
 });
 
 test("mock 发送：回执气泡出现", async ({ page }) => {
@@ -93,7 +126,7 @@ test("新建 Agent：清单页按钮 ?new=1 旁路 InitGuard 直达向导（老�
   await page.getByRole("button", { name: "新建 Agent" }).click();
   await page.waitForURL(/\/init\?new=1/, { timeout: 15_000 });
   await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("初始化 Agent")).toBeVisible(); // 创建态标题（非编辑态）
+  await expect(page.getByText("运维Agent", { exact: true })).toBeVisible();
 });
 
 test("编辑 Agent：卡片编辑 → 向导预填名称 → 改名保存 → 清单反映新名", async ({ page }) => {
@@ -101,7 +134,7 @@ test("编辑 Agent：卡片编辑 → 向导预填名称 → 改名保存 → �
   await page.goto("/agents");
   await page.getByText("编辑", { exact: true }).first().click();
   await page.waitForURL(/\/agent-teams\/.+\/edit/, { timeout: 15_000 });
-  await expect(page.getByText("编辑 Agent")).toBeVisible(); // 编辑态标题 + 模板步锁定提示
+  await expect(page.getByText("运维Agent", { exact: true })).toBeVisible();
   await expect(page.getByText(/编辑模式下模板不可更换/)).toBeVisible();
   await page.getByRole("button", { name: "下一步" }).click(); // 预填 tplId 使按钮可点（auto-wait）
   await expect(page.getByPlaceholder(/感知快恢Agent/)).toHaveValue("支付域感知快恢", { timeout: 10_000 });
@@ -159,7 +192,7 @@ test("外链 ?q= 未初始化：进向导 + 「问题已保留」提示在位", 
 test("外链 ?q= 无权限：开通引导页 + 「问题已保留」提示在位", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("openops.mock.nowl", "1"));
   await page.goto(`/?q=${encodeURIComponent("外链带来的问题Y")}`);
-  await expect(page.getByText("尚未开通 OpenOps")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("尚未开通 运维Agent")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("你带来的问题已保留")).toBeVisible();
   await expect(page.getByText("外链带来的问题Y")).toBeVisible();
   expect(page.url()).not.toContain("q=");

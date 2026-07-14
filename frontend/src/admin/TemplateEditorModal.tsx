@@ -57,14 +57,32 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   };
   useEffect(() => { if (open && templateId) load(templateId).catch((e) => setErr((e as Error).message)); }, [open, templateId]);
 
-  const buildContent = (): Record<string, unknown> => ({
-    ...content,
-    // __new 是编辑器内部标记（新增角色的 key/label 可输入），入库前剥掉
-    sub_agents: ((content.sub_agents ?? []) as Record<string, unknown>[]).map(({ __new: _n, ...rest }) => rest),
-    main: { ...((content.main ?? {}) as Record<string, unknown>), role: role.trim(), default_tools: [...tools] },
-  });
+  const buildContent = (): Record<string, unknown> => {
+    const activityLabels = (content.activity_labels ?? {}) as Record<string, unknown>;
+    const toolLabels = (activityLabels.tools ?? {}) as Record<string, unknown>;
+    const cleanToolLabels = Object.fromEntries(
+      Object.entries(toolLabels)
+        .map(([key, value]) => [key.trim(), String(value ?? "").trim()] as const)
+        .filter(([key, value]) => key && value),
+    );
+    return {
+      ...content,
+      activity_labels: { ...activityLabels, tools: cleanToolLabels },
+      // __new 是编辑器内部标记（新增角色的 key/label 可输入），入库前剥掉
+      sub_agents: ((content.sub_agents ?? []) as Record<string, unknown>[]).map(({ __new: _n, ...rest }) => rest),
+      main: { ...((content.main ?? {}) as Record<string, unknown>), role: role.trim(), default_tools: [...tools] },
+    };
+  };
   const patchMain = (field: string, value: unknown) =>
     setContent({ ...content, main: { ...((content.main ?? {}) as Record<string, unknown>), [field]: value } });
+  const patchActivityToolLabel = (tool: string, label: string) => {
+    const activityLabels = (content.activity_labels ?? {}) as Record<string, unknown>;
+    const previous = (activityLabels.tools ?? {}) as Record<string, unknown>;
+    const next = { ...previous };
+    if (label) next[tool] = label;
+    else delete next[tool];
+    setContent({ ...content, activity_labels: { ...activityLabels, tools: next } });
+  };
   const mainNum = (field: string, dft: number) => Number(((content.main ?? {}) as Record<string, unknown>)[field] ?? dft);
 
   const saveDraft = () => {
@@ -149,6 +167,39 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
           <ServerPicker groups={serverTools} selected={[...tools]} onChange={(next) => setTools(new Set(next))}
             emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注 把工具标为 allowed（动态注册表工具需先经 MCP 对账进目录），标注后这里即可按 server 勾选绑定。" />
           <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>勾选=绑定该 server <b>当前</b>全部 allowed 工具（此后新标注的工具需重开编辑器补勾）；main 未绑的工具运行时被剪，由子 Agent 承接。发布后版本不可原地改；再次修改须另存新草稿。</div>
+        </Box>
+        <Box title="活动栏工具名称（可选，仅影响展示文案）">
+          {(() => {
+            const activityLabels = (content.activity_labels ?? {}) as Record<string, unknown>;
+            const labels = (activityLabels.tools ?? {}) as Record<string, unknown>;
+            const configured = Object.keys(labels);
+            const referenced = [
+              ...tools,
+              ...((content.sub_agents ?? []) as Record<string, unknown>[])
+                .flatMap((sub) => Array.isArray(sub.mcp_tools) ? sub.mcp_tools as string[] : []),
+            ];
+            const names = [...new Set([...referenced, ...configured])].sort();
+            if (!names.length) {
+              return <div style={{ fontSize: 12, color: color.textSubtle }}>先为 main 或 sub Agent 绑定工具；也可以保留已有映射，工具加入模板后自动生效。</div>;
+            }
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                {names.map((tool) => (
+                  <label key={tool} style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 180px", gap: 10, alignItems: "center" }}>
+                    <span title={tool} style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: color.textBody, fontFamily: "ui-monospace, monospace" }}>{tool}</span>
+                    <input
+                      value={String(labels[tool] ?? "")}
+                      onChange={(e) => patchActivityToolLabel(tool, e.target.value)}
+                      placeholder="如：查询告警"
+                      maxLength={80}
+                      style={{ border: `1px solid ${color.borderInput}`, borderRadius: radius.sm, padding: "5px 8px", fontSize: 12 }}
+                    />
+                  </label>
+                ))}
+              </div>
+            );
+          })()}
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>运行时按完整工具名、MCP 内层工具名依次匹配；留空时显示目录名或后端兜底名，不影响调用、授权和审计。</div>
         </Box>
         <Box title="sub Agent 组（D 块：管理员可编辑；skills/mcp_tools 为该子 Agent 的工具白名单）">
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>

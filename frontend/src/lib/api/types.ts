@@ -153,6 +153,126 @@ export interface ActivityGroup {
   status?: "running" | "done" | "failed";  // E3：从组内 subagent.* 事件推导的组状态
 }
 
+/**
+ * 多 Agent 活动栏的统一事件模型。
+ *
+ * 这里只暴露后端已脱敏的 payload，刻意不提供 raw arguments/result/prompt 字段，避免
+ * 技术视图在后续迭代中绕过后端脱敏边界。state、audit、AG-UI CUSTOM 与备用 SSE 都
+ * 先归一化为此模型，再进入同一个 reducer。
+ */
+export type ActivityEventSource = "state" | "audit" | "live";
+
+export interface ActivityEvent {
+  eventId: string;
+  eventType: string;
+  runId?: string;
+  taskId?: string;
+  sequence?: number;
+  occurredAt: string;
+  severity: string;
+  message: string;
+  reasonCode?: string;
+  action?: string;
+  auditTraceId?: string;
+  externalRequestId?: string;
+  agentKey: string;
+  agentLabel?: string;
+  leaderTaskId?: string;
+  childTaskId?: string;
+  delegationId?: string;
+  dispatchBatchId?: string;
+  dispatchBatchNo?: number;
+  displayLabel?: string;
+  /** 后端 payload_redacted_json 的只读副本；不得放入原始调用参数或结果。 */
+  redactedPayload: Readonly<Record<string, unknown>>;
+  sources: ActivityEventSource[];
+}
+
+export type DelegationStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "timeout"
+  | "cancelled"
+  | "unknown";
+
+/** sre_agent_delegation 的前端领域投影；同一角色每次派发都有独立 delegationId。 */
+export interface Delegation {
+  delegationId: string;
+  runId?: string;
+  leaderTaskId?: string;
+  childTaskId?: string;
+  agentKey: string;
+  agentLabel?: string;
+  dispatchBatchId?: string;
+  dispatchBatchNo?: number;
+  status: DelegationStatus;
+  taskSummary?: string;
+  reportSummary?: string;
+  hadFinalReport: boolean;
+  deadline?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** true 表示来自账本；false 表示仅由旧事件补出的兼容轨迹。 */
+  authoritative: boolean;
+}
+
+export interface DelegationTrack {
+  delegation: Delegation;
+  events: ActivityEvent[];
+  /** 账本状态仍为 running；等待审批只是其展示子态。 */
+  waitingApproval: boolean;
+}
+
+export type DispatchRoundStatus = "running" | "completed" | "completed_with_errors" | "unknown";
+
+export interface DispatchRound {
+  id: string;
+  dispatchBatchId?: string;
+  dispatchBatchNo?: number;
+  leaderTaskId?: string;
+  label: string;
+  legacy: boolean;
+  status: DispatchRoundStatus;
+  startedAt?: string;
+  latestAt?: string;
+  tracks: DelegationTrack[];
+  /** 无法无歧义归属到 delegation 的旧事件，不用时间差强行猜轨迹。 */
+  unassignedEvents: ActivityEvent[];
+  counts: {
+    total: number;
+    running: number;
+    waitingApproval: number;
+    completed: number;
+    failed: number;
+    timeout: number;
+    cancelled: number;
+  };
+}
+
+/** `/agent-runs/{id}/events` 的前端页模型。 */
+export interface ActivityEventsPage {
+  items: ActivityEvent[];
+  next_cursor: string | null;
+  has_more: boolean;
+}
+
+export interface ActivityStoreState {
+  events: ActivityEvent[];
+  delegations: Delegation[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
+/** 活动 reducer 的最终 UI 投影；活动栏组件不再自行猜测轮次或终态。 */
+export interface RailModel {
+  events: ActivityEvent[];
+  generalEvents: ActivityEvent[];
+  rounds: DispatchRound[];
+  nextCursor: string | null;
+  hasMore: boolean;
+}
+
 export interface Conversation {
   id: string;           // real = agent_run_id（点击经 /agent-runs/:id 恢复）
   title: string;        // run_title；未起名显示「新对话」
@@ -170,6 +290,8 @@ export interface WorkbenchState {
   rca?: RcaCardData;
   hitl?: HitlCardData;
   activity: ActivityGroup[];
+  /** mock/E2E 演示用的 `/state` 等价形状；真实模式始终直接消费后端 state。 */
+  activitySnapshot?: Record<string, unknown>;
   skills: Skill[];
   models: ModelOption[];
   currentModel: string;
@@ -191,6 +313,8 @@ export interface OpenOpsEvent {
   severity: string;
   message: string;
   reason_code?: string | null;
+  audit_trace_id?: string | null;
+  external_request_id?: string | null;
   payload_redacted_json?: Record<string, unknown>;
   occurred_at: string;
 }

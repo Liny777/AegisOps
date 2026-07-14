@@ -148,6 +148,15 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
 | `sub_agents[].tool_result_limit` | 1000..200000 | 24000 | 子 Agent 单条工具结果保留 token |
 | `main.max_children` | 1..10 | 3 | 同时活跃子 Agent 上限（另有单批硬上限 _MAX_BATCH=5） |
 | `main.delegation_max_spawns` | 1..100 | 10 | 单 task 累计派发兜底（防失败重派死循环） |
+| `activity_labels.tools` | 非空字符串映射 | `{}` | 活动栏工具业务名称；优先匹配完整工具名，其次匹配 MCP 内层工具名，只改展示不改调用 |
+
+每次 `dispatch_subagents` 调用都会为该批生成 `dispatch_batch_id` 和 task 内递增的
+`dispatch_batch_no`。同批 worker 共享批次，但各自使用独立 `delegation_id` 与 `child_task_id`；
+所有子 Agent 生命周期、模型、工具、Skill、沙箱和审批事件均携带这些关联字段。业务汇报事件只写
+后端脱敏、截断后的 `report_summary`，完整正文不会进入活动接口。
+工具/Skill/沙箱事件同样使用 deny-by-default 白名单，只保留最长 300～500 字的参数、结果和错误摘要；
+完整 arguments、MCP 响应与 stdout/stderr 不进入审计或 AG-UI CUSTOM。审批卡所需 `args` 是唯一例外，
+但会递归脱敏并限制深度、项数和总长度。
 
 ### 不变式（D7 事故教训，校验不强制、人必须守）
 

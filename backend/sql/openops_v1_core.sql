@@ -1102,6 +1102,8 @@ CREATE TABLE IF NOT EXISTS sre_agent_delegation (
   delegation_id uuid NOT NULL PRIMARY KEY,
   run_id uuid NOT NULL,
   leader_task_id text NOT NULL,
+  dispatch_batch_id uuid,
+  dispatch_batch_no integer,
   agent_key text NOT NULL,
   task_text text NOT NULL DEFAULT '',
   delegation_status text NOT NULL DEFAULT 'running',
@@ -1114,11 +1116,18 @@ CREATE TABLE IF NOT EXISTS sre_agent_delegation (
   last_updated_by text NOT NULL DEFAULT 'system',
   deleted_at timestamptz
 );
+-- 幂等建表语句不会给存量表补列；core.sql 单独重跑也须先补齐再建索引/注释。
+ALTER TABLE sre_agent_delegation ADD COLUMN IF NOT EXISTS dispatch_batch_id uuid;
+ALTER TABLE sre_agent_delegation ADD COLUMN IF NOT EXISTS dispatch_batch_no integer;
 CREATE INDEX IF NOT EXISTS ix_delegation_leader ON sre_agent_delegation (leader_task_id, creation_date DESC);
+CREATE INDEX IF NOT EXISTS ix_delegation_batch
+  ON sre_agent_delegation (leader_task_id, dispatch_batch_no, creation_date DESC);
 COMMENT ON TABLE sre_agent_delegation IS '派发账本（D 块）：main→sub 每次派发一行；预算按本表计数（活跃=非终态；累计=全行含软删，防删除重置）';
 COMMENT ON COLUMN sre_agent_delegation.delegation_id IS '派发记录主键';
 COMMENT ON COLUMN sre_agent_delegation.run_id IS '所属运行 ID';
 COMMENT ON COLUMN sre_agent_delegation.leader_task_id IS '发起派发的主任务 ID';
+COMMENT ON COLUMN sre_agent_delegation.dispatch_batch_id IS '同一次批量派发共享的批次 ID；存量记录可为空';
+COMMENT ON COLUMN sre_agent_delegation.dispatch_batch_no IS '主任务内递增的派发批次号；存量记录可为空';
 COMMENT ON COLUMN sre_agent_delegation.agent_key IS '目标子 Agent 角色 key';
 COMMENT ON COLUMN sre_agent_delegation.task_text IS '派发给子 Agent 的任务文本';
 COMMENT ON COLUMN sre_agent_delegation.delegation_status IS 'running / completed / failed_no_report / timeout / cancelled';

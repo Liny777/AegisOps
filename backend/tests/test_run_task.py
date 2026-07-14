@@ -342,6 +342,78 @@ def test_d3_dispatch_end_to_end(client, runtime_backend):
     events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
     types = {e["event_type"] for e in events}
     assert "openops.subagent.dispatched" in types and "openops.subagent.reported" in types
+    reported = next(e for e in reversed(events) if e["event_type"] == "openops.subagent.reported")
+    assert reported["payload_redacted_json"]["report_summary"]
+    assert reported["payload_redacted_json"]["dispatch_batch_id"] == str(rows[-1]["dispatch_batch_id"])
+
+
+def test_subagent_dispatch_batches_persist_and_increment(client, monkeypatch):
+    """一次 dispatch 共享批次、跨 dispatch 递增；恢复投影只给脱敏摘要，不泄漏账本文本。"""
+    import asyncio as _asyncio
+
+    from infra.repositories import delegations
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+    st.dispatch_cfg = {"max_children": 3, "delegation_max_spawns": 10}
+
+    async def _fake_run(_st, _run, _sub, role, text, _did, _batch_id=None, _batch_no=None):
+        return f"{role} report {text}"
+
+    monkeypatch.setattr(subagent_dispatch, "_run_with_budget", _fake_run)
+    secret = "Bearer abcdefghijkl"
+    _asyncio.run(subagent_dispatch.dispatch(st, run_row, [
+        {"role": "inspect", "task": f"巡检 {secret}"},
+        {"role": "diagnose", "task": "诊断"},
+    ]))
+    _asyncio.run(subagent_dispatch.dispatch(st, run_row, [
+        {"role": "inspect", "task": "复核"},
+    ]))
+
+    rows = _asyncio.run(delegations.list_by_task(st.task_id))
+    assert len(rows) == 3
+    assert rows[0]["dispatch_batch_id"] == rows[1]["dispatch_batch_id"]
+    assert rows[0]["dispatch_batch_no"] == rows[1]["dispatch_batch_no"] == 1
+    assert rows[2]["dispatch_batch_id"] != rows[0]["dispatch_batch_id"]
+    assert rows[2]["dispatch_batch_no"] == 2
+
+    state = unwrap(client.get(f"/api/openops/v1/agent-runs/{st.run_id}/state", headers=USER_HEADERS))
+    projected = state["delegations"][-3:]
+    assert all("task_text" not in row and "report_text" not in row for row in projected)
+    assert projected[0]["task_summary"] == "巡检 [REDACTED]"
+    assert secret not in str(projected)
+    assert projected[0]["child_task_id"].startswith(st.task_id + ".inspect-")
+
+    dispatched = [e for e in state["recent_events"] if e["event_type"] == "openops.subagent.dispatched"]
+    assert len(dispatched) >= 3
+    first_payload = dispatched[-3]["payload_redacted_json"]
+    assert {"agent_key", "agent_label", "leader_task_id", "child_task_id", "delegation_id",
+            "dispatch_batch_id", "dispatch_batch_no", "summary"} <= set(first_payload)
+    assert secret not in str(first_payload)
+
+
+def test_subagent_cancelled_is_authoritative_event(client, monkeypatch):
+    import asyncio as _asyncio
+
+    import pytest as _pytest
+
+    from infra.repositories import delegations
+    from runtime import subagent_dispatch
+
+    st, run_row = _dispatch_env(client)
+
+    async def _cancel(*_args, **_kwargs):
+        raise _asyncio.CancelledError()
+
+    monkeypatch.setattr(subagent_dispatch, "_run_with_budget", _cancel)
+    with _pytest.raises(_asyncio.CancelledError):
+        _asyncio.run(subagent_dispatch.dispatch(
+            st, run_row, [{"role": "inspect", "task": "取消测试"}]))
+    rows = _asyncio.run(delegations.list_by_task(st.task_id))
+    assert rows[-1]["delegation_status"] == "cancelled"
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{st.run_id}", headers=USER_HEADERS))
+    cancelled = next(e for e in reversed(events) if e["event_type"] == "openops.subagent.cancelled")
+    assert cancelled["payload_redacted_json"]["delegation_id"] == str(rows[-1]["delegation_id"])
 
 
 def test_e1_subagent_approval_bridge(client, runtime_backend):

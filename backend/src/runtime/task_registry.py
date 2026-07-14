@@ -40,6 +40,12 @@ class TaskState:
     approval_id: str | None = None
     # D 块：sub_agents 编排
     agent_key: str = "main"  # 本 TaskState 归属 agent（子 task=角色 key；事件 payload 携带供前端分组）
+    agent_label: str = "主 Agent"  # 活动栏展示名；子 task 取模板 sub_agents[].label
+    leader_task_id: str | None = None  # 子 task 所属主任务；main 为 None
+    delegation_id: str | None = None  # 子 task 对应派发账本主键
+    dispatch_batch_id: str | None = None  # 同一次 dispatch_subagents 调用共享
+    dispatch_batch_no: int | None = None  # 主任务内递增批次号
+    activity_tool_labels: dict[str, str] | None = None  # 模板 activity_labels.tools（只含展示文案）
     sub_agents: list[dict[str, Any]] | None = None  # 模板 content_json.sub_agents（仅 main 装配；子恒 None=禁二层派发）
     dispatch_cfg: dict[str, Any] | None = None  # {"max_children", "delegation_max_spawns"}（仅 main）
 

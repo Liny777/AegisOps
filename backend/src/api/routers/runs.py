@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Query
 from fastapi.responses import StreamingResponse
 
 from api.deps import User
@@ -27,6 +27,17 @@ async def create_run(req: CreateRunRequest, user: User):
 @router.get("/agent-runs/{run_id}/state")
 async def state(run_id: str, user: User):
     return ok(await run_state_service.get_state(user, run_id))
+
+
+@router.get("/agent-runs/{run_id}/events")
+async def events_page(
+    run_id: str,
+    user: User,
+    before: str | None = None,
+    limit: int = Query(default=100, ge=1, le=200),
+):
+    """活动历史游标分页；实时事件仍走 /events/stream。"""
+    return ok(await run_state_service.list_events(user, run_id, before=before, limit=limit))
 
 
 @router.post("/agent-runs/{run_id}/tasks")

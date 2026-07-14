@@ -89,8 +89,16 @@ def test_ask_004_timeout_terminal_with_audit(client):
     out = unwrap(client.post(f"/api/openops/v1/approvals/{aid}:decide", headers=USER_HEADERS,
                              json={"client_request_id": "to1", "decision": "approved"}))
     assert out["decision"] == "timeout"  # 过期优先于本次决策（ASK-004）
-    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
-    assert any(e["event_type"] == "approval.timeout" for e in events)  # 翻转有审计（修复点）
+    audit_events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    timeout_audit = next(e for e in reversed(audit_events) if e["event_type"] == "approval.timeout")
+    assert timeout_audit  # 翻转有审计（修复点）
+    from runtime import events as runtime_events
+
+    timeout_live = next(
+        e for e in reversed(runtime_events.snapshot(run["agent_run_id"]))
+        if e["event_type"] == "openops.approval.timeout"
+    )
+    assert timeout_live["event_id"] == timeout_audit["audit_event_id"]
 
 
 def test_ask_main_loop_timeout_yields_unexecuted_conclusion(client, runtime_backend, monkeypatch):

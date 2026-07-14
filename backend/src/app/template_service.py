@@ -41,6 +41,15 @@ async def _validate_content(content: dict[str, Any]) -> None:
     tools = main.get("default_tools", [])
     if not isinstance(tools, list) or not all(isinstance(t, str) for t in tools):
         raise ApiError(Err.VALIDATION_FAILED, "main.default_tools 必须是工具名数组")
+    activity_labels = content.get("activity_labels", {})
+    if not isinstance(activity_labels, dict):
+        raise ApiError(Err.VALIDATION_FAILED, "activity_labels 必须是对象")
+    tool_labels = activity_labels.get("tools", {})
+    if not isinstance(tool_labels, dict) or not all(
+        isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+        for k, v in tool_labels.items()
+    ):
+        raise ApiError(Err.VALIDATION_FAILED, "activity_labels.tools 必须是非空字符串映射")
     # main 直连技能白名单（编排对称化）：类型校验同 sub.skills；skills 无标注体系不做门禁
     # （执行另有装配校验）。语义：空/缺省=不限（存量模板兼容），非空=白名单交集。
     ms = main.get("skills", [])

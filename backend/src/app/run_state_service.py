@@ -10,9 +10,10 @@ from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, sco
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
-from infra.repositories import agent_teams, audit, runs, runtime_config, secrets, task_states, templates
+from infra.redact import redact_text, sanitize_activity_payload, sanitize_approval_arguments
+from infra.repositories import agent_teams, audit, delegations, runs, runtime_config, secrets, task_states, templates
 from runtime import events, task_registry
-from runtime.emit import expire_stale_approvals_and_audit
+from runtime.emit import activity_context_of_task, expire_stale_approvals_and_audit
 from runtime.task_registry import TaskState
 from sandbox.executor import executor as sandbox_executor
 
@@ -49,7 +50,74 @@ async def owned_run(user_id: str, run_id: str) -> dict[str, Any]:
 async def list_pending(user: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
     """当前 Run 的 pending 审批（owner 校验后返回，router 不直连 repo）。"""
     await owned_run(user["user_id"], run_id)
-    return [row_json(a) for a in await runs.pending_approvals(run_id)]
+    return [_approval_json(a) for a in await runs.pending_approvals(run_id)]
+
+
+def _event_json(row: dict[str, Any]) -> dict[str, Any]:
+    """审计行对外别名：event_id 与实时 envelope 共用 audit_event_id。"""
+    item = row_json(row)
+    item["event_id"] = item["audit_event_id"]
+    item["payload_redacted_json"] = sanitize_activity_payload(
+        str(item.get("event_type") or ""),
+        item.get("payload_redacted_json"),
+        external_request_id=item.get("external_request_id"),
+    )
+    return item
+
+
+def _approval_json(row: dict[str, Any]) -> dict[str, Any]:
+    item = row_json(row)
+    item["arguments_redacted_json"] = sanitize_approval_arguments(
+        item.get("arguments_redacted_json") or {}
+    )
+    return item
+
+
+async def list_events(user: dict[str, Any], run_id: str, *, before: str | None,
+                      limit: int) -> dict[str, Any]:
+    """Owner 可见的活动历史游标页（最新页起，页内正序）。"""
+    await owned_run(user["user_id"], run_id)
+    if before is not None:
+        try:
+            uuid.UUID(before)
+        except ValueError as exc:
+            raise ApiError(Err.VALIDATION_FAILED, "事件游标格式无效") from exc
+    try:
+        rows, has_more = await audit.list_page_by_run(run_id, before=before, limit=limit)
+    except ValueError as exc:
+        raise ApiError(Err.VALIDATION_FAILED, str(exc)) from exc
+    items = [_event_json(row) for row in rows]
+    return {
+        "items": items,
+        "next_cursor": items[0]["audit_event_id"] if has_more and items else None,
+        "has_more": has_more,
+    }
+
+
+def _delegation_json(row: dict[str, Any], labels: dict[str, str]) -> dict[str, Any]:
+    """活动栏账本投影：只给关联/终态与脱敏摘要，不外放完整任务和汇报正文。"""
+    item = row_json(row)
+    leader = str(item["leader_task_id"])
+    agent_key = str(item["agent_key"])
+    delegation_id = str(item["delegation_id"])
+    return {
+        "delegation_id": delegation_id,
+        "run_id": item["run_id"],
+        "leader_task_id": leader,
+        "child_task_id": f"{leader}.{agent_key}-{delegation_id[:8]}",
+        "agent_key": agent_key,
+        "agent_label": labels.get(agent_key) or agent_key,
+        "dispatch_batch_id": item.get("dispatch_batch_id"),
+        "dispatch_batch_no": item.get("dispatch_batch_no"),
+        "delegation_status": item["delegation_status"],
+        "had_final_report": item["had_final_report"],
+        "deadline": item.get("deadline"),
+        "creation_date": item.get("creation_date"),
+        "last_update_date": item.get("last_update_date"),
+        "task_summary": redact_text(row.get("task_text") or "", max_length=300),
+        "report_summary": (redact_text(row["report_text"], max_length=300)
+                           if row.get("report_text") else None),
+    }
 
 
 async def create_run(user: dict[str, Any], req: Any) -> dict[str, Any]:
@@ -122,24 +190,29 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
                    instance_id=str(run["agent_team_instance_id"]), input_text=req.input_text)
     # task.started + scope.resolved 事件（审计+SSE）
     trace = str(run["audit_trace_id"])
-    await audit.insert_event(
+    task_message = "任务已启动"
+    task_eid = await audit.insert_event(
         audit_trace_id=trace, event_type="task.started", user_id=uid, run_id=run_id,
         instance_id=st.instance_id, task_id=task_id, action="start",
-        payload_redacted={"input_chars": len(req.input_text)}, actor_type="user",
+        payload_redacted={"input_chars": len(req.input_text), "summary": task_message}, actor_type="user",
     )
     events.publish(run_id, events.envelope(run_id, "openops.task.started", task_id=task_id,
-                                           message="任务已启动", audit_trace_id=trace))
-    await audit.insert_event(
+                                           message=task_message, audit_trace_id=trace, event_id=task_eid))
+    scope_message = f"范围已解析（{len(scope['effective_appids'])} 个 APPID）"
+    scope_eid = await audit.insert_event(
         audit_trace_id=trace, event_type="scope.resolved", user_id=uid, run_id=run_id,
         instance_id=st.instance_id, task_id=task_id, action="resolve",
-        payload_redacted={"scope_snapshot_id": scope["scope_snapshot_id"], "appid_count": len(scope["effective_appids"])},
+        payload_redacted={"scope_snapshot_id": scope["scope_snapshot_id"],
+                          "appid_count": len(scope["effective_appids"]), "summary": scope_message},
         external_request_id=scope["omodel_request_id"],
     )
     events.publish(run_id, events.envelope(
         run_id, "openops.scope.resolved", task_id=task_id,
-        message=f"范围已解析（{len(scope['effective_appids'])} 个 APPID）",
-        payload={"effective_appids": scope["effective_appids"], "scope_snapshot_id": scope["scope_snapshot_id"]},
-        audit_trace_id=trace,
+        message=scope_message,
+        payload={"scope_snapshot_id": scope["scope_snapshot_id"],
+                 "appid_count": len(scope["effective_appids"]), "summary": scope_message},
+        audit_trace_id=trace, event_id=scope_eid,
+        external_request_id=scope["omodel_request_id"],
     ))
 
     # 会话自动起名：run 首个任务的输入作 run_title（用户可随时改名覆盖）。失败不阻断任务
@@ -166,6 +239,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     _content = (tpl_ver or {}).get("content_json") or {}
     _main = _content.get("main", {})
     st.template_tools = set(_main.get("default_tools", []))
+    st.activity_tool_labels = dict((_content.get("activity_labels") or {}).get("tools") or {})
     # D 块：sub_agents 画像装配到 main task（子 task 恒 None=禁二层派发）；派发预算随模板
     _subs = _content.get("sub_agents") or []
     st.sub_agents = [s for s in _subs if isinstance(s, dict) and s.get("key")] or None
@@ -247,16 +321,18 @@ async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any]
     )
     await agent_teams.update_template_version(instance_id, active_ver, user["user_id"])
     trace = str(run["audit_trace_id"])
-    await audit.insert_event(
+    message = "平台模板已升级：本次任务起按新模板配置执行（你的角色追加与资产绑定已保留）"
+    eid = await audit.insert_event(
         audit_trace_id=trace, event_type="config.version.derived", user_id=user["user_id"],
         run_id=str(run["agent_run_id"]), instance_id=instance_id, action="template_upgrade",
         payload_redacted={"from_template_version": cur_ver, "to_template_version": active_ver,
-                          "config_version_id": str(out["config_version"]["config_version_id"])},
+                          "config_version_id": str(out["config_version"]["config_version_id"]),
+                          "summary": message},
     )
     events.publish(str(run["agent_run_id"]), events.envelope(
         str(run["agent_run_id"]), "openops.config.changed_notice",
-        message="平台模板已升级：本次任务起按新模板配置执行（你的角色追加与资产绑定已保留）",
-        payload={"to_template_version": active_ver}, audit_trace_id=trace,
+        message=message, payload={"to_template_version": active_ver}, audit_trace_id=trace,
+        event_id=eid,
     ))
     refreshed = await agent_teams.get_instance(instance_id)
     assert refreshed is not None
@@ -308,11 +384,14 @@ async def delete_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
         await sandbox_executor.release_user_container(uid, run_id)
         await sandbox_executor.sweep_idle(cfg)
     await runs.soft_delete_run(run_id, uid)
-    await audit.insert_event(
+    message = "会话已删除"
+    eid = await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="run.deleted", user_id=uid,
         run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="delete", actor_type="user",
+        payload_redacted={"summary": message},
     )
-    events.publish(run_id, events.envelope(run_id, "openops.run.deleted", message="会话已删除"))
+    events.publish(run_id, events.envelope(run_id, "openops.run.deleted", message=message,
+                                           audit_trace_id=str(run["audit_trace_id"]), event_id=eid))
     return {"agent_run_id": run_id, "deleted": True}
 
 
@@ -324,13 +403,15 @@ async def rename_run(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     if not title:
         raise ApiError(Err.VALIDATION_FAILED, "会话名称不能为空")
     await runs.set_run_title(run_id, title, uid)
-    await audit.insert_event(
+    message = redact_text(f"会话已重命名：{title}", max_length=200)
+    eid = await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="run.renamed", user_id=uid,
         run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="rename",
-        actor_type="user", payload_redacted={"title": title},
+        actor_type="user", payload_redacted={"summary": message},
     )
     events.publish(run_id, events.envelope(run_id, "openops.run.renamed",
-                                           message=f"会话已重命名：{title}", payload={"title": title}))
+                                           message=message, payload={"summary": message},
+                                           audit_trace_id=str(run["audit_trace_id"]), event_id=eid))
     return {"agent_run_id": run_id, "run_title": title}
 
 
@@ -344,11 +425,14 @@ async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
     await sandbox_executor.release_user_container(user["user_id"], run_id)
     await sandbox_executor.sweep_idle(cfg)
-    await audit.insert_event(
+    message = "会话已关闭"
+    eid = await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="run.closed", user_id=user["user_id"],
         run_id=run_id, instance_id=str(run["agent_team_instance_id"]), action="close", actor_type="user",
+        payload_redacted={"summary": message},
     )
-    events.publish(run_id, events.envelope(run_id, "openops.run.closed", message="会话已关闭"))
+    events.publish(run_id, events.envelope(run_id, "openops.run.closed", message=message,
+                                           audit_trace_id=str(run["audit_trace_id"]), event_id=eid))
     return {"run_id": run_id, "run_status": "closed"}
 
 
@@ -377,18 +461,20 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
     if st is not None and st.task_id != task_id:  # 双保险：registry 语义漂移也不误置
         st = None
     agent_key = _agent_key_of_task(task_id, st)  # DEF-6：决策事件带归属，前端活动栏才能归对组
-    await audit.insert_event(
+    ctx = {**(await activity_context_of_task(task_id)), "agent_key": agent_key}
+    message = "已批准，恢复动作将执行" if req.decision == "approved" else "已拒绝，当前工具调用终止"
+    payload = {"approval_request_id": approval_id, "reason_chars": len(req.reason or ""),
+               **ctx, "summary": message}
+    eid = await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]),
         event_type=f"approval.{req.decision}", user_id=user["user_id"], run_id=run_id,
         instance_id=str(appr["agent_team_instance_id"]), task_id=appr["task_id"],
         action="decide", decision=req.decision, actor_type="user",
-        payload_redacted={"approval_request_id": approval_id, "reason_chars": len(req.reason or ""),
-                          "agent_key": agent_key},
+        payload_redacted=payload,
     )
     events.publish(run_id, events.envelope(
         run_id, f"openops.approval.{req.decision}", task_id=appr["task_id"],
-        message="已批准，恢复动作将执行" if req.decision == "approved" else "已拒绝，当前工具调用终止",
-        payload={"approval_request_id": approval_id, "agent_key": agent_key},
+        message=message, payload=payload, audit_trace_id=str(run["audit_trace_id"]), event_id=eid,
     ))
     if st is not None:
         st.approval_result = req.decision
@@ -403,7 +489,7 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     st = task_registry.get_by_run(run_id)
     pend = await runs.pending_approvals(run_id)
-    recent = await audit.list_by_run(run_id, limit=100)
+    recent, events_has_more = await audit.list_page_by_run(run_id, limit=100)
     active_task: dict[str, Any] | None = None
     rca: Any = None
     if st is not None:
@@ -422,13 +508,31 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
                            "input_text": snap["input_text"], "started_at": snap["started_at"],
                            "selected_model": snap["selected_model"]}
             rca = snap["rca_json"]
+    recent_items = [_event_json(e) for e in recent]
+    delegation_rows = await delegations.list_by_run(run_id, limit=100)
+    agent_labels = {
+        str(sub["key"]): str(sub.get("label") or sub["key"])
+        for sub in ((st.sub_agents if st is not None else None) or [])
+        if isinstance(sub, dict) and sub.get("key")
+    }
+    # 重启后内存画像为空时，从最近的持久化事件恢复角色展示名；账本只存稳定 key。
+    for event in recent_items:
+        payload = event.get("payload_redacted_json") or {}
+        key = payload.get("agent_key") if isinstance(payload, dict) else None
+        label = payload.get("agent_label") if isinstance(payload, dict) else None
+        if key and label and str(label) != str(key):
+            agent_labels.setdefault(str(key), str(label))
     return {
         "run": row_json(run),
         "instance": row_json(inst) if inst else None,
         "active_task": active_task,
         "rca": rca,
-        "pending_approvals": [row_json(a) for a in pend],
-        "recent_events": [row_json(e) for e in recent],
+        "pending_approvals": [_approval_json(a) for a in pend],
+        "recent_events": recent_items,
+        "events_next_cursor": (recent_items[0]["audit_event_id"]
+                               if events_has_more and recent_items else None),
+        "events_has_more": events_has_more,
+        "delegations": [_delegation_json(d, agent_labels) for d in delegation_rows],
         "last_event_seq": events.snapshot(run_id)[-1]["sequence"] if events.snapshot(run_id) else 0,
     }
 
@@ -481,11 +585,12 @@ async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str,
     label = req.llm_config_id or req.model_source
     if st:
         st.selected_model = label
-    events.publish(run_id, events.envelope(run_id, "openops.model.selected",
-                                           message=f"模型已切换（会话级）：{label}"))
-    await audit.insert_event(
+    message = f"模型已切换（会话级）：{label}"
+    eid = await audit.insert_event(
         audit_trace_id=str(run["audit_trace_id"]), event_type="model.selected",
         user_id=user["user_id"], run_id=run_id, action="select_model",
-        payload_redacted={"model": label}, actor_type="user",
+        payload_redacted={"model": label, "summary": message}, actor_type="user",
     )
+    events.publish(run_id, events.envelope(run_id, "openops.model.selected", message=message,
+                                           audit_trace_id=str(run["audit_trace_id"]), event_id=eid))
     return {"run_id": run_id, "selected_model": label}
