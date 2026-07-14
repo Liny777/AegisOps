@@ -98,22 +98,6 @@ is_safe_identifier() {
   [ "${#value}" -ge 8 ] && [[ "$value" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
-is_safe_proxy_cidrs() {
-  python3 - "$1" >/dev/null 2>&1 <<'PY'
-import ipaddress
-import sys
-
-parts = [part.strip() for part in sys.argv[1].split(",") if part.strip()]
-try:
-    networks = [ipaddress.ip_network(part, strict=False) for part in parts]
-except ValueError:
-    raise SystemExit(1)
-valid = bool(networks) and all(
-    network.prefixlen >= (8 if network.version == 4 else 16) for network in networks
-)
-raise SystemExit(0 if valid else 1)
-PY
-}
 
 if [ -n "$PRODUCTION_ENV" ]; then
   if [ ! -r "$PRODUCTION_ENV" ]; then
@@ -187,7 +171,6 @@ else
   for v in \
     OPENOPS_ENCRYPTION_KEY \
     OPENOPS_PLATFORM_GLM_API_KEY \
-    OPENOPS_TRUSTED_PROXY_CIDRS \
     OPENOPS_IAM_ACCESS_TOKEN_URL \
     OPENOPS_IAM_USERINFO_URL \
     OPENOPS_OMODEL_BASE_URL \
@@ -209,12 +192,6 @@ else
     real) echo "   OK：OPENOPS_APPTREE=real" ;;
     *) fail "OPENOPS_APPTREE 必须为 real" ;;
   esac
-
-  if is_safe_proxy_cidrs "${OPENOPS_TRUSTED_PROXY_CIDRS-}"; then
-    echo "   OK：可信代理 CIDR 已显式配置且范围受限"
-  else
-    fail "OPENOPS_TRUSTED_PROXY_CIDRS 必须是有效且范围受限的 CIDR 列表（IPv4 至少 /8，IPv6 至少 /16）"
-  fi
 
   if [[ ! "${OPENOPS_ENCRYPTION_KEY-}" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
     fail "OPENOPS_ENCRYPTION_KEY 必须是合法 Fernet key（不输出值）"

@@ -328,39 +328,6 @@ def test_iam_browser_host_placeholder_substitution(monkeypatch):
     assert iam_client.browser_host(req3) == ""
 
 
-def test_iam_client_ip_uses_trusted_proxy_chain(monkeypatch):
-    from types import SimpleNamespace
-
-    from api.deps import _client_ip
-
-    monkeypatch.setenv("OPENOPS_TRUSTED_PROXY_CIDRS", "10.0.0.0/8,fd00:1234::/32")
-    # 非可信直连：忽略伪造 XFF，使用真实 peer。
-    assert _client_ip(SimpleNamespace(
-        headers={"x-forwarded-for": "192.0.2.99"},
-        client=SimpleNamespace(host="198.51.100.7"))) == "198.51.100.7"
-    # 可信两层代理：从右向左跳过可信段，取实际客户端；最左伪造值不会生效。
-    assert _client_ip(SimpleNamespace(
-        headers={"x-forwarded-for": "192.0.2.99, 198.51.100.7, 10.0.0.9"},
-        client=SimpleNamespace(host="10.0.0.8"))) == "198.51.100.7"
-    # 可信代理但畸形 XFF 无法确定用户 IP，必须 fail-closed。
-    assert _client_ip(SimpleNamespace(
-        headers={"x-forwarded-for": "spoofed.example"},
-        client=SimpleNamespace(host="10.0.0.8"))) is None
-    # IPv6 同样按可信链解析并规范化。
-    assert _client_ip(SimpleNamespace(
-        headers={"x-forwarded-for": "2001:0db8::1, fd00:1234::9"},
-        client=SimpleNamespace(host="fd00:1234::8"))) == "2001:db8::1"
-
-
-def test_iam_missing_trusted_client_ip_fails_before_upstream(client, monkeypatch):
-    from api import deps
-
-    _iam_env(monkeypatch)
-    monkeypatch.setattr(deps, "_client_ip", lambda _request: None)
-    response = client.get("/api/openops/v1/me", headers={"Cookie": "sid=no-trusted-ip"})
-    assert response.status_code == 502
-    assert response.json()["error"]["code"] == "IAM_UPSTREAM"
-    assert _FakeIam.calls == {"token": 0, "userinfo": 0}
 
 
 @pytest.mark.asyncio

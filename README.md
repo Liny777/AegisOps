@@ -69,7 +69,6 @@ VITE_OPENOPS_API_BASE=http://localhost:18082
 |---|---|---|
 | `OPENOPS_RUNTIME` | `mock` \| `agentscope` | mock 编排器 / 真 AgentScope runtime（需 `.[agentscope]`） |
 | `OPENOPS_OMODEL` | `mock` \| `real` | Scope resolve / workspace CRUD 接 oModel（BASE_URL 必须固定域名，禁止 `{host}`；部署显式配当前企业 tenant） |
-| `OPENOPS_TRUSTED_PROXY_CIDRS` | CIDR 列表 | IAM/oModel 会话绑 IP 的可信反代网段；拒绝过宽网段，直连请求忽略 XFF |
 | `OPENOPS_SANDBOX` | `fake` \| `docker` | 进程内 tempdir / 真 Docker 容器（需 `.[sandbox]` + 本机 Docker） |
 | `OPENOPS_LLM_PROBE` | `mock` \| `real` | 用户自定义 LLM 能力探测（real 发真 `chat/completions`） |
 | `OPENOPS_PLATFORM_GLM_API_KEY` | 无 → stub | 配置后真 GLM 驱动 RCA（需 `OPENOPS_RUNTIME=agentscope`） |

@@ -7,7 +7,6 @@ X-OpenOps-Mock-* 头（本地/pytest 零回归）。白名单/角色裁决两种
 """
 from __future__ import annotations
 
-import ipaddress
 import os
 from typing import Annotated, Any
 from urllib.parse import unquote
@@ -21,43 +20,12 @@ from infra.external import iam_client
 
 
 def _client_ip(request: Request) -> str | None:
-    """解析 IAM 绑 IP：只信显式可信代理，并从 XFF 右侧剥离可信代理链。
-
-    非可信 peer 忽略 XFF 并使用真实 peer；可信链缺失/畸形或代理配置非法、过宽时返回
-    None，由 IAM 路径在任何上游调用前 fail-closed。因此伪造的 XFF 首段不会被带出。
-    """
-    peer_text = request.client.host if request.client else ""
-    try:
-        peer = ipaddress.ip_address(peer_text)
-    except ValueError:
-        return None
-
-    raw_cidrs = os.getenv("OPENOPS_TRUSTED_PROXY_CIDRS", "").strip()
-    try:
-        trusted = [ipaddress.ip_network(part.strip(), strict=False)
-                   for part in raw_cidrs.split(",") if part.strip()]
-        if not trusted or any(network.prefixlen < (8 if network.version == 4 else 16)
-                              for network in trusted):
-            return None if raw_cidrs else str(peer)
-    except ValueError:
-        return None
-
-    def is_trusted(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-        return any(address.version == network.version and address in network for network in trusted)
-
-    if not is_trusted(peer):
-        return str(peer)
+    """XFF 首跳（IAM 绑 IP 校验用，取用户真实浏览器 IP）；无代理链回退直连地址。
+    入口网关须把用户真实 IP 放入 XFF 首段并全链透传。"""
     xff = request.headers.get("x-forwarded-for", "")
-    if not xff:
-        return None
-    try:
-        forwarded = [ipaddress.ip_address(part.strip()) for part in xff.split(",")]
-    except ValueError:
-        return None
-    for address in reversed(forwarded):
-        if not is_trusted(address):
-            return str(address)
-    return None
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else None
 
 
 async def current_user(
@@ -74,8 +42,6 @@ async def current_user(
         if not cookie:
             raise ApiError(Err.UNAUTHORIZED, "未登录（缺少 IAM Cookie）",
                            extra={"login_url": iam_client.login_url(host)})
-        if not resolved_client_ip:
-            raise ApiError(Err.IAM_UPSTREAM, "无法从可信代理链确定客户端 IP", retryable=False)
         try:
             ident = await iam_client.verify(cookie, resolved_client_ip)
         except iam_client.IamError as e:

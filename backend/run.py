@@ -44,8 +44,8 @@ def _uvicorn_config():
         port=int(os.environ.get("OPENOPS_PORT", "18082")),
         reload=False,  # 开 reload/workers 会让 uvicorn 改回 ProactorEventLoop 去起子进程
         workers=1,
-        # 应用自己按 OPENOPS_TRUSTED_PROXY_CIDRS 解析 XFF；必须保留原始 socket peer，禁止
-        # Uvicorn 按 FORWARDED_ALLOW_IPS 提前改写 request.client 后破坏可信代理边界。
+        # 应用自己读 X-Forwarded-For 首跳取用户真实 IP（deps._client_ip）；保留原始 socket peer
+        # 作无 XFF 时的回退，禁止 Uvicorn 按 FORWARDED_ALLOW_IPS 提前改写 request.client。
         proxy_headers=False,
         # 文根（OPENOPS_ROOT_PATH）不走 uvicorn root_path——新版 uvicorn 会把它拼回请求路径，
         # 网关不剥前缀时会变双前缀 404。改由 main.RootPathShim 在应用层按需剥（两种网关都兼容）。

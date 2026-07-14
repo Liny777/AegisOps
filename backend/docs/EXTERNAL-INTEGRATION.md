@@ -59,10 +59,9 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 ### oModel(umodel)（真 scope resolve + workspace CRUD）—— 已按 29.7 最终文档对齐
 `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`（固定 host root，禁止 `{host}`）。`omodel_real`（`/api/v1/workspaces...`）：
 
-- oModel 写请求携带当前 IAM 用户 Cookie、目标域派生的 `Origin/Referer`、浏览器 UA；若入口提供合法
-  可信代理链，还会同步解析后的 `IAM-Client-Ip`/`X-Forwarded-For`，兼容 IAM 会话绑定客户端 IP
-  的网关。后端仅信 `OPENOPS_TRUSTED_PROXY_CIDRS` 中的 peer，并从 XFF 右侧剥离可信代理；禁止把
-  过宽网段配成可信代理（门禁要求 IPv4 至少 `/8`、IPv6 至少 `/16`）。
+- oModel 写请求携带当前 IAM 用户 Cookie、目标域派生的 `Origin/Referer`、浏览器 UA，以及从
+  `X-Forwarded-For` 首跳取的 `IAM-Client-Ip`/`X-Forwarded-For`（用户真实浏览器 IP），兼容 IAM
+  会话绑定客户端 IP 的网关。**前置**：入口网关须把用户真实 IP 放入 XFF 首段并全链透传。
 - **`resolve_scope`** → 29.7「列出 workspace 关联项目」`GET /{ws}/projects`，`effective_appids` = 返回的 `project_id` 列表；
   任何错误/超时/404/空 → fail-closed（`status=failed`/空集，Scope Service 兜 SCOPE_RESOLVE_FAILED/EMPTY_SCOPE，缓存不作失败兜底）。
 - **`get/list/create`** → `WorkspaceMetadata`（无信封，29.7 snake_case `updated_at`）→ OpenOps 词汇映射；`list` 解 `Page.items`

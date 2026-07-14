@@ -194,9 +194,9 @@ IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版
 请求域名替换。回跳示例：
 `OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Faegisops%2F%3F`。
 
-**客户端 IP 信任边界**：真实 env 必须把 `OPENOPS_TRUSTED_PROXY_CIDRS` 配成实际网关/反代网段，
-避免过宽范围（门禁要求 IPv4 至少 `/8`、IPv6 至少 `/16`）。后端仅在 peer 属于该列表时解析 XFF，并从右向左剥离可信代理；
-最外层入口仍应覆盖客户端自带 XFF，网络 ACL 应禁止用户直达后端 `18082`。
+**客户端 IP 透传**（IAM 会话绑 IP）：`/aegisback` 全链（公司网关→前端机→后端）每跳都要
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`——后端取 XFF 首跳作为用户真实
+浏览器 IP 发给 IAM。缺则后端拿到网关 IP、IAM 绑 IP 校验失败 → /me 持续 401 登录横跳。
 
 **域名侧验证**：`https://xxxx.com/aegisback/health` → `{"status":"ok"}`；
 `https://xxxx.com/aegisops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
