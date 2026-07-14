@@ -66,15 +66,14 @@ test("审批卡：工具名可见 → 点击批准 → 显示已批准 → 自�
   await expect(page.getByText("需要人工批准")).toHaveCount(0, { timeout: 5_000 }); // ~2.2s 后自动淡出
 });
 
-test("初始化向导：三步骨架（2/3/4 已合并为「配置 Agent」）", async ({ page }) => {
+test("初始化向导：三步骨架（配置 → 确认能力清单 → 激活）", async ({ page }) => {
   // InitGuard（38f91c8）：有实例访问 /init 会被弹回工作台——本幕用「全新用户」缝进向导
   await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
   await page.goto("/init");
-  await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("配置 Agent").first()).toBeVisible();
+  // 三步名（删了「选择模板」页，step0 即配置）
+  await expect(page.getByText("确认能力清单").first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("激活 Agent").first()).toBeVisible();
-  // 进合并页：四区块关键元素在位
-  await page.getByRole("button", { name: "下一步" }).click();
+  // step0 即配置页：四区块关键元素直接在位（无需先点下一步）
   await expect(page.getByPlaceholder(/感知快恢Agent/)).toBeVisible();
   await expect(page.getByText("身份确认")).toBeVisible();
   await expect(page.getByText("模型供应商")).toBeVisible();
@@ -125,7 +124,7 @@ test("新建 Agent：清单页按钮 ?new=1 旁路 InitGuard 直达向导（老�
   await page.goto("/agents"); // 默认 demo 身份**有实例**——本幕即守卫旁路断言
   await page.getByRole("button", { name: "新建 Agent" }).click();
   await page.waitForURL(/\/init\?new=1/, { timeout: 15_000 });
-  await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByPlaceholder(/感知快恢Agent/)).toBeVisible({ timeout: 15_000 }); // 直达配置页（删了选择模板页）
   await expect(page.getByText("运维Agent", { exact: true })).toBeVisible();
 });
 
@@ -135,11 +134,11 @@ test("编辑 Agent：卡片编辑 → 向导预填名称 → 改名保存 → �
   await page.getByText("编辑", { exact: true }).first().click();
   await page.waitForURL(/\/agent-teams\/.+\/edit/, { timeout: 15_000 });
   await expect(page.getByText("运维Agent", { exact: true })).toBeVisible();
-  await expect(page.getByText(/编辑模式下模板不可更换/)).toBeVisible();
-  await page.getByRole("button", { name: "下一步" }).click(); // 预填 tplId 使按钮可点（auto-wait）
+  // step0 即配置页（删了选择模板页与锁定提示），名称已预填
   await expect(page.getByPlaceholder(/感知快恢Agent/)).toHaveValue("支付域感知快恢", { timeout: 10_000 });
   await page.getByPlaceholder(/感知快恢Agent/).fill("支付域感知快恢-改");
-  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "下一步" }).click();  // → step1 确认能力清单
+  await page.getByRole("button", { name: "下一步" }).click();  // → step2 激活（auto-wait OModel loading 完按钮 enable）
   await page.getByRole("button", { name: "保存修改" }).click(); // mock updateAgentTeam 原地改 module 态
   await page.waitForURL(/\/agents/, { timeout: 15_000 });
   await expect(page.getByText("支付域感知快恢-改").first()).toBeVisible({ timeout: 15_000 });
@@ -150,10 +149,11 @@ test("删光后新建：向导激活 → 进对话页侧栏 picker 即显新 Age
   // 不能被 agents.length>0 门拦住（实测 bug：picker 一直「选择 Agent」直到 F5）
   await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
   await page.goto("/init");
-  await page.getByRole("button", { name: "下一步" }).click();
+  // step0 即配置页（删了选择模板页）：填名称 + 选范围
   await page.getByPlaceholder(/感知快恢Agent/).fill("定界Agent");
   await page.getByText("支付核心域").click(); // 选中唯一 mock workspace
-  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "下一步" }).click();  // → step1 确认能力清单（OModel loading 2s）
+  await page.getByRole("button", { name: "下一步" }).click();  // → step2 激活（auto-wait loading 完按钮 enable）
   await page.getByRole("button", { name: "激活 Agent" }).click(); // mock 建完清 fresh 缝
   await page.waitForURL(/\/agent-teams\/.+\/chat/, { timeout: 15_000 });
   // 侧栏 Agent 选择器（title="选择 Agent"）应显出新实例名，而非空态占位
@@ -184,7 +184,7 @@ test("外链 ?q= 未初始化：进向导 + 「问题已保留」提示在位", 
   await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
   await page.goto(`/?q=${encodeURIComponent("外链带来的问题X")}`);
   await page.waitForURL(/\/init/, { timeout: 15_000 });
-  await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByPlaceholder(/感知快恢Agent/)).toBeVisible({ timeout: 15_000 }); // 直达配置页（删了选择模板页）
   await expect(page.getByText("你带来的问题已保留")).toBeVisible();
   await expect(page.getByText("外链带来的问题X")).toBeVisible();
 });

@@ -9,9 +9,9 @@ import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
 
-// 2026-07-13 改版（对齐更新版设计原型）：五步 → 三步，原 填写信息/系统范围/配置模型 合并为「配置 Agent」一页。
-// 「选择模板」「激活 Agent」两个字面量被 e2e 断言依赖，改名须同步 e2e/smoke.spec.ts。
-const STEPS = ["选择模板", "配置 Agent", "激活 Agent"];
+// 2026-07-14 改版：删「选择模板」页（感知快恢是唯一模板，默认用它）。三步=配置 → 确认能力清单
+//（含 OModel 看护空间初始化 loading）→ 激活。三个步名字面量均被 e2e 断言依赖，改名须同步 e2e/smoke.spec.ts。
+const STEPS = ["配置 Agent", "确认能力清单", "激活 Agent"];
 
 /** 自定义模型卡展示元数据（创建成功时从表单捕获；仅展示用，事实在后端 llm-config）。 */
 interface CustomLlmMeta {
@@ -38,6 +38,7 @@ export function InitWizard() {
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
   const [wsDialog, setWsDialog] = useState(false);
+  const [omodelReady, setOmodelReady] = useState(false);  // step1 OModel 看护空间初始化 loading 是否转完
   const [activating, setActivating] = useState(false);
   const [err, setErr] = useState("");
 
@@ -66,8 +67,8 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, [editing, instanceId]);
 
-  // 合并页门条件：名称 + 范围 + 模型（custom 分支须已创建，否则是死路）
-  const canNext = [!!tplId, !!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), true][step];
+  // 门条件：step0 配置（名称+范围+模型，custom 须已创建否则死路）；step1 OModel 初始化转完；step2 放行
+  const canNext = [!!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), omodelReady, true][step];
 
   const activate = () => {
     setActivating(true);
@@ -120,8 +121,7 @@ export function InitWizard() {
         <div style={{ maxWidth: 1280, margin: "0 auto" }}>
           {/* 外链 ?q= 场景：问题已保留，初始化完成进入对话时自动发送（editing 复用向导时不涉及） */}
           {!editing ? <PendingQuestionNotice /> : null}
-          {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} locked={editing} /> : null}
-          {step === 1 ? (
+          {step === 0 ? (
             <StepConfigure
               name={name} onName={setName}
               workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog(true)}
@@ -133,7 +133,10 @@ export function InitWizard() {
               onCustomRemoved={() => { setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null); setLlm("platform"); }}
             />
           ) : null}
-          {step === 2 ? <StepActivate name={name} activating={activating} capabilities={tpl?.capabilities ?? []} editing={editing} /> : null}
+          {step === 1 ? (
+            <StepCapabilities capabilities={tpl?.capabilities ?? []} ready={omodelReady} onReady={() => setOmodelReady(true)} />
+          ) : null}
+          {step === 2 ? <StepActivate name={name} activating={activating} editing={editing} /> : null}
         </div>
       </div>
 
@@ -188,47 +191,60 @@ function SectionLabel({ text, required, right }: { text: string; required?: bool
   );
 }
 
-function StepTemplate({ templates, tplId, onPick, locked }: { templates: Template[]; tplId: string; onPick: (id: string) => void; locked?: boolean }) {
+/** step1「确认能力清单」：能力识别卡片（上）+ Agent 看护空间 OModel 初始化 loading（下，2s 装饰过场）。
+ * ready 一旦转完（onReady）即置位，回退再进本步直接显完成态不重转；下一步按钮由外层 canNext=ready 门控。 */
+function StepCapabilities({ capabilities, ready, onReady }: { capabilities: string[]; ready: boolean; onReady: () => void }) {
+  useEffect(() => {
+    if (ready) return;
+    const t = setTimeout(onReady, 2000);  // 纯前端仪式感过场：workspace 已在配置步选定，V1 无 OModel 预热接口
+    return () => clearTimeout(t);
+  }, [ready, onReady]);
   return (
     <>
-      <Title t="选择模板" d={locked
-        ? "编辑模式下模板不可更换（模板升级由平台统一发布），确认后进入下一步修改配置。"
-        : "你将基于平台模板实例化一个 AgentTeam（用户视角单 Agent，背后 main + sub 由平台维护）。"} />
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {templates.map((tpl) => {
-          const on = tpl.template_version_id === tplId;
-          return <TemplateCard key={tpl.template_version_id} tpl={tpl} on={on} locked={locked} onPick={onPick} />;
-        })}
+      <Title t="确认能力清单" d="确认本 Agent 已具备的内置能力，并等待看护空间初始化完成后进入激活。" />
+      {capabilities.length ? (
+        <div style={{ marginBottom: 26 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+            <Icon name="bolt" size={16} color={color.brand} />能力识别
+            <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>Agent 已具备的内置能力</span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+            {capabilities.map((c) => {
+              const meta = CAP_META[c] ?? { icon: "bolt", desc: "平台内置能力。" };
+              return (
+                <div key={c} style={{ border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
+                  <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
+                    <Icon name={meta.icon} size={21} color={color.brand} />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
+                      <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>{c}</span>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap" }}>已识别</span>
+                    </div>
+                    <p style={{ fontSize: 12, color: color.textSubtle, margin: 0, lineHeight: 1.55 }}>{meta.desc}</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Agent 看护空间 OModel 初始化（占原「准备激活」块位置的装饰 loading，2s 转完） */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, border: `1px solid ${ready ? color.goodBorder : color.border}`, background: ready ? color.goodBg : "rgba(247,248,250,.5)", borderRadius: radius.xl, padding: "16px 18px" }}>
+        <div style={{ width: 38, height: 38, borderRadius: radius.md, background: ready ? color.goodBg : color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 38px" }}>
+          <Icon name={ready ? "circle-check" : "loader-2"} size={20} color={ready ? color.good : color.brand} spin={!ready} />
+        </div>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: ready ? color.goodText : color.textStrong }}>
+            {ready ? "Agent 看护空间已就绪" : "Agent 看护空间 OModel 初始化中…"}
+          </div>
+          <div style={{ fontSize: 12, color: color.textSubtle, marginTop: 2 }}>
+            {ready ? "看护范围已对接 oModel，可进入下一步激活。" : "正在对接 oModel 看护范围，请稍候（约 2 秒）。"}
+          </div>
+        </div>
       </div>
     </>
-  );
-}
-
-function TemplateCard({ tpl, on, locked, onPick }: { tpl: Template; on: boolean; locked?: boolean; onPick: (id: string) => void }) {
-  const { hovered, bind } = useHover();
-  const borderColor = on ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
-  return (
-    <div onClick={() => { if (!locked) onPick(tpl.template_version_id); }} {...(locked ? {} : bind)}
-      style={{ border: `1px solid ${borderColor}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xxl, padding: 18, cursor: locked ? "default" : "pointer", display: "flex", gap: 14, alignItems: "flex-start", opacity: locked && !on ? 0.55 : 1 }}>
-      <div style={{ width: 42, height: 42, borderRadius: radius.lg, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 42px" }}>
-        <Icon name="robot" size={22} color={color.brand} />
-      </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 15, fontWeight: 700 }}>{tpl.name}</span>
-          <span style={{ fontSize: 11, fontWeight: 600, color: color.brandStrong, background: "#fff", border: `1px solid ${color.brandTintBorder}`, padding: "2px 8px", borderRadius: radius.sm }}>{tpl.active_version} · active</span>
-        </div>
-        <div style={{ fontSize: 12.5, color: color.textMuted, margin: "5px 0 9px", lineHeight: 1.6 }}>{tpl.desc}</div>
-        <div style={{ display: "flex", gap: 6 }}>
-          {tpl.capabilities.map((c) => (
-            <span key={c} style={{ fontSize: 11.5, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: "1px solid rgb(226, 229, 234)", padding: "3px 9px", borderRadius: radius.pill }}>{c}</span>
-          ))}
-        </div>
-      </div>
-      <div style={{ width: 20, height: 20, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center", marginTop: 4 }}>
-        {on ? <div style={{ width: 9, height: 9, borderRadius: "50%", background: color.brand }} /> : null}
-      </div>
-    </div>
   );
 }
 
@@ -476,41 +492,12 @@ const CAP_META: Record<string, { icon: string; desc: string }> = {
   "恢复": { icon: "first-aid-kit", desc: "执行受控恢复动作：先核对目标与影响面，需人工批准后执行。" },
 };
 
-function StepActivate({ name, activating, capabilities, editing }: { name: string; activating: boolean; capabilities: string[]; editing?: boolean }) {
+function StepActivate({ name, activating, editing }: { name: string; activating: boolean; editing?: boolean }) {
   const items = editing
     ? ["更新名称与系统看护范围", "模型有变更时生成新配置版本（历史版本保留）", "返回 Agent 清单"]
     : ["创建 AgentTeam 实例", "同步系统范围（oModel 就绪）", "装配模板默认能力（巡检 / 定界 / 恢复）", "启动 Agent 服务"];
   return (
     <div style={{ padding: "8px 0" }}>
-      {/* 能力识别（原型「确认 Agent 能力清单」并入）：所选模板已具备的内置能力 */}
-      {capabilities.length ? (
-        <div style={{ marginBottom: 26 }}>
-          <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
-            <Icon name="bolt" size={16} color={color.brand} />能力识别
-            <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>Agent 已具备的内置能力</span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
-            {capabilities.map((c) => {
-              const meta = CAP_META[c] ?? { icon: "bolt", desc: "平台内置能力。" };
-              return (
-                <div key={c} style={{ border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
-                    <Icon name={meta.icon} size={21} color={color.brand} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>{c}</span>
-                      <span style={{ fontSize: 10, fontWeight: 600, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap" }}>已识别</span>
-                    </div>
-                    <p style={{ fontSize: 12, color: color.textSubtle, margin: 0, lineHeight: 1.55 }}>{meta.desc}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
       <div style={{ textAlign: "center" }}>
         <div style={{ width: 64, height: 64, borderRadius: 18, background: color.brandGrad, display: "inline-flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand, marginBottom: 18, animation: activating ? "omPulse 1.4s ease-in-out infinite" : undefined }}>
           <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
