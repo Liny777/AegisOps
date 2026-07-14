@@ -5,6 +5,7 @@
 import type {
   Me,
   AgentInstance,
+  AgentTeamDetail,
   WorkbenchState,
   Conversation,
   AdminTableData,
@@ -107,6 +108,10 @@ export interface OpenOpsApi {
   getScopeApps(): Promise<ScopeApp[]>;
   createWorkspace(name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
+  /** 编辑向导预填：实例真实字段 + active overlay（区别于 listAgents 的卡片展示投影）。 */
+  getAgentTeam(instanceId: string): Promise<AgentTeamDetail>;
+  /** 编辑保存（POST :update）：改名 / 换 workspace / 换模型；user_llm_config_id=null 回平台默认。 */
+  updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null }): Promise<void>;
   // demo 身份
   switchRole(admin: boolean): void;
   demoState(): WorkbenchState; // mock 兜底静态（composer skills/models 等）
@@ -626,6 +631,24 @@ const realApi: OpenOpsApi = {
     });
     return { instance_id: String(d.instance.instance_id) };
   },
+  async getAgentTeam(instanceId) {
+    const d = await apiFetch<{ instance: Record<string, unknown>; active_config_version: Record<string, unknown> | null }>(
+      `/openops/v1/agent-teams/${instanceId}`);
+    return {
+      instance_id: String(d.instance.instance_id),
+      name: String(d.instance.instance_name ?? ""),
+      template_version_id: String(d.instance.template_version_id ?? ""),
+      workspace_id: String(d.instance.workspace_id ?? ""),
+      overlay: (d.active_config_version?.overlay_json as Record<string, unknown>) ?? {},
+    };
+  },
+  async updateAgentTeam(instanceId, input) {
+    await apiFetch(`/openops/v1/agent-teams/${instanceId}:update`, {
+      method: "POST",
+      body: { client_request_id: crid(), name: input.name, workspace_id: input.workspace_id,
+              user_llm_config_id: input.user_llm_config_id },
+    });
+  },
 
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
@@ -635,6 +658,9 @@ const realApi: OpenOpsApi = {
 };
 
 /* -------------------------------- mock -------------------------------- */
+// 编辑向导 mock 态：per-instance overlay（updateAgentTeam 写入，getAgentTeam 读回，支撑再编辑预填）
+const mockOverlays = new Map<string, Record<string, unknown>>();
+
 const mockApi: OpenOpsApi = {
   getMe: () => {
     const me = M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user");
@@ -715,6 +741,28 @@ const mockApi: OpenOpsApi = {
   getScopeApps: () => delay(M.mockScopeApps),
   createWorkspace: (_name, _apps) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
   createAgentTeam: () => delay({ instance_id: "agt_pay_fast_recovery" }, 600),
+  getAgentTeam: (instanceId) => {
+    const ag = M.mockAgents.find((a) => a.instance_id === instanceId) ?? M.mockAgents[0];
+    return delay({
+      instance_id: ag.instance_id,
+      name: ag.name,
+      template_version_id: "tplv_sre_fast_recovery_3",
+      workspace_id: ag.workspace_id,
+      overlay: mockOverlays.get(ag.instance_id) ?? {},
+    });
+  },
+  updateAgentTeam: (instanceId, input) => {
+    // 原地改 module 态（先例：renameRun/deleteRun 改 mockConversations）——保存后清单立即反映
+    const ag = M.mockAgents.find((a) => a.instance_id === instanceId);
+    if (ag) {
+      ag.name = input.name;
+      ag.workspace_id = input.workspace_id;
+      ag.workspace_label = M.mockWorkspaces.find((w) => w.workspace_id === input.workspace_id)?.name ?? input.workspace_id;
+      ag.model = input.user_llm_config_id ? "自定义模型" : "千问 (平台提供)";
+    }
+    mockOverlays.set(instanceId, input.user_llm_config_id ? { user_llm_config_id: input.user_llm_config_id } : {});
+    return delay(undefined as unknown as void);
+  },
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
   },

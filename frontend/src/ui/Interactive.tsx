@@ -46,6 +46,8 @@ export function Interactive({
       title={title}
       onClick={disabled ? undefined : onClick}
       {...(disabled ? {} : bind)}
+      {/* button 须真禁用（DOM disabled）：仅样式禁用时 Playwright/读屏器认不出，
+          自动化会在数据未就绪时点到空 onClick（编辑向导预填幕实测坑） */ ...(disabled && Tag === "button" ? { disabled: true } : {})}
       {...rest}
       style={{ ...baseStyle, ...(hovered && !disabled ? hoverStyle : {}) }}
     >

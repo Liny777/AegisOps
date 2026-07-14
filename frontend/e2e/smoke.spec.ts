@@ -1,9 +1,11 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑的六幕）：
- * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页。
- * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）。
+ * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 10 幕）：
+ * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页 /
+ * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 插件页两 tab。
+ * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）；
+ * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
 
 test("对话工作台：composer 与活动栏渲染", async ({ page }) => {
@@ -70,4 +72,36 @@ test("InitGuard：已有 Agent 访问 /init 直接跳工作台（不重复初始
   await page.goto("/init"); // 默认 demo 身份自带实例
   await page.waitForURL(/\/agent-teams\/.+\/chat/, { timeout: 15_000 });
   await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+});
+
+test("新建 Agent：清单页按钮 ?new=1 旁路 InitGuard 直达向导（老用户建第二个实例）", async ({ page }) => {
+  await page.goto("/agents"); // 默认 demo 身份**有实例**——本幕即守卫旁路断言
+  await page.getByRole("button", { name: "新建 Agent" }).click();
+  await page.waitForURL(/\/init\?new=1/, { timeout: 15_000 });
+  await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("初始化 Agent")).toBeVisible(); // 创建态标题（非编辑态）
+});
+
+test("编辑 Agent：卡片编辑 → 向导预填名称 → 改名保存 → 清单反映新名", async ({ page }) => {
+  // mockAgents[1] 的 ws_gw 不在 mockWorkspaces（预填选不中范围卡），幕固定用 .first()（支付域感知快恢）
+  await page.goto("/agents");
+  await page.getByText("编辑", { exact: true }).first().click();
+  await page.waitForURL(/\/agent-teams\/.+\/edit/, { timeout: 15_000 });
+  await expect(page.getByText("编辑 Agent")).toBeVisible(); // 编辑态标题 + 模板步锁定提示
+  await expect(page.getByText(/编辑模式下模板不可更换/)).toBeVisible();
+  await page.getByRole("button", { name: "下一步" }).click(); // 预填 tplId 使按钮可点（auto-wait）
+  await expect(page.getByPlaceholder(/感知快恢Agent/)).toHaveValue("支付域感知快恢", { timeout: 10_000 });
+  await page.getByPlaceholder(/感知快恢Agent/).fill("支付域感知快恢-改");
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "保存修改" }).click(); // mock updateAgentTeam 原地改 module 态
+  await page.waitForURL(/\/agents/, { timeout: 15_000 });
+  await expect(page.getByText("支付域感知快恢-改").first()).toBeVisible({ timeout: 15_000 });
+});
+
+test("插件页仅 Skill/MCP 两 tab（模型配置/角色提示词已并入向导）", async ({ page }) => {
+  await page.goto("/agent-teams/agt_pay_fast_recovery/settings");
+  await expect(page.getByText("Skill 配置")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("MCP 配置")).toBeVisible();
+  await expect(page.getByText("模型配置")).toHaveCount(0);
+  await expect(page.getByText("角色提示词")).toHaveCount(0);
 });

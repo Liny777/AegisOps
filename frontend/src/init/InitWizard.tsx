@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
@@ -18,9 +18,14 @@ interface CustomLlmMeta {
   baseUrl: string;
 }
 
-/** 初始化向导（30.2 改版）：模板 → 配置（名称+身份+模型+范围合一页）→ 激活。壳外全屏。 */
+/** 初始化向导（30.2 改版）：模板 → 配置（名称+身份+模型+范围合一页）→ 激活。壳外全屏。
+ * 编辑态（/agent-teams/:instanceId/edit）复用同一向导：预填名称/范围/模型，模板锁定不可换，
+ * 保存走 :update 更新同一实例后回 Agent 清单。 */
 export function InitWizard() {
   const nav = useNavigate();
+  const { instanceId } = useParams();
+  const editing = !!instanceId;
+  const { refresh } = useApp();
   const [step, setStep] = useState(0);
   const [templates, setTemplates] = useState<Template[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -36,9 +41,29 @@ export function InitWizard() {
   const [err, setErr] = useState("");
 
   useEffect(() => {
+    if (editing && instanceId) {
+      // 编辑态：并取模板/范围/实例详情/模型清单，预填 名称+范围+模板（锁定）+模型
+      Promise.all([api.getTemplates(), api.getWorkspaces(), api.getAgentTeam(instanceId), api.getModelConfigs()])
+        .then(([tpls, wss, d, models]) => {
+          setTemplates(tpls);
+          setWorkspaces(wss);
+          setTplId(tpls.some((t) => t.template_version_id === d.template_version_id)
+            ? d.template_version_id : tpls[0]?.template_version_id ?? "");
+          setName(d.name);
+          setWsId(d.workspace_id);
+          const llmId = typeof d.overlay.user_llm_config_id === "string" ? d.overlay.user_llm_config_id : "";
+          if (llmId) {
+            setLlm("custom");
+            setCustomLlmId(llmId);
+            setCustomLlmLabel(models.find((m) => m.llm_config_id === llmId)?.label ?? "自定义模型");
+          }
+        })
+        .catch((e: unknown) => setErr(e instanceof Error ? e.message : "加载失败，请重试"));
+      return;
+    }
     api.getTemplates().then((t) => { setTemplates(t); setTplId(t[0]?.template_version_id ?? ""); });
     api.getWorkspaces().then(setWorkspaces);
-  }, []);
+  }, [editing, instanceId]);
 
   // 合并页门条件：名称 + 范围 + 模型（custom 分支须已创建，否则是死路）
   const canNext = [!!tplId, !!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), true][step];
@@ -46,16 +71,21 @@ export function InitWizard() {
   const activate = () => {
     setActivating(true);
     setErr("");
-    const overlay = llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId } : undefined;
-    api.createAgentTeam({ template_version_id: tplId, name, workspace_id: wsId, initial_overlay_json: overlay })
-      .then((r) => {
-        nav(`/agent-teams/${r.instance_id}/chat`);
-      })
-      .catch((e: unknown) => {
-        // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如"同名实例已存在"）
-        setActivating(false);
-        setErr(e instanceof Error ? e.message : "激活失败，请重试");
-      });
+    const done = editing && instanceId
+      // 编辑态：更新同一实例（模板不送），刷新全局列表后回清单页
+      ? api.updateAgentTeam(instanceId, {
+          name, workspace_id: wsId,
+          user_llm_config_id: llm === "custom" && customLlmId ? customLlmId : null,
+        }).then(() => { refresh(); nav("/agents"); })
+      : api.createAgentTeam({
+          template_version_id: tplId, name, workspace_id: wsId,
+          initial_overlay_json: llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId } : undefined,
+        }).then((r) => { nav(`/agent-teams/${r.instance_id}/chat`); });
+    done.catch((e: unknown) => {
+      // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如"同名实例已存在"）
+      setActivating(false);
+      setErr(e instanceof Error ? e.message : editing ? "保存失败，请重试" : "激活失败，请重试");
+    });
   };
 
   const tpl = templates.find((t) => t.template_version_id === tplId);
@@ -67,7 +97,7 @@ export function InitWizard() {
         <div style={{ width: 30, height: 30, borderRadius: 8, background: color.brandGrad, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand }}>
           <Icon name="robot" size={18} color="#fff" />
         </div>
-        <div style={{ fontSize: 15, fontWeight: 800 }}>初始化 Agent</div>
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{editing ? "编辑 Agent" : "初始化 Agent"}</div>
         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 0, maxWidth: 520, margin: "0 auto" }}>
           {STEPS.map((s, i) => (
             <div key={s} style={{ display: "flex", alignItems: "center", flex: i === STEPS.length - 1 ? "0 0 auto" : 1 }}>
@@ -87,7 +117,7 @@ export function InitWizard() {
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "36px 24px" }}>
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
-          {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} /> : null}
+          {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} locked={editing} /> : null}
           {step === 1 ? (
             <StepConfigure
               name={name} onName={setName}
@@ -100,7 +130,7 @@ export function InitWizard() {
               onCustomRemoved={() => { setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null); setLlm("platform"); }}
             />
           ) : null}
-          {step === 2 ? <StepActivate name={name} activating={activating} capabilities={tpl?.capabilities ?? []} /> : null}
+          {step === 2 ? <StepActivate name={name} activating={activating} capabilities={tpl?.capabilities ?? []} editing={editing} /> : null}
         </div>
       </div>
 
@@ -118,7 +148,9 @@ export function InitWizard() {
           {step < 2 ? (
             <Button icon="arrow-right" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>下一步</Button>
           ) : (
-            <Button icon="rocket" disabled={activating} onClick={activate}>{activating ? "激活中…" : "激活 Agent"}</Button>
+            <Button icon={editing ? "device-floppy" : "rocket"} disabled={activating} onClick={activate}>
+              {editing ? (activating ? "保存中…" : "保存修改") : (activating ? "激活中…" : "激活 Agent")}
+            </Button>
           )}
         </div>
       </div>
@@ -153,17 +185,19 @@ function SectionLabel({ text, required, right }: { text: string; required?: bool
   );
 }
 
-function StepTemplate({ templates, tplId, onPick }: { templates: Template[]; tplId: string; onPick: (id: string) => void }) {
+function StepTemplate({ templates, tplId, onPick, locked }: { templates: Template[]; tplId: string; onPick: (id: string) => void; locked?: boolean }) {
   return (
     <>
-      <Title t="选择模板" d="你将基于平台模板实例化一个 AgentTeam（用户视角单 Agent，背后 main + sub 由平台维护）。" />
+      <Title t="选择模板" d={locked
+        ? "编辑模式下模板不可更换（模板升级由平台统一发布），确认后进入下一步修改配置。"
+        : "你将基于平台模板实例化一个 AgentTeam（用户视角单 Agent，背后 main + sub 由平台维护）。"} />
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         {templates.map((tpl) => {
           const on = tpl.template_version_id === tplId;
           return (
-            <Interactive key={tpl.template_version_id} onClick={() => onPick(tpl.template_version_id)}
-              baseStyle={{ border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xxl, padding: 18, cursor: "pointer", display: "flex", gap: 14, alignItems: "flex-start" }}
-              hoverStyle={on ? {} : { borderColor: color.brandTintBorder }}>
+            <Interactive key={tpl.template_version_id} onClick={() => { if (!locked) onPick(tpl.template_version_id); }}
+              baseStyle={{ border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xxl, padding: 18, cursor: locked ? "default" : "pointer", display: "flex", gap: 14, alignItems: "flex-start", opacity: locked && !on ? 0.55 : 1 }}
+              hoverStyle={on || locked ? {} : { borderColor: color.brandTintBorder }}>
               <div style={{ width: 42, height: 42, borderRadius: radius.lg, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 42px" }}>
                 <Icon name="robot" size={22} color={color.brand} />
               </div>
@@ -413,8 +447,10 @@ const CAP_META: Record<string, { icon: string; desc: string }> = {
   "恢复": { icon: "first-aid-kit", desc: "执行受控恢复动作：先核对目标与影响面，需人工批准后执行。" },
 };
 
-function StepActivate({ name, activating, capabilities }: { name: string; activating: boolean; capabilities: string[] }) {
-  const items = ["创建 AgentTeam 实例", "同步系统范围（oModel 就绪）", "装配模板默认能力（巡检 / 定界 / 恢复）", "启动 Agent 服务"];
+function StepActivate({ name, activating, capabilities, editing }: { name: string; activating: boolean; capabilities: string[]; editing?: boolean }) {
+  const items = editing
+    ? ["更新名称与系统看护范围", "模型有变更时生成新配置版本（历史版本保留）", "返回 Agent 清单"]
+    : ["创建 AgentTeam 实例", "同步系统范围（oModel 就绪）", "装配模板默认能力（巡检 / 定界 / 恢复）", "启动 Agent 服务"];
   return (
     <div style={{ padding: "8px 0" }}>
       {/* 能力识别（原型「确认 Agent 能力清单」并入）：所选模板已具备的内置能力 */}
@@ -450,8 +486,12 @@ function StepActivate({ name, activating, capabilities }: { name: string; activa
         <div style={{ width: 64, height: 64, borderRadius: 18, background: color.brandGrad, display: "inline-flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand, marginBottom: 18, animation: activating ? "omPulse 1.4s ease-in-out infinite" : undefined }}>
           <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
         </div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>{activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`}</h2>
-        <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>激活将创建实例与初始配置版本，然后进入对话工作台。</div>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>
+          {editing ? (activating ? "正在保存…" : `保存对「${name || "Agent"}」的修改`) : (activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`)}
+        </h2>
+        <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>
+          {editing ? "保存将更新实例信息，必要时生成新配置版本，然后返回 Agent 清单。" : "激活将创建实例与初始配置版本，然后进入对话工作台。"}
+        </div>
         <div style={{ maxWidth: 380, margin: "0 auto", textAlign: "left", display: "flex", flexDirection: "column", gap: 10 }}>
           {items.map((it, i) => (
             <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 13, color: color.textBody }}>

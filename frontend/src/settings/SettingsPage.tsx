@@ -4,17 +4,15 @@ import { color, radius } from "../theme/tokens";
 import { Icon, Interactive, Pill, Button, TextInput, Toggle } from "../ui";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { api } from "../lib/api";
-import type { AgentInstance, AssetRow, ConfigVersionRow, ModelOption } from "../lib/api/types";
-import { AddCustomModelDialog } from "./AddCustomModelDialog";
+import type { AgentInstance, AssetRow, ConfigVersionRow } from "../lib/api/types";
 
-type Tab = "skill" | "mcp" | "model" | "prompt";
+type Tab = "skill" | "mcp";
 type Filter = "all" | "on" | "off";
 
 /** 实例配置（isSettings·新原型）：视图完全由路由驱动 —— `/agent-teams/:id/settings` = 当前 Agent
- * 配置详情（侧栏「插件」直达；原「设置」入口，现「设置」挂 /settings 的 OModel 占位页），
- * `/agents` = 全部 Agent 清单（picker「全部 Agents」进入，新建/启停/删除入口在那）。
- * 切换视图一律 nav() 产生历史条目，返回统一 nav(-1)，来路由历史栈表达：
- * 对话→插件→返回=对话页；清单→编辑→返回=清单（实测诉求：配置页返回不经停清单页）。 */
+ * 插件配置（侧栏「插件」直达，仅 Skill/MCP 两 tab——模型/提示词在编辑向导与创建向导里管），
+ * `/agents` = 全部 Agent 清单（picker「全部 Agents」进入；新建→/init?new=1、编辑→编辑向导 /edit、
+ * 启停/删除入口在卡片上）。切换视图一律 nav() 产生历史条目，返回统一 nav(-1)，来路由历史栈表达。 */
 export function SettingsPage() {
   const nav = useNavigate();
   const { instanceId } = useParams();
@@ -33,10 +31,12 @@ export function SettingsPage() {
         <div style={{ fontSize: 15, fontWeight: 700 }}>{detail ? detail.name : "Agent 设置"}</div>
         <span style={{ fontSize: 12, color: color.textSubtle }}>{detail ? `${detail.template} · ${detail.workspace_label}` : "管理你的全部 Agent"}</span>
         <div style={{ flex: 1 }} />
-        {!detail ? <Button icon="plus" onClick={() => nav("/init")}>新建 Agent</Button> : null}
+        {/* ?new=1：显式新建旁路 InitGuard 的「已有实例弹回工作台」（老用户建第二个实例的唯一入口） */}
+        {!detail ? <Button icon="plus" onClick={() => nav("/init?new=1")}>新建 Agent</Button> : null}
       </header>
 
-      {detail ? <AgentDetail instance={detail} /> : <AgentListPage agents={agents} onOpen={(id) => nav(`/agent-teams/${id}/settings`)} onChanged={refresh} />}
+      {/* 编辑 → 编辑向导（预填名称/范围/模型，保存更新同一实例）；插件配置走侧栏「插件」入口 */}
+      {detail ? <AgentDetail instance={detail} /> : <AgentListPage agents={agents} onOpen={(id) => nav(`/agent-teams/${id}/edit`)} onChanged={refresh} />}
     </>
   );
 }
@@ -182,14 +182,14 @@ function CardAction({ icon, label, color: c, hoverBg, bold, disabled, onClick }:
   );
 }
 
-/* ---------------- per-agent 配置（运行服务视角：Skill / MCP / 模型 / 提示词）---------------- */
+/* ---------------- per-agent 插件配置（仅 Skill / MCP；模型与提示词在创建/编辑向导里管）---------------- */
 function AgentDetail({ instance }: { instance: AgentInstance }) {
   const [tab, setTab] = useState<Tab>("skill");
   const instanceId = instance.instance_id;
   return (
     <>
       <div style={{ flex: "0 0 auto", background: "#fff", borderBottom: `1px solid ${color.border}`, padding: "0 24px", display: "flex", gap: 6 }}>
-        {([["skill", "Skill 配置", "puzzle"], ["mcp", "MCP 配置", "plug"], ["model", "模型配置", "cpu"], ["prompt", "角色提示词", "message-2"]] as const).map(([k, label, icon]) => {
+        {([["skill", "Skill 配置", "puzzle"], ["mcp", "MCP 配置", "plug"]] as const).map(([k, label, icon]) => {
           const active = tab === k;
           return (
             <div key={k} onClick={() => setTab(k)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "13px 4px", margin: "0 8px", cursor: "pointer", fontSize: 13.5, fontWeight: active ? 700 : 500, color: active ? color.brand : color.textNav, borderBottom: `2px solid ${active ? color.brand : "transparent"}` }}>
@@ -198,8 +198,7 @@ function AgentDetail({ instance }: { instance: AgentInstance }) {
           );
         })}
       </div>
-      {tab === "skill" || tab === "mcp" ? <PluginPane key={tab} kind={tab} instanceId={instanceId} />
-        : tab === "prompt" ? <PromptTab instanceId={instanceId} /> : <ModelTab instance={instance} />}
+      <PluginPane key={tab} kind={tab} instanceId={instanceId} />
     </>
   );
 }
@@ -396,98 +395,6 @@ function AssetDialog({ kind, busy, onClose, onSubmit }: {
           <Button disabled={!ok || busy} onClick={() => ok && onSubmit(name.trim(), endpoint.trim())}>{kind === "skill" ? "上传" : "注册"}</Button>
         </div>
       </div>
-    </div>
-  );
-}
-
-/** 角色提示词（30.5 CFG-002：只写 main overlay 的 append；平台默认只读）。 */
-function PromptTab({ instanceId }: { instanceId: string }) {
-  const [text, setText] = useState("");
-  const [saved, setSaved] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  useEffect(() => { api.getMainAppend(instanceId).then((t) => { setText(t); setSaved(t); }); }, [instanceId]);
-  const dirty = saved !== null && text !== saved;
-  return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "26px 30px 40px" }}>
-      <div style={{ maxWidth: 720 }}>
-        <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>main Agent 角色追加</h2>
-        <div style={{ fontSize: 12.5, color: color.textSubtle, marginBottom: 18 }}>
-          平台模板的默认角色只读；此处内容以「追加」方式作用于 main Agent（不影响 sub Agent）。保存生成新配置版本。
-        </div>
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="例：优先关注支付链路核心接口的 P99 与错误率；恢复动作前先给出影响面评估。"
-          style={{ width: "100%", minHeight: 180, border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "12px 14px", fontSize: 13, lineHeight: 1.7, fontFamily: "inherit", background: "#fff", outline: "none", boxSizing: "border-box" }}
-        />
-        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
-          <Button
-            disabled={!dirty || busy}
-            onClick={() => {
-              setBusy(true);
-              api.saveMainAppend(instanceId, text).then(() => setSaved(text)).catch((e) => alert((e as Error).message)).finally(() => setBusy(false));
-            }}
-          >保存（生成新版本）</Button>
-          {dirty ? <span style={{ fontSize: 12, color: color.textSubtle }}>有未保存的修改</span> : saved !== null ? <span style={{ fontSize: 12, color: color.textSubtle }}>已保存</span> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function ModelTab({ instance }: { instance: AgentInstance }) {
-  const [models, setModels] = useState<ModelOption[]>([]);
-  const [picked, setPicked] = useState<string>("");
-  const [dialog, setDialog] = useState(false);
-  const load = (selectId?: string) =>
-    api.getModelConfigs().then((m) => {
-      setModels(m);
-      setPicked(selectId ?? m.find((x) => x.current)?.llm_config_id ?? m[0]?.llm_config_id ?? "");
-    });
-  useEffect(() => { load(); }, []);
-  return (
-    <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "26px 30px 40px" }}>
-      <div style={{ maxWidth: 720 }}>
-        <h2 style={{ fontSize: 19, fontWeight: 700, margin: "0 0 6px" }}>模型配置</h2>
-        <div style={{ fontSize: 12.5, color: color.textSubtle, marginBottom: 16 }}>当前 Agent 的模型来源与可用模型清单（查看为主）。</div>
-        {/* 当前 Agent 默认模型（创建向导设定；查看为主，不做实例级修改持久化） */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "14px 16px", marginBottom: 20 }}>
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 38px" }}>
-            <Icon name="cpu" size={20} color={color.brand} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, color: color.textSubtle }}>当前 Agent 默认模型</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginTop: 2 }}>{instance.model ?? "平台默认模型"}</div>
-          </div>
-          <span style={{ fontSize: 11.5, color: color.textSubtle }}>创建向导设定 · 对话中可临时切换（会话级）</span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {models.map((m) => {
-            const on = picked === m.llm_config_id;
-            return (
-              <Interactive key={m.llm_config_id} onClick={() => m.available && setPicked(m.llm_config_id)}
-                baseStyle={{ display: "flex", alignItems: "center", gap: 12, border: `1px solid ${on ? color.brand : color.border}`, background: on ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "13px 15px", cursor: m.available ? "pointer" : "not-allowed", opacity: m.available ? 1 : 0.6 }}
-                hoverStyle={on || !m.available ? {} : { borderColor: color.brandTintBorder }}>
-                <Icon name="cpu" size={18} color={on ? color.brand : color.textSubtle} />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13.5, fontWeight: 600, color: color.textStrong }}>{m.label}</div>
-                  <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 2 }}>{m.reason ?? m.note}</div>
-                </div>
-                <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${on ? color.brand : "#cfd3da"}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  {on ? <div style={{ width: 8, height: 8, borderRadius: "50%", background: color.brand }} /> : null}
-                </div>
-              </Interactive>
-            );
-          })}
-        </div>
-        <button onClick={() => setDialog(true)} style={{ marginTop: 12, border: `1px dashed #c9cdd6`, background: "#fff", cursor: "pointer", color: color.brand, fontSize: 12.5, fontWeight: 600, padding: "9px 15px", borderRadius: radius.lg, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          <Icon name="plus" size={15} color={color.brand} />添加自定义模型（OpenAI 兼容）
-        </button>
-        <div style={{ marginTop: 16, padding: "11px 13px", borderRadius: radius.lg, background: color.brandTintBg, border: `1px solid rgba(22,131,255,.18)`, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
-          Secret 明文仅在创建时提交，保存后只显示脱敏指纹；探测失败的模型不能设为默认。对话输入框里的模型切换是会话级临时选择，不会修改这里的默认配置。
-        </div>
-      </div>
-      <AddCustomModelDialog open={dialog} onClose={() => setDialog(false)} onCreated={(id) => load(id)} />
     </div>
   );
 }

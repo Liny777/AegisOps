@@ -190,6 +190,147 @@ def test_def3_rollback_allows_retry(client):
     assert r.status_code == 200  # 同 key 重试成功（异体但占位已释放，不撞 hash）
 
 
+# ---- 编辑实例（POST :update，编辑向导后端面）----
+
+def _update(client, instance_id, crid, name, workspace_id, user_llm_config_id=None):
+    return client.post(
+        f"/api/openops/v1/agent-teams/{instance_id}:update",
+        headers=USER_HEADERS,
+        json={"client_request_id": crid, "name": name, "workspace_id": workspace_id,
+              "user_llm_config_id": user_llm_config_id},
+    )
+
+
+def _detail(client, instance_id):
+    return unwrap(client.get(f"/api/openops/v1/agent-teams/{instance_id}", headers=USER_HEADERS))
+
+
+def test_update_renames_instance(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="编辑前名字")
+    out = unwrap(_update(client, inst["instance_id"], "upd_rename", "编辑后名字", inst["workspace_id"]))
+    assert out["instance"]["instance_name"] == "编辑后名字"
+    listed = unwrap(client.get("/api/openops/v1/agent-teams", headers=USER_HEADERS))
+    assert any(i["instance_id"] == inst["instance_id"] and i["instance_name"] == "编辑后名字" for i in listed)
+
+
+def test_update_same_name_self_ok(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="自身同名")
+    r = _update(client, inst["instance_id"], "upd_selfname", "自身同名", inst["workspace_id"])
+    assert r.status_code == 200  # 保留自己的名字不撞唯一性
+
+
+def test_update_duplicate_name_conflict(client):
+    from conftest import create_instance
+
+    create_instance(client, name="占位名字")
+    other = create_instance(client, name="待改名")
+    r = _update(client, other["instance_id"], "upd_dup", "占位名字", other["workspace_id"])
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_update_workspace_not_ready_blocked(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="换未就绪范围")
+    r = _update(client, inst["instance_id"], "upd_notready", "换未就绪范围·新名", "ws_syncing")
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "WORKSPACE_NOT_READY"
+    # 先全量校验后落库：换范围失败时改名也不得半生效
+    detail = _detail(client, inst["instance_id"])["instance"]
+    assert detail["workspace_id"] == inst["workspace_id"]
+    assert detail["instance_name"] == "换未就绪范围"
+
+
+def test_update_workspace_refreshes_scope_revision(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="换范围刷快照")
+    ws = unwrap(client.post("/api/openops/v1/workspaces", headers=USER_HEADERS,
+                            json={"client_request_id": "upd_ws_new", "name": "新范围", "app_ids": ["APP-A"]}))
+    unwrap(_update(client, inst["instance_id"], "upd_swap_ws", "换范围刷快照", ws["workspace_id"]))
+    detail = _detail(client, inst["instance_id"])["instance"]
+    all_ws = unwrap(client.get("/api/openops/v1/workspaces", headers=USER_HEADERS))
+    fresh_rev = next(w["scope_revision"] for w in all_ws if w["workspace_id"] == ws["workspace_id"])
+    assert detail["workspace_id"] == ws["workspace_id"]
+    assert detail["scope_revision"] == fresh_rev
+
+
+def test_update_overlay_merge_preserves_main_role_append(client):
+    templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+    inst = unwrap(client.post(
+        "/api/openops/v1/agent-teams", headers=USER_HEADERS,
+        json={"client_request_id": "upd_ov_create", "template_version_id": templates[0]["template_version_id"],
+              "name": "覆盖合并", "workspace_id": "ws_pay_abc",
+              "initial_overlay_json": {"main_role_append": "保留我"}},
+    ))["instance"]
+    unwrap(_update(client, inst["instance_id"], "upd_ov_llm", "覆盖合并", "ws_pay_abc", "llm-cfg-1"))
+    detail = _detail(client, inst["instance_id"])
+    overlay = detail["active_config_version"]["overlay_json"]
+    assert overlay == {"main_role_append": "保留我", "user_llm_config_id": "llm-cfg-1"}
+    versions = unwrap(client.get(
+        f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS))
+    assert versions[0]["version_no"] == 2 and versions[0]["status"] == "active"
+    assert versions[1]["version_no"] == 1 and versions[1]["status"] == "archived"
+
+
+def test_update_custom_to_platform_removes_llm(client):
+    templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+    inst = unwrap(client.post(
+        "/api/openops/v1/agent-teams", headers=USER_HEADERS,
+        json={"client_request_id": "upd_back_create", "template_version_id": templates[0]["template_version_id"],
+              "name": "回平台默认", "workspace_id": "ws_pay_abc",
+              "initial_overlay_json": {"main_role_append": "别动我", "user_llm_config_id": "llm-cfg-2"}},
+    ))["instance"]
+    unwrap(_update(client, inst["instance_id"], "upd_back_pf", "回平台默认", "ws_pay_abc", None))
+    overlay = _detail(client, inst["instance_id"])["active_config_version"]["overlay_json"]
+    assert overlay == {"main_role_append": "别动我"}
+
+
+def test_update_rename_only_no_new_config_version(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="纯改名")
+    before_cv = _detail(client, inst["instance_id"])["instance"]["active_config_version_id"]
+    unwrap(_update(client, inst["instance_id"], "upd_nameonly", "纯改名·新", inst["workspace_id"]))
+    detail = _detail(client, inst["instance_id"])["instance"]
+    assert detail["active_config_version_id"] == before_cv  # 不涨配置版本
+    versions = unwrap(client.get(
+        f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS))
+    assert len(versions) == 1
+
+
+def test_update_ownership_403(client):
+    from conftest import ADMIN_HEADERS
+
+    tv = unwrap(client.get("/api/openops/v1/templates/available", headers=ADMIN_HEADERS))[0]["template_version_id"]
+    inst_admin = unwrap(client.post("/api/openops/v1/agent-teams", headers=ADMIN_HEADERS,
+                                    json={"client_request_id": "upd_agt_admin", "template_version_id": tv,
+                                          "name": "admin的实例", "workspace_id": "ws_pay_abc"}))["instance"]
+    r = _update(client, inst_admin["instance_id"], "upd_forbidden", "偷改", "ws_pay_abc")
+    assert r.status_code == 403
+
+
+def test_update_client_request_id_idempotent(client):
+    from conftest import create_instance
+
+    inst = create_instance(client, name="编辑幂等")
+    one = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", "llm-cfg-3"))
+    two = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", "llm-cfg-3"))
+    assert one["instance"]["instance_id"] == two["instance"]["instance_id"]
+    versions = unwrap(client.get(
+        f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS))
+    assert len(versions) == 2  # 重放不重复派生（initial + 模型变更一版）
+    # 同 key 异体（hash 载荷含 instance_id 与字段）→ 409
+    r = _update(client, inst["instance_id"], "upd_idem", "编辑幂等·异体", "ws_pay_abc", "llm-cfg-3")
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
+
+
 def test_root_path_shim_strips_prefix_only_when_present():
     """文根自剥（RootPathShim）：带前缀剥掉+root_path 回写；裸路径原样放行（sidecar 直连）。"""
     import asyncio as _asyncio

@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from api.deps import User
 from api.responses import ok
 from app import agent_team_service, asset_registry_service
-from domain.schemas import AssetBindingRequest, CreateAgentTeamRequest, SaveConfigRequest
+from domain.schemas import AssetBindingRequest, CreateAgentTeamRequest, SaveConfigRequest, UpdateAgentTeamRequest
 
 router = APIRouter(prefix="/api/openops/v1", tags=["agent-teams"])
 
@@ -23,6 +23,12 @@ async def create(req: CreateAgentTeamRequest, user: User):
 @router.get("/agent-teams/{instance_id}")
 async def get(instance_id: str, user: User):
     return ok(await agent_team_service.get(user, instance_id))
+
+
+@router.post("/agent-teams/{instance_id}:update")
+async def update(instance_id: str, req: UpdateAgentTeamRequest, user: User):
+    """编辑实例：改名 / 换 workspace（刷新 scope 快照）/ 换模型（派生新配置版本）。"""
+    return ok(await agent_team_service.update(user, instance_id, req))
 
 
 @router.post("/agent-teams/{instance_id}:disable")

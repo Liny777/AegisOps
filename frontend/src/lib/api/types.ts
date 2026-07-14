@@ -29,6 +29,16 @@ export interface AgentInstance {
   model?: string; // 新原型：模型提供商行
 }
 
+/** 编辑向导预填数据（GET /agent-teams/{id} 投影：实例列 + active 配置版本 overlay）。
+ * 与卡片投影（projectInstance 的展示串）分开——预填要的是真实 id/overlay，不是显示文案。 */
+export interface AgentTeamDetail {
+  instance_id: string;
+  name: string;
+  template_version_id: string;
+  workspace_id: string;
+  overlay: Record<string, unknown>; // active_config_version.overlay_json（user_llm_config_id 等）
+}
+
 /* -------------------------- 对话工作台 -------------------------- */
 export interface ChatMessage {
   id: string;

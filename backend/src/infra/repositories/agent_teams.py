@@ -7,15 +7,17 @@ from typing import Any
 from infra.db import exec1, jsonb, q_all, q_one
 
 
-async def name_exists(owner: str, name: str) -> bool:
-    row = await q_one(
-        """
+async def name_exists(owner: str, name: str, exclude_instance_id: str | None = None) -> bool:
+    """同 owner 存活实例同名判定；编辑改名传 exclude_instance_id 排除自身（DDL 有部分唯一索引兜底）。"""
+    sql = """
         select 1 ok from sre_agent_team_instance
         where owner_user_id=%(o)s and instance_name=%(n)s and deleted_at is null
-        """,
-        {"o": owner, "n": name},
-    )
-    return row is not None
+    """
+    params: dict[str, Any] = {"o": owner, "n": name}
+    if exclude_instance_id:
+        sql += " and agent_team_instance_id <> %(x)s"
+        params["x"] = exclude_instance_id
+    return (await q_one(sql, params)) is not None
 
 
 async def create_instance(
@@ -86,6 +88,29 @@ async def update_template_version(instance_id: str, template_version_id: str, by
         where agent_team_instance_id=%(i)s and deleted_at is null
         """,
         {"i": instance_id, "tv": template_version_id, "b": by},
+    )
+
+
+async def set_name(instance_id: str, name: str, by: str) -> int:
+    """编辑改名（唯一性由 service 预检 + DDL 部分唯一索引兜底）。"""
+    return await exec1(
+        """
+        update sre_agent_team_instance set instance_name=%(n)s, last_updated_by=%(b)s, last_update_date=now()
+        where agent_team_instance_id=%(i)s and deleted_at is null
+        """,
+        {"i": instance_id, "n": name, "b": by},
+    )
+
+
+async def update_workspace(instance_id: str, workspace_id: str, scope_revision: str, by: str) -> int:
+    """编辑换系统范围：workspace_id 与 scope_revision 快照一条 UPDATE 同步落库。"""
+    return await exec1(
+        """
+        update sre_agent_team_instance set workspace_id=%(w)s, scope_revision=%(sr)s,
+               last_updated_by=%(b)s, last_update_date=now()
+        where agent_team_instance_id=%(i)s and deleted_at is null
+        """,
+        {"i": instance_id, "w": workspace_id, "sr": scope_revision, "b": by},
     )
 
 

@@ -84,6 +84,70 @@ async def get(user: dict[str, Any], instance_id: str) -> dict[str, Any]:
     return {"instance": _dto(row), "active_config_version": row_json(cfg) if cfg else None}
 
 
+async def update(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
+    """编辑实例（编辑向导）：改名 / 换 workspace / 换模型；模板不可换。"""
+    uid = user["user_id"]
+    # hash 载荷带 path 上的 instance_id：同 crid 打不同实例 → IDEMPOTENCY_KEY_CONFLICT 而非误重放
+    payload = {"instance_id": instance_id, **req.model_dump(exclude={"client_request_id"})}
+    cached = await idempotency.begin(uid, "update_agent_team", req.client_request_id, payload)
+    if cached is not None:
+        return cached
+    try:
+        return await _update_body(user, instance_id, req)
+    except Exception:
+        await idempotency.rollback(uid, "update_agent_team", req.client_request_id)
+        raise
+
+
+async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
+    uid = user["user_id"]
+    row = _owner_check(await agent_teams.get_instance(instance_id), uid)
+    rename = req.name != row["instance_name"]
+    ws_change = req.workspace_id != row["workspace_id"]
+
+    # 先全量校验后落库，避免半更新（如改名已生效、换 workspace 才失败）
+    if rename and await agent_teams.name_exists(uid, req.name, exclude_instance_id=instance_id):
+        raise ApiError(Err.VALIDATION_FAILED, "同名实例已存在")
+    ws = None
+    if ws_change:
+        # 换范围 = 换安全边界，与 disable/delete 同守卫；改名/换模型不拦（模型在任务启动时装配）
+        if _has_running_task(instance_id):
+            raise ApiError(Err.INSTANCE_BUSY, "仍有任务运行中，请先取消任务")
+        ws = await omodel_client.get_workspace(req.workspace_id)
+        if ws is None:
+            raise ApiError(Err.NOT_FOUND, "workspace 不存在")
+        if ws["sync_status"] != "ready":
+            raise ApiError(Err.WORKSPACE_NOT_READY, "workspace 未就绪，暂不能激活")  # INIT-003 口径
+
+    # 模型 overlay：save_config 是整体替换，这里必须读旧值合并、只动 user_llm_config_id（保 main_role_append）
+    prev = await agent_teams.get_config_version(str(row["active_config_version_id"]))
+    prev_overlay = dict((prev or {}).get("overlay_json") or {})
+    new_overlay = {k: v for k, v in prev_overlay.items() if k != "user_llm_config_id"}
+    if req.user_llm_config_id:
+        new_overlay["user_llm_config_id"] = req.user_llm_config_id
+
+    changed: dict[str, Any] = {}
+    if rename:
+        await agent_teams.set_name(instance_id, req.name, uid)
+        changed["name"] = req.name
+    if ws_change and ws is not None:
+        await agent_teams.update_workspace(instance_id, req.workspace_id, ws["scope_revision"], uid)
+        changed["workspace_id"] = req.workspace_id
+        changed["scope_revision"] = ws["scope_revision"]
+    if new_overlay != prev_overlay:  # 纯改名/换范围不涨配置版本
+        await derive_config_version(row, uid, "edit: 模型变更", overlay=new_overlay)
+        changed["user_llm_config_id"] = req.user_llm_config_id
+    if changed:  # payload 只含变化字段的纯标识符（SEC-001）
+        await audit.insert_event(
+            audit_trace_id=instance_id, event_type="instance.updated",
+            user_id=uid, instance_id=instance_id,
+            action="update", payload_redacted=changed, actor_type="user",
+        )
+    fresh = _owner_check(await agent_teams.get_instance(instance_id), uid)
+    result = {"instance": _dto(fresh)}
+    return await idempotency.commit(uid, "update_agent_team", req.client_request_id, result)
+
+
 async def available_skills(user: dict[str, Any], instance_id: str) -> list[dict[str, Any]]:
     """composer「/」列表数据源：与执行门禁**同源**（run_state_service.resolve_available_skills，
     平台 active ∪ 本实例绑定的用户 Skill）——保证前端展示的即后端可执行的，键=skill_key。"""
