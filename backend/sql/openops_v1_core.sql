@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS sre_agent_team_template (
   deleted_at timestamptz
 );
 
-CREATE TABLE IF NOT EXISTS sre_agent_team_template_version (
+CREATE TABLE IF NOT EXISTS sre_agent_team_tpl_version (
   template_version_id uuid NOT NULL PRIMARY KEY,
   template_id uuid NOT NULL,
   version_no integer NOT NULL,
@@ -444,11 +444,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_key
   WHERE deleted_at IS NULL;
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tplver_no
-  ON sre_agent_team_template_version (template_id, version_no);
+  ON sre_agent_team_tpl_version (template_id, version_no);
 
 -- 同一模板最多一个 active 版本：并发双发布是应用层校验挡不住的竞态，用部分唯一索引兜底（非外键、非触发器）
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tplver_active
-  ON sre_agent_team_template_version (template_id)
+  ON sre_agent_team_tpl_version (template_id)
   WHERE status = 'active';
 
 CREATE UNIQUE INDEX IF NOT EXISTS ux_inst_owner_name
@@ -495,14 +495,14 @@ CREATE INDEX IF NOT EXISTS ix_user_whitelist_user_status
 CREATE INDEX IF NOT EXISTS ix_user_whitelist_expire_at
   ON sre_user_whitelist (expire_at);
 
-CREATE INDEX IF NOT EXISTS ix_platform_runtime_config_status
+CREATE INDEX IF NOT EXISTS ix_platform_runtime_cfg_status
   ON sre_platform_runtime_config (config_domain, status);
 
 CREATE INDEX IF NOT EXISTS ix_tpl_status
   ON sre_agent_team_template (status);
 
 CREATE INDEX IF NOT EXISTS ix_tplver_tpl_status
-  ON sre_agent_team_template_version (template_id, status);
+  ON sre_agent_team_tpl_version (template_id, status);
 
 CREATE INDEX IF NOT EXISTS ix_inst_owner_status
   ON sre_agent_team_instance (owner_user_id, status);
@@ -680,21 +680,21 @@ COMMENT ON COLUMN sre_agent_team_template.last_update_date IS '最后更新时�
 COMMENT ON COLUMN sre_agent_team_template.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_agent_team_template.deleted_at IS '软删除时间，NULL 表示未删除';
 
-COMMENT ON TABLE sre_agent_team_template_version IS '不可变模板版本，保存 main/sub 定义和模板默认资产绑定';
-COMMENT ON COLUMN sre_agent_team_template_version.template_version_id IS '模板版本主键';
-COMMENT ON COLUMN sre_agent_team_template_version.template_id IS '所属模板 ID';
-COMMENT ON COLUMN sre_agent_team_template_version.version_no IS '版本号，模板内递增';
-COMMENT ON COLUMN sre_agent_team_template_version.schema_version IS 'content_json 的 schema 版本';
-COMMENT ON COLUMN sre_agent_team_template_version.content_json IS '模板内容 JSON，含 main/sub role、模板级 LLM、平台 Skill/MCP tool 绑定';
-COMMENT ON COLUMN sre_agent_team_template_version.status IS '状态：draft / active / archived / disabled / deleted';
-COMMENT ON COLUMN sre_agent_team_template_version.published_by IS '发布管理员工号';
-COMMENT ON COLUMN sre_agent_team_template_version.published_at IS '发布时间';
-COMMENT ON COLUMN sre_agent_team_template_version.content_hash IS '内容 hash';
-COMMENT ON COLUMN sre_agent_team_template_version.creation_date IS '创建时间';
-COMMENT ON COLUMN sre_agent_team_template_version.last_update_date IS '最后更新时间';
-COMMENT ON COLUMN sre_agent_team_template_version.created_by IS '创建人工号';
-COMMENT ON COLUMN sre_agent_team_template_version.last_updated_by IS '最后更新人工号';
-COMMENT ON COLUMN sre_agent_team_template_version.deleted_at IS '软删除时间，NULL 表示未删除';
+COMMENT ON TABLE sre_agent_team_tpl_version IS '不可变模板版本，保存 main/sub 定义和模板默认资产绑定';
+COMMENT ON COLUMN sre_agent_team_tpl_version.template_version_id IS '模板版本主键';
+COMMENT ON COLUMN sre_agent_team_tpl_version.template_id IS '所属模板 ID';
+COMMENT ON COLUMN sre_agent_team_tpl_version.version_no IS '版本号，模板内递增';
+COMMENT ON COLUMN sre_agent_team_tpl_version.schema_version IS 'content_json 的 schema 版本';
+COMMENT ON COLUMN sre_agent_team_tpl_version.content_json IS '模板内容 JSON，含 main/sub role、模板级 LLM、平台 Skill/MCP tool 绑定';
+COMMENT ON COLUMN sre_agent_team_tpl_version.status IS '状态：draft / active / archived / disabled / deleted';
+COMMENT ON COLUMN sre_agent_team_tpl_version.published_by IS '发布管理员工号';
+COMMENT ON COLUMN sre_agent_team_tpl_version.published_at IS '发布时间';
+COMMENT ON COLUMN sre_agent_team_tpl_version.content_hash IS '内容 hash';
+COMMENT ON COLUMN sre_agent_team_tpl_version.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_agent_team_tpl_version.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_agent_team_tpl_version.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_agent_team_tpl_version.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_agent_team_tpl_version.deleted_at IS '软删除时间，NULL 表示未删除';
 
 COMMENT ON TABLE sre_agent_team_instance IS '普通用户基于模板创建的 AgentTeam 实例';
 COMMENT ON COLUMN sre_agent_team_instance.agent_team_instance_id IS '实例主键';
@@ -1018,9 +1018,18 @@ CREATE TABLE IF NOT EXISTS sre_idempotency_key (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_idempotency_key
   ON sre_idempotency_key (user_id, op, client_request_id) WHERE deleted_at IS NULL;
 COMMENT ON TABLE sre_idempotency_key IS '幂等键（P 块）：同 (user_id, op, client_request_id) 重放返回首个结果，跨进程持久（内存为 L1）；过期行启动时物理清理';
-COMMENT ON COLUMN sre_idempotency_key.result_json IS '首次执行的结果（row_json 后的 JSON），重放原样返回；NULL=占位进行中（DEF-3 先占位后执行）';
+COMMENT ON COLUMN sre_idempotency_key.idempotency_id IS '幂等键主键';
+COMMENT ON COLUMN sre_idempotency_key.user_id IS '用户 W3 工号';
+COMMENT ON COLUMN sre_idempotency_key.op IS '操作标识，如 create_run / create_agent_team / update_agent_team';
+COMMENT ON COLUMN sre_idempotency_key.client_request_id IS '客户端请求 ID，与 user_id、op 共同组成幂等键';
 COMMENT ON COLUMN sre_idempotency_key.request_hash IS '请求体 sha256（DEF-3/INIT-006）：同 key 不同体 → 409 IDEMPOTENCY_KEY_CONFLICT';
+COMMENT ON COLUMN sre_idempotency_key.result_json IS '首次执行的结果（row_json 后的 JSON），重放原样返回；NULL=占位进行中（DEF-3 先占位后执行）';
 COMMENT ON COLUMN sre_idempotency_key.expire_at IS '过期时间（默认 7 天）；过期后允许同 key 重新执行';
+COMMENT ON COLUMN sre_idempotency_key.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_idempotency_key.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_idempotency_key.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_idempotency_key.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_idempotency_key.deleted_at IS '软删除时间，NULL 表示未删除';
 
 -- P 块：任务运行态快照（重启孤儿收敛用；内存 task_registry 为热路径，本表为影子快照）
 CREATE TABLE IF NOT EXISTS sre_task_state (
@@ -1045,7 +1054,23 @@ CREATE TABLE IF NOT EXISTS sre_task_state (
 CREATE INDEX IF NOT EXISTS ix_task_state_run ON sre_task_state (run_id, creation_date DESC);
 CREATE INDEX IF NOT EXISTS ix_task_state_running ON sre_task_state (user_id) WHERE task_status = 'running';
 COMMENT ON TABLE sre_task_state IS '任务运行态影子快照（P 块）：可序列化字段落盘（协程/Event 活对象不落）；重启后 running 行由 startup 收敛为 interrupted，不做协程恢复';
+COMMENT ON COLUMN sre_task_state.task_id IS '任务主键';
+COMMENT ON COLUMN sre_task_state.run_id IS '所属运行 ID';
+COMMENT ON COLUMN sre_task_state.user_id IS '任务发起人工号';
+COMMENT ON COLUMN sre_task_state.instance_id IS '所属 AgentTeam 实例 ID';
 COMMENT ON COLUMN sre_task_state.task_status IS 'running / completed / failed / cancelled / interrupted（重启收敛态）';
+COMMENT ON COLUMN sre_task_state.input_text IS '任务输入文本';
+COMMENT ON COLUMN sre_task_state.rca_json IS 'RCA 状态快照 JSON，供任务状态恢复展示';
+COMMENT ON COLUMN sre_task_state.selected_model IS '任务选用的模型标识';
+COMMENT ON COLUMN sre_task_state.scope_ctx_json IS '任务范围上下文快照，含 effective_appids、snapshot_id 和 revision';
+COMMENT ON COLUMN sre_task_state.approval_id IS '当前关联审批请求 ID，可空';
+COMMENT ON COLUMN sre_task_state.started_at IS '任务开始时间，ISO 8601 文本';
+COMMENT ON COLUMN sre_task_state.audit_trace_id IS '关联审计 trace 根 ID';
+COMMENT ON COLUMN sre_task_state.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_task_state.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_task_state.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_task_state.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_task_state.deleted_at IS '软删除时间，NULL 表示未删除';
 
 -- P 块：Agent 会话状态（同 run 跨 task 记忆连续性；AgentState pydantic 全量 JSON）
 CREATE TABLE IF NOT EXISTS sre_agent_session_state (
@@ -1062,6 +1087,15 @@ CREATE TABLE IF NOT EXISTS sre_agent_session_state (
 CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_session_state
   ON sre_agent_session_state (framework_session_id, agent_key) WHERE deleted_at IS NULL;
 COMMENT ON TABLE sre_agent_session_state IS 'Agent 会话状态（P 块）：AgentState 按 (framework_session_id, agent_key) 持久化，task 开始读入/终态回写——同 run 第二个 task 不再失忆；agent_key 为 D 块 sub agent 预留';
+COMMENT ON COLUMN sre_agent_session_state.session_state_id IS '会话状态主键';
+COMMENT ON COLUMN sre_agent_session_state.framework_session_id IS 'AgentScope session ID';
+COMMENT ON COLUMN sre_agent_session_state.agent_key IS 'Agent 角色 key，当前为 main，预留 sub agent';
+COMMENT ON COLUMN sre_agent_session_state.state_json IS 'AgentScope AgentState 全量 JSON';
+COMMENT ON COLUMN sre_agent_session_state.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_agent_session_state.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_agent_session_state.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_agent_session_state.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_agent_session_state.deleted_at IS '软删除时间，NULL 表示未删除';
 
 -- D 块：派发账本（老 D6 状态机迁移；同步 gather 模式下无独立 watcher，超时由派发边界裁决）
 CREATE TABLE IF NOT EXISTS sre_agent_delegation (
@@ -1082,7 +1116,20 @@ CREATE TABLE IF NOT EXISTS sre_agent_delegation (
 );
 CREATE INDEX IF NOT EXISTS ix_delegation_leader ON sre_agent_delegation (leader_task_id, creation_date DESC);
 COMMENT ON TABLE sre_agent_delegation IS '派发账本（D 块）：main→sub 每次派发一行；预算按本表计数（活跃=非终态；累计=全行含软删，防删除重置）';
+COMMENT ON COLUMN sre_agent_delegation.delegation_id IS '派发记录主键';
+COMMENT ON COLUMN sre_agent_delegation.run_id IS '所属运行 ID';
+COMMENT ON COLUMN sre_agent_delegation.leader_task_id IS '发起派发的主任务 ID';
+COMMENT ON COLUMN sre_agent_delegation.agent_key IS '目标子 Agent 角色 key';
+COMMENT ON COLUMN sre_agent_delegation.task_text IS '派发给子 Agent 的任务文本';
 COMMENT ON COLUMN sre_agent_delegation.delegation_status IS 'running / completed / failed_no_report / timeout / cancelled';
+COMMENT ON COLUMN sre_agent_delegation.had_final_report IS '是否已产出最终汇报';
+COMMENT ON COLUMN sre_agent_delegation.deadline IS '子 Agent 执行截止时间';
+COMMENT ON COLUMN sre_agent_delegation.report_text IS '子 Agent 最终汇报文本，可空';
+COMMENT ON COLUMN sre_agent_delegation.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_agent_delegation.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_agent_delegation.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_agent_delegation.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_agent_delegation.deleted_at IS '软删除时间，NULL 表示未删除';
 
 -- ==================== 增量迁移（幂等，重跑本文件自动补齐旧库） ====================
 -- ⚠ 新列的 COMMENT 必须放本段（ALTER 之后）：COMMENT 无 IF EXISTS，放上方主体段会在旧库炸 UndefinedColumn。

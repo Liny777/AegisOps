@@ -6,7 +6,8 @@
 
 ## 1. 数据库
 
-- [ ] 目标库执行/重放 `backend/sql/openops_v1_core.sql`（幂等；26 表；增量列在尾部 ALTER 段）
+- [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；任一步失败均停止发布
+- [ ] 全新库只执行 `backend/sql/openops_v1_core.sql`（幂等；26 表），成功后再发布/启动新后端
 - [ ] GaussDB 环境确认：无 `role` 裸列名（已改 `user_role`）、无 ON CONFLICT 偏索引 target
 - [ ] 首次建库：启动一次后端触发 seed（模板/标注/沙箱配置/模型资产）；已播种库 seed 自动跳过
 

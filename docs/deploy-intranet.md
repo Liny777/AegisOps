@@ -7,7 +7,7 @@
                       ├── /api/copilotkit → compose 网内 sidecar 容器 :4002（CopilotKit 流）
                       └── /api           → 后端机 :18082（REST/SSE/agui，关缓冲长超时）
                     openops-sidecar（不发布宿主机端口，仅 compose 网内可达）
-后端机：uvicorn（run.py，:18082）+（可选）Docker 沙箱 ── PG（内网库，先跑 core.sql）
+后端机：uvicorn（run.py，:18082）+（可选）Docker 沙箱 ── PG（存量库先迁移再跑 core.sql；新库只跑 core.sql）
 ```
 
 前端所有请求都是相对路径（`/api`、`/api/copilotkit`），**同两个镜像测试/生产共用**——
@@ -75,10 +75,23 @@ sudo -u openops vi /opt/openops/shared/config/openops.prod.env
 sudo -u openops bash "$RELEASE/scripts/release_check.sh" \
   --production-env /opt/openops/shared/config/openops.prod.env
 
-# 建表（幂等，26 表；GaussDB 保留字已规避）——每个库/schema 一次
-# 已建过表的旧库升级也重跑本文件：尾部「增量迁移」段幂等补齐（07-13 缺陷批新增
-# sre_idempotency_key.request_hash 列 + result_json 去 NOT NULL/DEFAULT，必须跑）
-psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
+# 数据库变更必须在切换 current / 重启后端前完成；按实际状态填写 existing 或 new。
+DATABASE_MODE=REPLACE_WITH_existing_OR_new
+case "$DATABASE_MODE" in
+  existing)
+    # 存量库：先无损重命名旧对象，再重放 core.sql；两步成功后才能发布新后端。
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-ddl-object-names.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
+    ;;
+  new)
+    # 全新库：只执行 core.sql；成功后再发布新后端。
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
+    ;;
+  *)
+    echo "DATABASE_MODE 必须显式设置为 existing 或 new" >&2
+    exit 1
+    ;;
+esac
 
 # 安装完成后冻结发布源码/元数据；运行用户只保留 release 内 venv 的写权限。
 sudo chown -R root:openops \

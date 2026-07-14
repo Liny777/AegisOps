@@ -54,7 +54,7 @@ TABLES = [
     "sre_instance_asset_binding",
     "sre_agent_team_config_version",
     "sre_agent_team_instance",
-    "sre_agent_team_template_version",
+    "sre_agent_team_tpl_version",
     "sre_agent_team_template",
     "sre_platform_runtime_config",
     "sre_user_whitelist",

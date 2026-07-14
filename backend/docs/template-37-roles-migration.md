@@ -1,6 +1,6 @@
 # 老版 roles.yaml（37 号）→ 感知快恢模板迁移手册（2026-07-12）
 
-老项目 roles.yaml 的角色画像在新平台的权威载体是**模板的 `content_json`**（`sre_agent_team_template_version` 表）。
+老项目 roles.yaml 的角色画像在新平台的权威载体是**模板的 `content_json`**（`sre_agent_team_tpl_version` 表）。
 不再有 yaml 文件；改角色 = 发一个新模板版本。本文给出字段映射、前置条件、可直接使用的 content_json 与两条落库路径。
 
 ## 一、字段映射（老 → 新）
