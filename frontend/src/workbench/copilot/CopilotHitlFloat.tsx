@@ -6,6 +6,7 @@
 // 时自动跟随；不碰 CopilotChat 内部（input slot 方案在外部状态注入时组件引用不稳，
 // 会整段重建输入框丢焦点）。RCA 决策面板保持顶部横条（分析上下文，非动作项）。
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { HitlCard } from "../HitlCard";
 import type { HitlCardData } from "../../lib/api/types";
 
@@ -47,10 +48,14 @@ export function CopilotHitlFloat({ hitl, onDecide }: {
   if (!hitl || !anchor) return null;
   const width = Math.min(anchor.width, MAX_W);
   const left = anchor.left + (anchor.width - width) / 2; // 比输入框宽时水平居中对齐
-  return (
-    <div style={{ position: "fixed", left, bottom: anchor.bottom, width, zIndex: 50,
+  // 经 portal 挂到 body：CopilotChat 虚拟消息列表容器会建独立层叠上下文，作为其兄弟的浮层
+  // （原 zIndex:50）会被内联工具卡盖住。挂 body 后彻底脱离该子树，position:fixed 仍按视口坐标
+  // 定位（锚定数学不变），zIndex 压过一切内联渲染，审批卡稳定置顶。
+  return createPortal(
+    <div style={{ position: "fixed", left, bottom: anchor.bottom, width, zIndex: 1000,
                   boxShadow: "0 12px 32px rgba(20,24,31,.16)", borderRadius: 14 }}>
       <HitlCard key={hitl.approval_request_id + hitl.status} hitl={hitl} onDecide={onDecide} />
-    </div>
+    </div>,
+    document.body,
   );
 }

@@ -561,3 +561,92 @@ def test_bash_approval_required_payload_carries_args(client):
     assert p["tool"] == "run_container_command"
     assert p["args"]["command"] == "rm data.txt"  # 通用入参字典（前端逐项展示）
     assert p["command"] == "rm data.txt"           # 兼容旧前端字段保留
+
+
+def test_skill_013_unzip_strips_single_toplevel_dir():
+    """2026-07-14 exit2 实锤修复：zip -r 打包的单顶层目录自动剥掉；混合层级不动；
+    无 entrypoint 行但有 run.py 保旧默认（零回归）；均无 → None（手册型信号）。"""
+    import io
+    import zipfile
+
+    from infra.external.skill_hub_client import _entrypoint_from, _unzip
+
+    def _zip(entries: dict[str, bytes]) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            for name, data in entries.items():
+                z.writestr(name, data)
+        return buf.getvalue()
+
+    # 单顶层目录 → 剥
+    files = _unzip(_zip({"change-query/SKILL.md": b"# m", "change-query/run.py": b"print(1)"}))
+    assert set(files) == {"SKILL.md", "run.py"}
+    # 混合层级（有文件在根）→ 不动
+    files2 = _unzip(_zip({"SKILL.md": b"# m", "lib/util.py": b""}))
+    assert set(files2) == {"SKILL.md", "lib/util.py"}
+    # entrypoint 解析三态
+    assert _entrypoint_from({"SKILL.md": b"entrypoint: bash run.sh", "run.sh": b""}) == "bash run.sh"
+    assert _entrypoint_from({"SKILL.md": b"# no entry", "run.py": b""}) == "python3 run.py"  # 保旧默认
+    assert _entrypoint_from({"SKILL.md": b"# manual only"}) is None  # 手册型
+
+
+def test_skill_014_manual_skill_returns_manual_text(client, monkeypatch):
+    """手册型 Skill（只有 SKILL.md 无脚本）：不进沙箱，正文返回模型 + skill.call.succeeded(mode=manual)。"""
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    async def _manual_pkg(_key, _ver):
+        return {"files": {"SKILL.md": "# alarm-query 排查手册\n先查告警列表再看详情。".encode()},
+                "entrypoint": None, "checksum": "x"}
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _manual_pkg)
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_man", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk-man", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {"alarm-query": {"version_no": 1}}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "alarm-query")
+        assert "手册型技能" in txt and "排查手册" in txt
+        assert st.tool_blocked is False  # 手册装载=成功，不是拦截
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    ok = [e for e in events if e["event_type"] == "openops.skill.call.succeeded"]
+    # 审计出口有 payload 白名单投影（活动栏批次）：mode 键被剥，按可观测契约断言 summary
+    assert ok and "手册已装载" in str(ok[0]["payload_redacted_json"].get("summary", ""))
+
+
+def test_skill_015_entrypoint_missing_structured_error(client, monkeypatch):
+    """脚本型但 entrypoint 指的脚本不在包内：SKILL_PACKAGE_INVALID 结构化报错，不再是 python exit 2。"""
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    async def _broken_pkg(_key, _ver):
+        return {"files": {"SKILL.md": b"entrypoint: python3 run.py"},  # 声明了脚本但包里没有
+                "entrypoint": "python3 run.py", "checksum": "x"}
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _broken_pkg)
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_brk", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk-brk", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {"change-query": {"version_no": 1}}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "change-query")
+        assert "SKILL_PACKAGE_INVALID" in txt
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    fails = [e for e in events if e["event_type"] == "openops.skill.call.failed"]
+    assert fails and fails[0]["reason_code"] == "SKILL_PACKAGE_INVALID"

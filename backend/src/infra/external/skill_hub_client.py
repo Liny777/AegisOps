@@ -116,21 +116,33 @@ async def list_skills(user_id: str) -> list[dict[str, Any]]:
 
 
 def _unzip(data: bytes) -> dict[str, bytes]:
+    """解包 + 剥单一公共顶层目录。
+
+    内网实锤（2026-07-14 exit 2 事故）：SkillHub 的 ZIP 常按 `zip -r x.zip skill-dir/` 打包，
+    所有文件落在 `skill-dir/…` 子层 → 根目录无 SKILL.md → entrypoint 解析失效。
+    所有 entry 共享同一首段目录时 strip 之；混合层级（部分在根）不动。"""
     files: dict[str, bytes] = {}
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         for name in z.namelist():
             if not name.endswith("/"):
                 files[name] = z.read(name)
+    prefixes = {name.split("/", 1)[0] for name in files}
+    if len(prefixes) == 1 and all("/" in name for name in files):  # 全部嵌在同一顶层目录下
+        files = {name.split("/", 1)[1]: data for name, data in files.items()}
     return files
 
 
-def _entrypoint_from(files: dict[str, bytes]) -> str:
-    """从 SKILL.md frontmatter 取 entrypoint（29.3 契约）；缺省回退 python3 run.py。"""
+def _entrypoint_from(files: dict[str, bytes]) -> str | None:
+    """从 SKILL.md frontmatter 取 entrypoint（29.3 契约）。
+
+    无 entrypoint 行时：包里恰有 run.py → 回退 `python3 run.py`（保留旧默认，零回归）；
+    否则返回 None = **手册型 Skill**（老形态：SKILL.md 是给 Agent 读的排查手册，无可执行脚本
+    ——内网 SkillHub 的 alarm-query/change-query 即此形态，按脚本执行必 exit 2）。"""
     md = files.get("SKILL.md", b"").decode("utf-8", "replace")
     for line in md.splitlines():
         if line.strip().startswith("entrypoint:"):
             return line.split(":", 1)[1].strip()
-    return "python3 run.py"
+    return "python3 run.py" if "run.py" in files else None
 
 
 async def download_skill_package(skill_key: str, version_no: int) -> dict[str, Any]:

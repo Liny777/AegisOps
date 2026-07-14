@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any
 
+from domain.errors import ApiError, Err
 from infra.external import skill_hub_client
 from runtime.emit import emit
 from runtime.task_registry import TaskState
@@ -36,6 +38,22 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
                message=f"Skill 执行：{skill_name}", payload={"skill": skill_name})
     try:
         pkg = await skill_hub_client.download_skill_package(skill_name, int(meta.get("version_no") or 1))
+        # 双形态分型（2026-07-14 内网 exit 2 实锤）：SkillHub 老形态 Skill 只有 SKILL.md 排查手册、
+        # 无可执行脚本（entrypoint=None）——不进沙箱，把手册正文返回给模型照做（老「查阅排查手册」语义）
+        if pkg.get("entrypoint") is None:
+            md = (pkg.get("files") or {}).get("SKILL.md", b"").decode("utf-8", "replace").strip()
+            if not md:
+                raise ApiError(Err.SKILL_PACKAGE_INVALID, "Skill 包既无可执行 entrypoint 也无 SKILL.md 手册")
+            cap = int(os.environ.get("OPENOPS_SKILL_MANUAL_CAP", "12000"))
+            await emit(st, run, "openops.skill.call.succeeded", action=skill_name,
+                       message=f"Skill 手册已装载：{skill_name}",
+                       payload={"skill": skill_name, "mode": "manual", "chars": len(md)})
+            return (f"Skill 「{skill_name}」是手册型技能（无可执行脚本）。以下是手册内容，"
+                    f"请按其中的指引使用可用工具完成任务：\n\n{md[:cap]}")
+        # 脚本型：entrypoint 指向的脚本必须真的在包里——缺失给结构化错误，而不是让 python 的 exit 2 出面
+        if not any(tok in pkg["files"] for tok in str(pkg["entrypoint"]).split()):
+            raise ApiError(Err.SKILL_PACKAGE_INVALID,
+                           f"Skill 包缺少 entrypoint 指向的脚本（entrypoint={pkg['entrypoint']}），请检查包结构")
         res: SkillResult = await sandbox_executor.run_skill(
             st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
             entrypoint=pkg["entrypoint"], files=pkg["files"],
