@@ -1,10 +1,15 @@
-import { lazy, Suspense } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useEffect } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import type { ReactNode } from "react";
 import { AppProvider, useApp } from "./lib/appState";
 import { AppShell } from "./layout/AppShell";
 import { Workbench } from "./workbench/Workbench";
 import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
+import { api } from "./lib/api";
+import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
+
+// 外链 ?q= 捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
+captureAutoQuestion();
 
 // 路由级 code splitting（S1）：对话主链路（Workbench/AppShell）留主包，
 // 低频面（设置/管理台/初始化向导）按需加载——主 chunk 曾 >500KB。
@@ -13,13 +18,41 @@ const SettingsHome = lazy(() => import("./settings/SettingsHome").then((m) => ({
 const AdminConsole = lazy(() => import("./admin/AdminConsole").then((m) => ({ default: m.AdminConsole })));
 const InitWizard = lazy(() => import("./init/InitWizard").then((m) => ({ default: m.InitWizard })));
 
-/** 首页分流：按 me 落到最近实例对话 / 初始化 / 白名单拦截。 */
+/** 首页分流：按 me 落到最近实例对话 / 初始化 / 白名单拦截。
+ *  外链 ?q= 三态：无权限→引导页（问题保留）；未初始化→向导（完成后自动发送）；
+ *  已初始化→为该问题专门新建 run（防污染既有会话）再进对话。 */
 function HomeRedirect() {
   const { me, loading, currentAgentId } = useApp();
   if (loading || !me) return <Loading />;
   if (!me.whitelisted) return <Navigate to="/not-whitelisted" replace />;
   if (!me.has_instances) return <Navigate to="/init" replace />;
-  return <Navigate to={`/agent-teams/${me.recent_instance_id ?? currentAgentId}/chat`} replace />;
+  const agentId = me.recent_instance_id ?? currentAgentId;
+  if (peekAutoQuestion()) return <ExternalJump instanceId={agentId} />;
+  return <Navigate to={`/agent-teams/${agentId}/chat`} replace />;
+}
+
+/** 外链落地跳板：为带入的问题**专门新建 run**（老项目 82e40e6 教训：对"最近会话"直发会污染
+ *  旧会话/发错线程），成功进 /agent-runs/:id 由 Workbench 自动发送；失败兜底常规 chat 入口
+ *  （Workbench 的 ensureRun 路径仍会消费 pending 自动发送，只是可能落在既有会话）。 */
+let externalJumpRun: Promise<string> | null = null; // 模块级单飞：StrictMode 双跑 effect 不重复建 run
+function ExternalJump({ instanceId }: { instanceId: string }) {
+  const nav = useNavigate();
+  useEffect(() => {
+    let alive = true;
+    if (!externalJumpRun) {
+      console.info("[autosend] creating dedicated run for external question");
+      externalJumpRun = api.createRun(instanceId);
+    }
+    externalJumpRun
+      .then((rid) => { if (alive) nav(`/agent-runs/${rid}`, { replace: true }); })
+      .catch((e) => {
+        console.error("[autosend] createRun failed, fallback to chat entry:", e);
+        externalJumpRun = null; // 失败允许下次重试
+        if (alive) nav(`/agent-teams/${instanceId}/chat`, { replace: true });
+      });
+    return () => { alive = false; };
+  }, [instanceId, nav]);
+  return <Loading />;
 }
 
 function WhitelistGuard({ children }: { children: ReactNode }) {

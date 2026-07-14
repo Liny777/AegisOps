@@ -670,6 +670,10 @@ const mockOverlays = new Map<string, Record<string, unknown>>();
 const mockApi: OpenOpsApi = {
   getMe: () => {
     const me = M.mockMe(demoIdentity.user === "admin" ? "platform_admin" : "user");
+    // e2e 缝：openops.mock.nowl=1 模拟未开通白名单（→ 开通引导页，外链 ?q= 保留提示）
+    if (typeof localStorage !== "undefined" && localStorage.getItem("openops.mock.nowl") === "1") {
+      return delay({ ...me, whitelisted: false, has_instances: false, recent_instance_id: undefined });
+    }
     // e2e 缝：localStorage 置 openops.mock.fresh=1 模拟全新用户（无实例→进初始化向导）
     if (typeof localStorage !== "undefined" && localStorage.getItem("openops.mock.fresh") === "1") {
       return delay({ ...me, has_instances: false, recent_instance_id: undefined });

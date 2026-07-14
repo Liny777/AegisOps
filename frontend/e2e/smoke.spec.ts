@@ -1,9 +1,10 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 11 幕）：
+ * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 14 幕）：
  * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页 /
- * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 删光后新建 picker 兜底重拉 / 插件页两 tab。
+ * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 删光后新建 picker 兜底重拉 / 插件页两 tab /
+ * 外链 ?q= 三态（已初始化自动发送·未初始化向导保留·无权限引导页保留）。
  * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）；
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
@@ -122,4 +123,34 @@ test("插件页仅 Skill/MCP 两 tab（模型配置/角色提示词已并入向�
   await expect(page.getByText("MCP 配置")).toBeVisible();
   await expect(page.getByText("模型配置")).toHaveCount(0);
   await expect(page.getByText("角色提示词")).toHaveCount(0);
+});
+
+test("外链 ?q= 已初始化：新建专属会话 → 自动发送 → URL 清净 → 刷新不重发", async ({ page }) => {
+  const q = "外链自动发问-支付网关P0告警";
+  await page.goto(`/?q=${encodeURIComponent(q)}`);
+  await page.waitForURL(/\/agent-runs\/run_demo_/, { timeout: 15_000 }); // ExternalJump 专属新 run
+  await expect(page.getByText(q)).toBeVisible({ timeout: 15_000 }); // 问题成为 user 气泡
+  await expect(page.getByText(/任务已受理/)).toBeVisible({ timeout: 10_000 }); // mock 回执
+  expect(page.url()).not.toContain("q="); // 地址栏已抹掉（刷新/分享不重发）
+  await page.reload();
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(q)).toHaveCount(0); // sessionStorage 已消费：刷新不重发
+});
+
+test("外链 ?q= 未初始化：进向导 + 「问题已保留」提示在位", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
+  await page.goto(`/?q=${encodeURIComponent("外链带来的问题X")}`);
+  await page.waitForURL(/\/init/, { timeout: 15_000 });
+  await expect(page.getByText("选择模板").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("你带来的问题已保留")).toBeVisible();
+  await expect(page.getByText("外链带来的问题X")).toBeVisible();
+});
+
+test("外链 ?q= 无权限：开通引导页 + 「问题已保留」提示在位", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("openops.mock.nowl", "1"));
+  await page.goto(`/?q=${encodeURIComponent("外链带来的问题Y")}`);
+  await expect(page.getByText("尚未开通 OpenOps")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("你带来的问题已保留")).toBeVisible();
+  await expect(page.getByText("外链带来的问题Y")).toBeVisible();
+  expect(page.url()).not.toContain("q=");
 });

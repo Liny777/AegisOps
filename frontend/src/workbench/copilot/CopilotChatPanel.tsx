@@ -9,6 +9,7 @@ import { CopilotChat, CopilotKit } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
 
 import { demoIdentity } from "../../lib/api";
+import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotModelFloat } from "./CopilotModelFloat";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 
@@ -21,7 +22,13 @@ function identityHeaders(): Record<string, string> {
   };
 }
 
-export function CopilotChatPanel({ runId, instanceId }: { runId: string; instanceId: string }) {
+export function CopilotChatPanel({ runId, instanceId, autoQuestion, onAutoSent }: {
+  runId: string;
+  instanceId: string;
+  /** 外链 ?q= 带入的待发问题（仅外链落地首个面板非空）；发送/放弃后经 onAutoSent 清除。 */
+  autoQuestion?: string | null;
+  onAutoSent?: () => void;
+}) {
   return (
     <CopilotKit
       key={runId}
@@ -42,6 +49,9 @@ export function CopilotChatPanel({ runId, instanceId }: { runId: string; instanc
           welcomeScreen={false}
         />
         <CopilotSkillSlash instanceId={instanceId} />
+        {autoQuestion && onAutoSent ? (
+          <CopilotAutoSend question={autoQuestion} threadId={runId} agentId={AGENT_ID} onSent={onAutoSent} />
+        ) : null}
       </div>
     </CopilotKit>
   );

@@ -24,6 +24,7 @@ import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
 import { CopilotChatPanel } from "./copilot/CopilotChatPanel";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
+import { consumeAutoQuestion } from "../lib/autosend";
 
 // Part B：CopilotChat 接管对话区（real+agui）。回退开关：VITE_OPENOPS_COPILOT_CHAT=0 回自建渲染。
 const USE_COPILOT_CHAT =
@@ -70,6 +71,10 @@ export function Workbench() {
   // agui 流活跃期间对话区文本归 agui 独占（TEXT_MESSAGE_*）；SSE 的终态文本仅在无 agui 流（刷新接续）时追加，
   // 否则 SSE task.completed 先到会以同 event_id 建泡，agui 合成文本再追加 → 文本双写（双通道竞态）
   const aguiActive = useRef(false);
+  // 外链 ?q= 待发问题：挂载即消费（sessionStorage 一次性，刷新不重发）；
+  // copilot 路径经 CopilotAutoSend 发送，自建/mock 路径由下方 effect 调 send()
+  const [autoQuestion, setAutoQuestion] = useState<string | null>(() => consumeAutoQuestion());
+  const autoSentRef = useRef(false);
 
   const pushNode = useCallback((n: ActivityNode) => {
     setNodes((prev) => (seen.current.has(n.id) ? prev : (seen.current.add(n.id), [...prev, n])));
@@ -282,6 +287,23 @@ export function Workbench() {
     }
   };
 
+  // 外链自动发送（自建渲染/mock 路径；copilot 路径由面板内 CopilotAutoSend 负责，勿双发）。
+  // 就绪门槛：mock=demo 分支挂载完（conn open）；real=runId 就绪。ref 幂等防 StrictMode/重渲染重发。
+  useEffect(() => {
+    if (!autoQuestion || autoSentRef.current) return;
+    if (runStatus === "closed") return;
+    if (USE_COPILOT_CHAT && runId) return;
+    const ready = API_MODE !== "real" ? conn === "open" : !!runId;
+    if (!ready) return;
+    autoSentRef.current = true;
+    console.info("[autosend] sending via composer path");
+    const q = autoQuestion;
+    setAutoQuestion(null);
+    void send(q);
+    // send 每次渲染重建且仅作动作不作触发条件，不进依赖
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoQuestion, runId, runStatus, conn]);
+
   const running = taskStatus === "running";
   // 标题=会话名（real：run_title，未起名「新对话」；mock 保持 demo 文案）；徽标=真实 Agent 名
   const displayTitle = chatTitle ?? (API_MODE === "real" ? "新对话" : demo.chatTitle);
@@ -366,7 +388,12 @@ export function Workbench() {
                 </div>
               </div>
             ) : null}
-            <CopilotChatPanel runId={runId} instanceId={instanceId || currentAgentId || ""} />
+            <CopilotChatPanel
+              runId={runId}
+              instanceId={instanceId || currentAgentId || ""}
+              autoQuestion={autoQuestion}
+              onAutoSent={() => setAutoQuestion(null)}
+            />
           </div>
         ) : (
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>

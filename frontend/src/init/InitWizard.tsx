@@ -7,6 +7,7 @@ import { useApp } from "../lib/appState";
 import type { Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm } from "../settings/AddCustomModelDialog";
+import { PendingQuestionNotice } from "../pages/states";
 
 // 2026-07-13 改版（对齐更新版设计原型）：五步 → 三步，原 填写信息/系统范围/配置模型 合并为「配置 Agent」一页。
 // 「选择模板」「激活 Agent」两个字面量被 e2e 断言依赖，改名须同步 e2e/smoke.spec.ts。
@@ -117,6 +118,8 @@ export function InitWizard() {
       {/* body */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "36px 24px" }}>
         <div style={{ maxWidth: 720, margin: "0 auto" }}>
+          {/* 外链 ?q= 场景：问题已保留，初始化完成进入对话时自动发送（editing 复用向导时不涉及） */}
+          {!editing ? <PendingQuestionNotice /> : null}
           {step === 0 ? <StepTemplate templates={templates} tplId={tplId} onPick={setTplId} locked={editing} /> : null}
           {step === 1 ? (
             <StepConfigure
