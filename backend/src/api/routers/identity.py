@@ -19,6 +19,24 @@ async def me(user: AnyUser):
     return ok(await identity_service.me(user))
 
 
+@router.get("/whitelist")
+async def whitelist_query(user_id: str | None = None):
+    """白名单开放查询（**免 IAM/token 鉴权**，老项目 1cd7ef0 口径）：外部系统（告警面板
+    拼外链 ?q= 前）判断用户是否已开通。只读；全量只出 user_id/display_name，点查只出
+    是否开通——不含 role/last_login 等内部字段。写操作仍走 /admin/users/whitelist
+    （platform_admin 会话鉴权），本端点无任何写能力。
+
+    - GET /whitelist            → {users: [{user_id, display_name}]}（active 未过期）
+    - GET /whitelist?user_id=x  → {user_id, whitelisted}
+    """
+    if user_id is not None:
+        uid = user_id.strip()
+        if not uid:
+            raise ApiError(Err.VALIDATION_FAILED, "user_id 不能为空")
+        return ok({"user_id": uid, "whitelisted": await identity_service.check_whitelist(uid)})
+    return ok({"users": await identity_service.whitelist_overview()})
+
+
 @router.get("/me/profile")
 async def profile(user: AnyUser):
     if not user["whitelisted"]:

@@ -45,6 +45,16 @@ async def list_users() -> list[dict[str, Any]]:
     return [dict(r) for r in await users.list_users_with_whitelist()]
 
 
+# ---- 开放查询面（免鉴权 GET /whitelist，老项目 1cd7ef0 口径）：外部系统判断
+#      是否展示 OpenOps 跳转入口；只读、只出 user_id/display_name/是否开通 ----
+async def whitelist_overview() -> list[dict[str, Any]]:
+    return [dict(r) for r in await users.list_active_whitelist()]
+
+
+async def check_whitelist(user_id: str) -> bool:
+    return await users.is_whitelisted(user_id)
+
+
 async def add_whitelist(user_id: str, display_name: str, role: str, by: str) -> None:
     await users.upsert_user(user_id, display_name or user_id, role)
     await users.add_whitelist(user_id, by)

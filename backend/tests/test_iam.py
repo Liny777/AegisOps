@@ -438,3 +438,45 @@ def test_omodel_base_rejects_request_derived_host(monkeypatch):
     monkeypatch.delenv("OPENOPS_OMODEL_PAGE_URL", raising=False)
     assert _base() == ""
     assert console_page_base() == ""
+
+
+# ---- 白名单开放查询（免 IAM/token，老项目 1cd7ef0 口径；外链 ?q= 配套） ----
+
+def test_whitelist_open_query_no_auth(client):
+    """GET /whitelist 免鉴权：无任何身份头也 200；字段只出 user_id/display_name（不泄内部字段）。"""
+    resp = client.get("/api/openops/v1/whitelist")
+    assert resp.status_code == 200
+    users = resp.json()["data"]["users"]
+    assert any(u["user_id"] == "0026demo01" for u in users)  # seed 白名单
+    assert all(set(u.keys()) == {"user_id", "display_name"} for u in users)
+
+
+def test_whitelist_open_point_check(client):
+    """?user_id= 点查：seed 用户 true / 未知用户 false / 空值 400；同样免鉴权。"""
+    hit = client.get("/api/openops/v1/whitelist", params={"user_id": "0026demo01"})
+    assert hit.status_code == 200
+    assert hit.json()["data"] == {"user_id": "0026demo01", "whitelisted": True}
+
+    miss = client.get("/api/openops/v1/whitelist", params={"user_id": "0099nobody"})
+    assert miss.json()["data"]["whitelisted"] is False
+
+    empty = client.get("/api/openops/v1/whitelist", params={"user_id": "  "})
+    assert empty.status_code == 400
+    assert empty.json()["error"]["code"] == "VALIDATION_FAILED"
+
+
+def test_whitelist_open_query_reflects_revoke(client):
+    """撤销即时生效：admin 移出白名单后，开放查询点查转 false、全量列表不再含该用户。"""
+    from conftest import ADMIN_HEADERS
+
+    client.post("/api/openops/v1/admin/users/whitelist",
+                json={"client_request_id": "wl-open-1", "user_id": "0088temp", "display_name": "临时"},
+                headers=ADMIN_HEADERS)
+    assert client.get("/api/openops/v1/whitelist", params={"user_id": "0088temp"}).json()["data"]["whitelisted"] is True
+
+    client.post("/api/openops/v1/admin/users/whitelist:revoke",
+                json={"client_request_id": "wl-open-2", "user_id": "0088temp"},
+                headers=ADMIN_HEADERS)
+    assert client.get("/api/openops/v1/whitelist", params={"user_id": "0088temp"}).json()["data"]["whitelisted"] is False
+    users = client.get("/api/openops/v1/whitelist").json()["data"]["users"]
+    assert not any(u["user_id"] == "0088temp" for u in users)

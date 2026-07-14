@@ -28,6 +28,7 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 ## 核心 API
 
 - `GET /api/openops/v1/me`
+- `GET /api/openops/v1/whitelist` — **免鉴权开放查询**（外部系统拼外链 `?q=` 前判断用户是否已开通；全量出 `{users:[{user_id,display_name}]}`，`?user_id=` 点查出 `{user_id,whitelisted}`；只读，写仍走 admin 面）
 - `GET /api/openops/v1/templates/available`
 - `POST /api/openops/v1/workspaces`
 - `GET /api/openops/v1/workspaces/{workspace_id}/status`

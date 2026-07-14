@@ -49,6 +49,21 @@ async def is_whitelisted(user_id: str) -> bool:
     return row is not None
 
 
+async def list_active_whitelist() -> list[dict[str, Any]]:
+    """开放查询面（免鉴权 GET /whitelist）用：仅 active 未过期行，仅 user_id/display_name 两列
+    ——不带 role/last_login 等内部字段（与 is_whitelisted 同口径）。"""
+    return await q_all(
+        """
+        select w.user_id, coalesce(u.display_name, w.user_id) display_name
+        from sre_user_whitelist w
+        left join sre_openops_user u on u.user_id = w.user_id and u.deleted_at is null
+        where w.status='active' and w.deleted_at is null
+          and (w.expire_at is null or w.expire_at > now())
+        order by w.user_id
+        """
+    )
+
+
 async def add_whitelist(user_id: str, by: str) -> None:
     # 幂等（B7·三）：已有 active 行则不再插——重复授权会让 list 的 LEFT JOIN 出重行。
     # 不用 ON CONFLICT（表无唯一索引，且 GaussDB 偏索引 target 有兼容坑），insert…select 通用。
