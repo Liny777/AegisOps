@@ -166,9 +166,10 @@ export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
     approval_request_id: String(a.approval_request_id),
     title: "需要人工批准",
     tool: String(a.tool_call_name ?? "tool"),
+    // 按工具类型给摘要：Bash 命令≠恢复动作；非 bash 工具用中性话术（此前把一切写工具都叫「恢复动作」）
     summary: args.command
       ? "Agent 请求在你的容器内执行非只读命令，批准后才会真正执行。"
-      : "Agent 建议执行受控恢复动作，确认后才会解密凭证并调用工具。",
+      : `Agent 请求调用需人工批准的工具「${String(a.tool_call_name ?? "tool")}」，批准后才会真正执行。`,
     facts,
     countdown: `${mm}:${String(ss).padStart(2, "0")}`,
     status: "pending",

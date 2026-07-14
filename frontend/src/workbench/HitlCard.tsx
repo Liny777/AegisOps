@@ -52,7 +52,7 @@ export function HitlCard({ hitl, onDecide }: { hitl: HitlCardData; onDecide?: (d
               </div>
             </>
           ) : (
-            <ResultLine status={status} />
+            <ResultLine status={status} tool={hitl.tool} />
           )}
         </div>
       </div>
@@ -60,13 +60,17 @@ export function HitlCard({ hitl, onDecide }: { hitl: HitlCardData; onDecide?: (d
   );
 }
 
-function ResultLine({ status }: { status: "approved" | "rejected" }) {
+function ResultLine({ status, tool }: { status: "approved" | "rejected"; tool: string }) {
   const ok = status === "approved";
   const c = ok ? toneColor.good : toneColor.danger;
+  // 按工具类型给结果文案：Bash 命令≠恢复动作（此前写死「恢复动作将经 Tool Gateway 执行」，内网走查指出）
+  const approvedText = tool === "run_container_command"
+    ? "已批准 · 命令将在你的容器内执行"
+    : `已批准 · 「${tool}」将继续执行`;
   return (
     <div style={{ display: "inline-flex", alignItems: "center", gap: 7, marginTop: 12, fontSize: 12.5, fontWeight: 600, color: c.text, background: c.bg, border: `1px solid ${c.border}`, padding: "7px 12px", borderRadius: radius.md }}>
       <Icon name={ok ? "circle-check" : "circle-x"} size={15} color={c.text} />
-      {ok ? "已批准 · 恢复动作将经 Tool Gateway 执行" : "已拒绝 · 当前工具调用终止，任务可继续"}
+      {ok ? approvedText : "已拒绝 · 当前工具调用终止，任务可继续"}
     </div>
   );
 }
