@@ -88,14 +88,20 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             summary["mcp_ingest_error"] = str(e)[:200]
 
         # ---- MCP Registry：平台 MCP tools/list → schema_hash 对账（ASSET-005） ----
+        # 按 server 隔离异常（对齐上方 ingest 块口径）：一家 server 坏（握手拒/超时/不规范）
+        # 只记错继续下一家——此前一家抛错会中断后续所有家的工具同步并把整轮标 failed（内网实测踩坑）
         for m in await assets.list_platform_mcps():
             server_url = (m.get("endpoint_config_json") or {}).get("endpoint", "")  # 29.3 proxy 必填 url（mock 忽略）
-            for t in await mcp_registry_client.discover_tools(server_url):
-                res = await mcp_tools.sync_catalog_tool(
-                    str(m["mcp_version_id"]), t["tool_name"], t["description"],
-                    t["input_schema"], t["schema_hash"],
-                )
-                summary[f"tools_{res}"] += 1
+            try:
+                for t in await mcp_registry_client.discover_tools(server_url):
+                    res = await mcp_tools.sync_catalog_tool(
+                        str(m["mcp_version_id"]), t["tool_name"], t["description"],
+                        t["input_schema"], t["schema_hash"],
+                    )
+                    summary[f"tools_{res}"] += 1
+            except Exception as e:  # noqa: BLE001
+                log.warning("mcp tools sync failed (%s): %s", m.get("display_name"), str(e)[:200])
+                summary.setdefault("tool_sync_errors", {})[str(m.get("display_name"))] = str(e)[:120]
 
         await audit.insert_event(
             audit_trace_id=str(uuid.uuid4()), event_type="asset.reconciled", user_id="system",

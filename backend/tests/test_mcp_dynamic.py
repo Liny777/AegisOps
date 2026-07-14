@@ -24,12 +24,24 @@ class _Resp:
 
 
 class _FakeClient:
+    """按 body.method 路由的多次调用桩（MCP 握手后一次业务调用 = 3 个 POST）：
+    initialize → 200+Mcp-Session-Id 头；notifications/initialized → 202；其余=业务调用
+    （tools/list、tools/call、proxy 信封、legacy）落 captured（兼容旧断言=最后一次业务调用）。"""
+
     captured: dict = {}
+    calls: list = []  # 全部调用按序 {url,json,headers}
     init_kwargs: dict = {}
-    resp: _Resp | None = None  # 各用例可注入自定义响应
+    resp: _Resp | None = None  # 业务调用可注入自定义响应
+    session_id: str | None = "sess-1"  # initialize 响应头会话 id（None=stateless 不带头）
+    expire_once: bool = False  # 模拟会话过期：下一个业务调用回 404 一次
 
     def __init__(self, *a, **k) -> None:
         _FakeClient.init_kwargs = dict(k)
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.captured, cls.calls, cls.resp = {}, [], None
+        cls.session_id, cls.expire_once = "sess-1", False
 
     async def __aenter__(self):
         return self
@@ -38,21 +50,40 @@ class _FakeClient:
         return False
 
     async def post(self, url, json=None, headers=None):
+        _FakeClient.calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+        method = (json or {}).get("method")
+        if method == "initialize":
+            r = _Resp({"jsonrpc": "2.0", "id": 0, "result": {"capabilities": {}}})
+            if _FakeClient.session_id:
+                r.headers["Mcp-Session-Id"] = _FakeClient.session_id
+            return r
+        if method == "notifications/initialized":
+            return _Resp({}, status=202)
         _FakeClient.captured = {"url": url, "json": json, "headers": headers}
+        if _FakeClient.expire_once:
+            _FakeClient.expire_once = False
+            return _Resp({"error": "session expired"}, status=404)
         if _FakeClient.resp is not None:
             return _FakeClient.resp
         return _Resp({"code": 0, "data": {"result": {
             "structuredContent": {"result": "告警3条：A/B/C"}, "isError": False}}})
 
 
+def _inits(calls: list) -> list:
+    return [c for c in calls if (c["json"] or {}).get("method") == "initialize"]
+
+
 def test_mcp_direct_call_streamable_http(monkeypatch):
-    """默认 direct 路由：tools/call 直连 server_url，JSON-RPC 信封 + Accept SSE；28.2 头照带、不带 console cookie。"""
+    """默认 direct 路由：initialize 握手（取 Mcp-Session-Id）→ tools/call 直连 server_url，
+    JSON-RPC 信封 + Accept SSE；28.2 头照带、不带 console cookie。"""
     monkeypatch.setenv("OPENOPS_MCP", "real")
     monkeypatch.setenv("OPENOPS_MCPREGISTRY_COOKIE", "sid=abc123")  # 有 cookie 也不该带到 mcpgateway
     monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)  # 默认 direct
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    http_mcp_client._sessions.clear()
     sse = ('event: message\n'
            'data: {"jsonrpc":"2.0","id":1,"result":{"structuredContent":{"result":"告警3条：A/B/C"},"isError":false}}\n')
     _FakeClient.resp = _Resp(text=sse, content_type="text/event-stream")
@@ -62,11 +93,16 @@ def test_mcp_direct_call_streamable_http(monkeypatch):
             headers={"X-OpenOps-Effective-Appids": "APP-REAL-1"}, server_url="http://mcpgw/x"))
     finally:
         _FakeClient.resp = None
+    # 首个调用必须是 initialize 握手（严格 stateful server 兼容，2026-07-14 内网实测）
+    first = _FakeClient.calls[0]["json"]
+    assert first["method"] == "initialize" and first["id"] == 0
+    assert first["params"]["protocolVersion"] == "2025-03-26" and first["params"]["clientInfo"]["name"] == "openops"
     cap = _FakeClient.captured
     assert cap["url"] == "http://mcpgw/x"  # 直连 server_url，不经 console
     assert cap["json"] == {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                            "params": {"name": "query_alarm_list", "arguments": {"project_id": "APP-REAL-1"}}}
     assert cap["headers"]["Accept"] == "application/json, text/event-stream"
+    assert cap["headers"]["Mcp-Session-Id"] == "sess-1"  # 握手取到的会话头带到业务调用
     assert cap["headers"]["X-OpenOps-Effective-Appids"] == "APP-REAL-1"  # 28.2 头照带
     assert "Cookie" not in cap["headers"]  # console cookie 不外泄给 mcpgateway
     assert r["result_summary"] == "告警3条：A/B/C"  # SSE data 行解析 + structuredContent 抽取
@@ -79,6 +115,7 @@ def test_mcp_direct_discover_streamable_http(monkeypatch):
     import httpx
 
     monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
     sse = ('event: message\n'
            'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"query_alarm_list","description":"d",'
            '"inputSchema":{"type":"object","properties":{"project_id":{"type":"string"}}},'
@@ -88,10 +125,61 @@ def test_mcp_direct_discover_streamable_http(monkeypatch):
         tools = asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x"))
     finally:
         _FakeClient.resp = None
+    assert _FakeClient.calls[0]["json"]["method"] == "initialize"  # 发现面同样先握手
     cap = _FakeClient.captured
     assert cap["url"] == "http://mcpgw/x"
     assert cap["json"]["method"] == "tools/list" and cap["json"]["jsonrpc"] == "2.0"
+    assert cap["headers"]["Mcp-Session-Id"] == "sess-1"
     assert tools[0]["tool_name"] == "query_alarm_list" and tools[0]["readonly"] is True
+
+
+def test_mcp_session_cache_reuse(monkeypatch):
+    """会话缓存：同 server 第二次 tools/call 不再握手（省 2 往返），会话头照带。"""
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    http_mcp_client._sessions.clear()
+    asyncio.run(http_mcp_client.call_tool("t1", {}, server_url="http://mcpgw/x"))
+    asyncio.run(http_mcp_client.call_tool("t2", {}, server_url="http://mcpgw/x"))
+    assert len(_inits(_FakeClient.calls)) == 1  # 只握手一次
+    assert _FakeClient.captured["headers"]["Mcp-Session-Id"] == "sess-1"  # 第二次直发带缓存会话
+
+
+def test_mcp_session_expired_rehandshake(monkeypatch):
+    """缓存会话被 server 判失效（404）→ 清缓存重握手重试一次成功。"""
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    http_mcp_client._sessions.clear()
+    asyncio.run(http_mcp_client.call_tool("t1", {}, server_url="http://mcpgw/x"))  # 建缓存
+    _FakeClient.calls = []
+    _FakeClient.expire_once = True  # 下一个业务调用 404
+    r = asyncio.run(http_mcp_client.call_tool("t2", {}, server_url="http://mcpgw/x"))
+    assert r["status"] == "ok"  # 重握手重试后成功
+    methods = [(c["json"] or {}).get("method") for c in _FakeClient.calls]
+    # 序列：tools/call(404) → initialize → notifications/initialized → tools/call(ok)
+    assert methods == ["tools/call", "initialize", "notifications/initialized", "tools/call"]
+
+
+def test_mcp_stateless_server_no_session_header(monkeypatch):
+    """stateless server（initialize 响应无 Mcp-Session-Id）：后续调用不带会话头照常工作。"""
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    _FakeClient.session_id = None
+    http_mcp_client._sessions.clear()
+    r = asyncio.run(http_mcp_client.call_tool("t1", {}, server_url="http://mcpgw/x"))
+    assert r["status"] == "ok"
+    assert "Mcp-Session-Id" not in _FakeClient.captured["headers"]
 
 
 def test_mcp_real_call_routes_via_proxy_and_preserves_28_2_headers(monkeypatch):
@@ -320,3 +408,31 @@ def test_run_platform_skill_description_injects_available_skills(monkeypatch):
         assert "未装配任何 Skill" in str(getattr(tool2, "description", ""))
 
     asyncio.run(scenario())
+
+
+def test_reconcile_isolates_bad_server(client, monkeypatch):
+    """对账按 server 隔离：一家 server 坏（如严格握手拒/超时）只记错继续下一家，
+    不再中断后续同步、不再把整轮标 reconcile_failed（内网实测踩坑）。"""
+    from app import asset_reconcile_service as ars
+    from infra.repositories import assets as assets_repo
+
+    async def _setup():
+        # 第二个平台 MCP（seed 已有「oModel 查询与恢复」）：坏 server
+        await assets_repo.create_mcp(None, "platform", "坏掉的同事server", "http",
+                                     {"endpoint": "http://bad.internal/mcp"}, {})
+
+    asyncio.run(_setup())
+
+    async def _disc(server_url):
+        if "bad.internal" in (server_url or ""):
+            raise RuntimeError("MCP initialize 错误：Bad Request")
+        return [{"tool_name": "good_tool", "description": "d", "readonly": True,
+                 "input_schema": {"type": "object", "properties": {}},
+                 "schema_hash": "h1"}]
+
+    monkeypatch.setattr(ars.mcp_registry_client, "discover_tools", _disc)
+    ars._reset()
+    summary = asyncio.run(ars.reconcile(force=True, trigger="test"))
+    assert summary.get("failed") is not True  # 整轮不因一家坏而 failed
+    assert "坏掉的同事server" in (summary.get("tool_sync_errors") or {})  # 坏家记错
+    assert summary.get("tools_created", 0) >= 1  # 好家（seed mcp）照常同步

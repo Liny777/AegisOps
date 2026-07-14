@@ -18,7 +18,8 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   const [draftVer, setDraftVer] = useState<Record<string, unknown> | null>(null);
   const [role, setRole] = useState("");
   const [tools, setTools] = useState<Set<string>>(new Set());
-  const [allowedTools, setAllowedTools] = useState<string[]>([]);
+  // MCP 目录按 server 分组（allowed 行 mcp_display_name → 工具名列表）：main/sub 的 MCP 绑定按 server 勾选
+  const [serverTools, setServerTools] = useState<Record<string, string[]>>({});
   const [skillKeys, setSkillKeys] = useState<string[]>([]); // 技能目录（active 行的 skill_key）：main/sub skills 勾选源
   const [content, setContent] = useState<Record<string, unknown>>({});
   const [msg, setMsg] = useState("");
@@ -39,7 +40,14 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
     setRole(String(main.role ?? ""));
     setTools(new Set(((main.default_tools ?? []) as string[])));
     const toolsData = await api.getAdminMcpTools(null);
-    setAllowedTools(toolsData.raw.filter((r) => r.annotation_id != null && r.annotation_status === "allowed").map((r) => String(r.tool_name)));
+    const grouped: Record<string, string[]> = {};
+    for (const r of toolsData.raw) {
+      if (r.annotation_id != null && r.annotation_status === "allowed") {
+        const s = String(r.mcp_display_name);
+        (grouped[s] ??= []).push(String(r.tool_name));
+      }
+    }
+    setServerTools(grouped);
     // 技能目录（SkillHub 对账后的资产）：skills 白名单从这里勾选，键=skill_key（运行时同键）
     const skills = await api.getSkillLibrary().catch(() => []);
     setSkillKeys([...new Set(skills.filter((s) => s.status === "active" && s.skillKey).map((s) => String(s.skillKey)))]);
@@ -137,23 +145,10 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
             </div>
           </div>
         </Box>
-        <Box title="main 平台 MCP tool 绑定（仅 allowed 标注可绑，含动态注册表工具；空=零工具纯编排派发，模板外工具运行时 fail-closed）">
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-            {allowedTools.map((t) => (
-              <label key={t} style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontFamily: "ui-monospace, monospace", border: `1px solid ${tools.has(t) ? color.brand : color.border}`, background: tools.has(t) ? color.brandTintBg : "#fff", padding: "5px 10px", borderRadius: radius.sm, cursor: "pointer" }}>
-                <input type="checkbox" checked={tools.has(t)}
-                  onChange={(e) => setTools((p) => { const n = new Set(p); e.target.checked ? n.add(t) : n.delete(t); return n; })} />
-                {t}
-              </label>
-            ))}
-            {!allowedTools.length ? (
-              <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.7 }}>
-                目录暂无 allowed 标注工具——先到 <b>资产治理 → Tool 标注</b> 把工具标为 allowed
-                （动态注册表工具需先经 MCP 对账进目录），标注后这里即可勾选绑定。
-              </div>
-            ) : null}
-          </div>
-          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>main 直连的动态工具也须在此勾选（未勾=运行时被剪，由子 Agent 承接）。发布后版本不可原地改；再次修改须另存新草稿。</div>
+        <Box title="main 平台 MCP tool 绑定（按 server 勾选=绑定其当前全部 allowed 工具；空=零工具纯编排派发，模板外工具运行时 fail-closed）">
+          <ServerPicker groups={serverTools} selected={[...tools]} onChange={(next) => setTools(new Set(next))}
+            emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注 把工具标为 allowed（动态注册表工具需先经 MCP 对账进目录），标注后这里即可按 server 勾选绑定。" />
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>勾选=绑定该 server <b>当前</b>全部 allowed 工具（此后新标注的工具需重开编辑器补勾）；main 未绑的工具运行时被剪，由子 Agent 承接。发布后版本不可原地改；再次修改须另存新草稿。</div>
         </Box>
         <Box title="sub Agent 组（D 块：管理员可编辑；skills/mcp_tools 为该子 Agent 的工具白名单）">
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -206,9 +201,9 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                           emptyHint="技能目录为空——先上传 Skill / 等 SkillHub 对账。" />
                       </div>
                     </div>
-                    <div style={{ fontSize: 11.5, color: color.textSubtle }}>mcp_tools（勾选；仅 allowed 标注可选）
+                    <div style={{ fontSize: 11.5, color: color.textSubtle }}>mcp_tools（按 server 勾选=绑定其当前全部 allowed 工具）
                       <div style={{ marginTop: 4 }}>
-                        <ChipPicker options={allowedTools} selected={(s.mcp_tools ?? []) as string[]}
+                        <ServerPicker groups={serverTools} selected={(s.mcp_tools ?? []) as string[]}
                           onChange={(next) => patch("mcp_tools", next)}
                           emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注。" />
                       </div>
@@ -269,6 +264,60 @@ function ChipPicker({ options, selected, onChange, emptyHint }: {
           </label>
         );
       })}
+    </div>
+  );
+}
+
+/** MCP 按 server 勾选器：一家 server 一个勾选框（勾=把该家当前全部 allowed 工具写进白名单，
+ * 去勾=全删；落库仍是工具名，运行时 per-agent 工具级隔离与 fail-closed 不变）。
+ * 旧数据部分选中显「部分」徽标，点击归一为全选；不属于任何已知 server 的存量值
+ * 显示为可取消残留 chip，不静默丢数据。 */
+function ServerPicker({ groups, selected, onChange, emptyHint }: {
+  groups: Record<string, string[]>; selected: string[]; onChange: (next: string[]) => void; emptyHint: string;
+}) {
+  const servers = Object.keys(groups);
+  const known = new Set(servers.flatMap((s) => groups[s]));
+  const residual = selected.filter((t) => !known.has(t));
+  if (!servers.length && !residual.length) {
+    return <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.7 }}>{emptyHint}</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {servers.map((s) => {
+        const tls = groups[s];
+        const picked = tls.filter((t) => selected.includes(t));
+        const full = tls.length > 0 && picked.length === tls.length;
+        const partial = picked.length > 0 && !full;
+        return (
+          <label key={s} style={{ display: "flex", alignItems: "flex-start", gap: 8, border: `1px solid ${full ? color.brand : color.border}`, background: full ? color.brandTintBg : "#fff", borderRadius: radius.md, padding: "8px 10px", cursor: "pointer" }}>
+            <input type="checkbox" checked={full} style={{ marginTop: 2 }}
+              onChange={(e) => {
+                const rest = selected.filter((t) => !tls.includes(t));
+                onChange(e.target.checked ? [...rest, ...tls] : rest);
+              }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }}>
+                {s}（{tls.length} 个工具）
+                {partial ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "#b7791f", background: "#fdf3e2", padding: "1px 6px", borderRadius: 4 }}>部分 {picked.length}/{tls.length} · 勾选归一为全选</span> : null}
+              </div>
+              <div style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace", marginTop: 2, lineHeight: 1.6, wordBreak: "break-all" }}>{tls.join("、")}</div>
+            </div>
+          </label>
+        );
+      })}
+      {residual.length ? (
+        <div style={{ fontSize: 11.5, color: color.textSubtle }}>
+          不在目录的存量绑定（点 × 移除）：
+          <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 6, marginLeft: 6 }}>
+            {residual.map((t) => (
+              <span key={t} style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontFamily: "ui-monospace, monospace", border: `1px solid ${color.border}`, padding: "2px 7px", borderRadius: radius.sm }}>
+                {t}
+                <Icon name="x" size={11} color={color.dangerText} onClick={() => onChange(selected.filter((x) => x !== t))} />
+              </span>
+            ))}
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }

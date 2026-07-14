@@ -14,6 +14,10 @@ from infra.external.mcp_registry_client import console_api_prefix, console_tls_v
 
 last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 {tool, arguments, headers}
 
+# direct 路由会话缓存：server_url → Mcp-Session-Id（None=已知 stateless，直发不带头）。
+# 命中省 2 个握手往返；400/404 视为会话过期（MCP 规范 404=session 失效）清缓存重握手重试一次。
+_sessions: dict[str, str | None] = {}
+
 
 _SUMMARY_CAP = int(os.getenv("OPENOPS_MCP_RESULT_CAP", "24000"))
 
@@ -40,17 +44,27 @@ async def call_tool(
         import httpx
 
         if server_url:  # 动态 MCP：direct=streamable-HTTP 直连 server_url（默认）；proxy=经 console mcps/proxy
-            from infra.external.mcp_registry_client import _MCP_ACCEPT, mcp_route, parse_mcp_response
+            from infra.external.mcp_registry_client import mcp_initialize, mcp_request, mcp_route, parse_mcp_response
 
             if mcp_route() == "direct":
-                hdrs = dict(headers or {})  # 28.2 平台上下文头照带（审计/回放）；不带 console cookie（无需且不外泄）
-                hdrs["Accept"] = _MCP_ACCEPT
+                # 28.2 平台上下文头照带（审计/回放）；不带 console cookie（无需且不外泄）；
+                # 严格 stateful server 须先 initialize（Mcp-Session-Id 会话头），见 mcp_initialize
+                params = {"name": tool_name, "arguments": arguments}
                 async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")),
                                              verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
-                    r = await cli.post(server_url,
-                                       json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                                             "params": {"name": tool_name, "arguments": arguments}},
-                                       headers=hdrs)
+                    was_cached = server_url in _sessions
+                    if was_cached:
+                        sid = _sessions[server_url]
+                    else:
+                        sid = await mcp_initialize(cli, server_url)
+                        _sessions[server_url] = sid
+                    r = await mcp_request(cli, server_url, "tools/call", params, sid, dict(headers or {}))
+                    if was_cached and r.status_code in (400, 404):
+                        # 缓存会话已被 server 判失效 → 清缓存重握手重试一次（新会话失败即真错误照抛）
+                        _sessions.pop(server_url, None)
+                        sid = await mcp_initialize(cli, server_url)
+                        _sessions[server_url] = sid
+                        r = await mcp_request(cli, server_url, "tools/call", params, sid, dict(headers or {}))
                     raise_with_body(r)
                     rpc = parse_mcp_response(r)
                 if "error" in rpc:

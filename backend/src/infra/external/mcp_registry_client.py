@@ -184,6 +184,48 @@ def parse_mcp_response(r: Any) -> dict[str, Any]:
 _MCP_ACCEPT = "application/json, text/event-stream"  # streamable-HTTP：server 可回 JSON 或 SSE
 
 
+def mcp_headers(session_id: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
+    """MCP 出站头：Accept 双形态 + 会话头（stateful server 的 Mcp-Session-Id；None=不带）。"""
+    hdrs = dict(extra or {})
+    hdrs["Accept"] = _MCP_ACCEPT
+    if session_id:
+        hdrs["Mcp-Session-Id"] = session_id
+    return hdrs
+
+
+async def mcp_initialize(cli: Any, server_url: str) -> str | None:
+    """MCP streamable-HTTP 会话握手（2026-07-14 内网实测：严格 stateful server 必须先 initialize
+    再 tools/list，否则不响应）：initialize → 取响应头 Mcp-Session-Id → notifications/initialized。
+
+    返回 session id；stateless server（如 FastMCP stateless_http）无该头返回 None，后续不带头。
+    initialized 通知的任何错误忽略——严格 SDK 需要它、部分 stateless 实现会 4xx 拒绝，两类都兼容。"""
+    r = await cli.post(server_url,
+                       json={"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                             "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                                        "clientInfo": {"name": "openops", "version": "1"}}},
+                       headers=mcp_headers(None))
+    raise_with_body(r)
+    rpc = parse_mcp_response(r)
+    if "error" in rpc:
+        raise RuntimeError(f"MCP initialize 错误：{str(rpc['error'])[:200]}")
+    sid = r.headers.get("Mcp-Session-Id")  # httpx 头大小写不敏感
+    try:
+        await cli.post(server_url, json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                       headers=mcp_headers(sid))
+    except Exception:  # noqa: BLE001 —— 通知失败不阻断（见 docstring）
+        pass
+    return sid
+
+
+async def mcp_request(cli: Any, server_url: str, method: str, params: dict[str, Any],
+                      session_id: str | None, extra_headers: dict[str, str] | None = None) -> Any:
+    """单发 JSON-RPC 请求（带会话头若有）。返回原始 httpx 响应——调用方自行 raise/parse
+    （调用面需先看 400/404 判会话过期做重握手，不能在这里一律抛）。"""
+    return await cli.post(server_url,
+                          json={"jsonrpc": "2.0", "id": 1, "method": method, "params": params},
+                          headers=mcp_headers(session_id, extra_headers))
+
+
 def console_tls_verify() -> bool | str:
     """console 是 https 内网证书：Python httpx 用 certifi CA（无公司内部 CA）会
     CERTIFICATE_VERIFY_FAILED（Windows curl 用系统证书库所以通）。三档：
@@ -248,9 +290,9 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
 
         if mcp_route() == "direct":  # 标准 MCP streamable-HTTP 直连 server_url（实测通；无需 console cookie）
             async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
-                r = await cli.post(server_url,
-                                   json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
-                                   headers={"Accept": _MCP_ACCEPT})
+                # 严格 stateful server 必须先握手（发现是一次性动作，不缓存会话）
+                sid = await mcp_initialize(cli, server_url)
+                r = await mcp_request(cli, server_url, "tools/list", {}, sid)
                 raise_with_body(r)
                 rpc = parse_mcp_response(r)
             if "error" in rpc:
