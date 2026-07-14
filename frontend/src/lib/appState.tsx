@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { api } from "./api";
 import type { AgentInstance, Me } from "./api/types";
@@ -93,9 +93,15 @@ export function useApp(): AppCtx {
  * → 侧栏 picker 兜底显示旧 Agent、设置页也看不到它（实测 bug）。缺失即 refresh 重拉，幂等收敛。 */
 export function useSyncCurrentAgent(instanceId?: string) {
   const { agents, loading, setCurrentAgentId, refresh } = useApp();
+  const lastPulled = useRef<string | null>(null); // 每个 instanceId 只兜底重拉一次：坏 id 不进刷新循环
   useEffect(() => {
     if (!instanceId) return;
     setCurrentAgentId(instanceId);
-    if (!loading && agents.length > 0 && !agents.some((a) => a.instance_id === instanceId)) refresh();
+    // 列表缺当前实例即重拉。不能加 agents.length>0 门——全部删光后新建的场景列表就是空的，
+    // 有门会拦死重拉，侧栏 picker 一直「选择 Agent」直到手动刷新（实测 bug）。
+    if (!loading && !agents.some((a) => a.instance_id === instanceId) && lastPulled.current !== instanceId) {
+      lastPulled.current = instanceId;
+      refresh();
+    }
   }, [instanceId, agents, loading, setCurrentAgentId, refresh]);
 }

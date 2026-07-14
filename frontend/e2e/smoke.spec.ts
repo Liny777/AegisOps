@@ -1,9 +1,9 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 10 幕）：
+ * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 11 幕）：
  * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页 /
- * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 插件页两 tab。
+ * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 删光后新建 picker 兜底重拉 / 插件页两 tab。
  * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）；
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
@@ -96,6 +96,21 @@ test("编辑 Agent：卡片编辑 → 向导预填名称 → 改名保存 → �
   await page.getByRole("button", { name: "保存修改" }).click(); // mock updateAgentTeam 原地改 module 态
   await page.waitForURL(/\/agents/, { timeout: 15_000 });
   await expect(page.getByText("支付域感知快恢-改").first()).toBeVisible({ timeout: 15_000 });
+});
+
+test("删光后新建：向导激活 → 进对话页侧栏 picker 即显新 Agent（无需手动刷新）", async ({ page }) => {
+  // 全新用户（=全部删光的形状：listAgents 为空）走完创建 → useSyncCurrentAgent 兜底重拉
+  // 不能被 agents.length>0 门拦住（实测 bug：picker 一直「选择 Agent」直到 F5）
+  await page.addInitScript(() => localStorage.setItem("openops.mock.fresh", "1"));
+  await page.goto("/init");
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByPlaceholder(/感知快恢Agent/).fill("定界Agent");
+  await page.getByText("支付核心域").click(); // 选中唯一 mock workspace
+  await page.getByRole("button", { name: "下一步" }).click();
+  await page.getByRole("button", { name: "激活 Agent" }).click(); // mock 建完清 fresh 缝
+  await page.waitForURL(/\/agent-teams\/.+\/chat/, { timeout: 15_000 });
+  // 侧栏 Agent 选择器（title="选择 Agent"）应显出新实例名，而非空态占位
+  await expect(page.getByTitle("选择 Agent")).toContainText("支付域感知快恢", { timeout: 15_000 });
 });
 
 test("插件页仅 Skill/MCP 两 tab（模型配置/角色提示词已并入向导）", async ({ page }) => {

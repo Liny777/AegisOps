@@ -147,14 +147,16 @@ export function projectRca(p: Record<string, unknown> | null | undefined): RcaCa
   return { ...(p as unknown as RcaCardData), time: hhmm(new Date().toISOString().replace("T", " ").slice(0, 16) + ":00") || undefined };
 }
 
-/** 后端实例行 → 前端 AgentInstance。 */
-export function projectInstance(r: Record<string, unknown>): AgentInstance {
+/** 后端实例行 → 前端 AgentInstance。wsNames = oModel workspace id→名称映射
+ * （DB 实例行只存 workspace_id；卡片「系统范围」要显示工作空间名称，拿不到名字回退 id）。 */
+export function projectInstance(r: Record<string, unknown>, wsNames?: Map<string, string>): AgentInstance {
+  const wsId = String(r.workspace_id ?? "");
   return {
     instance_id: String(r.instance_id ?? r.agent_team_instance_id),
     name: String(r.instance_name ?? r.name ?? ""),
     template: "感知快恢 Agent",
-    workspace_id: String(r.workspace_id ?? ""),
-    workspace_label: String(r.workspace_id ?? ""),
+    workspace_id: wsId,
+    workspace_label: wsNames?.get(wsId) ?? wsId,
     scope_revision: String(r.scope_revision ?? ""),
     status: (r.status as AgentInstance["status"]) ?? "active",
     active_config_version: String(r.active_config_version_id ?? "").slice(0, 8),
