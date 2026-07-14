@@ -4,6 +4,7 @@ import type {
   ActivityNode,
   AgentInstance,
   HitlCardData,
+  HitlFact,
   OpenOpsEvent,
   RcaCardData,
 } from "./types";
@@ -125,6 +126,28 @@ function subGroupStatus(items: ActivityNode[], running: boolean): ActivityGroup[
   return running ? "running" : undefined;
 }
 
+/** 审批入参键 → 中文标签（已知键友好化，未知键用原 key）。 */
+const APPROVAL_ARG_LABELS: Record<string, string> = {
+  command: "命令",
+  target: "目标",
+  appid: "目标 APPID",
+  app_id: "目标 APPID",
+  project_id: "目标 APPID",
+  action: "动作",
+  impact: "影响说明",
+};
+
+/** 审批卡事实行统一构建（SSE 实时与 /state 恢复同口径）：首行工具名 + 逐项具体入参。
+ *  args 空时回退到"工具"单行——至少让用户看清在批哪个工具。 */
+export function buildApprovalFacts(tool: string, args: Record<string, unknown>): HitlFact[] {
+  const facts: HitlFact[] = [{ label: "工具", value: tool }];
+  for (const [k, v] of Object.entries(args)) {
+    if (k === "agent_key" || v === null || v === undefined || v === "") continue; // agent_key 由 emit 注入，非入参
+    facts.push({ label: APPROVAL_ARG_LABELS[k] ?? k, value: String(v) });
+  }
+  return facts;
+}
+
 /** approval_request 行 → HITL 卡数据。 */
 export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
   const args = (a.arguments_redacted_json ?? {}) as Record<string, unknown>;
@@ -132,19 +155,8 @@ export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
   const remainMs = expire ? expire.getTime() - Date.now() : 0;
   const mm = Math.max(0, Math.floor(remainMs / 60000));
   const ss = Math.max(0, Math.floor((remainMs % 60000) / 1000));
-  // bash（run_container_command）审批的 args 是 {command}，恢复类是 {target/appid/action}
-  // ——按付形状取事实，避免 bash 审批「目标/动作」两栏全"—"没法判断（与 SSE 路径同口径）
-  const facts = args.command
-    ? [
-        { label: "命令", value: String(args.command) },
-        { label: "任务", value: String(a.task_id ?? "—") },
-      ]
-    : [
-        { label: "工具", value: String(a.tool_call_name ?? "") },
-        { label: "目标", value: String(args.target ?? args.appid ?? "—") },
-        { label: "动作", value: String(args.action ?? "—") },
-        { label: "任务", value: String(a.task_id ?? "—") },
-      ];
+  const facts = buildApprovalFacts(String(a.tool_call_name ?? "tool"), args);
+  facts.push({ label: "任务", value: String(a.task_id ?? "—") });
   return {
     approval_request_id: String(a.approval_request_id),
     title: "需要人工批准",

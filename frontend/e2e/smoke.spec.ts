@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
 
 /**
- * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 14 幕）：
+ * B9 smoke（mock 模式，33:213 八场景裁剪为可离线跑，现 15 幕）：
  * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页 /
  * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 删光后新建 picker 兜底重拉 / 插件页两 tab /
- * 外链 ?q= 三态（已初始化自动发送·未初始化向导保留·无权限引导页保留）。
+ * 外链 ?q= 三态（已初始化自动发送·未初始化向导保留·无权限引导页保留） / 审批卡批准后自动淡出。
  * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）；
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
@@ -22,6 +22,15 @@ test("mock 发送：回执气泡出现", async ({ page }) => {
   await input.fill("查一下支付链路状态");
   await input.press("Enter");
   await expect(page.getByText(/任务已受理/)).toBeVisible({ timeout: 10_000 });
+});
+
+test("审批卡：工具名可见 → 点击批准 → 显示已批准 → 自动淡出", async ({ page }) => {
+  await page.goto("/"); // mock 工作台自带一张 pending 审批卡（recover_execute）
+  await expect(page.getByText("需要人工批准")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("recover_execute").first()).toBeVisible(); // 在批哪个工具，一眼可见
+  await page.getByRole("button", { name: "批准", exact: true }).click();
+  await expect(page.getByText(/已批准/)).toBeVisible({ timeout: 3_000 }); // 原地显结果
+  await expect(page.getByText("需要人工批准")).toHaveCount(0, { timeout: 5_000 }); // ~2.2s 后自动淡出
 });
 
 test("初始化向导：三步骨架（2/3/4 已合并为「配置 Agent」）", async ({ page }) => {

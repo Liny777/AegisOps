@@ -77,15 +77,16 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             return await _emit(st, run, "openops.task.completed", message="任务完成：根因 H1，已执行恢复", action="task")
 
         # ASK：恢复动作需人工批准（标注 is_approval_required=true）
+        args = redact_args({"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"})
         appr = await runs.create_approval(
             st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "recover_execute",
-            redact_args({"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"}),
-            str(run["audit_trace_id"]), str(run["framework_session_id"]),
+            args, str(run["audit_trace_id"]), str(run["framework_session_id"]),
         )
         st.approval_id = str(appr["approval_request_id"])
+        # payload 带 args（脱敏入参）供审批卡逐项展示；保留 target/impact 兼容旧前端
         await _emit(st, run, "openops.approval.required", severity="warning",
                     message="恢复动作待批准：重启 svc-a 释放连接",
-                    payload={"approval_request_id": st.approval_id, "tool": "recover_execute",
+                    payload={"approval_request_id": st.approval_id, "tool": "recover_execute", "args": args,
                              "target": "APP-A · svc-payment-api/svc-a", "impact": "重启期间 svc-a 短暂不可用（约 15s）"})
 
         # 等待决策（decide/cancel 置 approval_ev；超时按 expire）

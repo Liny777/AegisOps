@@ -64,14 +64,17 @@ async def _bridge_command_approval(st: TaskState, run: dict[str, Any], command: 
     """
     st.approval_ev.clear()  # 多次 ASK 复用同一 event，等待前清位
     st.approval_result = None
+    args = redact_args({"command": command})  # 同一份脱敏入参：入审批行 + 进事件 payload（卡片展示）
     appr = await runs.create_approval(
         st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, "run_container_command",
-        redact_args({"command": command}), str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        args, str(run["audit_trace_id"]), str(run["framework_session_id"]),
     )
     st.approval_id = str(appr["approval_request_id"])
+    # payload 带 args（脱敏入参字典，供审批卡逐项展示"批哪个工具的什么入参"）；保留 command 兼容旧前端
     await emit(st, run, "openops.approval.required", severity="warning", action="bash",
                message="容器内命令待批准",
-               payload={"approval_request_id": st.approval_id, "tool": "run_container_command", "command": command})
+               payload={"approval_request_id": st.approval_id, "tool": "run_container_command",
+                        "command": command, "args": args})
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=_ASK_TIMEOUT_S)
     except asyncio.TimeoutError:

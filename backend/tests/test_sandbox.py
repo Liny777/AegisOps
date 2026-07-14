@@ -524,3 +524,40 @@ def test_def7_bash_tool_entry_revives_after_restart(client):
 
     out = asyncio.run(scenario())
     assert "revived" in out and "容器不可用" not in out  # 自愈重建并执行（修复点）
+
+
+def test_bash_approval_required_payload_carries_args(client):
+    """审批卡"批哪个工具的什么入参"：非只读容器命令的 approval.required payload 带 args.command
+    （前端 buildApprovalFacts 逐项展示）+ 保留 command 兼容旧前端。"""
+    from runtime.sandbox_bash import run_container_command
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "bashargs", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk_bashargs", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.sandbox_cfg = {}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"],
+           "framework_session_id": run_row["framework_session_id"]}
+
+    async def scenario():
+        async def approver():  # 后台审批者：approval_id 一就位即批准，避免 bridge 卡在 wait
+            for _ in range(300):
+                if st.approval_id:
+                    st.approval_result = "approved"
+                    st.approval_ev.set()
+                    return
+                await asyncio.sleep(0.01)
+        approve = asyncio.create_task(approver())
+        await run_container_command(st, run, "rm data.txt")  # 非只读 → ASK（BASH-002）
+        await approve
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    appr = next(e for e in events if e["event_type"] == "openops.approval.required")
+    p = appr["payload_redacted_json"]
+    assert p["tool"] == "run_container_command"
+    assert p["args"]["command"] == "rm data.txt"  # 通用入参字典（前端逐项展示）
+    assert p["command"] == "rm data.txt"           # 兼容旧前端字段保留

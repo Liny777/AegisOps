@@ -6,7 +6,7 @@ import { Icon, IconButton, Button } from "../ui";
 import { api, API_MODE } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
-import { approvalToHitl, eventToNode, groupNodes } from "../lib/api/projection";
+import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes } from "../lib/api/projection";
 import { API_BASE } from "../lib/api/client";
 import type {
   ActivityNode,
@@ -33,6 +33,9 @@ const USE_COPILOT_CHAT =
   (import.meta.env.VITE_OPENOPS_COPILOT_CHAT as string | undefined) !== "0";
 
 type ConnState = "connecting" | "open" | "reconnecting" | "error";
+
+// 审批卡结果驻留时长：批准/拒绝后原地显「已批准/已拒绝」这么久再自动淡出（用户拍板"显示结果后自动消失"）
+const HITL_RESULT_LINGER_MS = 2200;
 
 /** 会话自动起名（与后端 run_state_service._auto_title 同规则）：单行化取前 30 字。 */
 const autoTitle = (t: string) => {
@@ -114,31 +117,38 @@ export function Workbench() {
       case "openops.rca.updated":
         setRca(p as unknown as RcaCardData);
         break;
-      case "openops.approval.required":
+      case "openops.approval.required": {
+        const tool = String(p.tool ?? "recover_execute");
+        // 首选后端透传的通用入参字典（buildApprovalFacts 逐项展示）；缺失回退旧派生字段（兼容旧后端）
+        const facts = p.args && typeof p.args === "object"
+          ? buildApprovalFacts(tool, p.args as Record<string, unknown>)
+          : p.command
+            ? buildApprovalFacts(tool, { command: p.command })
+            : buildApprovalFacts(tool, { target: p.target, impact: p.impact });
         setHitl({
           approval_request_id: String(p.approval_request_id ?? ""),
           title: "需要人工批准",
-          tool: String(p.tool ?? "recover_execute"),
+          tool,
           summary: e.message,
-          // 按工具付形状取事实：bash（run_container_command）payload 带 command，
-          // 恢复类带 target/impact——此前硬取 target/impact，bash 审批两栏全"—"没法判断
-          facts: p.command
-            ? [{ label: "命令", value: String(p.command) }]
-            : [
-                { label: "目标", value: String(p.target ?? "—") },
-                { label: "影响说明", value: String(p.impact ?? "—") },
-              ],
+          facts,
           countdown: "5:00",
           status: "pending",
           tone: "warning",
         });
         break;
+      }
       case "openops.approval.approved":
-        setHitl((h) => (h ? { ...h, status: "approved" } : h));
+      case "openops.approval.rejected": {
+        // 远端/超时决策路径：翻结果态并按 id 守卫计时器自动淡出（与本端 resolveHitl 幂等）
+        const decided = e.event_type === "openops.approval.approved" ? "approved" : "rejected";
+        setHitl((h) => (h ? { ...h, status: decided } : h));
+        const aid = String(p.approval_request_id ?? "");
+        window.setTimeout(
+          () => setHitl((cur) => (cur && cur.status !== "pending" && (!aid || cur.approval_request_id === aid) ? undefined : cur)),
+          HITL_RESULT_LINGER_MS,
+        );
         break;
-      case "openops.approval.rejected":
-        setHitl((h) => (h ? { ...h, status: "rejected" } : h));
-        break;
+      }
       case "openops.task.completed":
         setTaskStatus("completed");
         if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
@@ -309,6 +319,19 @@ export function Workbench() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoQuestion, runId, runStatus, conn]);
 
+  // 审批决策（本端点击）：发决策 → 原地显结果 → HITL_RESULT_LINGER_MS 后按 id 守卫自动淡出。
+  // 副作用不放进 setState updater（防 StrictMode 双发 decide）。远端/超时决策由 handleOpenOpsEvent 兜底。
+  const resolveHitl = useCallback((d: "approved" | "rejected") => {
+    if (!hitl) return;
+    const id = hitl.approval_request_id;
+    if (API_MODE === "real") void api.decideApproval(id, d);
+    setHitl((h) => (h ? { ...h, status: d } : h));
+    window.setTimeout(
+      () => setHitl((cur) => (cur && cur.approval_request_id === id ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, [hitl]);
+
   const running = taskStatus === "running";
   // 标题=会话名（real：run_title，未起名「新对话」；mock 保持 demo 文案）；徽标=真实 Agent 名
   const displayTitle = chatTitle ?? (API_MODE === "real" ? "新对话" : demo.chatTitle);
@@ -393,10 +416,7 @@ export function Workbench() {
               autoQuestion={autoQuestion}
               onAutoSent={() => setAutoQuestion(null)}
             />
-            <CopilotHitlFloat
-              hitl={hitl}
-              onDecide={(d) => hitl && api.decideApproval(hitl.approval_request_id, d)}
-            />
+            <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
           </div>
         ) : (
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
@@ -414,7 +434,7 @@ export function Workbench() {
                 <HitlCard
                   key={hitl.approval_request_id + hitl.status}
                   hitl={hitl}
-                  onDecide={(d) => api.decideApproval(hitl.approval_request_id, d)}
+                  onDecide={resolveHitl}
                 />
               ) : null}
               {running ? (
