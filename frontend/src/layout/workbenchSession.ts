@@ -49,6 +49,14 @@ export function parseWorkbenchTarget(pathname: string, search: string): Workbenc
   return null;
 }
 
+/** 从非对话页首次进入聊天时，debounce 尚未创建 retained Workbench 也必须占满主区。 */
+export function shouldShowWorkbenchColdStart(
+  routeTarget: WorkbenchTarget | null,
+  hasRetainedWorkbench: boolean,
+): boolean {
+  return routeTarget !== null && !hasRetainedWorkbench;
+}
+
 const sameRawTarget = (left: WorkbenchTarget, right: WorkbenchTarget): boolean =>
   left.instanceId === right.instanceId && left.explicitRunId === right.explicitRunId;
 
@@ -73,4 +81,70 @@ export function shouldReuseWorkbench(
 
   return resolvedSession.runStatus === "active" &&
     incomingTarget.instanceId === resolvedSession.instanceId;
+}
+
+export const WORKBENCH_TARGET_SWITCH_DELAY_MS = 120;
+
+type TimerHandle = unknown;
+
+export interface LatestWorkbenchTargetScheduler {
+  /**
+   * Queue a real Workbench target change. Returns false when the incoming route
+   * already identifies the retained canonical session; any older queued change
+   * is cancelled in that case.
+   */
+  request(
+    retainedTarget: WorkbenchTarget | null,
+    resolvedSession: ResolvedWorkbenchSession | null,
+    incomingTarget: WorkbenchTarget,
+    apply: (target: WorkbenchTarget) => void,
+  ): boolean;
+  cancel(): void;
+  hasPending(): boolean;
+}
+
+interface LatestWorkbenchTargetSchedulerOptions {
+  delayMs?: number;
+  setTimer?: (callback: () => void, delayMs: number) => TimerHandle;
+  clearTimer?: (handle: TimerHandle) => void;
+}
+
+/**
+ * Trailing latest-wins scheduler for expensive Workbench switches.
+ *
+ * React Router still owns the URL immediately, so Sidebar selection remains
+ * responsive. Only the target that initializes /state, SSE and CopilotKit is
+ * delayed and coalesced.
+ */
+export function createLatestWorkbenchTargetScheduler(
+  options: LatestWorkbenchTargetSchedulerOptions = {},
+): LatestWorkbenchTargetScheduler {
+  const delayMs = options.delayMs ?? WORKBENCH_TARGET_SWITCH_DELAY_MS;
+  const setTimer = options.setTimer ?? ((callback, delay) => window.setTimeout(callback, delay));
+  const clearTimer = options.clearTimer ?? ((handle) => window.clearTimeout(handle as number));
+  let timer: TimerHandle | null = null;
+
+  const cancel = () => {
+    if (timer === null) return;
+    clearTimer(timer);
+    timer = null;
+  };
+
+  return {
+    request(retainedTarget, resolvedSession, incomingTarget, apply) {
+      if (shouldReuseWorkbench(retainedTarget, resolvedSession, incomingTarget)) {
+        cancel();
+        return false;
+      }
+
+      cancel();
+      timer = setTimer(() => {
+        timer = null;
+        apply(incomingTarget);
+      }, delayMs);
+      return true;
+    },
+    cancel,
+    hasPending: () => timer !== null,
+  };
 }

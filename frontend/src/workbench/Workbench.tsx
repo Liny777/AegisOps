@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, IconButton, Button } from "../ui";
-import { api, API_MODE } from "../lib/api";
+import { api, API_MODE, forgetEnsuredRun, isAbortError } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
 import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes } from "../lib/api/projection";
@@ -21,11 +21,23 @@ import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
-import { CopilotChatPanel } from "./copilot/CopilotChatPanel";
+import { CopilotChatPanel, CopilotWorkbenchProvider } from "./copilot/CopilotChatPanel";
+import { CopilotErrorBoundary } from "./copilot/CopilotErrorBoundary";
 import { CopilotHitlFloat } from "./copilot/CopilotHitlFloat";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { consumeAutoQuestion } from "../lib/autosend";
 import type { ResolvedWorkbenchSession, WorkbenchTarget } from "../layout/workbenchSession";
+import {
+  clearRunRecoveryIssue,
+  isCurrentRunAction,
+  isCurrentRunStream,
+  isOwnedOrStaleInitializationCancellation,
+  recoverSnapshotMessages,
+  resetActivityPageRequest,
+  shouldShowWorkbenchPortal,
+  workbenchTransitionUi,
+  type WorkbenchRecoveryIssue,
+} from "./workbenchRecovery";
 
 // Part B：CopilotChat 接管对话区（real+agui）。回退开关：VITE_OPENOPS_COPILOT_CHAT=0 回自建渲染。
 const USE_COPILOT_CHAT =
@@ -74,12 +86,18 @@ async function copyText(text: string): Promise<boolean> {
  *  两个入口：/agent-teams/:instanceId/chat（ensureRun 复用 active run）与 /agent-runs/:runId（按 run 恢复）。 */
 export function Workbench({
   target,
+  sessionGeneration,
   visible,
+  routeTransitionPending = false,
   onSessionResolved,
 }: {
   target: WorkbenchTarget;
+  /** 同 raw target 需要重新 ensure（例如 retained Run 已 closed）时递增；不得用于 Provider key。 */
+  sessionGeneration: number;
   /** 仅控制浮层可见性；不得参与 Run 初始化或连接 effect。 */
   visible: boolean;
+  /** URL 已更新但 120ms latest-wins 目标尚未完成切换。 */
+  routeTransitionPending?: boolean;
   onSessionResolved: (session: ResolvedWorkbenchSession) => void;
 }) {
   const { instanceId, explicitRunId } = target;
@@ -90,7 +108,7 @@ export function Workbench({
   const [resolvedInstanceId, setResolvedInstanceId] = useState(instanceId);
   const [chatTitle, setChatTitle] = useState<string | null>(null);   // run_title（real）；null=未起名
   const [agentName, setAgentName] = useState<string | null>(null);   // /state 的 instance.instance_name
-  const [initializationError, setInitializationError] = useState<string | null>(null);
+  const [initializationIssue, setInitializationIssue] = useState<WorkbenchRecoveryIssue | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
@@ -107,37 +125,78 @@ export function Workbench({
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(true);
+  const targetKey = `${instanceId}\u0000${explicitRunId ?? ""}`;
+  type TransitionState = {
+    key: string;
+    status: "loading" | "ready" | "error";
+  };
+  const initialTransition: TransitionState = { key: targetKey, status: "loading" };
+  const [transition, setTransition] = useState<TransitionState>(initialTransition);
+  const transitionGuardRef = useRef<TransitionState>(initialTransition);
+  // target prop 在 effect 之前已经生效；同步把 guard 标为 loading，旧 Run 的 resync
+  // 就不会在这一帧覆盖/清除新 target 的切换结果。
+  if (transitionGuardRef.current.key !== targetKey) {
+    transitionGuardRef.current = { key: targetKey, status: "loading" };
+  }
+  const updateTransition = useCallback((next: TransitionState) => {
+    transitionGuardRef.current = next;
+    setTransition(next);
+  }, []);
+  const {
+    failedCurrentTarget,
+    showSwitchOverlay,
+    showFailureOverlay,
+    blockInput: workbenchInputBlocked,
+  } = workbenchTransitionUi({
+    hasDisplayedRun: Boolean(runId),
+    routeTransitionPending,
+    transitionKey: transition.key,
+    targetKey,
+    transitionStatus: transition.status,
+  });
   const seen = useRef(new Set<string>());
   const activeRunRef = useRef<string | null>(null);
+  const activeInstanceRef = useRef<string>("");
   const runGenerationRef = useRef(0);
   const sseOpenRef = useRef(false);
+  const sseHandleRef = useRef<{ close: () => void } | null>(null);
+  const refreshRequestRef = useRef<AbortController | null>(null);
+  const activityRequestRef = useRef<AbortController | null>(null);
+  const initializationError = initializationIssue?.message ?? null;
   const effectiveInstanceId = resolvedInstanceId || instanceId;
   useSyncCurrentAgent(effectiveInstanceId);  // 新建/按 Run 恢复后同步侧栏，缺实例时兜底重拉
   // agui 流活跃期间对话区文本归 agui 独占（TEXT_MESSAGE_*）；SSE 的终态文本仅在无 agui 流（刷新接续）时追加，
   // 否则 SSE task.completed 先到会以同 event_id 建泡，agui 合成文本再追加 → 文本双写（双通道竞态）
-  const aguiActive = useRef(false);
+  const aguiActive = useRef<{ runId: string; token: symbol } | null>(null);
   // 外链 ?q= 待发问题：挂载即消费（sessionStorage 一次性，刷新不重发）；
   // copilot 路径经 CopilotAutoSend 发送，自建/mock 路径由下方 effect 调 send()
   const [autoQuestion, setAutoQuestion] = useState<string | null>(() => consumeAutoQuestion());
   const autoSentRef = useRef(false);
 
   useEffect(() => {
-    if (API_MODE !== "real" || !runId || !effectiveInstanceId) return;
+    if (
+      API_MODE !== "real" || !runId || !effectiveInstanceId ||
+      transition.key !== targetKey || transition.status !== "ready"
+    ) return;
     // ensureRun/createRun 已给出 canonical runId 时先上报 provisional active 身份：即便 /state
     // 仍在等待，设置页也能通过 /agent-runs/:runId 回到同一个 CopilotKit；hydrate 后再校正 closed。
     onSessionResolved({ runId, instanceId: effectiveInstanceId, runStatus });
-  }, [runId, effectiveInstanceId, runStatus, onSessionResolved]);
+  }, [runId, effectiveInstanceId, runStatus, onSessionResolved, targetKey, transition]);
 
   // `/agent-runs/:runId` 初始没有 instanceId；待 /state 解析归属实例后再加载同源 Skill 集。
   useEffect(() => {
     if (API_MODE !== "real" || !effectiveInstanceId) return;
-    let closed = false;
-    api.getAvailableSkills(effectiveInstanceId)
+    const controller = new AbortController();
+    // 常驻 Workbench 跨 Agent 时先撤下旧能力；空列表与失败都不能继续暴露上一 Agent 的 Skill。
+    setSkills([]);
+    api.getAvailableSkills(effectiveInstanceId, { signal: controller.signal })
       .then((next) => {
-        if (!closed && next.length) setSkills(next);
+        if (!controller.signal.aborted) setSkills(next);
       })
-      .catch(() => undefined);
-    return () => { closed = true; };
+      .catch((error) => {
+        if (!isAbortError(error)) console.warn("[OpenOps][skills] 能力列表读取失败", error);
+      });
+    return () => controller.abort();
   }, [effectiveInstanceId]);
 
   const pushNode = useCallback((n: ActivityNode) => {
@@ -214,161 +273,263 @@ export function Workbench({
       }
       case "openops.task.completed":
         setTaskStatus("completed");
-        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
+        if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
         break;
       case "openops.task.failed":
         setTaskStatus("failed");
-        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.task.cancelled":
         setTaskStatus("cancelled");
-        if (!aguiActive.current && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
+        if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.run.closed":
         setRunStatus("closed");
+        if (activeInstanceRef.current) forgetEnsuredRun(activeInstanceRef.current, e.agent_run_id);
         break;
       default:
         break;
     }
   }, [pushNode, appendMessage]);
 
-  const refresh = useCallback(async (
+  const applyStateSnapshot = useCallback((
+    d: Record<string, any>,
     rid: string,
-    generation = runGenerationRef.current,
-  ): Promise<boolean> => {
-    try {
-      const d = (await api.getRunState(rid)) as Record<string, any>;
-      // /state 可能在路由已经切换后才返回；按 Run + generation 双重隔离异步回写。
-      if (activeRunRef.current !== rid || runGenerationRef.current !== generation) return false;
-      // 按 run 恢复入口：state 返回 instance，回填工作台和侧栏的真实 Agent。
-      const stateInstanceId = String(d.instance?.agent_team_instance_id ?? instanceId ?? "");
-      if (!stateInstanceId) throw new Error("会话状态缺少 Agent 归属信息");
-      setResolvedInstanceId(stateInstanceId);
-      setCurrentAgentId(stateInstanceId);
-      setChatTitle((d.run?.run_title as string | undefined) || null);
-      setAgentName(d.instance?.instance_name ? String(d.instance.instance_name) : null);
-      setRunStatus(d.run?.run_status === "closed" ? "closed" : "active");
-      if (d.active_task) {
-        setTaskId(d.active_task.task_id);
-        setTaskStatus(d.active_task.status);
-        setMessages((m) => (m.length ? m : [{ id: "u0", role: "user", text: d.active_task.input_text }]));
+    fallbackInstanceId: string,
+    replaceSession: boolean,
+  ): { instanceId: string; runStatus: "active" | "closed"; lastEventSeq: number | null } => {
+    const stateInstanceId = String(d.instance?.agent_team_instance_id ?? fallbackInstanceId ?? "");
+    if (!stateInstanceId) throw new Error("会话状态缺少 Agent 归属信息");
+    const nextRunStatus = d.run?.run_status === "closed" ? "closed" : "active";
+    const activeTask = d.active_task as Record<string, any> | null | undefined;
+
+    setResolvedInstanceId(stateInstanceId);
+    setCurrentAgentId(stateInstanceId);
+    setChatTitle((d.run?.run_title as string | undefined) || null);
+    setAgentName(d.instance?.instance_name ? String(d.instance.instance_name) : null);
+    setRunStatus(nextRunStatus);
+    if (nextRunStatus === "closed") forgetEnsuredRun(stateInstanceId, rid);
+    if (replaceSession) {
+      setEditingTitle(false);
+      setTaskId(activeTask?.task_id ? String(activeTask.task_id) : null);
+      setTaskStatus(activeTask?.status ? String(activeTask.status) : null);
+      setMessages(recoverSnapshotMessages(d, rid));
+      setRca(d.rca ? d.rca as RcaCardData : undefined);
+      setNodes([]);
+      seen.current = new Set();
+    } else if (activeTask) {
+      setTaskId(activeTask.task_id ? String(activeTask.task_id) : null);
+      setTaskStatus(activeTask.status ? String(activeTask.status) : null);
+      if (activeTask.input_text) {
+        setMessages((messages) => messages.length
+          ? messages
+          : [{ id: `u-${rid}`, role: "user", text: String(activeTask.input_text) }]);
+      }
+      const recoveredTerminal = recoverSnapshotMessages(d, rid).find((message) => message.role === "bot");
+      if (recoveredTerminal) {
+        setMessages((current) => current.some((message) => message.id === recoveredTerminal.id)
+          ? current
+          : [...current, recoveredTerminal]);
       }
       if (d.rca) setRca(d.rca as RcaCardData);
-      const pend = (d.pending_approvals ?? []) as Record<string, unknown>[];
-      if (pend.length) setHitl(approvalToHitl(pend[0]));
-      else setHitl((h) => (h && h.status !== "pending" ? h : undefined));
-      const recent = Array.isArray(d.recent_events) ? d.recent_events as Record<string, unknown>[] : [];
-      for (const event of recent) {
-        const id = event.event_id ?? event.audit_event_id;
-        if (id) seen.current.add(String(id));
-      }
-      dispatchActivity({ type: "hydrate", snapshot: d });
-      setInitializationError(null);
+    }
+
+    const pending = (d.pending_approvals ?? []) as Record<string, unknown>[];
+    if (pending.length) setHitl(approvalToHitl(pending[0]));
+    else if (replaceSession) setHitl(undefined);
+    else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
+
+    const recent = Array.isArray(d.recent_events) ? d.recent_events as Record<string, unknown>[] : [];
+    for (const event of recent) {
+      const id = event.event_id ?? event.audit_event_id;
+      if (id) seen.current.add(String(id));
+    }
+    dispatchActivity({ type: replaceSession ? "replace_snapshot" : "hydrate", snapshot: d });
+
+    const lastEventSeq = Number(d.last_event_seq);
+    return {
+      instanceId: stateInstanceId,
+      runStatus: nextRunStatus,
+      lastEventSeq: Number.isFinite(lastEventSeq) && lastEventSeq >= 0 ? lastEventSeq : null,
+    };
+  }, [setCurrentAgentId]);
+
+  const refresh = useCallback(async (
+    rid: string,
+    fallbackInstanceId: string,
+    signal?: AbortSignal,
+  ): Promise<boolean> => {
+    try {
+      const d = (await api.getRunState(rid, { signal })) as Record<string, any>;
+      if (activeRunRef.current !== rid) return false;
+      applyStateSnapshot(d, rid, fallbackInstanceId, false);
+      setInitializationIssue((current) => clearRunRecoveryIssue(current, rid));
       if (sseOpenRef.current) setConn("open");
       return true;
     } catch (error) {
-      if (activeRunRef.current !== rid || runGenerationRef.current !== generation) return false;
-      setInitializationError(`会话状态恢复失败：${(error as Error).message}`);
+      if (isAbortError(error) || activeRunRef.current !== rid) return false;
+      // 新 target 正在 loading/error 时，当前 rid 仍是屏幕上保留的旧 Run；旧 resync
+      // 不能覆盖新 target 的切换提示。
+      if (transitionGuardRef.current.status !== "ready") return false;
+      setInitializationIssue({
+        owner: "run",
+        runId: rid,
+        message: `会话状态恢复失败：${(error as Error).message}`,
+      });
       setConn("error");
       return false;
     }
-  }, [instanceId, setCurrentAgentId]);
+  }, [applyStateSnapshot]);
 
-  // 挂载：显式 run_id 优先恢复；否则 ensureRun 复用当前 Agent 的 active run。
+  const openSse = useCallback((
+    rid: string,
+    fallbackInstanceId: string,
+    initialLastEventId: number | null,
+  ) => subscribeSse(`${API_BASE}/openops/v1/agent-runs/${rid}/events/stream`, {
+    initialLastEventId,
+    onStateChange: (state) => {
+      if (activeRunRef.current !== rid) return;
+      sseOpenRef.current = state === "open";
+      setConn(state);
+    },
+    onResync: () => {
+      if (activeRunRef.current !== rid) return;
+      refreshRequestRef.current?.abort();
+      const controller = new AbortController();
+      refreshRequestRef.current = controller;
+      void refresh(rid, fallbackInstanceId, controller.signal).finally(() => {
+        if (refreshRequestRef.current === controller) refreshRequestRef.current = null;
+      });
+    },
+    onEvent: (raw) => {
+      if (activeRunRef.current === rid) handleOpenOpsEvent(raw as OpenOpsEvent);
+    },
+  }), [handleOpenOpsEvent, refresh]);
+
+  // 显式 run_id 优先；否则 ensureRun。切换期间保留旧内容与旧连接，/state 成功后原子换入。
   useEffect(() => {
     if (API_MODE !== "real" || (!instanceId && !explicitRunId)) {
-      // mock 演示：直接用 demoState
       setMessages(demo.messages);
       setRca(demo.rca);
       setHitl(demo.hitl);
-      setNodes(demo.activity.flatMap((g) => g.items));
+      setNodes(demo.activity.flatMap((group) => group.items));
       if (demo.activitySnapshot) dispatchActivity({ type: "hydrate", snapshot: demo.activitySnapshot });
       setConn("open");
+      updateTransition({ key: targetKey, status: "ready" });
       return;
     }
-    let closed = false;
-    let handle: { close: () => void } | null = null;
+
     const generation = ++runGenerationRef.current;
-    activeRunRef.current = null;
-    sseOpenRef.current = false;
-    setRunId(null);
-    setRunStatus("active");
-    setResolvedInstanceId(instanceId);
-    setChatTitle(null);
-    setAgentName(null);
-    setInitializationError(null);
-    setEditingTitle(false);
-    setTaskId(null);
-    setTaskStatus(null);
-    setMessages([]);
-    setRca(undefined);
-    setHitl(undefined);
-    setNodes([]);
-    dispatchActivity({ type: "reset" });
-    seen.current = new Set();
-    setConn("connecting");
-    (async () => {
-      // ensureRun/refresh 失败必须透出（实测坑：静默吞掉 → runId 恒 null → send 走 mock 文案误导）
-      let rid: string;
+    const controller = new AbortController();
+    const hadDisplayedRun = activeRunRef.current !== null;
+    refreshRequestRef.current?.abort();
+    refreshRequestRef.current = null;
+    updateTransition({ key: targetKey, status: "loading" });
+    setInitializationIssue(null);
+    if (!hadDisplayedRun) setConn("connecting");
+
+    void (async () => {
       try {
-        rid = explicitRunId ?? (await api.ensureRun(instanceId));
-      } catch (err) {
-        if (closed) return;
-        setConn("error");
-        setInitializationError(`会话创建失败：${(err as Error).message}`);
-        return;
+        const rid = explicitRunId ?? await api.ensureRun(instanceId, { signal: controller.signal });
+        if (controller.signal.aborted || runGenerationRef.current !== generation) return;
+        const snapshot = await api.getRunState(rid, { signal: controller.signal }) as Record<string, any>;
+        if (controller.signal.aborted || runGenerationRef.current !== generation) return;
+
+        // Validate/derive everything before moving the canonical event guard.
+        const derived = applyStateSnapshot(snapshot, rid, instanceId, true);
+        const previousSse = sseHandleRef.current;
+        activeRunRef.current = rid;
+        activeInstanceRef.current = derived.instanceId;
+        sseOpenRef.current = false;
+        setRunId(rid);
+        setConn("connecting");
+        sseHandleRef.current = openSse(rid, derived.instanceId, derived.lastEventSeq);
+        previousSse?.close();
+        setInitializationIssue(null);
+        updateTransition({ key: targetKey, status: "ready" });
+      } catch (error) {
+        if (isOwnedOrStaleInitializationCancellation(
+          controller.signal.aborted,
+          generation,
+          runGenerationRef.current,
+        )) return;
+        updateTransition({ key: targetKey, status: "error" });
+        const reason = isAbortError(error)
+          ? "会话请求被意外中止，请重试"
+          : (error as Error).message;
+        if (hadDisplayedRun) {
+          setInitializationIssue({
+            owner: "transition",
+            generation,
+            targetKey,
+            message: `会话切换失败：${reason}；仍显示上一会话。`,
+          });
+        } else {
+          setConn("error");
+          setInitializationIssue({
+            owner: "transition",
+            generation,
+            targetKey,
+            message: `会话状态恢复失败：${reason}`,
+          });
+        }
       }
-      if (closed) return;
-      if (runGenerationRef.current !== generation) return;
-      activeRunRef.current = rid;
-      setRunId(rid);
-      // 先挂被动 SSE，再拉 /state；连接建立时再补拉一次，覆盖「state 快照后、SSE 注册前」的极小窗口。
-      // CopilotChat 主动流同时经 useAgent.subscribe 进入同一 reducer，四路最终按 event_id 去重。
-      handle = subscribeSse(`${API_BASE}/openops/v1/agent-runs/${rid}/events/stream`, {
-        onStateChange: (state) => {
-          if (closed || runGenerationRef.current !== generation || activeRunRef.current !== rid) return;
-          sseOpenRef.current = state === "open";
-          setConn(state);
-          if (state === "open") void refresh(rid, generation);
-        },
-        onResync: () => {
-          if (!closed && runGenerationRef.current === generation) void refresh(rid, generation);
-        },
-        onEvent: (raw) => {
-          if (!closed && runGenerationRef.current === generation && activeRunRef.current === rid) {
-            handleOpenOpsEvent(raw as OpenOpsEvent);
-          }
-        },
-      });
-      await refresh(rid, generation);
     })();
-    return () => {
-      closed = true;
-      sseOpenRef.current = false;
-      handle?.close();
-      if (runGenerationRef.current === generation) {
-        runGenerationRef.current += 1;
-        activeRunRef.current = null;
-      }
-    };
-  }, [instanceId, explicitRunId, retryGeneration, refresh, handleOpenOpsEvent, demo]);
+
+    return () => controller.abort();
+  }, [
+    instanceId,
+    explicitRunId,
+    sessionGeneration,
+    retryGeneration,
+    targetKey,
+    applyStateSnapshot,
+    openSse,
+    demo,
+    updateTransition,
+  ]);
+
+  // 只有 AppShell 真正卸载时才关闭当前会话；目标切换由成功后的原子交换负责。
+  useEffect(() => () => {
+    runGenerationRef.current += 1;
+    refreshRequestRef.current?.abort();
+    activityRequestRef.current?.abort();
+    sseHandleRef.current?.close();
+    sseHandleRef.current = null;
+    activeRunRef.current = null;
+    activeInstanceRef.current = "";
+  }, []);
 
   const railModel = useMemo(() => projectRailModel(activityState), [activityState]);
   const hasUnifiedActivity = railModel.events.length > 0 || railModel.rounds.length > 0;
+  useEffect(() => {
+    activityRequestRef.current = resetActivityPageRequest(
+      activityRequestRef.current,
+      setLoadingEarlier,
+    );
+  }, [runId]);
   const loadEarlier = useCallback(async () => {
     const activityRunId = runId ?? (API_MODE === "mock" ? "run_demo" : null);
     if (!activityRunId || loadingEarlier || !activityState.hasMore || !activityState.nextCursor) return;
+    activityRequestRef.current?.abort();
+    const controller = new AbortController();
+    activityRequestRef.current = controller;
     setLoadingEarlier(true);
     try {
       const page = await api.getActivityEvents(activityRunId, {
         before: activityState.nextCursor,
         limit: 100,
+        signal: controller.signal,
       });
+      if (controller.signal.aborted || (API_MODE === "real" && activeRunRef.current !== activityRunId)) return;
       dispatchActivity({ type: "prepend_page", page });
     } catch (error) {
-      console.warn("[OpenOps][activity] 加载更早事件失败", error);
+      if (!isAbortError(error)) console.warn("[OpenOps][activity] 加载更早事件失败", error);
     } finally {
-      setLoadingEarlier(false);
+      if (activityRequestRef.current === controller) {
+        activityRequestRef.current = null;
+        setLoadingEarlier(false);
+      }
     }
   }, [runId, loadingEarlier, activityState.hasMore, activityState.nextCursor]);
 
@@ -390,21 +551,34 @@ export function Workbench({
       return;
     }
     if (!runId) return;  // 上方两分支已保证非空；此守卫仅为类型收窄
+    const actionRunId = runId;
     setRca(undefined);
     setHitl(undefined);
     if (TRANSPORT === "agui") {
       // B5：任务经 AG-UI 端点启动并流式接收（标准事件→对话区；CUSTOM→同一 openops 处理器）
       setTaskStatus("running");
-      aguiActive.current = true;
-      runAguiTask(runId, text, {
+      const streamRunId = actionRunId;
+      const streamToken = Symbol(streamRunId);
+      aguiActive.current = { runId: streamRunId, token: streamToken };
+      const ownsVisibleRun = () => isCurrentRunStream(
+        activeRunRef.current,
+        streamRunId,
+        aguiActive.current?.token ?? null,
+        streamToken,
+      );
+      runAguiTask(streamRunId, text, {
         onOpenOps: handleOpenOpsEvent,
-        onAssistantDelta: streamDelta,
+        onAssistantDelta: (messageId, delta) => {
+          if (ownsVisibleRun()) streamDelta(messageId, delta);
+        },
         onDone: () => {
-          aguiActive.current = false;
-          void refresh(runId);
+          const ownsStream = aguiActive.current?.token === streamToken;
+          if (ownsStream) aguiActive.current = null;
+          if (activeRunRef.current === streamRunId) void refresh(streamRunId, effectiveInstanceId);
         },
         onError: (msg) => {
-          aguiActive.current = false;
+          if (!ownsVisibleRun()) return;
+          aguiActive.current = null;
           setTaskStatus((s) => (s === "running" ? "failed" : s));
           appendMessage({ id: `e${Date.now()}`, role: "bot", text: `任务异常：${msg}` });
         },
@@ -412,10 +586,12 @@ export function Workbench({
       return;
     }
     try {
-      const r = await api.startTask(runId, text);
+      const r = await api.startTask(actionRunId, text);
+      if (!isCurrentRunAction(activeRunRef.current, actionRunId)) return;
       setTaskId(r.task_id);
       setTaskStatus("running");
     } catch (err) {
+      if (!isCurrentRunAction(activeRunRef.current, actionRunId)) return;
       setMessages((m) => [...m, { id: `e${m.length}`, role: "bot", text: `无法启动任务：${(err as Error).message}` }]);
     }
   };
@@ -426,7 +602,9 @@ export function Workbench({
     if (!autoQuestion || autoSentRef.current) return;
     if (runStatus === "closed") return;
     if (USE_COPILOT_CHAT && runId) return;
-    const ready = API_MODE !== "real" ? conn === "open" : !!runId;
+    const ready = API_MODE !== "real"
+      ? conn === "open"
+      : Boolean(runId) && !workbenchInputBlocked;
     if (!ready) return;
     autoSentRef.current = true;
     console.info("[autosend] sending via composer path");
@@ -435,7 +613,7 @@ export function Workbench({
     void send(q);
     // send 每次渲染重建且仅作动作不作触发条件，不进依赖
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoQuestion, runId, runStatus, conn]);
+  }, [autoQuestion, runId, runStatus, conn, workbenchInputBlocked]);
 
   // 审批决策（本端点击）：发决策 → 原地显结果 → HITL_RESULT_LINGER_MS 后按 id 守卫自动淡出。
   // 副作用不放进 setState updater（防 StrictMode 双发 decide）。远端/超时决策由 handleOpenOpsEvent 兜底。
@@ -458,20 +636,114 @@ export function Workbench({
       (initializationError ? "Agent 信息读取失败" : "正在读取 Agent…")
     : demo.agentName;
   const retryRecovery = () => {
-    setInitializationError(null);
-    setConn("connecting");
+    setInitializationIssue(null);
+    if (!activeRunRef.current) setConn("connecting");
     setRetryGeneration((generation) => generation + 1);
   };
   const commitTitle = () => {
     const t = titleDraft.split(/\s+/).filter(Boolean).join(" ").slice(0, 60);
     setEditingTitle(false);
     if (!t || !runId || t === chatTitle) return;
+    const actionRunId = runId;
     const prev = chatTitle;
     setChatTitle(t);
-    api.renameRun(runId, t).catch((e) => { setChatTitle(prev); alert(`重命名失败：${(e as Error).message}`); });
+    api.renameRun(actionRunId, t).catch((e) => {
+      if (!isCurrentRunAction(activeRunRef.current, actionRunId)) return;
+      setChatTitle(prev);
+      alert(`重命名失败：${(e as Error).message}`);
+    });
   };
+  const closeCurrentRun = () => {
+    if (!runId) return;
+    const actionRunId = runId;
+    void api.closeRun(actionRunId).then(() => {
+      if (isCurrentRunAction(activeRunRef.current, actionRunId)) setRunStatus("closed");
+    });
+  };
+
+  // 新 URL 恢复失败时页面仍展示上一 Run，但任何输入都必须保持禁用；否则用户会在
+  // 侧栏高亮新会话的同时，把操作误发到旧 thread。
+
+  const fallbackChat = (
+    <div
+      inert={workbenchInputBlocked}
+      style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}
+    >
+      <div className="oa-fallback-chat-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
+        <div className="oa-fallback-chat-list" style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column" }}>
+          {messages.length === 0 && !running ? (
+            <div style={{ textAlign: "center", color: color.textSubtle, fontSize: 13, padding: "40px 0" }}>
+              <Icon name="message-2" size={22} color={color.brand} />
+              <div style={{ marginTop: 10 }}>描述你的排障任务，Agent 会按「巡检 → 定界 → 恢复」推进，恢复动作需你确认。</div>
+            </div>
+          ) : null}
+          {messages.map((message) => (message.role === "user"
+            ? <UserBubble key={message.id} text={message.text} />
+            : <BotBubble key={message.id} text={message.text} showCopy={message.showCopy} />))}
+          {rca ? <RcaCard rca={rca} /> : null}
+          {hitl ? (
+            <HitlCard
+              key={hitl.approval_request_id + hitl.status}
+              hitl={hitl}
+              onDecide={resolveHitl}
+            />
+          ) : null}
+          {running ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, color: color.textSubtle, fontSize: 12.5 }}>
+              <Icon name="loader-2" size={14} color={color.brand} spin />Agent 正在调查…（工具细节见右侧活动栏）
+            </div>
+          ) : null}
+        </div>
+      </div>
+      {runStatus === "closed" ? (
+        <div style={{ flex: "0 0 auto", padding: "14px 24px 18px", textAlign: "center", color: color.textSubtle, fontSize: 12.5, background: color.pageBg }}>
+          <Icon name="lock" size={14} /> 会话已关闭：只读查看历史与审计，不能再启动新任务。
+        </div>
+      ) : (
+        <Composer skills={skills} onSend={send} />
+      )}
+    </div>
+  );
+
+  const copilotChat = runId && runStatus !== "closed" ? (
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+      {rca ? (
+        <div className="oa-chat-rca-dock" style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, background: color.pageBg }}>
+          <div style={{ maxWidth: 760, margin: "0 auto" }}>
+            <RcaCard rca={rca} />
+          </div>
+        </div>
+      ) : null}
+      <CopilotChatPanel
+        runId={runId}
+        instanceId={effectiveInstanceId}
+        blocked={workbenchInputBlocked}
+        blockedMessage={failedCurrentTarget ? "目标会话恢复失败，请使用上方“重试”后再继续" : undefined}
+        autoQuestion={autoQuestion}
+        onAutoSent={() => setAutoQuestion(null)}
+        onOpenOps={handleOpenOpsEvent}
+      />
+      {shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
+        ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+        : null}
+    </div>
+  ) : fallbackChat;
+
+  const chatSurface = USE_COPILOT_CHAT ? (
+    <CopilotErrorBoundary resetKey={runId ?? targetKey}>
+      <CopilotWorkbenchProvider>{copilotChat}</CopilotWorkbenchProvider>
+    </CopilotErrorBoundary>
+  ) : fallbackChat;
   return (
-    <>
+    <div
+      data-testid="workbench-session"
+      data-run-id={runId ?? ""}
+      style={{ position: "relative", flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
+    >
+      <div
+        inert={workbenchInputBlocked}
+        style={{ flex: 1, minWidth: 0, minHeight: 0, display: "flex", flexDirection: "column" }}
+      >
       {/* header */}
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 20px", gap: 12 }}>
         {editingTitle ? (
@@ -499,7 +771,7 @@ export function Workbench({
           <Button variant="ghost" icon="player-stop" onClick={() => api.cancelTask(taskId)}>取消任务</Button>
         ) : null}
         {runStatus === "active" && runId ? (
-          <Button variant="ghost" icon="lock" onClick={() => api.closeRun(runId).then(() => setRunStatus("closed"))}>关闭会话</Button>
+          <Button variant="ghost" icon="lock" onClick={closeCurrentRun}>关闭会话</Button>
         ) : null}
         <IconButton icon="refresh" title="会话摘要" active={summaryOpen} onClick={() => setSummaryOpen((v) => !v)} />
         <IconButton icon="timeline-event" title="活动栏" active={activityOpen} onClick={() => setActivityOpen((v) => !v)} />
@@ -544,62 +816,7 @@ export function Workbench({
       ) : null}
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-        {USE_COPILOT_CHAT && runId && runStatus !== "closed" ? (
-          // Part B：CopilotChat 接管对话区（含输入框/发送按钮原生两态/停止=取消桥）。
-          // RCA 卡不进消息流——由 SSE 通道驱动，浮在面板上方（30.4 三层模型不变）；
-          // HITL 审批卡是动作项，锚在 composer 正上方（CopilotHitlFloat，用户实测反馈改位）。
-          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-            {rca ? (
-              <div className="oa-chat-rca-dock" style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, background: color.pageBg }}>
-                <div style={{ maxWidth: 760, margin: "0 auto" }}>
-                  <RcaCard rca={rca} />
-                </div>
-              </div>
-            ) : null}
-            <CopilotChatPanel
-              runId={runId}
-              instanceId={effectiveInstanceId}
-              autoQuestion={autoQuestion}
-              onAutoSent={() => setAutoQuestion(null)}
-              onOpenOps={handleOpenOpsEvent}
-            />
-            {visible ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} /> : null}
-          </div>
-        ) : (
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          <div className="oa-fallback-chat-scroll" style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-            <div className="oa-fallback-chat-list" style={{ maxWidth: 760, margin: "0 auto", display: "flex", flexDirection: "column" }}>
-              {messages.length === 0 && !running ? (
-                <div style={{ textAlign: "center", color: color.textSubtle, fontSize: 13, padding: "40px 0" }}>
-                  <Icon name="message-2" size={22} color={color.brand} />
-                  <div style={{ marginTop: 10 }}>描述你的排障任务，Agent 会按「巡检 → 定界 → 恢复」推进，恢复动作需你确认。</div>
-                </div>
-              ) : null}
-              {messages.map((m) => (m.role === "user" ? <UserBubble key={m.id} text={m.text} /> : <BotBubble key={m.id} text={m.text} showCopy={m.showCopy} />))}
-              {rca ? <RcaCard rca={rca} /> : null}
-              {hitl ? (
-                <HitlCard
-                  key={hitl.approval_request_id + hitl.status}
-                  hitl={hitl}
-                  onDecide={resolveHitl}
-                />
-              ) : null}
-              {running ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, color: color.textSubtle, fontSize: 12.5 }}>
-                  <Icon name="loader-2" size={14} color={color.brand} spin />Agent 正在调查…（工具细节见右侧活动栏）
-                </div>
-              ) : null}
-            </div>
-          </div>
-          {runStatus === "closed" ? (
-            <div style={{ flex: "0 0 auto", padding: "14px 24px 18px", textAlign: "center", color: color.textSubtle, fontSize: 12.5, background: color.pageBg }}>
-              <Icon name="lock" size={14} /> 会话已关闭：只读查看历史与审计，不能再启动新任务。
-            </div>
-          ) : (
-            <Composer skills={skills} onSend={send} />
-          )}
-        </div>
-        )}
+        {chatSurface}
         {activityOpen ? (
           <ActivityRail
             key={runId ?? explicitRunId ?? "demo"}
@@ -612,7 +829,51 @@ export function Workbench({
           />
         ) : null}
       </div>
-    </>
+      </div>
+      {showSwitchOverlay ? (
+        <div
+          data-testid="workbench-switch-overlay"
+          role="status"
+          aria-live="polite"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 80,
+            display: "grid",
+            placeItems: "center",
+            pointerEvents: "auto",
+            background: "rgba(247, 248, 250, 0.58)",
+            backdropFilter: "blur(1px)",
+          }}
+        >
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 12px", border: `1px solid ${color.border}`, borderRadius: radius.pill, background: "rgba(255,255,255,.94)", color: color.textBody, fontSize: 12.5, boxShadow: "0 6px 20px rgba(31,38,51,.08)" }}>
+            <Icon name="loader-2" size={14} color={color.brand} spin />正在切换到最后选择的会话…
+          </div>
+        </div>
+      ) : null}
+      {showFailureOverlay ? (
+        <div
+          data-testid="workbench-failure-overlay"
+          role="alert"
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 90,
+            display: "grid",
+            placeItems: "center",
+            pointerEvents: "auto",
+            background: "rgba(247, 248, 250, 0.74)",
+            backdropFilter: "blur(1px)",
+          }}
+        >
+          <div style={{ display: "grid", justifyItems: "center", gap: 10, maxWidth: 460, padding: "18px 20px", border: `1px solid ${color.border}`, borderRadius: radius.xl, background: "rgba(255,255,255,.97)", color: color.textBody, fontSize: 12.5, textAlign: "center", boxShadow: "0 10px 30px rgba(31,38,51,.10)" }}>
+            <Icon name="alert-triangle" size={18} color={toneColor.warning.dot} />
+            <span>{initializationError ?? "目标会话恢复失败；当前仅保留上一会话只读画面。"}</span>
+            <Button variant="secondary" onClick={retryRecovery}>重试目标会话</Button>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
 

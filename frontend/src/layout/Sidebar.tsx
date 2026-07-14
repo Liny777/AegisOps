@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
@@ -56,7 +56,15 @@ function NavRow({
 export function Sidebar() {
   const nav = useNavigate();
   const loc = useLocation();
-  const { me, agents, currentAgentId, setCurrentAgentId, toggleRole } = useApp();
+  const {
+    me,
+    agents,
+    conversations: convs,
+    conversationsLoading,
+    currentAgentId,
+    setCurrentAgentId,
+    toggleRole,
+  } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -64,14 +72,8 @@ export function Sidebar() {
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
 
-  // 历史会话（真实 run 列表）：路由变化即重拉——新对话/自动起名/改名/关闭返回后自然刷新；
-  // 显示时按当前 Agent 过滤（会话绑定实例，切 Agent 列表跟着切）再截断
-  const [convs, setConvs] = useState<Conversation[]>([]);
-  useEffect(() => {
-    let dead = false;
-    api.listConversations().then((c) => { if (!dead) setConvs(c); }).catch(() => undefined);
-    return () => { dead = true; };
-  }, [loc.pathname]);
+  // 历史会话由 AppProvider single-flight 拉取；路由切换只改变高亮，不再重发全量列表请求。
+  // 显示时按当前 Agent 过滤（会话绑定实例，切 Agent 列表跟着切）再截断。
   const shownConvs = convs
     .filter((c) => !currentAgentId || !c.instance_id || c.instance_id === currentAgentId)
     .slice(0, 20);
@@ -80,7 +82,6 @@ export function Sidebar() {
     if (!confirm(`删除会话「${c.title}」？`)) return;
     try {
       await api.deleteRun(c.id);
-      setConvs((prev) => prev.filter((x) => x.id !== c.id));
       // 删的是当前打开的会话 → 回当前 Agent 的对话入口（ensureRun 会开新会话）
       if (loc.pathname.includes(c.id) && currentAgentId) nav(`/agent-teams/${currentAgentId}/chat`);
     } catch (e) {
@@ -214,6 +215,7 @@ export function Sidebar() {
           <div style={{ padding: "6px 10px 2px" }}>
             <Interactive
               title="新对话"
+              data-testid="new-conversation"
               onClick={newChat}
               baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "pointer", fontSize: 13.5, fontWeight: 700, color: color.textStrong }}
               hoverStyle={{ borderColor: color.brandTintBorder, background: "rgb(233,236,241)" }}
@@ -228,18 +230,22 @@ export function Sidebar() {
             ))}
           </nav>
           {showText ? (
-            <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 10px 10px" }}>
+            <div data-testid="conversation-list" style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "6px 10px 10px" }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: color.textLabel, letterSpacing: 0.5, padding: "10px 8px 6px", display: "flex", alignItems: "center", gap: 6 }}>
                 <Icon name="clock" size={13} />历史会话
               </div>
               {shownConvs.length === 0 ? (
-                <div style={{ padding: "8px 10px", fontSize: 12.5, color: color.textFaint }}>暂无会话</div>
+                <div style={{ padding: "8px 10px", fontSize: 12.5, color: color.textFaint }}>
+                  {conversationsLoading ? "正在加载…" : "暂无会话"}
+                </div>
               ) : (
                 shownConvs.map((c) => {
                   const cur = loc.pathname.includes(c.id);
                   return (
                     <Interactive
                       key={c.id}
+                      data-testid="conversation-row"
+                      data-run-id={c.id}
                       title={c.title}
                       onClick={() => nav(`/agent-runs/${c.id}`)}
                       baseStyle={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 10px", borderRadius: radius.md, cursor: "pointer", fontSize: 13, color: cur ? color.brand : c.status === "closed" ? color.textFaint : color.textNav, fontWeight: cur ? 600 : 400, background: cur ? color.brandTintBg : "transparent" }}

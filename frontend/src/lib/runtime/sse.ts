@@ -15,10 +15,15 @@ export function subscribeSse(
     onEvent: (data: unknown, id: number | null) => void;
     onResync?: () => void;
     onStateChange?: (s: "connecting" | "open" | "reconnecting") => void;
+    /** `/state.last_event_seq`：首次连接即从快照游标之后补发，避免为防竞态重复拉 state。 */
+    initialLastEventId?: number | null;
   },
 ): SseHandle {
   let closed = false;
-  let lastId: number | null = null;
+  let lastId: number | null = typeof opts.initialLastEventId === "number"
+    && Number.isFinite(opts.initialLastEventId)
+    ? opts.initialLastEventId
+    : null;
   let retry = 0;
   let activeController: AbortController | null = null;
   let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;

@@ -5,7 +5,7 @@
 // 技能来自与执行门禁同源的装配集 api.getAvailableSkills（skill_key 即调用名）。
 import { useEffect, useRef, useState } from "react";
 import { color, radius, shadow } from "../../theme/tokens";
-import { api } from "../../lib/api";
+import { api, isAbortError } from "../../lib/api";
 import type { Skill } from "../../lib/api/types";
 
 const NATIVE_SETTER = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
@@ -22,12 +22,18 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    let dead = false;
-    if (!instanceId) return;
-    api.getAvailableSkills(instanceId)
-      .then((list) => { if (!dead) setSkills(list); })
-      .catch(() => undefined);
-    return () => { dead = true; };
+    const controller = new AbortController();
+    setSkills([]);
+    setOpen(false);
+    setQuery("");
+    setAnchor(null);
+    if (!instanceId) return () => controller.abort();
+    api.getAvailableSkills(instanceId, { signal: controller.signal })
+      .then((list) => { if (!controller.signal.aborted) setSkills(list); })
+      .catch((error) => {
+        if (!isAbortError(error)) console.warn("[OpenOps][skills] Skill 菜单读取失败", error);
+      });
+    return () => controller.abort();
   }, [instanceId]);
 
   useEffect(() => {

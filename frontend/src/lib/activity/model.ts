@@ -317,6 +317,7 @@ export function prependActivityPage(state: ActivityStoreState, page: ActivityEve
 
 export type ActivityAction =
   | { type: "hydrate"; snapshot: unknown }
+  | { type: "replace_snapshot"; snapshot: unknown }
   | { type: "merge_events"; events: ActivityEventInput[]; source: ActivityEventSource }
   | { type: "merge_delegations"; delegations: DelegationInput[] }
   | { type: "prepend_page"; page: ActivityEventsPage }
@@ -324,6 +325,9 @@ export type ActivityAction =
 
 export function activityReducer(state: ActivityStoreState, action: ActivityAction): ActivityStoreState {
   switch (action.type) {
+    case "replace_snapshot":
+      // 切换到不同 Run 时必须原子替换，不能复用 hydrate 的同 Run 重连合并语义。
+      return activityStateFromSnapshot(action.snapshot);
     case "hydrate": {
       const restored = activityStateFromSnapshot(action.snapshot);
       const alreadyHydrated = state.events.some((event) =>

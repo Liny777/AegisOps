@@ -4,6 +4,7 @@
 // cookie / X-Forwarded-For。AsyncLocalStorage 让 CopilotKit runner 深处的 fetch 也能拿到
 // 当前请求的身份头（参考 openOps-Dev strategy-a 的 identity.ts，裁掉 IAM hop 逻辑）。
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import type { IncomingHttpHeaders } from "node:http";
 
 export type Identity = Record<string, string>;
@@ -29,4 +30,24 @@ export function runWithIdentity<T>(identity: Identity, fn: () => T): T {
 
 export function identityHeaders(): Identity {
   return als.getStore() ?? {};
+}
+
+/**
+ * Return a stable, non-reversible owner scope for in-memory runtime state.
+ *
+ * A real IAM session cookie takes precedence whenever present. The mock user id
+ * is only a fallback for local/mock deployments, where no authenticated cookie
+ * exists. The raw cookie never leaves this function: only its digest is used as
+ * the ownership key. Display names and forwarded addresses are deliberately not
+ * ownership signals: names can change and client IPs can be shared or spoofed.
+ */
+export function identityOwnerScope(identity: Identity = identityHeaders()): string {
+  const mockUser = identity["x-openops-mock-user"];
+  const cookie = identity.cookie;
+  const principal = cookie
+    ? `cookie\0${cookie}`
+    : mockUser
+      ? `mock-user\0${mockUser}`
+      : "anonymous";
+  return createHash("sha256").update(principal).digest("base64url");
 }

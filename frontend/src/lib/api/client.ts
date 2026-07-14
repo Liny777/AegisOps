@@ -28,10 +28,11 @@ export class ApiError extends Error {
 
 export async function apiFetch<T = unknown>(
   path: string,
-  opts: { method?: string; body?: unknown } = {},
+  opts: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: opts.method ?? "GET",
+    signal: opts.signal,
     // B9：带上公司 IAM cookie（后端 OPENOPS_IAM_ENABLED=true 时据此双步校验；mock 模式无害）
     credentials: "include",
     headers: {

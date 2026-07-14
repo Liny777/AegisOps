@@ -11,6 +11,7 @@ type SubscribeSse = (
     onEvent: (data: unknown, id: number | null) => void;
     onResync?: () => void;
     onStateChange?: (state: State) => void;
+    initialLastEventId?: number | null;
   },
 ) => { close: () => void };
 
@@ -63,6 +64,33 @@ test("subscribeSse 关闭语义", async (suite) => {
     assert.equal(calls, 1);
     assert.equal(eventCount, 0);
     assert.deepEqual(states, ["connecting"]);
+  });
+
+  await suite.test("首次连接携带 state 快照提供的 Last-Event-ID", async (t) => {
+    const originalFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = originalFetch; });
+
+    let receivedHeader: string | null = null;
+    let signal: AbortSignal | undefined;
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      receivedHeader = new Headers(init?.headers).get("Last-Event-ID");
+      signal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+          once: true,
+        });
+      });
+    }) as typeof fetch;
+
+    const handle = subscribeSse("/events", {
+      initialLastEventId: 42,
+      onEvent: () => undefined,
+    });
+    assert.equal(receivedHeader, "42");
+
+    handle.close();
+    await flushMicrotasks();
+    assert.equal(signal?.aborted, true);
   });
 
   await suite.test("close 会取消活动 reader，并丢弃关闭后才完成的读取", async (t) => {
