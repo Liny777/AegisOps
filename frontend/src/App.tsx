@@ -103,7 +103,7 @@ export default function App() {
               {/* 全部 Agent 清单（picker「全部 Agents」入口）：同一 SettingsPage，无 instanceId → 列表态 */}
               <Route path="/agents" element={<SettingsPage />} />
               {/* 设置（侧栏「设置」入口）：用户级配置二级菜单，V1 仅 OModel 占位（禁用） */}
-              <Route path="/settings" element={<SettingsHome />} />
+              <Route path="/settings/:section?" element={<SettingsHome />} />
               {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
               <Route path="/agent-runs/:runId" element={<Workbench />} />
               <Route path="/admin" element={<RoleGuard><Navigate to="/admin/templates" replace /></RoleGuard>} />
