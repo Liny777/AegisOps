@@ -10,8 +10,13 @@
     "runtime": "tsx watch server/copilot-runtime.ts",
     "runtime:start": "node --import tsx server/copilot-runtime.ts",
     "test:activity": "node --import tsx --test src/lib/activity/model.test.ts",
+    "test:workbench-lifecycle": "node --import tsx --test src/layout/workbenchSession.test.ts src/lib/runtime/sse.test.ts",
+    "test:request-convergence": "node --import tsx --test src/lib/api/singleFlight.test.ts src/lib/api/requestConvergence.test.ts src/lib/runtime/sse.test.ts",
     "test:rich-ui": "node --import tsx --test src/workbench/copilot/rich-ui/*.test.ts",
-    "e2e": "playwright test"
+    "test:runtime-lifecycle": "node --import tsx --test server/*.test.ts",
+    "e2e": "playwright test",
+    "e2e:real": "OPENOPS_E2E_REAL=1 playwright test e2e/real-workbench-persistence.spec.ts e2e/history-switch-storm.spec.ts",
+    "e2e:history-load": "OPENOPS_E2E_REAL=1 OPENOPS_E2E_LOAD=1 playwright test e2e/history-switch-storm.spec.ts"
   },
   "dependencies": {
     "@ag-ui/client": "0.0.57",
@@ -26,6 +31,7 @@
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-router-dom": "^7.18.1",
+    "rxjs": "7.8.1",
     "tsx": "4.23.0",
     "zod": "^3.25.75"
   },

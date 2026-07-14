@@ -15,17 +15,54 @@ export function subscribeSse(
     onEvent: (data: unknown, id: number | null) => void;
     onResync?: () => void;
     onStateChange?: (s: "connecting" | "open" | "reconnecting") => void;
+    /** `/state.last_event_seq`：首次连接即从快照游标之后补发，避免为防竞态重复拉 state。 */
+    initialLastEventId?: number | null;
   },
 ): SseHandle {
   let closed = false;
-  let lastId: number | null = null;
+  let lastId: number | null = typeof opts.initialLastEventId === "number"
+    && Number.isFinite(opts.initialLastEventId)
+    ? opts.initialLastEventId
+    : null;
   let retry = 0;
+  let activeController: AbortController | null = null;
+  let activeReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let cancelRetryWait: (() => void) | null = null;
+
+  const waitForRetry = (delay: number): Promise<boolean> => {
+    if (closed) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (shouldRetry: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timer != null) clearTimeout(timer);
+        if (cancelRetryWait === cancel) cancelRetryWait = null;
+        resolve(shouldRetry);
+      };
+      const cancel = () => finish(false);
+
+      cancelRetryWait = cancel;
+      timer = setTimeout(() => finish(true), delay);
+      // close() may have run between entering waitForRetry() and installing the timer.
+      if (closed) cancel();
+    });
+  };
 
   const connect = async () => {
     while (!closed) {
       opts.onStateChange?.(retry === 0 ? "connecting" : "reconnecting");
+      if (closed) return;
+
+      const controller = new AbortController();
+      activeController = controller;
+      let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+      let shouldRetry = false;
       try {
         const res = await fetch(url, {
+          signal: controller.signal,
           headers: {
             Accept: "text/event-stream",
             "X-OpenOps-Mock-User": demoIdentity.user,
@@ -34,17 +71,24 @@ export function subscribeSse(
           },
         });
         if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
+        if (closed || controller.signal.aborted) {
+          void res.body.cancel().catch(() => undefined);
+          return;
+        }
         opts.onStateChange?.("open");
+        if (closed || controller.signal.aborted) return;
         retry = 0;
-        const reader = res.body.getReader();
+        reader = res.body.getReader();
+        activeReader = reader;
         const decoder = new TextDecoder();
         let buf = "";
         for (;;) {
           const { done, value } = await reader.read();
-          if (done || closed) break;
+          if (done || closed || controller.signal.aborted) break;
           buf += decoder.decode(value, { stream: true });
           let idx: number;
           while ((idx = buf.indexOf("\n\n")) >= 0) {
+            if (closed || controller.signal.aborted) return;
             const chunk = buf.slice(0, idx);
             buf = buf.slice(idx + 2);
             let ev = "message";
@@ -57,27 +101,52 @@ export function subscribeSse(
               else if (line.startsWith("data:")) dataLines.push(line.slice(5).trim());
             }
             if (ev === "resync") {
-              opts.onResync?.();
+              if (!closed && !controller.signal.aborted) opts.onResync?.();
               continue;
             }
             if (!dataLines.length) continue;
             if (id != null) lastId = id;
             try {
-              opts.onEvent(JSON.parse(dataLines.join("\n")), id);
+              if (!closed && !controller.signal.aborted) {
+                opts.onEvent(JSON.parse(dataLines.join("\n")), id);
+              }
             } catch {
               /* 非 JSON 数据忽略 */
             }
           }
         }
-        if (closed) return;
+        if (closed || controller.signal.aborted) return;
         throw new Error("stream ended");
       } catch {
-        if (closed) return;
+        if (closed || controller.signal.aborted) return;
         retry += 1;
-        await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.min(retry, 4), 8000)));
+        shouldRetry = true;
+      } finally {
+        if (activeReader === reader) activeReader = null;
+        if (activeController === controller) activeController = null;
+        try {
+          reader?.releaseLock();
+        } catch {
+          // cancel/read 尚在收尾时 releaseLock 可能失败；资源已由 AbortController 关闭。
+        }
       }
+
+      if (!shouldRetry || closed) return;
+      const delay = Math.min(1000 * 2 ** Math.min(retry, 4), 8000);
+      if (!(await waitForRetry(delay)) || closed) return;
     }
   };
   void connect();
-  return { close: () => { closed = true; } };
+  return {
+    close: () => {
+      if (closed) return;
+      closed = true;
+      cancelRetryWait?.();
+      cancelRetryWait = null;
+      activeController?.abort();
+      const reader = activeReader;
+      activeReader = null;
+      if (reader) void reader.cancel().catch(() => undefined);
+    },
+  };
 }

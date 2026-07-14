@@ -26,6 +26,15 @@ import * as M from "./mockData";
 import { apiFetch, crid, demoIdentity, setDemoUser } from "./client";
 import { auditToNode, projectInstance } from "./projection";
 import { normalizeActivityPage } from "../activity";
+import {
+  KeyedSingleFlightCache,
+  SingleFlightCache,
+  waitWithSignal,
+} from "./singleFlight";
+import type { RequestOptions } from "./singleFlight";
+
+export type { RequestOptions } from "./singleFlight";
+export { isAbortError } from "./singleFlight";
 
 export const API_MODE: "mock" | "real" =
   (import.meta.env.VITE_OPENOPS_API_MODE as "mock" | "real" | undefined) ?? "real";
@@ -62,13 +71,13 @@ export interface OpenOpsApi {
   getOmodelPageBase(): Promise<string>;
   /** 登出（B9）：清后端 IAM 会话缓存，返回 IAM signout/login 地址（未配 IAM 时均为 null）。 */
   logout(): Promise<{ signout_url: string | null; login_url: string | null }>;
-  listConversations(): Promise<Conversation[]>;
+  listConversations(options?: RequestOptions): Promise<Conversation[]>;
   // 运行态（real：ensureRun → state/task/approval/SSE）
-  ensureRun(instanceId: string): Promise<string>; // → run_id
+  ensureRun(instanceId: string, options?: RequestOptions): Promise<string>; // → run_id
   createRun(instanceId: string): Promise<string>; // always create a new run
   renameRun(runId: string, title: string): Promise<void>;
   deleteRun(runId: string): Promise<void>;
-  getRunState(runId: string): Promise<Record<string, unknown>>;
+  getRunState(runId: string, options?: RequestOptions): Promise<Record<string, unknown>>;
   startTask(runId: string, text: string): Promise<{ task_id: string }>;
   cancelTask(taskId: string): Promise<void>;
   closeRun(runId: string): Promise<void>;
@@ -77,17 +86,17 @@ export interface OpenOpsApi {
   /** 脱敏活动事件游标页；before 为空时取最新一页。 */
   getActivityEvents(
     runId: string,
-    options?: { before?: string | null; limit?: number },
+    options?: { before?: string | null; limit?: number; signal?: AbortSignal },
   ): Promise<ActivityEventsPage>;
   /** 旧 ActivityRail 兼容接口；新实现统一使用 getActivityEvents + activity reducer。 */
-  getAuditNodes(runId: string): Promise<ActivityNode[]>;
+  getAuditNodes(runId: string, options?: RequestOptions): Promise<ActivityNode[]>;
   // 实例管理（新原型清单页）
   toggleInstance(instanceId: string, enabled: boolean): Promise<void>;
   deleteInstance(instanceId: string): Promise<void>;
   // settings
   getBoundSkills(instanceId: string): Promise<AssetRow[]>;
   /** composer「/」列表：与后端执行门禁同源的可执行 Skill 装配集（skill_key 即调用名）。 */
-  getAvailableSkills(instanceId: string): Promise<Skill[]>;
+  getAvailableSkills(instanceId: string, options?: RequestOptions): Promise<Skill[]>;
   getSkillLibrary(): Promise<AssetRow[]>;
   getMcpLibrary(): Promise<AssetRow[]>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
@@ -155,6 +164,83 @@ export interface OpenOpsApi {
 
 /* -------------------------------- real -------------------------------- */
 const runByInstance = new Map<string, string>();
+const ensureRunCreationByInstance = new Map<string, Promise<string>>();
+
+/** 已确认 Run closed 时清掉 ensureRun 的实例命中，下一次 generic chat 必须重新解析/创建。 */
+export function forgetEnsuredRun(instanceId: string, runId?: string): void {
+  const current = runByInstance.get(instanceId);
+  if (current && (!runId || current === runId)) runByInstance.delete(instanceId);
+}
+
+const conversationListeners = new Set<() => void>();
+
+async function loadConversationHistory(signal: AbortSignal): Promise<Conversation[]> {
+  if (API_MODE === "mock") {
+    return waitWithSignal(
+      delay(M.mockConversations.map((conversation) => ({ ...conversation }))),
+      signal,
+    );
+  }
+  const runs = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-runs", { signal });
+  return runs.map((r) => ({
+    id: String(r.agent_run_id),
+    title: String(r.run_title ?? "") || "新对话",
+    instance_id: String(r.agent_team_instance_id),
+    status: (r.run_status === "closed" ? "closed" : "active") as "active" | "closed",
+  }));
+}
+
+const conversationCache = new SingleFlightCache(loadConversationHistory);
+
+/** App 级历史列表失效通知；CRUD 成功后自动调用，消费者无需跟随 pathname 重拉。 */
+export function invalidateConversationHistory(): void {
+  conversationCache.invalidate();
+  for (const listener of conversationListeners) {
+    try {
+      listener();
+    } catch (error) {
+      console.warn("[OpenOps] 历史会话失效订阅执行失败：", error);
+    }
+  }
+}
+
+export function subscribeConversationHistory(listener: () => void): () => void {
+  conversationListeners.add(listener);
+  return () => conversationListeners.delete(listener);
+}
+
+const availableSkillsCache = new KeyedSingleFlightCache<string, Skill[]>();
+
+async function loadAvailableSkills(instanceId: string, signal: AbortSignal): Promise<Skill[]> {
+  if (API_MODE === "mock") {
+    return waitWithSignal(
+      delay(M.mockWorkbenchState().skills.map((skill) => ({ ...skill }))),
+      signal,
+    );
+  }
+  const rows = await apiFetch<Record<string, unknown>[]>(
+    `/openops/v1/agent-teams/${instanceId}/available-skills`,
+    { signal },
+  );
+  return rows.map((r) => ({
+    skill_id: String(r.skill_key),
+    name: "/" + String(r.skill_key),
+    desc: `${r.display_name ?? r.skill_key} · ${r.source_type === "platform" ? "平台" : "我的"}`,
+  }));
+}
+
+function getAvailableSkillsCached(instanceId: string, options: RequestOptions = {}): Promise<Skill[]> {
+  return availableSkillsCache.get(
+    instanceId,
+    (signal) => loadAvailableSkills(instanceId, signal),
+    options,
+  );
+}
+
+/** 资产绑定变化后失效指定 Agent；无法确定归属时清空全部实例缓存。 */
+export function invalidateAvailableSkills(instanceId?: string): void {
+  availableSkillsCache.invalidate(instanceId);
+}
 
 /** audit_event 行 → 审计页节点（recent 与 by-trace 共用）。 */
 const auditNode = (e: Record<string, unknown>) => ({
@@ -196,37 +282,48 @@ const realApi: OpenOpsApi = {
       "/openops/v1/auth/logout", { method: "POST" });
     return { signout_url: d.signout_url ?? null, login_url: d.login_url ?? null };
   },
-  async listConversations() {
-    // 历史会话 = 该用户全部 run（后端按 started_at desc），空 title 兜「新对话」；
-    // 按 Agent 过滤/条数截断在显示层（Sidebar）做——此处截断会导致过滤后不足
-    const runs = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-runs");
-    return runs.map((r) => ({
-      id: String(r.agent_run_id),
-      title: String(r.run_title ?? "") || "新对话",
-      instance_id: String(r.agent_team_instance_id),
-      status: (r.run_status === "closed" ? "closed" : "active") as "active" | "closed",
-    }));
-  },
+  listConversations: (options) => conversationCache.get(options),
 
-  async ensureRun(instanceId) {
+  async ensureRun(instanceId, options) {
     const cached = runByInstance.get(instanceId);
     if (cached) return cached;
-    const runs = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-runs");
+    // 查询阶段跟随当前会话 generation 取消；进入创建阶段后不再把路由取消传播给写请求。
+    const runs = await conversationCache.get(options);
     const active = runs.find(
-      (r) => String(r.agent_team_instance_id) === instanceId && r.run_status === "active",
+      (run) => run.instance_id === instanceId && run.status === "active",
     );
     if (active) {
-      const id = String(active.agent_run_id);
+      const id = active.id;
       runByInstance.set(instanceId, id);
       return id;
     }
-    const d = await apiFetch<{ run: Record<string, unknown> }>("/openops/v1/agent-runs", {
-      method: "POST",
-      body: { client_request_id: crid(), agent_team_instance_id: instanceId },
-    });
-    const id = String(d.run.agent_run_id);
-    runByInstance.set(instanceId, id);
-    return id;
+    if (options?.signal?.aborted) {
+      throw options.signal.reason instanceof Error
+        ? options.signal.reason
+        : new DOMException("The operation was aborted", "AbortError");
+    }
+    // 两个 ensure 可能共享同一次列表查询；第一个创建已完成时，第二个不得再开一条 Run。
+    const createdByPeer = runByInstance.get(instanceId);
+    if (createdByPeer) return createdByPeer;
+
+    let creation = ensureRunCreationByInstance.get(instanceId);
+    if (!creation) {
+      creation = apiFetch<{ run: Record<string, unknown> }>("/openops/v1/agent-runs", {
+        method: "POST",
+        body: { client_request_id: crid(), agent_team_instance_id: instanceId },
+      }).then((d) => {
+        const id = String(d.run.agent_run_id);
+        runByInstance.set(instanceId, id);
+        invalidateConversationHistory();
+        return id;
+      }).finally(() => {
+        if (ensureRunCreationByInstance.get(instanceId) === creation) {
+          ensureRunCreationByInstance.delete(instanceId);
+        }
+      });
+      ensureRunCreationByInstance.set(instanceId, creation);
+    }
+    return creation;
   },
   async createRun(instanceId) {
     const d = await apiFetch<{ run: Record<string, unknown> }>("/openops/v1/agent-runs", {
@@ -235,6 +332,7 @@ const realApi: OpenOpsApi = {
     });
     const id = String(d.run.agent_run_id);
     runByInstance.set(instanceId, id);
+    invalidateConversationHistory();
     return id;
   },
   async renameRun(runId, title) {
@@ -242,12 +340,16 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { client_request_id: crid(), title },
     });
+    invalidateConversationHistory();
   },
   async deleteRun(runId) {
     await apiFetch(`/openops/v1/agent-runs/${runId}:delete`, { method: "POST", body: {} });
     runByInstance.forEach((v, k) => { if (v === runId) runByInstance.delete(k); });
+    invalidateConversationHistory();
   },
-  getRunState: (runId) => apiFetch(`/openops/v1/agent-runs/${runId}/state`),
+  getRunState: (runId, options) => apiFetch(`/openops/v1/agent-runs/${runId}/state`, {
+    signal: options?.signal,
+  }),
   async startTask(runId, text) {
     return apiFetch(`/openops/v1/agent-runs/${runId}/tasks`, {
       method: "POST",
@@ -260,6 +362,7 @@ const realApi: OpenOpsApi = {
   async closeRun(runId) {
     await apiFetch(`/openops/v1/agent-runs/${runId}:close`, { method: "POST", body: {} });
     runByInstance.forEach((v, k) => { if (v === runId) runByInstance.delete(k); });
+    invalidateConversationHistory();
   },
   async decideApproval(id, decision) {
     await apiFetch(`/openops/v1/approvals/${id}:decide`, {
@@ -285,11 +388,14 @@ const realApi: OpenOpsApi = {
     const query = params.size ? `?${params.toString()}` : "";
     const page = await apiFetch<Record<string, unknown>>(
       `/openops/v1/agent-runs/${runId}/events${query}`,
+      { signal: options?.signal },
     );
     return normalizeActivityPage(page);
   },
-  async getAuditNodes(runId) {
-    const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/audit/runs/${runId}`);
+  async getAuditNodes(runId, options) {
+    const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/audit/runs/${runId}`, {
+      signal: options?.signal,
+    });
     return rows.map(auditToNode);
   },
 
@@ -298,6 +404,7 @@ const realApi: OpenOpsApi = {
   },
   async deleteInstance(instanceId) {
     await apiFetch(`/openops/v1/agent-teams/${instanceId}`, { method: "DELETE" });
+    invalidateAvailableSkills(instanceId);
   },
 
   async getBoundSkills(instanceId) {
@@ -314,14 +421,7 @@ const realApi: OpenOpsApi = {
       assetId: String(r.skill_id ?? r.mcp_id ?? ""),
     }));
   },
-  async getAvailableSkills(instanceId) {
-    const rows = await apiFetch<Record<string, unknown>[]>(`/openops/v1/agent-teams/${instanceId}/available-skills`);
-    return rows.map((r) => ({
-      skill_id: String(r.skill_key),
-      name: "/" + String(r.skill_key),
-      desc: `${r.display_name ?? r.skill_key} · ${r.source_type === "platform" ? "平台" : "我的"}`,
-    }));
-  },
+  getAvailableSkills: (instanceId, options) => getAvailableSkillsCached(instanceId, options),
   async getSkillLibrary() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/skills");
     return rows.map((r) => ({
@@ -368,6 +468,7 @@ const realApi: OpenOpsApi = {
   },
   async deleteAsset(kind, id) {
     await apiFetch(`/openops/v1/assets/${kind === "mcp" ? "mcps" : "skills"}/${id}`, { method: "DELETE" });
+    invalidateAvailableSkills();
   },
   async bindAsset(instanceId, row) {
     await apiFetch(`/openops/v1/agent-teams/${instanceId}/asset-bindings`, {
@@ -381,9 +482,12 @@ const realApi: OpenOpsApi = {
         mcp_version_id: row.kind === "mcp" ? row.versionId ?? null : null,
       },
     });
+    invalidateAvailableSkills(instanceId);
   },
   async unbindAsset(bindingId) {
     await apiFetch(`/openops/v1/asset-bindings/${bindingId}`, { method: "DELETE" });
+    // 删除接口只有 bindingId，无法可靠还原 instanceId，保守失效全部 Agent。
+    invalidateAvailableSkills();
   },
   async getMainAppend(instanceId) {
     const d = await apiFetch<{ active_config_version?: Record<string, unknown> | null }>(
@@ -735,6 +839,8 @@ const realApi: OpenOpsApi = {
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
     runByInstance.clear();
+    invalidateConversationHistory();
+    invalidateAvailableSkills();
   },
   demoState: () => M.mockWorkbenchState(),
 };
@@ -764,23 +870,27 @@ const mockApi: OpenOpsApi = {
   },
   getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
   logout: () => delay({ signout_url: null, login_url: null }), // mock 无 IAM，登出为空操作
-  listConversations: () => delay(M.mockConversations),
-  ensureRun: () => delay("run_demo"),
-  createRun: () => delay("run_demo_" + Math.random().toString(36).slice(2, 8)),
+  listConversations: (options) => conversationCache.get(options),
+  ensureRun: (_instanceId, options) => waitWithSignal(delay("run_demo"), options?.signal),
+  createRun: async () => {
+    const id = await delay("run_demo_" + Math.random().toString(36).slice(2, 8));
+    invalidateConversationHistory();
+    return id;
+  },
   renameRun: (runId, title) => {
     const c = M.mockConversations.find((x) => x.id === runId);
     if (c) c.title = title;
-    return delay(undefined as unknown as void);
+    return delay(undefined as unknown as void).then(() => invalidateConversationHistory());
   },
   deleteRun: (runId) => {
     const i = M.mockConversations.findIndex((x) => x.id === runId);
     if (i >= 0) M.mockConversations.splice(i, 1);
-    return delay(undefined as unknown as void);
+    return delay(undefined as unknown as void).then(() => invalidateConversationHistory());
   },
-  getRunState: () => delay({}),
+  getRunState: (_runId, options) => waitWithSignal(delay({}), options?.signal),
   startTask: () => delay({ task_id: "tsk_demo" }),
   cancelTask: () => delay(undefined as unknown as void),
-  closeRun: () => delay(undefined as unknown as void),
+  closeRun: () => delay(undefined as unknown as void).then(() => invalidateConversationHistory()),
   decideApproval: () => delay(undefined as unknown as void),
   selectModel: () => delay(undefined as unknown as void),
   getActivityEvents: () => delay(normalizeActivityPage({
@@ -800,14 +910,14 @@ const mockApi: OpenOpsApi = {
   toggleInstance: () => delay(undefined as unknown as void),
   deleteInstance: () => delay(undefined as unknown as void),
   getBoundSkills: () => delay(M.mockBoundSkills),
-  getAvailableSkills: () => delay(M.mockWorkbenchState().skills),
+  getAvailableSkills: (instanceId, options) => getAvailableSkillsCached(instanceId, options),
   getSkillLibrary: () => delay(M.mockSkillLibrary),
   getMcpLibrary: () => delay(M.mockMcpLibrary),
   uploadSkill: (file) => delay({ skill_key: file.name.replace(/\.zip$/i, "").toLowerCase(), action: "created" }),
   registerMcp: () => delay(undefined as unknown as void),
-  deleteAsset: () => delay(undefined as unknown as void),
-  bindAsset: () => delay(undefined as unknown as void),
-  unbindAsset: () => delay(undefined as unknown as void),
+  deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
+  bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
+  unbindAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
   getMainAppend: () => delay("优先关注支付链路核心接口的 P99 与错误率。"),
   saveMainAppend: () => delay(undefined as unknown as void),
   reconcileAssets: () => delay({ skipped: true }),
@@ -877,6 +987,8 @@ const mockApi: OpenOpsApi = {
   },
   switchRole(admin: boolean) {
     setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
+    invalidateConversationHistory();
+    invalidateAvailableSkills();
   },
   demoState: () => M.mockWorkbenchState(),
 };

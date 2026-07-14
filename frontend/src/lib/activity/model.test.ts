@@ -249,6 +249,40 @@ test("重连 hydrate 不会把已经前翻的历史游标重置到最新页", ()
   assert.equal(reconnected.nextCursor, "cursor-older");
 });
 
+test("切换 Run 的 replace_snapshot 不保留上一 Run 的事件、派发或分页游标", () => {
+  const firstRun = activityReducer(createActivityState(), {
+    type: "hydrate",
+    snapshot: {
+      recent_events: [auditEvent("run-a-event", "openops.subagent.dispatched", "2026-07-14T04:00:00Z", {
+        delegation_id: "run-a-delegation",
+        dispatch_batch_id: "run-a-batch",
+      })],
+      delegations: [{
+        delegation_id: "run-a-delegation",
+        agent_key: "inspect",
+        delegation_status: "running",
+      }],
+      events_next_cursor: "run-a-cursor",
+      events_has_more: true,
+    },
+  });
+
+  const secondRun = activityReducer(firstRun, {
+    type: "replace_snapshot",
+    snapshot: {
+      recent_events: [auditEvent("run-b-event", "openops.task.completed", "2026-07-14T05:00:00Z")],
+      delegations: [],
+      events_next_cursor: null,
+      events_has_more: false,
+    },
+  });
+
+  assert.deepEqual(secondRun.events.map((event) => event.eventId), ["run-b-event"]);
+  assert.deepEqual(secondRun.delegations, []);
+  assert.equal(secondRun.nextCursor, null);
+  assert.equal(secondRun.hasMore, false);
+});
+
 test("业务时间线只展示派发、工具或 Skill、审批与汇报里程碑", () => {
   const events = mergeActivityEvents([], [
     auditEvent("model", "openops.model.call.started", "2026-07-14T04:00:00Z"),

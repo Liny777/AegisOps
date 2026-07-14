@@ -28,7 +28,7 @@ export class ApiError extends Error {
 
 export async function apiFetch<T = unknown>(
   path: string,
-  opts: { method?: string; body?: unknown } = {},
+  opts: { method?: string; body?: unknown; signal?: AbortSignal } = {},
 ): Promise<T> {
   // FormData（文件上传）：不设 Content-Type（浏览器自带 multipart boundary）、不 JSON.stringify；
   // 其余（鉴权头 / credentials / 信封 / 401 跳登录）与 JSON 路径完全一致。
@@ -41,6 +41,7 @@ export async function apiFetch<T = unknown>(
   if (!isMultipart) headers["Content-Type"] = "application/json";
   const res = await fetch(`${BASE}${path}`, {
     method: opts.method ?? "GET",
+    signal: opts.signal,
     // B9：带上公司 IAM cookie（后端 OPENOPS_IAM_ENABLED=true 时据此双步校验；mock 模式无害）
     credentials: "include",
     headers,

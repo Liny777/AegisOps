@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import uuid
 from collections import deque
 from datetime import datetime, timezone
@@ -14,6 +15,8 @@ from typing import Any
 from infra.redact import redact_text
 
 _BUFFER_SIZE = 500
+_CHANNEL_IDLE_TTL_SECONDS = 30 * 60
+_MAX_CHANNELS = 1024
 
 
 class RunChannel:
@@ -21,15 +24,49 @@ class RunChannel:
         self.seq = 0
         self.buffer: deque[dict[str, Any]] = deque(maxlen=_BUFFER_SIZE)
         self.subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self.last_touched = time.monotonic()
 
 
 _channels: dict[str, RunChannel] = {}
 
 
+def _prune_channels(*, now: float | None = None, reserve: int = 0) -> None:
+    """回收无订阅的旧 channel；活跃 SSE/AG-UI 订阅永不被容量策略驱逐。"""
+    current = time.monotonic() if now is None else now
+    expired = [
+        run_id
+        for run_id, channel in _channels.items()
+        if not channel.subscribers
+        and current - channel.last_touched >= _CHANNEL_IDLE_TTL_SECONDS
+    ]
+    for run_id in expired:
+        _channels.pop(run_id, None)
+
+    target = max(0, _MAX_CHANNELS - reserve)
+    overflow = len(_channels) - target
+    if overflow <= 0:
+        return
+    idle = sorted(
+        (
+            (channel.last_touched, run_id)
+            for run_id, channel in _channels.items()
+            if not channel.subscribers
+        ),
+    )
+    for _last_touched, run_id in idle[:overflow]:
+        _channels.pop(run_id, None)
+
+
 def _chan(run_id: str) -> RunChannel:
-    if run_id not in _channels:
-        _channels[run_id] = RunChannel()
-    return _channels[run_id]
+    channel = _channels.get(run_id)
+    if channel is None:
+        # 先为新 channel 腾位置；若现有 channel 全部有订阅，则允许临时超过上限，
+        # 也不能为了硬上限破坏正在运行的 SSE/AG-UI 流。
+        _prune_channels(reserve=1)
+        channel = RunChannel()
+        _channels[run_id] = channel
+    channel.last_touched = time.monotonic()
+    return channel
 
 
 def envelope(
@@ -80,12 +117,16 @@ def subscribe(run_id: str, last_event_id: int | None) -> tuple[asyncio.Queue[dic
     ch.subscribers.add(q)
     replay: list[dict[str, Any]] = []
     need_resync = False
-    if last_event_id is not None and last_event_id < ch.seq:
-        buffered = [e for e in ch.buffer if e["sequence"] > last_event_id]
-        # 缓冲被挤掉（最早 seq > last+1）→ 无法无缝补发
-        if buffered and buffered[0]["sequence"] != last_event_id + 1:
+    if last_event_id is not None:
+        if last_event_id > ch.seq:
+            # channel 因进程重启或空闲回收而重建，序号已无法与客户端游标衔接。
             need_resync = True
-        replay = buffered
+        elif last_event_id < ch.seq:
+            buffered = [e for e in ch.buffer if e["sequence"] > last_event_id]
+            # 缓冲被挤掉（最早 seq > last+1）→ 无法无缝补发
+            if not buffered or buffered[0]["sequence"] != last_event_id + 1:
+                need_resync = True
+            replay = buffered
     return q, replay, need_resync
 
 
@@ -93,11 +134,15 @@ def unsubscribe(run_id: str, q: asyncio.Queue[dict[str, Any]]) -> None:
     ch = _channels.get(run_id)
     if ch:
         ch.subscribers.discard(q)
+        ch.last_touched = time.monotonic()
+    _prune_channels()
 
 
 def snapshot(run_id: str, limit: int = 200) -> list[dict[str, Any]]:
     """缓冲内事件快照（/ag-ui 批量端点用）。"""
     ch = _channels.get(run_id)
+    if ch:
+        ch.last_touched = time.monotonic()
     return list(ch.buffer)[-limit:] if ch else []
 
 

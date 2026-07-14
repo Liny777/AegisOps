@@ -21,15 +21,27 @@ def _start_task(client, run_id: str) -> None:
 async def _read_one_chunk(run_id: str, last_event_id: int | None) -> dict:
     gen = event_stream_service.stream(run_id, last_event_id)
     try:
-        chunk = await asyncio.wait_for(anext(gen), timeout=1)
+        data = ""
+        while not data:
+            chunk = await asyncio.wait_for(anext(gen), timeout=1)
+            for line in chunk.splitlines():
+                if line.startswith("data:"):
+                    data += line.removeprefix("data:").strip()
     finally:
         await gen.aclose()
-    data = ""
-    for line in chunk.splitlines():
-        if line.startswith("data:"):
-            data += line.removeprefix("data:").strip()
     assert data
     return json.loads(data)
+
+
+def test_sse_stream_flushes_connection_immediately():
+    async def read_first() -> str:
+        gen = event_stream_service.stream("run_flush_probe", None)
+        try:
+            return await asyncio.wait_for(anext(gen), timeout=0.1)
+        finally:
+            await gen.aclose()
+
+    assert asyncio.run(read_first()) == ": connected\n\n"
 
 
 def test_sse_stream_can_replay_buffered_openops_event(client):
