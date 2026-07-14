@@ -145,3 +145,13 @@ def test_register_rejects_key_value_in_secret_env_var(client):
                      json={"client_request_id": "reg_k2", "display_name": "正确", "model_id": "good-llm",
                            "base_url": "http://gw/v1", "secret_env_var": "OPENOPS_TX_LLM_KEY", "access_scope": "all"})
     assert r2.status_code == 200
+
+
+def test_model_acl_default_flag_points_to_runnable_default(client):
+    """is_default = 运行时真实默认（OPENOPS_RUNTIME_MODEL=glm-5.1，带 secret_env_var 才能跑），
+    不是列表首位的 Qwen3.5-千问（seed 无 Key，跑不起来）——初始化向导据此展示真实平台默认名。"""
+    rows = unwrap(client.get("/api/openops/v1/models/platform", headers=USER_HEADERS))
+    by_id = {r["model_id"]: r for r in rows}
+    assert by_id["glm-5.1"]["is_default"] is True            # 真正能跑的默认
+    assert by_id["qwen3.5-instruct"]["is_default"] is False  # 无 Key，不再被当默认
+    assert sum(1 for r in rows if r.get("is_default")) == 1  # 恰一个默认

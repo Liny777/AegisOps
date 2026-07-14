@@ -400,12 +400,12 @@ const realApi: OpenOpsApi = {
   },
   async getModelConfigs() {
     const platformRows = await apiFetch<Record<string, unknown>[]>("/openops/v1/models/platform");
-    const platform: ModelOption[] = platformRows.map((r, idx) => ({
+    const platform: ModelOption[] = platformRows.map((r) => ({
       llm_config_id: `platform:${String(r.model_id)}`,
-      label: String(r.name ?? r.model_id),
+      label: String(r.display_name ?? r.name ?? r.model_id),  // 展示名（如 GLM-5.1）优先，回退 model_id
       note: `${r.protocol ?? "OpenAI 兼容"} · ${r.probe ?? "待探测"}`,
       available: r.status === "active",
-      current: idx === 0,
+      current: r.is_default === true,  // 后端标记的真实运行默认（同 model_gateway 口径），非列表首位
       reason: r.status === "active" ? undefined : String(r.probe ?? "不可用"),
     }));
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/llm-configs");

@@ -258,7 +258,7 @@ export const mockWorkbenchState = (): WorkbenchState => ({
 
 /* ------------------------- 实例配置（30.5） ------------------------- */
 export const mockModels = [
-  { llm_config_id: "llm_platform_default", label: "平台默认 · Qwen3.5", note: "平台提供 · 128k · 支持 tool calling", current: true, available: true },
+  { llm_config_id: "llm_platform_default", label: "Qwen3.5", note: "平台提供 · 128k · 支持 tool calling", current: true, available: true },
   { llm_config_id: "llm_user_gpt4o", label: "我的 GPT-4o", note: "OpenAI 兼容 · 64k · 我的 SecretRef", current: false, available: true },
 ];
 

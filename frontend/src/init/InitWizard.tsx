@@ -37,6 +37,7 @@ export function InitWizard() {
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
+  const [platformDefaultLabel, setPlatformDefaultLabel] = useState(""); // 平台默认模型名（后台驱动，替代写死 Qwen3.5）
   const [wsDialog, setWsDialog] = useState(false);
   const [omodelReady, setOmodelReady] = useState(false);  // step1 OModel 看护空间初始化 loading 是否转完
   const [activating, setActivating] = useState(false);
@@ -66,6 +67,17 @@ export function InitWizard() {
     api.getTemplates().then((t) => { setTemplates(t); setTplId(t[0]?.template_version_id ?? ""); });
     api.getWorkspaces().then(setWorkspaces);
   }, [editing, instanceId]);
+
+  // 平台默认模型名（后台驱动）：取 /models/platform 中标记为默认（is_default→current）的那个，
+  // 替代此前写死的「Qwen3.5」——真实运行默认由 OPENOPS_RUNTIME_MODEL 决定（如 glm-5.1）。
+  useEffect(() => {
+    api.getModelConfigs()
+      .then((models) => {
+        const def = models.find((m) => m.current) ?? models[0];
+        if (def) setPlatformDefaultLabel(def.label);
+      })
+      .catch(() => undefined);
+  }, []);
 
   // 门条件：step0 配置（名称+范围+模型，custom 须已创建否则死路）；step1 OModel 初始化转完；step2 放行
   const canNext = [!!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), omodelReady, true][step];
@@ -126,6 +138,7 @@ export function InitWizard() {
               name={name} onName={setName}
               workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog(true)}
               llm={llm} onLlm={setLlm}
+              platformDefaultLabel={platformDefaultLabel}
               customLlmId={customLlmId} customLlmLabel={customLlmLabel} customLlmMeta={customLlmMeta}
               onCustomCreated={(id, label, meta) => {
                 setCustomLlmId(id); setCustomLlmLabel(label); setCustomLlmMeta(meta); setLlm("custom");
@@ -261,12 +274,13 @@ function RadioDot({ on }: { on: boolean }) {
 function StepConfigure({
   name, onName,
   workspaces, wsId, onPickWs, onCreateWs,
-  llm, onLlm,
+  llm, onLlm, platformDefaultLabel,
   customLlmId, customLlmLabel, customLlmMeta, onCustomCreated, onCustomRemoved,
 }: {
   name: string; onName: (v: string) => void;
   workspaces: Workspace[]; wsId: string; onPickWs: (id: string) => void; onCreateWs: () => void;
   llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void;
+  platformDefaultLabel: string;
   customLlmId: string; customLlmLabel: string; customLlmMeta: CustomLlmMeta | null;
   onCustomCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
   onCustomRemoved: () => void;
@@ -311,7 +325,7 @@ function StepConfigure({
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <LlmCard selected={llm === "platform"} onClick={() => onLlm("platform")}
               icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
-              label="平台默认模型（Qwen3.5）" badge="平台提供" />
+              label={`平台默认模型${platformDefaultLabel ? `（${platformDefaultLabel}）` : ""}`} badge="平台提供" />
 
             {customLlmId ? (
               <LlmCard selected={llm === "custom"} onClick={() => onLlm("custom")}

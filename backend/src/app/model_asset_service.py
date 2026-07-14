@@ -81,9 +81,27 @@ async def save_grants(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
     return await get_grants(model_asset_id)
 
 
+def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
+    """与 [[model_gateway.resolve_runtime_model]] 完全同口径的平台默认解析：
+    优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个带 `secret_env_var` 的模型。
+    默认**必须带 Key** 才成立——否则运行时回退 stub。避免把无 Key 的种子资产（如 Qwen3.5-千问）
+    当默认却根本跑不起来（前端初始化向导据此展示真实默认名，而非写死）。"""
+    from app.model_gateway import DEFAULT_RUNTIME_MODEL
+
+    by_id = {r.get("model_id"): r for r in rows}
+    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r.get("secret_env_var")), None)
+    if target is None or not target.get("secret_env_var"):
+        return None
+    return target.get("model_id")
+
+
 async def list_available(user: dict[str, Any]) -> list[dict[str, Any]]:
-    """用户可见平台模型（30.5 ModelTab / 工作台 ModelPicker 数据源）：按授权过滤。"""
-    return [row_json(r) for r in await model_assets.list_available_for_user(user["user_id"])]
+    """用户可见平台模型（30.5 ModelTab / 工作台 ModelPicker 数据源）：按授权过滤。
+    每行带 `is_default`（本用户授权范围内运行时实际会用的那个，同 model_gateway 口径），
+    供初始化向导等直接展示真实平台默认模型。"""
+    rows = await model_assets.list_available_for_user(user["user_id"])
+    default_id = _default_model_id(rows)
+    return [{**row_json(r), "is_default": r.get("model_id") == default_id} for r in rows]
 
 
 async def is_authorized(user_id: str, model_id: str) -> bool:
