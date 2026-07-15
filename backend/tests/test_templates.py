@@ -37,18 +37,23 @@ def _publish(client, version_id: str):
     )
 
 
-def test_template_draft_validates_allowed_tools(client):
-    """ADMIN-002：保存校验——未 allowed 标注的平台 tool 不可绑定；草稿 upsert 不涨版本号。"""
+def test_template_draft_scrubs_stale_tools(client):
+    """ADMIN-002（自愈翻案）：保存时解析不到 allowed 标注的平台 tool（已删 MCP server / 失效存量绑定）
+    被自动摘除、不再硬报错；被摘名字回传 dropped_tools；allowed 工具保留。main.default_tools 与
+    sub.mcp_tools 两处都摘。草稿 upsert 不涨版本号。"""
     tid = _template_id(client)
-    bad = _save_draft(client, tid, _content(["query_resource", "no_such_tool"]))
-    assert bad.status_code == 400
-    assert "no_such_tool" in bad.json()["error"]["message"]
-
-    d1 = unwrap(_save_draft(client, tid, _content(["query_resource", "recover_execute"])))
+    content = _content(["query_resource", "no_such_tool"])
+    content["sub_agents"][0]["mcp_tools"] = ["recover_execute", "ghost_tool"]
+    d1 = unwrap(_save_draft(client, tid, content))
     assert d1["status"] == "draft" and d1["version_no"] == 2
+    assert d1["content_json"]["main"]["default_tools"] == ["query_resource"]  # 幽灵摘除、allowed 保留
+    assert d1["content_json"]["sub_agents"][0]["mcp_tools"] == ["recover_execute"]
+    assert set(d1["dropped_tools"]) == {"no_such_tool", "ghost_tool"}
+
     d2 = unwrap(_save_draft(client, tid, _content(["query_resource"])))
     assert d2["version_no"] == 2  # upsert 语义：同一草稿反复改
     assert str(d2["template_version_id"]) == str(d1["template_version_id"])
+    assert d2["dropped_tools"] == []  # 纯 allowed 无失效工具
 
 
 def test_template_activity_tool_labels_are_optional_string_mapping(client):
@@ -165,8 +170,9 @@ def test_template_empty_tools_fail_closed(client, runtime_backend):
     assert not any(e["event_type"] == "openops.runtime_plan.updated" for e in events)
 
 
-def test_template_publish_revalidates_annotation(client):
-    """B7-TEST-001①：草稿期 allowed、发布前被 block 的 tool——发布重校验必须 400 拦下。"""
+def test_template_publish_scrubs_now_blocked_tool(client):
+    """B7-TEST-001①（自愈翻案）：草稿期 allowed、发布前被 block 的 tool——发布不再 400，而是自动摘除该
+    工具后发布干净版本（dropped_tools 含之，发布版 default_tools 不含之）。"""
     tid = _template_id(client)
     draft = unwrap(_save_draft(client, tid, _content(["query_resource", "recover_execute"])))
     catalog = unwrap(client.get("/api/openops/v1/admin/mcp-tools", headers=ADMIN_HEADERS))
@@ -176,9 +182,36 @@ def test_template_publish_revalidates_annotation(client):
         json={"is_approval_required": True, "is_secret_required": False, "scope_mode": "required",
               "appid_arg_path": "$.appid", "status": "blocked", "blocked_reason": "发布前冻结"},
     ))
-    resp = _publish(client, str(draft["template_version_id"]))
-    assert resp.status_code == 400
-    assert "recover_execute" in resp.json()["error"]["message"]
+    pub = unwrap(_publish(client, str(draft["template_version_id"])))
+    assert pub["status"] == "active"
+    assert "recover_execute" in pub["dropped_tools"]
+    assert pub["content_json"]["main"]["default_tools"] == ["query_resource"]  # 发布版已摘 blocked 工具
+
+
+def test_delete_mcp_cascades_scrub_template_draft(client):
+    """删平台 MCP server 级联清理：删掉后，引用其工具的模板 draft 绑定被自动摘掉（published 不可变、不动）。"""
+    import asyncio
+
+    from app import asset_registry_service
+    from infra.repositories import assets, templates
+
+    tid = _template_id(client)
+    draft = unwrap(_save_draft(client, tid, _content(["query_resource"])))
+    dvid = str(draft["template_version_id"])
+    assert draft["content_json"]["main"]["default_tools"] == ["query_resource"]
+
+    async def scenario() -> list[str]:
+        mcp_id = None
+        for m in await assets.list_platform_mcps():  # seed 平台 MCP「oModel 查询与恢复」含 query_resource
+            if "query_resource" in await assets.tool_names_for_mcp(str(m["mcp_id"])):
+                mcp_id = str(m["mcp_id"])
+                break
+        assert mcp_id is not None
+        await asset_registry_service.delete_mcp({"user_id": "admin"}, mcp_id)
+        v = await templates.get_version(dvid)
+        return v["content_json"]["main"]["default_tools"]
+
+    assert asyncio.run(scenario()) == []  # query_resource 随 server 删除被级联摘掉
 
 
 def test_template_write_endpoints_forbidden_for_user(client):

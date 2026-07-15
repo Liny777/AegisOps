@@ -178,3 +178,14 @@ async def delete_mcp(mcp_id: str, by: str) -> int:
         "update sre_mcp_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where mcp_id=%(m)s and deleted_at is null",
         {"m": mcp_id, "b": by},
     )
+
+
+async def tool_names_for_mcp(mcp_id: str) -> list[str]:
+    """该 MCP server 所有版本的 catalog 工具名（删 server 级联清模板绑定用；含软删 catalog 行，清干净）。"""
+    rows = await q_all(
+        "select distinct c.tool_name from sre_mcp_tool_catalog c "
+        "join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id "
+        "where v.mcp_id=%(m)s",
+        {"m": mcp_id},
+    )
+    return [str(r["tool_name"]) for r in rows]

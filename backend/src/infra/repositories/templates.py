@@ -66,6 +66,58 @@ async def save_draft(template_id: str, content_json: dict[str, Any], by: str) ->
     return (await get_version(vid))  # type: ignore[return-value]
 
 
+async def update_version_content(template_version_id: str, content_json: dict[str, Any]) -> None:
+    """原地更新草稿内容（发布前自愈摘除失效工具用；仅 draft 可改，active/archived 不动）。"""
+    await exec1(
+        "update sre_agent_team_tpl_version set content_json=%(c)s, last_update_date=now() "
+        "where template_version_id=%(v)s and status='draft' and deleted_at is null",
+        {"v": template_version_id, "c": jsonb(content_json)},
+    )
+
+
+def _drop_tool_names(content: dict[str, Any], drop: set[str]) -> tuple[dict[str, Any], bool]:
+    """从 content_json 的 main.default_tools 与 sub_agents[].mcp_tools 摘掉指定工具名。返回 (新内容, 是否改动)。"""
+    import copy
+    content = copy.deepcopy(content) if isinstance(content, dict) else {}
+    changed = False
+    main = content.get("main")
+    if isinstance(main, dict) and isinstance(main.get("default_tools"), list):
+        kept = [t for t in main["default_tools"] if t not in drop]
+        if len(kept) != len(main["default_tools"]):
+            main["default_tools"] = kept
+            changed = True
+    for s in content.get("sub_agents", []) or []:
+        if isinstance(s, dict) and isinstance(s.get("mcp_tools"), list):
+            kept = [t for t in s["mcp_tools"] if t not in drop]
+            if len(kept) != len(s["mcp_tools"]):
+                s["mcp_tools"] = kept
+                changed = True
+    return content, changed
+
+
+async def scrub_tools_from_versions(tool_names: list[str]) -> int:
+    """删 MCP server 级联清理：把这些平台工具名从所有 draft 版本的 content_json 摘掉（published 不可变，
+    留待下次编辑经 save_draft 自愈）。返回被改动的版本数。"""
+    drop = {t for t in tool_names if t}
+    if not drop:
+        return 0
+    rows = await q_all(
+        "select template_version_id, content_json from sre_agent_team_tpl_version "
+        "where status='draft' and deleted_at is null"
+    )
+    changed = 0
+    for r in rows:
+        new_c, hit = _drop_tool_names(r["content_json"] or {}, drop)
+        if hit:
+            await exec1(
+                "update sre_agent_team_tpl_version set content_json=%(c)s, last_update_date=now() "
+                "where template_version_id=%(v)s",
+                {"v": str(r["template_version_id"]), "c": jsonb(new_c)},
+            )
+            changed += 1
+    return changed
+
+
 async def publish_version(template_version_id: str, by: str) -> dict[str, Any]:
     """发布：draft→active（不可变），旧 active→archived，回写 template.active_template_version_id。"""
     ver = await get_version(template_version_id)

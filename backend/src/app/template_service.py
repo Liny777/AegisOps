@@ -1,6 +1,7 @@
 """Template Admin：读侧 + 版本写闭环（B7·二：草稿/发布/禁用，发布后不可变）。"""
 from __future__ import annotations
 
+import copy
 import uuid
 from typing import Any
 
@@ -8,6 +9,41 @@ from app import mcp_tool_annotation_service
 from domain.errors import ApiError, Err
 from infra.db import row_json
 from infra.repositories import audit, templates
+
+
+async def _allowed_tools() -> set[str]:
+    """当前有 allowed 标注的平台工具名集合（绑定校验/自愈的判据）。"""
+    anns = await mcp_tool_annotation_service.runtime_annotations()
+    return {k for k, v in anns.items() if v.get("status") == "allowed"}
+
+
+def _scrub_platform_tools(content: dict[str, Any], allowed: set[str]) -> tuple[dict[str, Any], list[str]]:
+    """从 content_json 摘掉解析不到 allowed 标注的平台工具名（失效/幽灵存量绑定，如已删 MCP server 的工具）。
+
+    覆盖 main.default_tools 与每个 sub_agents[].mcp_tools。返回 (新 content, 被摘名字去重排序)。
+    前端选择器本就只提供 allowed 工具作新绑，故被摘的必是存量残留——摘除=不绑=运行时不跑，安全意图不变。
+    """
+    content = copy.deepcopy(content)
+    dropped: list[str] = []
+
+    def _filter(names: Any) -> list[str]:
+        if not isinstance(names, list):
+            return names  # 结构非法留给 _validate_content 报
+        keep = []
+        for t in names:
+            if isinstance(t, str) and t not in allowed:
+                dropped.append(t)
+            else:
+                keep.append(t)
+        return keep
+
+    main = content.get("main")
+    if isinstance(main, dict) and "default_tools" in main:
+        main["default_tools"] = _filter(main["default_tools"])
+    for s in content.get("sub_agents", []) or []:
+        if isinstance(s, dict) and "mcp_tools" in s:
+            s["mcp_tools"] = _filter(s["mcp_tools"])
+    return content, sorted(set(dropped))
 
 
 async def available() -> list[dict[str, Any]]:
@@ -79,12 +115,8 @@ async def _validate_content(content: dict[str, Any]) -> None:
         v = main.get(f)
         if v is not None and (not isinstance(v, int) or not (lo <= v <= hi)):
             raise ApiError(Err.VALIDATION_FAILED, f"main.{f} 须为 {lo}..{hi} 整数")
-    anns = await mcp_tool_annotation_service.runtime_annotations()  # 全部已标注工具（含 blocked，运行时另拦）
-    allowed = {k for k, v in anns.items() if v.get("status") == "allowed"}  # 绑定校验只认 allowed（B7-TEST-001 暴露：曾误放行 blocked）
-    sub_tools = [t for s in subs for t in s.get("mcp_tools", [])]
-    bad = [t for t in [*tools, *sub_tools] if t not in allowed]
-    if bad:
-        raise ApiError(Err.VALIDATION_FAILED, f"以下平台 tool 未 allowed 标注，不可绑定：{', '.join(sorted(set(bad)))}")
+    # 平台工具 allowed 门禁不在此硬报错：save_draft/publish 先经 _scrub_platform_tools 把解析不到 allowed
+    # 的存量/失效绑定自动摘除（B7-TEST-001 曾误放行 blocked → 现统一在 scrub 剔除，安全意图不变）。
 
 
 async def admin_detail(template_id: str) -> dict[str, Any]:
@@ -102,32 +134,46 @@ async def admin_detail(template_id: str) -> dict[str, Any]:
 
 
 async def save_draft(template_id: str, content: dict[str, Any], by: str) -> dict[str, Any]:
-    """保存草稿（另存新版本；草稿可反复改，发布后不可原地改）。"""
+    """保存草稿（另存新版本；草稿可反复改，发布后不可原地改）。
+
+    自愈：先摘掉解析不到 allowed 标注的平台工具（已删 MCP server / 失效存量绑定）——不再硬报错，
+    存量卡住的模板保存一次即恢复；被摘名字回传 dropped_tools 供前端提示。
+    """
     if await templates.get_template(template_id) is None:
         raise ApiError(Err.NOT_FOUND, "模板不存在")
+    content, dropped = _scrub_platform_tools(content, await _allowed_tools())
     await _validate_content(content)
     ver = await templates.save_draft(template_id, content, by)
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="template.version.saved", user_id=by,
-        action="save_draft", payload_redacted={"template_id": template_id, "version_no": ver["version_no"]},
+        action="save_draft",
+        payload_redacted={"template_id": template_id, "version_no": ver["version_no"], "dropped_tools": dropped},
     )
-    return row_json(ver)
+    out = row_json(ver)
+    out["dropped_tools"] = dropped
+    return out
 
 
 async def publish(template_version_id: str, by: str) -> dict[str, Any]:
-    """发布草稿为 active（不可变）；重校验内容（防草稿期后标注变化）。"""
+    """发布草稿为 active（不可变）；发布前自愈摘除失效工具（防草稿期后标注变化/存量草稿），保证发布版干净。"""
     ver = await templates.get_version(template_version_id)
     if ver is None:
         raise ApiError(Err.NOT_FOUND, "模板版本不存在")
     if ver["status"] != "draft":
         raise ApiError(Err.CONFIG_VERSION_INVALID, "仅 draft 版本可发布（发布后的版本不可原地修改）")
-    await _validate_content(ver["content_json"])
+    content, dropped = _scrub_platform_tools(ver["content_json"], await _allowed_tools())
+    await _validate_content(content)
+    if dropped:  # 草稿里有失效绑定 → 发布前把草稿内容更新为 scrubbed，发布版不带幽灵工具
+        await templates.update_version_content(template_version_id, content)
     out = await templates.publish_version(template_version_id, by)
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="template.version.published", user_id=by,
-        action="publish", payload_redacted={"template_version_id": template_version_id, "version_no": out["version_no"]},
+        action="publish",
+        payload_redacted={"template_version_id": template_version_id, "version_no": out["version_no"], "dropped_tools": dropped},
     )
-    return row_json(out)
+    res = row_json(out)
+    res["dropped_tools"] = dropped
+    return res
 
 
 async def disable_version(template_version_id: str, by: str) -> None:

@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import hashlib
+import uuid
 from typing import Any
 
 from app import agent_team_service
 from domain.errors import ApiError, Err
 from infra.db import row_json
-from infra.repositories import agent_teams, assets
+from infra.repositories import agent_teams, assets, audit, templates
 
 
 async def list_skills(user: dict[str, Any]) -> list[dict[str, Any]]:
@@ -107,7 +108,14 @@ async def delete_mcp(user: dict[str, Any], mcp_id: str) -> None:
         raise ApiError(Err.FORBIDDEN, "无权删除该 MCP")
     if await agent_teams.asset_in_use("mcp", mcp_id):
         raise ApiError(Err.ASSET_IN_USE, "该资产仍被 active 配置引用，请先解绑")
+    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 删前取工具名（catalog 随 asset 保留）
     await assets.delete_mcp(mcp_id, user["user_id"])
+    # 级联清理：把该 server 的工具从模板 draft 绑定里摘掉，防成幽灵绑定卡编辑（published 不可变，编辑时自愈）
+    scrubbed = await templates.scrub_tools_from_versions(tool_names)
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="mcp.deleted", user_id=user["user_id"], action="delete",
+        payload_redacted={"mcp_id": mcp_id, "tool_names": tool_names, "templates_scrubbed": scrubbed},
+    )
 
 
 async def bind(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
