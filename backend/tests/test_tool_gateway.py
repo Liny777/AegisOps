@@ -56,6 +56,7 @@ def test_tool_001_platform_headers_injected(client):
     assert "APP-A" in h["X-OpenOps-Effective-Appids"]
     assert h["X-OpenOps-Scope-Snapshot-Id"]
     assert h["X-OpenOps-User-Id"] == "0026demo01"
+    assert h["workspace_id"]  # omodel 工作空间 id 出站（值=该实例绑定的 workspace）
 
 
 def test_tool_002_blocked_annotation_direct_fail_closed(client):
@@ -99,7 +100,8 @@ def test_tool_003_appid_out_of_scope_fail_closed(client):
 def _st(annotations: dict | None, appids: list[str] | None = None) -> TaskState:
     st = TaskState(task_id="tsk_unit", run_id=str(uuid.uuid4()), user_id="u1", instance_id="i1", input_text="x")
     st.tool_annotations = annotations
-    st.scope_ctx = {"effective_appids": appids or ["APP-A"], "scope_snapshot_id": "snap-1", "scope_revision": "r1"}
+    st.scope_ctx = {"effective_appids": appids or ["APP-A"], "scope_snapshot_id": "snap-1",
+                    "scope_revision": "r1", "workspace_id": "ws_unit"}
     return st
 
 
@@ -129,6 +131,15 @@ def test_tool_010_platform_headers_carry_user_cookie_and_ip():
     assert h1["IAM-Client-Ip"] == "10.1.2.3" and h1["X-Forwarded-For"] == "10.1.2.3"
     assert "Mozilla" in h1.get("User-Agent", "")  # 浏览器 UA（网关拦脚本 UA）
     assert h1["X-OpenOps-User-Id"] == "u1"  # 原上下文头不受影响
+
+
+def test_tool_011_platform_headers_carry_workspace_id():
+    """平台 MCP 出站带 omodel 工作空间 id header `workspace_id`（scope_ctx 里有就发，无则不发=零回归）。"""
+    st = _st({})  # _st 的 scope_ctx 含 workspace_id="ws_unit"
+    assert tool_gateway._platform_headers(st, _RUN)["workspace_id"] == "ws_unit"
+    # scope_ctx 无 workspace_id（旧缓存态）→ 不发该 header
+    st.scope_ctx = {"effective_appids": ["APP-A"], "scope_snapshot_id": "s", "scope_revision": "r"}
+    assert "workspace_id" not in tool_gateway._platform_headers(st, _RUN)
 
 
 @pytest.fixture()

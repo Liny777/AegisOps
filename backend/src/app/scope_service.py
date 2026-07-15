@@ -107,6 +107,7 @@ async def resolve_for_task(
     )
     ctx = {
         "scope_snapshot_id": snapshot_id, "effective_appids": appids, "scope_revision": new_rev,
+        "workspace_id": ws_id,  # 出站平台 MCP header 用（omodel 工作空间 id，ws_id 见上）
         "omodel_request_id": res["omodel_request_id"], "cache_hit": False,
     }
     expires = now + _TTL_S

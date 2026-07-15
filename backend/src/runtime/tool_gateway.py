@@ -74,6 +74,9 @@ def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
         "X-OpenOps-Scope-Snapshot-Id": str(scope.get("scope_snapshot_id", "")),
         "X-OpenOps-Audit-Trace-Id": str(run.get("audit_trace_id", "")),  # 28.2：回放 Trace 串联
     }
+    ws = scope.get("workspace_id") or ""
+    if ws:
+        h["workspace_id"] = str(ws)  # omodel 工作空间 id（接收端 MCP 按此名读）
     # 用户登录态透传（与 omodel/console 出站同款，console_client_kwargs 口径）：华为 IAM 会话绑客户端 IP——
     # 只带 Cookie 从服务器 IP 出站会被判 code=1001 失效，故 Cookie 必与用户真实 IP 一并带。
     # 优先级：当前请求上下文用户 cookie > 按 user_id 缓存（后台 task 兜底）> env（仅联调调试）。
