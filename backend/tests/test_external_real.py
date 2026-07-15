@@ -709,6 +709,74 @@ async def test_ext_skillhub_download_json_envelope_explicit(monkeypatch):
         await skill_hub_client.download_skill_package("alarm-query", 1)
 
 
+def _install_mock_transport(monkeypatch, handler):
+    """真实 httpx.AsyncClient 照跑（event_hooks 真触发），传输走 MockTransport。
+    区别于 _install（整体换掉 AsyncClient、钩子不跑）——本 helper 保留真实客户端只换传输层，
+    才能复现出站请求钩子（_log_outbound_request）对流式 multipart 体的处理。verify/trust_env 与
+    显式 transport 无关，注入前剔除，避免构造器冲突。"""
+    import httpx
+
+    real = httpx.AsyncClient
+
+    def factory(*a, **k):
+        k.pop("verify", None)
+        k.pop("trust_env", None)
+        return real(*a, transport=httpx.MockTransport(handler), **k)
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_request_hook_survives_multipart_stream(monkeypatch, caplog):
+    """出站请求钩子读 multipart 流式体不得崩：httpx MultipartStream 不预读 _content，
+    直接读 request.content 会 RequestNotRead（曾把 skills:upload 打成 502 IAM_UPSTREAM）。
+    流式体打占位、json= 体仍照常记录（不回归 JSON 调试价值）。"""
+    import logging
+
+    import httpx
+
+    from infra.external.mcp_registry_client import _log_outbound_request
+
+    caplog.set_level(logging.WARNING, logger="openops.mcpreg")
+    # 真实 multipart 流式体：修复前 `request.content` 抛 RequestNotRead
+    mp = httpx.Request("POST", "http://skillhub/obsv/agent/management/skills/upload",
+                       files={"file": ("demo.zip", b"PK\x03\x04zipbytes", "application/zip")},
+                       data={"category": "运维"})
+    await _log_outbound_request(mp)  # 不得抛
+    assert "streaming body" in caplog.text and "multipart/form-data" in caplog.text
+    # json= 已预读 _content：body 仍照常打进日志
+    caplog.clear()
+    jr = httpx.Request("POST", "http://x", json={"probe": "kept"})
+    await _log_outbound_request(jr)
+    assert "kept" in caplog.text and "streaming body" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_upload_multipart_with_http_debug(monkeypatch):
+    """端到端 upload（HTTP_DEBUG=1 钩子真挂 + 真实 httpx 客户端 + multipart 体）：不再 502，
+    正常解信封返回 data。锁定 mcp_registry_client._log_outbound_request 的回归。"""
+    import httpx
+
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "http://skillhub")
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG", "1")  # 挂上 _log_outbound_request 钩子（复现条件）
+    monkeypatch.setenv("OPENOPS_TLS_INSECURE", "1")  # MockTransport 下免真实 TLS 装配
+
+    seen: dict[str, str] = {}
+
+    def handler(request):
+        seen["ct"] = request.headers.get("content-type", "")
+        return httpx.Response(200, json={"code": 200, "message": "ok", "data": {
+            "skill_id": "x", "name": "x", "version": "1.0.0", "status": "active", "action": "created"}})
+
+    _install_mock_transport(monkeypatch, handler)
+    out = await skill_hub_client.upload_skill("demo.zip", b"PK\x03\x04zip", "运维", ["t"])
+    assert out["skill_id"] == "x" and out["action"] == "created"
+    assert "multipart/form-data" in seen["ct"]
+
+
 @pytest.mark.asyncio
 async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
     """oModel 同时携带登录态、浏览器 UA，以及从 target base 派生的 CSRF 同源头。"""
