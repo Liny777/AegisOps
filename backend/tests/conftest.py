@@ -18,7 +18,7 @@ import sys  # noqa: E402
 if sys.platform == "win32":  # Windows pytest：psycopg3 async 需 SelectorEventLoop（同 backend/run.py）
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-from app import asset_reconcile_service, scope_service  # noqa: E402
+from app import asset_reconcile_service, asset_registry_service, scope_service  # noqa: E402
 from infra import idempotency  # noqa: E402
 from infra.external import omodel_mock  # noqa: E402
 from main import app  # noqa: E402
@@ -77,6 +77,7 @@ def client() -> TestClient:
     scope_service._reset_cache()
     omodel_mock._reset()
     asset_reconcile_service._reset()
+    asset_registry_service._reset_user_skill_sync()  # 清个人 skill 同步节流，避免跨用例泄漏
     sandbox_executor._by_user.clear()  # B8：每用例清沙箱容器注册表（fake 后端，进程内）
     with TestClient(app) as c:
         yield c
@@ -86,6 +87,7 @@ def client() -> TestClient:
     scope_service._reset_cache()
     omodel_mock._reset()
     asset_reconcile_service._reset()
+    asset_registry_service._reset_user_skill_sync()
 
 
 def _runtime_params() -> list[str]:

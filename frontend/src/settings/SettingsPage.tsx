@@ -214,6 +214,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialog, setDialog] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");  // 页内成功横幅（上传/注册成功提示，几秒后自动消失）
   const [groupOpen, setGroupOpen] = useState<{ sys: boolean; mine: boolean }>({ sys: true, mine: true });
 
   const reload = () => {
@@ -227,7 +228,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   useEffect(reload, [instanceId, kind]);
 
   const run = (p: Promise<unknown>) => {
-    setBusy(true);
+    setBusy(true); setMsg("");  // 新动作先清旧成功提示
     p.then(reload).catch((e) => alert((e as Error).message)).finally(() => setBusy(false));
   };
 
@@ -285,6 +286,9 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
         <Button variant="secondary" icon="refresh" disabled={busy} onClick={() => run(api.reconcileAssets())}>同步资产</Button>
         <Button variant="secondary" icon={isSkill ? "upload" : "plug"} onClick={() => setDialog(true)}>{isSkill ? "上传 Skill" : "注册 HTTP MCP"}</Button>
       </div>
+      {msg ? (
+        <div style={{ flex: "0 0 auto", padding: "8px 24px", background: "#e8f7ef", color: color.goodText, fontSize: 12.5, fontWeight: 600, borderBottom: `1px solid ${color.border}` }}>{msg}</div>
+      ) : null}
 
       {/* 左树 + 右详情 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
@@ -342,10 +346,10 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
           busy={busy}
           onClose={() => setDialog(false)}
           onSubmit={(p) => {
-            const promise = p.kind === "skill"
-              ? api.uploadSkill(p.file)
-              : api.registerMcp(p.name, p.endpoint);
-            run(promise.then(() => setDialog(false)));
+            const done = p.kind === "skill"
+              ? api.uploadSkill(p.file).then((r) => { setDialog(false); setMsg(`Skill 已上传：${r.skill_key}`); setTimeout(() => setMsg(""), 4000); })
+              : api.registerMcp(p.name, p.endpoint).then(() => { setDialog(false); setMsg("HTTP MCP 已注册"); setTimeout(() => setMsg(""), 4000); });
+            run(done);
           }}
         />
       ) : null}

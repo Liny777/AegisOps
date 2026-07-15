@@ -4,7 +4,7 @@ import os
 import time
 
 import psycopg
-from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
+from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
 from infra.external import mcp_registry_client, skill_hub_client
 
 
@@ -365,3 +365,70 @@ def test_skill_zip_upload_without_category(client):
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
     row = next(s for s in skills if s["skill_key"] == "nocat-skill")
     assert row.get("category") is None
+
+
+def _personal_skill(skill_key: str, created_by: str = "l00833445") -> dict:
+    """构造一条 SkillHub 映射后的个人 skill（source_type='user'，owner_user_id=上游 created_by）。"""
+    return {"skill_key": skill_key, "display_name": f"我的{skill_key}", "source": "openops",
+            "source_type": "user", "owner_user_id": created_by, "latest_version": "1.0.0",
+            "category": "trace", "checksum_sha256": f"c-{skill_key}", "status": "active"}
+
+
+def test_user_skill_synced_to_viewer_and_not_leaked(client, monkeypatch):
+    """个人 skill 按 viewer 同步：归属 viewer 的 user_id（非上游 created_by）→ 本人可见；
+    他人（cookie 拿不到该个人 skill）看不到，也不串号。"""
+    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,  # 让 OTHER 可访问 /assets
+                       json={"client_request_id": f"wl_{time.time_ns()}", "user_id": "0099other", "display_name": "Other"}))
+
+    async def fake_list(uid):
+        return [_personal_skill("my-runbook")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
+
+    mine = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    row = next((s for s in mine if s["skill_key"] == "my-runbook"), None)
+    assert row is not None and row["source_type"] == "user"
+    assert row["owner_user_id"] == "0026demo01"  # 归 viewer，而非上游 created_by "l00833445"
+    assert row["latest_version"] == "1.0.0" and row["category"] == "trace"
+
+    other = unwrap(client.get("/api/openops/v1/assets/skills", headers=OTHER_HEADERS))
+    assert all(s["skill_key"] != "my-runbook" for s in other)  # 他人看不到本人的个人 skill
+
+
+def test_user_skill_sync_throttled_per_user(client, monkeypatch):
+    """per-user 节流：TTL 窗口内重复列表只打一次 SkillHub。"""
+    calls = {"n": 0}
+
+    async def fake_list(uid):
+        calls["n"] += 1
+        return [_personal_skill("throttle-x")]
+    monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
+
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    assert calls["n"] == 1  # 第二次命中节流，不再打 SkillHub
+
+
+def test_user_skill_sync_failure_not_fatal(client, monkeypatch):
+    """SkillHub 挂/cookie 失效：个人 skill 同步异常被吞，列表读仍 200（读本地兜底，不 500）。"""
+    async def boom(uid):
+        raise RuntimeError("skill hub down")
+    monkeypatch.setattr(skill_hub_client, "list_skills", boom)
+
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    assert isinstance(skills, list)
+
+
+def test_reconcile_ignores_user_skills(client, monkeypatch):
+    """全局 reconcile 只收平台 skill：个人 skill 归 sync_user_skills，reconcile 不再吞（避免错 owner 双写）。"""
+    async def fake_list(uid):
+        return [
+            {"skill_key": "plat-x", "display_name": "平台X", "source": "openops", "source_type": "platform",
+             "owner_user_id": None, "latest_version": "1.0.0", "category": "ops", "checksum_sha256": "p1", "status": "active"},
+            _personal_skill("user-y"),
+        ]
+    monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
+
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    keys = {r[0] for r in _sql("select skill_key from sre_skill_asset where deleted_at is null", {})}
+    assert "plat-x" in keys       # 平台 skill 照常 reconcile 入库
+    assert "user-y" not in keys   # 个人 skill 不被全局 reconcile 吞

@@ -66,6 +66,19 @@ async def get_skill_by_key(source_type: str, skill_key: str) -> dict[str, Any] |
     )
 
 
+async def get_user_skill_by_key(owner: str, skill_key: str) -> dict[str, Any] | None:
+    """个人 skill 按 (owner, skill_key) 查重：user skill 无 owner 作用域会串号（两个用户同名 skill
+    落到同一行）——upload / 按用户同步都用它，确保同一 (owner, skill_key) 才认作同一 skill。"""
+    return await q_one(
+        """
+        select * from sre_skill_asset
+        where source_type='user' and owner_user_id=%(o)s and skill_key=%(k)s and deleted_at is null
+        order by creation_date desc limit 1
+        """,
+        {"o": owner, "k": skill_key},
+    )
+
+
 async def latest_skill_version(skill_id: str) -> dict[str, Any] | None:
     return await q_one(
         """

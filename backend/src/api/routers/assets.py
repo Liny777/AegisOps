@@ -29,8 +29,9 @@ def _parse_tags(raw: str) -> list[str]:
 
 
 @router.post(":reconcile")
-async def reconcile(_user: User):
-    """配置页 refresh：立即对账 Skill Hub / MCP Registry（28.7）。"""
+async def reconcile(user: User):
+    """配置页 refresh：立即对账 Skill Hub / MCP Registry（28.7）+ 强制重拉当前用户的个人 skill。"""
+    asset_registry_service.invalidate_user_skill_sync(user["user_id"])  # 清节流：随后列表 GET 强制重同步个人 skill
     return ok(await asset_reconcile_service.reconcile(force=True, trigger="refresh"))
 
 

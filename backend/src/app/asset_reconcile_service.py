@@ -44,9 +44,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         "mcps_created": 0, "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
-        # ---- Skill Hub（ASSET-001：只 source=openops） ----
+        # ---- Skill Hub（ASSET-001：只 source=openops；且只收平台 skill） ----
+        # 个人 skill（source_type='user'）改由 asset_registry_service.sync_user_skills 按「当前 viewer」
+        # 同步：全局 reconcile 只有一个 cookie 身份、只能看到一个人的个人 skill 且 owner 必错（存成
+        # created_by 而非 viewer id）→ 交给按用户路径，避免双写、错 owner 的半坏行。
         for s in await skill_hub_client.list_skills("system"):
-            if s.get("source") != "openops":
+            if s.get("source") != "openops" or s.get("source_type") != "platform":
                 continue
             # §2.2 semver + category 落进 manifest_json（零迁移展示口径；latest_version=SkillHub 原串）
             manifest = {"synced_from": "skill_hub", "latest_version": s.get("latest_version"),

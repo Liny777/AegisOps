@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+import logging
+import os
+import time
 import uuid
 from typing import Any
 
@@ -10,8 +13,62 @@ from domain.errors import ApiError, Err
 from infra.db import row_json
 from infra.repositories import agent_teams, assets, audit, templates
 
+log = logging.getLogger("openops.user_skill_sync")
+
+# 个人 skill「按用户」同步：SkillHub 已按 cookie 把个人 skill 限定为调用者本人，故列表时用 viewer
+# cookie 拉到的 source_type='user' 即他自己的 → 归属 viewer 的 user_id（过读过滤、可绑定）。
+# 全局 reconcile 只收平台 skill（见 asset_reconcile_service）。per-user 节流避免每次 GET 都打 SkillHub。
+_USER_SKILL_TTL_S = float(os.environ.get("OPENOPS_USER_SKILL_TTL_S", os.environ.get("OPENOPS_RECONCILE_TTL_S", "300")))
+_user_skill_synced: dict[str, float] = {}  # user_id -> 上次同步的 monotonic 时刻
+
+
+def _reset_user_skill_sync() -> None:  # 测试隔离（对齐 asset_reconcile_service._reset）
+    _user_skill_synced.clear()
+
+
+def invalidate_user_skill_sync(user_id: str) -> None:
+    """使某用户的同步节流失效：下次 list_skills 强制重拉（手动「同步资产」用）。"""
+    _user_skill_synced.pop(user_id, None)
+
+
+async def sync_user_skills(user: dict[str, Any]) -> None:
+    """请求内按 viewer 同步个人 skill：用 viewer cookie 拉 SkillHub，把 source_type='user' 的 skill
+    upsert 进本地表、归属 viewer 的 user_id。per-user 节流；失败只记日志不阻断列表读（读本地兜底）。"""
+    uid = user["user_id"]
+    now = time.monotonic()
+    if now - _user_skill_synced.get(uid, 0.0) < _USER_SKILL_TTL_S:
+        return
+    _user_skill_synced[uid] = now  # await 前乐观写入：并发同用户塌缩为一次
+    try:
+        from infra.external import skill_hub_client
+
+        for s in await skill_hub_client.list_skills(uid):  # viewer cookie 经 console_cookie 请求上下文透传
+            if s.get("source") != "openops" or s.get("source_type") != "user":
+                continue  # 只收个人 skill；平台 skill 走全局 reconcile
+            manifest = {"synced_from": "skill_hub_user", "latest_version": s.get("latest_version"),
+                        "category": s.get("category")}
+            existing = await assets.get_user_skill_by_key(uid, s["skill_key"])
+            if existing is None:
+                await assets.create_skill(uid, "user", s["display_name"], s["skill_key"],
+                                          manifest, s["checksum_sha256"])
+                continue
+            latest = await assets.latest_skill_version(str(existing["skill_id"]))
+            if latest is None or latest["checksum_sha256"] != s["checksum_sha256"]:
+                await assets.add_skill_version(
+                    str(existing["skill_id"]), (latest["version_no"] if latest else 0) + 1,
+                    manifest, s["checksum_sha256"], uid)
+            else:
+                cur = latest.get("manifest_json") or {}
+                if cur.get("latest_version") != s.get("latest_version") or cur.get("category") != s.get("category"):
+                    await assets.update_skill_version_manifest(
+                        str(latest["skill_version_id"]),
+                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category")})
+    except Exception as e:  # noqa: BLE001 —— SkillHub 挂/cookie 失效不阻断列表读
+        log.warning("user skill sync failed (%s): %s", uid, str(e)[:200])
+
 
 async def list_skills(user: dict[str, Any]) -> list[dict[str, Any]]:
+    await sync_user_skills(user)  # 读本地前先按 viewer 同步个人 skill（节流内为 no-op）
     out: list[dict[str, Any]] = []
     for r in await assets.list_skills(user["user_id"]):
         d = row_json(r)
@@ -51,7 +108,7 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
     manifest = {"entrypoint": meta.get("entrypoint") or "python3 run.py",
                 "category": category or None, "tags": tags, "synced_from": "upload",  # 分类/标签可空（上传流程已移除该输入）→ 列表回退「—」
                 "latest_version": result.get("version")}  # §2.1 上传响应 version → 上传后即刻可展示 semver
-    existing = await assets.get_skill_by_key("user", skill_key)
+    existing = await assets.get_user_skill_by_key(user["user_id"], skill_key)  # owner 作用域：同 (owner, key) 才认作同一 skill
     if existing is None:
         row = await assets.create_skill(user["user_id"], "user", meta["name"], skill_key, manifest, checksum)
         action = "created"
