@@ -197,6 +197,7 @@ async def list_instance_bindings(user: dict[str, Any], instance_id: str) -> list
     out: list[dict[str, Any]] = []
     for r in rows:
         d = row_json(r)
+        d["binding_status"] = d.get("status")  # 绑定行状态（active/muted）——供前端分辨个人 skill 是否被解绑
         if d["asset_type"] == "skill":
             d["display_name"] = d.get("skill_display_name") or "Skill"
             d["version_no"] = d.get("skill_version_no") or 1
@@ -225,3 +226,28 @@ async def unbind(user: dict[str, Any], binding_id: str) -> dict[str, Any]:
         inst, user["user_id"], "unbind", drop_binding_id=binding_id,
     )
     return {"config_version_id": str(out["config_version"]["config_version_id"])}
+
+
+async def mute_skill(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
+    """个人 skill「解绑」：个人 skill 默认自动挂载（按 owner 纳入可执行集），解绑=在当前配置版本记一条
+    muted 绑定行（opt-out），派生结转保留；resolve_available_skills 据此剔除。重新绑定=对该 mute 行走
+    unbind（drop 掉）。仅限本人 source_type='user' 的 skill；平台 skill 自动装配、不可解绑。"""
+    inst = await agent_teams.get_instance(instance_id)
+    if inst is None or inst["owner_user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "无权操作该 AgentTeam")
+    skill = await assets.get_skill(req.skill_id) if req.skill_id else None
+    if skill is None:
+        raise ApiError(Err.NOT_FOUND, "Skill 不存在")
+    if skill["source_type"] != "user" or skill["owner_user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "仅可解绑本人的自定义 Skill（平台 Skill 自动装配、不可解绑）")
+    # 幂等守卫：同 (config_version, skill_id) 唯一（ux_iab_skill），已 muted 则拒绝重复解绑
+    for b in await agent_teams.list_binding_details(str(inst["active_config_version_id"])):
+        if b.get("asset_type") == "skill" and str(b.get("skill_id")) == str(req.skill_id) and b.get("status") == "muted":
+            raise ApiError(Err.VALIDATION_FAILED, "该 Skill 已从本 Agent 解绑")
+    out = await agent_team_service.derive_config_version(
+        inst, user["user_id"], "mute skill",
+        add_binding={"asset_type": "skill", "skill_id": req.skill_id,
+                     "skill_version_id": req.skill_version_id, "status": "muted"},
+    )
+    return {"binding_id": out["binding"]["binding_id"],
+            "config_version_id": str(out["config_version"]["config_version_id"])}

@@ -201,13 +201,14 @@ async def derive_config_version(
         instance_id, template_version_id or str(inst["template_version_id"]), new_overlay, by, reason
     )
     new_cv = str(cfg["config_version_id"])
-    for b in await agent_teams.list_bindings(active_cv):  # 结转（可丢弃指定一条）
+    for b in await agent_teams.list_bindings_incl_muted(active_cv):  # 结转（含 muted 标记，可丢弃指定一条）
         if drop_binding_id and str(b["binding_id"]) == drop_binding_id:
             continue
         await agent_teams.create_binding(
             instance_id, new_cv, by, b["asset_type"],
             str(b["skill_id"]) if b["skill_id"] else None, str(b["skill_version_id"]) if b["skill_version_id"] else None,
             str(b["mcp_id"]) if b["mcp_id"] else None, str(b["mcp_version_id"]) if b["mcp_version_id"] else None,
+            status=b["status"],  # 保留 muted（个人 skill 解绑）——否则派生冲掉解绑
         )
     binding = None
     if add_binding is not None:
@@ -215,6 +216,7 @@ async def derive_config_version(
             instance_id, new_cv, by, add_binding["asset_type"],
             add_binding.get("skill_id"), add_binding.get("skill_version_id"),
             add_binding.get("mcp_id"), add_binding.get("mcp_version_id"),
+            status=add_binding.get("status", "active"),
         )
     return {"config_version": cfg, "binding": binding}
 

@@ -73,6 +73,12 @@ async def list_bindings(instance_id: str, user: User):
     return ok(await asset_registry_service.list_instance_bindings(user, instance_id))
 
 
+@router.post("/agent-teams/{instance_id}/skill-mutes")
+async def mute_skill(instance_id: str, req: AssetBindingRequest, user: User):
+    """个人 skill「解绑」（默认自动挂载的 opt-out）；重新绑定走 DELETE /asset-bindings/{mute_id}。"""
+    return ok(await asset_registry_service.mute_skill(user, instance_id, req))
+
+
 @router.delete("/asset-bindings/{binding_id}")
 async def unbind(binding_id: str, user: User):
     await asset_registry_service.unbind(user, binding_id)

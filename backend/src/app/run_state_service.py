@@ -292,13 +292,20 @@ async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str
             out[str(s["skill_key"])] = {"version_no": s.get("version_no"), "checksum": s.get("checksum_sha256"),
                                         "source_type": s.get("source_type"),
                                         "display_name": s.get("display_name") or str(s["skill_key"])}
-    for b in await agent_teams.list_binding_details(config_version_id):
+    details = await agent_teams.list_binding_details(config_version_id)
+    for b in details:
         if b.get("asset_type") == "skill" and b.get("skill_status") in ("enabled", "validated", "uploaded"):
             key = b.get("skill_key") or b.get("skill_display_name")  # 键基统一：skill_key 优先，旧数据回退
             if not key:
                 continue
             out[str(key)] = {"version_no": b.get("skill_version_no"), "checksum": None, "source_type": "user",
                              "display_name": b.get("skill_display_name") or str(key)}
+    # 个人 skill「解绑」= muted 绑定行：从可执行集剔除（守卫 source_type=='user'——平台 skill 永不可被 mute）
+    for b in details:
+        if b.get("asset_type") == "skill" and b.get("status") == "muted":
+            key = b.get("skill_key") or b.get("skill_display_name")
+            if key and out.get(str(key), {}).get("source_type") == "user":
+                out.pop(str(key), None)
     return out
 
 

@@ -4,6 +4,7 @@ import os
 import time
 
 import psycopg
+from app import asset_registry_service
 from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
 from infra.external import mcp_registry_client, skill_hub_client
 
@@ -432,3 +433,102 @@ def test_reconcile_ignores_user_skills(client, monkeypatch):
     keys = {r[0] for r in _sql("select skill_key from sre_skill_asset where deleted_at is null", {})}
     assert "plat-x" in keys       # 平台 skill 照常 reconcile 入库
     assert "user-y" not in keys   # 个人 skill 不被全局 reconcile 吞
+
+
+# ============================ 个人 skill 默认挂载 + 解绑/重新绑定（mute 模型） ============================
+
+def _available_skill_keys(client, instance_id: str, headers=USER_HEADERS) -> set:
+    return {s["skill_key"] for s in unwrap(
+        client.get(f"/api/openops/v1/agent-teams/{instance_id}/available-skills", headers=headers))}
+
+
+def _mute_skill(client, instance_id: str, skill: dict):
+    return unwrap(client.post(
+        f"/api/openops/v1/agent-teams/{instance_id}/skill-mutes", headers=USER_HEADERS,
+        json={"client_request_id": f"m_{time.time_ns()}", "asset_type": "skill",
+              "skill_id": skill["skill_id"], "skill_version_id": skill.get("skill_version_id")}))
+
+
+def test_personal_skill_auto_bound_by_default(client):
+    """个人 skill 默认自动挂载：上传后不做任何绑定，available-skills 即含；对之后新建的实例也含。"""
+    inst_a = create_instance(client, "实例A")
+    _upload_skill(client, "my-personal-skill")
+    assert "my-personal-skill" in _available_skill_keys(client, inst_a["instance_id"])
+    inst_b = create_instance(client, "实例B")  # 上传之后才建 → 默认仍挂载
+    assert "my-personal-skill" in _available_skill_keys(client, inst_b["instance_id"])
+
+
+def test_personal_skill_unbind_removes_and_records_mute(client):
+    """解绑：available-skills 不再含；active 配置版本上记一条 muted 绑定行。"""
+    inst = create_instance(client)
+    s = _upload_skill(client, "to-mute")
+    assert "to-mute" in _available_skill_keys(client, inst["instance_id"])
+    _mute_skill(client, inst["instance_id"], s)
+    assert "to-mute" not in _available_skill_keys(client, inst["instance_id"])
+    muted = _sql("select status from sre_instance_asset_binding "
+                 "where skill_id=%(s)s and status='muted' and deleted_at is null", {"s": s["skill_id"]})
+    assert muted and muted[0][0] == "muted"
+
+
+def test_personal_skill_mute_survives_resync(client, monkeypatch):
+    """解绑必须扛过 ~5min 个人 skill 重新同步（同 skill_id upsert，mute 不被冲）。"""
+    inst = create_instance(client)
+    s = _upload_skill(client, "resync-skill")
+    _mute_skill(client, inst["instance_id"], s)
+    assert "resync-skill" not in _available_skill_keys(client, inst["instance_id"])
+
+    async def fake_list(uid):
+        return [_personal_skill("resync-skill")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))  # 触发重新同步（upsert 同 skill_id）
+    assert "resync-skill" not in _available_skill_keys(client, inst["instance_id"])  # mute 仍在
+
+
+def test_personal_skill_mute_survives_derivation(client):
+    """解绑必须扛过配置版本派生（save_config 结转 muted）——承重回归。"""
+    inst = create_instance(client)
+    s = _upload_skill(client, "derive-skill")
+    _mute_skill(client, inst["instance_id"], s)
+    assert "derive-skill" not in _available_skill_keys(client, inst["instance_id"])
+    unwrap(client.post(
+        f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS,
+        json={"client_request_id": f"cfg_{time.time_ns()}", "overlay_json": {"main_role_append": "x"},
+              "change_reason": "append", "base_config_version_id": None}))
+    assert "derive-skill" not in _available_skill_keys(client, inst["instance_id"])  # 结转带 muted
+
+
+def test_personal_skill_rebind_restores(client):
+    """重新绑定（drop mute 行）：available-skills 恢复含。"""
+    inst = create_instance(client)
+    s = _upload_skill(client, "rebind-skill")
+    _mute_skill(client, inst["instance_id"], s)
+    assert "rebind-skill" not in _available_skill_keys(client, inst["instance_id"])
+    muted = [b for b in _bindings(client, inst["instance_id"]) if b.get("binding_status") == "muted"]
+    assert len(muted) == 1
+    unwrap(client.delete(f"/api/openops/v1/asset-bindings/{muted[0]['binding_id']}", headers=USER_HEADERS))
+    assert "rebind-skill" in _available_skill_keys(client, inst["instance_id"])
+
+
+def test_platform_skill_cannot_be_muted(client):
+    """平台 skill 自动装配、不可解绑：调 skill-mutes → 403 且仍在。"""
+    inst = create_instance(client)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 平台 inspection 入库
+    assert "inspection" in _available_skill_keys(client, inst["instance_id"])
+    plat = next(s for s in unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+                if s["skill_key"] == "inspection")
+    resp = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/skill-mutes", headers=USER_HEADERS,
+                       json={"client_request_id": f"m_{time.time_ns()}", "asset_type": "skill",
+                             "skill_id": plat["skill_id"], "skill_version_id": plat.get("skill_version_id")})
+    assert resp.status_code == 403
+    assert "inspection" in _available_skill_keys(client, inst["instance_id"])
+
+
+def test_personal_skill_mute_is_per_instance(client):
+    """解绑按实例隔离：inst_a 解绑不影响 inst_b。"""
+    inst_a = create_instance(client, "A")
+    inst_b = create_instance(client, "B")
+    s = _upload_skill(client, "iso-skill")
+    _mute_skill(client, inst_a["instance_id"], s)
+    assert "iso-skill" not in _available_skill_keys(client, inst_a["instance_id"])
+    assert "iso-skill" in _available_skill_keys(client, inst_b["instance_id"])

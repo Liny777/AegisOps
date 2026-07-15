@@ -113,6 +113,8 @@ export interface OpenOpsApi {
   deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
   bindAsset(instanceId: string, row: AssetRow): Promise<void>;
   unbindAsset(bindingId: string): Promise<void>;
+  /** 个人 skill 解绑（默认自动挂载的 opt-out）：记一条 muted 绑定行；重新绑定用 unbindAsset(该 mute 行 id)。 */
+  unbindSkill(instanceId: string, row: AssetRow): Promise<void>;
   getMainAppend(instanceId: string): Promise<string>;
   saveMainAppend(instanceId: string, text: string): Promise<void>;
   reconcileAssets(): Promise<Record<string, unknown>>;
@@ -420,6 +422,7 @@ const realApi: OpenOpsApi = {
       kind: (r.asset_type === "mcp" ? "mcp" : "skill") as "skill" | "mcp",
       sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
       assetId: String(r.skill_id ?? r.mcp_id ?? ""),
+      bindingStatus: String(r.binding_status ?? r.status ?? "active"),
     }));
   },
   getAvailableSkills: (instanceId, options) => getAvailableSkillsCached(instanceId, options),
@@ -489,6 +492,20 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/asset-bindings/${bindingId}`, { method: "DELETE" });
     // 删除接口只有 bindingId，无法可靠还原 instanceId，保守失效全部 Agent。
     invalidateAvailableSkills();
+  },
+  async unbindSkill(instanceId, row) {
+    await apiFetch(`/openops/v1/agent-teams/${instanceId}/skill-mutes`, {
+      method: "POST",
+      body: {
+        client_request_id: crid(),
+        asset_type: "skill",
+        skill_id: row.id,
+        skill_version_id: row.versionId ?? null,
+        mcp_id: null,
+        mcp_version_id: null,
+      },
+    });
+    invalidateAvailableSkills(instanceId);
   },
   async getMainAppend(instanceId) {
     const d = await apiFetch<{ active_config_version?: Record<string, unknown> | null }>(
@@ -938,6 +955,7 @@ const mockApi: OpenOpsApi = {
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
   bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   unbindAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
+  unbindSkill: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   getMainAppend: () => delay("优先关注支付链路核心接口的 P99 与错误率。"),
   saveMainAppend: () => delay(undefined as unknown as void),
   reconcileAssets: () => delay({ skipped: true }),

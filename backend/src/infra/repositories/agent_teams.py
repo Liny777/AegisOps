@@ -195,6 +195,7 @@ async def create_config_version(
 async def create_binding(
     instance_id: str, config_version_id: str, owner: str, asset_type: str,
     skill_id: str | None, skill_version_id: str | None, mcp_id: str | None, mcp_version_id: str | None,
+    status: str = "active",
 ) -> dict[str, Any]:
     bid = str(uuid.uuid4())
     await exec1(
@@ -202,10 +203,10 @@ async def create_binding(
         insert into sre_instance_asset_binding
           (binding_id, agent_team_instance_id, config_version_id, owner_user_id, agent_key, asset_type,
            skill_id, skill_version_id, mcp_id, mcp_version_id, status, created_by, last_updated_by)
-        values (%(b)s, %(i)s, %(cv)s, %(o)s, 'main', %(t)s, %(s)s, %(sv)s, %(m)s, %(mv)s, 'active', %(o)s, %(o)s)
+        values (%(b)s, %(i)s, %(cv)s, %(o)s, 'main', %(t)s, %(s)s, %(sv)s, %(m)s, %(mv)s, %(st)s, %(o)s, %(o)s)
         """,
         {"b": bid, "i": instance_id, "cv": config_version_id, "o": owner, "t": asset_type,
-         "s": skill_id, "sv": skill_version_id, "m": mcp_id, "mv": mcp_version_id},
+         "s": skill_id, "sv": skill_version_id, "m": mcp_id, "mv": mcp_version_id, "st": status},
     )
     return {"binding_id": bid}
 
@@ -221,6 +222,18 @@ async def list_bindings(config_version_id: str) -> list[dict[str, Any]]:
         """
         select * from sre_instance_asset_binding
         where config_version_id=%(cv)s and deleted_at is null and status='active'
+        """,
+        {"cv": config_version_id},
+    )
+
+
+async def list_bindings_incl_muted(config_version_id: str) -> list[dict[str, Any]]:
+    """结转用：含 muted（个人 skill 的「解绑」标记）——派生新配置版本必须保留 mute，
+    否则解绑会被下一次派生（save_config / 模板升级 / 再绑定）冲掉、个人 skill 静默复现。"""
+    return await q_all(
+        """
+        select * from sre_instance_asset_binding
+        where config_version_id=%(cv)s and deleted_at is null and status in ('active', 'muted')
         """,
         {"cv": config_version_id},
     )
@@ -247,7 +260,7 @@ async def list_binding_details(config_version_id: str) -> list[dict[str, Any]]:
         left join sre_skill_asset_version sv on sv.skill_version_id = b.skill_version_id and sv.deleted_at is null
         left join sre_mcp_asset m on m.mcp_id = b.mcp_id and m.deleted_at is null
         left join sre_mcp_asset_version mv on mv.mcp_version_id = b.mcp_version_id and mv.deleted_at is null
-        where b.config_version_id=%(cv)s and b.deleted_at is null and b.status='active'
+        where b.config_version_id=%(cv)s and b.deleted_at is null and b.status in ('active', 'muted')
         order by b.creation_date
         """,
         {"cv": config_version_id},
