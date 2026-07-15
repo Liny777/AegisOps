@@ -18,8 +18,10 @@ import os
 from typing import Any
 
 from infra.external import http_mcp_client
+from infra.external.mcp_registry_client import _BROWSER_UA
 from infra.redact import redact_args
 from infra.repositories import mcp_tools
+from infra.request_context import cached_user_cookie, client_ip, user_cookie
 from runtime.emit import emit
 from runtime.task_registry import TaskState
 
@@ -60,9 +62,9 @@ def _extract_appid(arguments: dict[str, Any], path: str | None) -> str | None:
 
 
 def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
-    """28.2 平台 MCP 出站上下文 header（Cookie/X-EC2-IP 由真实网关透传，mock 不造假值）。"""
+    """28.2 平台 MCP 出站上下文 header + 用户登录态透传（IAM 保护的内网 MCP 靠用户 Cookie 鉴权）。"""
     scope = st.scope_ctx or {}
-    return {
+    h = {
         "X-OpenOps-User-Id": st.user_id,
         "X-OpenOps-Agent-Team-Id": st.instance_id,
         "X-OpenOps-Session-Id": str(run["framework_session_id"]),
@@ -72,6 +74,19 @@ def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
         "X-OpenOps-Scope-Snapshot-Id": str(scope.get("scope_snapshot_id", "")),
         "X-OpenOps-Audit-Trace-Id": str(run.get("audit_trace_id", "")),  # 28.2：回放 Trace 串联
     }
+    # 用户登录态透传（与 omodel/console 出站同款，console_client_kwargs 口径）：华为 IAM 会话绑客户端 IP——
+    # 只带 Cookie 从服务器 IP 出站会被判 code=1001 失效，故 Cookie 必与用户真实 IP 一并带。
+    # 优先级：当前请求上下文用户 cookie > 按 user_id 缓存（后台 task 兜底）> env（仅联调调试）。
+    # 后台 task 经 create_task 继承请求 contextvars，故此处（工具调用时）仍能读到发起用户的 cookie/IP。
+    cookie = user_cookie() or cached_user_cookie(st.user_id) or os.getenv("OPENOPS_MCPREGISTRY_COOKIE") or ""
+    if cookie:
+        h["Cookie"] = cookie
+        h["User-Agent"] = _BROWSER_UA  # 网关拦脚本 UA，按浏览器 UA 放行
+    ip = client_ip()
+    if ip:
+        h["IAM-Client-Ip"] = ip
+        h["X-Forwarded-For"] = ip
+    return h
 
 
 async def _blocked(st: TaskState, run: dict[str, Any], tool_name: str, reason_code: str, msg: str) -> ToolBlocked:

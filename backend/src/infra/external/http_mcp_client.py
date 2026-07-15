@@ -47,7 +47,8 @@ async def call_tool(
             from infra.external.mcp_registry_client import mcp_initialize, mcp_request, mcp_route, parse_mcp_response
 
             if mcp_route() == "direct":
-                # 28.2 平台上下文头照带（审计/回放）；不带 console cookie（无需且不外泄）；
+                # headers 由 Tool Gateway 构建：X-OpenOps-* 上下文头 + 用户登录态透传（Cookie/IAM-Client-Ip/
+                # X-Forwarded-For，IAM 保护的内网 MCP 靠它鉴权，见 tool_gateway._platform_headers）。
                 # 严格 stateful server 须先 initialize（Mcp-Session-Id 会话头），见 mcp_initialize
                 params = {"name": tool_name, "arguments": arguments}
                 async with httpx.AsyncClient(timeout=float(os.getenv("OPENOPS_MCP_TIMEOUT_S", "30")),

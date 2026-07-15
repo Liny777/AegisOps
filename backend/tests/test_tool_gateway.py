@@ -107,6 +107,30 @@ _RUN = {"framework_session_id": "sess-unit", "config_version_id": "cv-unit", "au
         "agent_team_instance_id": "i1"}
 
 
+def test_tool_010_platform_headers_carry_user_cookie_and_ip():
+    """平台 MCP 出站透传用户登录态：请求上下文有用户 cookie/IP 时注入 Cookie+IAM-Client-Ip+X-Forwarded-For
+    （IAM 保护的内网 MCP 靠 cookie 鉴权，且华为 IAM 会话绑客户端 IP，cookie 必带用户真实 IP）；
+    无 cookie（mock / 未开 IAM）时不注入——零回归。X-OpenOps-* 上下文头照旧。"""
+    from infra import request_context as rc
+
+    st = _st({})
+    rc.clear()
+    h0 = tool_gateway._platform_headers(st, _RUN)
+    assert "Cookie" not in h0 and "IAM-Client-Ip" not in h0 and "X-Forwarded-For" not in h0
+    assert h0["X-OpenOps-User-Id"] == "u1"  # 原上下文头在
+
+    rc.set_request_user("u1", "JSESSIONID=abc")
+    rc.set_client_ip("10.1.2.3")
+    try:
+        h1 = tool_gateway._platform_headers(st, _RUN)
+    finally:
+        rc.clear()
+    assert h1["Cookie"] == "JSESSIONID=abc"
+    assert h1["IAM-Client-Ip"] == "10.1.2.3" and h1["X-Forwarded-For"] == "10.1.2.3"
+    assert "Mozilla" in h1.get("User-Agent", "")  # 浏览器 UA（网关拦脚本 UA）
+    assert h1["X-OpenOps-User-Id"] == "u1"  # 原上下文头不受影响
+
+
 @pytest.fixture()
 def quiet_emit(monkeypatch):
     """桩掉 Gateway 的 emit（不写 DB/SSE），并捕获事件供断言。"""

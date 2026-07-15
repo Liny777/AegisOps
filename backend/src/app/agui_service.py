@@ -19,6 +19,7 @@ from typing import Any, AsyncGenerator
 
 from app import run_state_service
 from domain.errors import ApiError, Err
+from infra.repositories import agent_session_states, runs
 from runtime import events, task_registry
 
 KEEPALIVE_S = 15.0
@@ -42,12 +43,47 @@ def _last_user_text(body: dict[str, Any]) -> str:
     return ""
 
 
+def project_transcript(state_json: dict[str, Any] | None) -> list[dict[str, str]]:
+    """AgentState.model_dump() → 用户可见对话 [{role, content}]。
+
+    对话历史在 AgentState.context（list[Msg]）；只取 user/assistant 两种 role，content blocks 里只留
+    TextBlock（type=="text"），丢弃 thinking / tool_call / tool_result / hint / data（工具噪声不进 transcript）。
+    """
+    out: list[dict[str, str]] = []
+    for m in (state_json or {}).get("context", []) or []:
+        role = m.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        text = "\n".join(
+            b.get("text", "") for b in (m.get("content") or [])
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+        if text.strip():
+            out.append({"role": role, "content": text})
+    return out
+
+
+async def _load_transcript(run_id: str) -> list[dict[str, str]]:
+    """重进会话时的历史对话：run → framework_session_id → 已持久化的 AgentState → 投影。"""
+    run = await runs.get_run(run_id)
+    if not run:
+        return []
+    state = await agent_session_states.get_state_json(str(run["framework_session_id"]), "main")
+    return project_transcript(state)
+
+
 async def start(user: dict[str, Any], run_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    """校验 + 订阅事件通道 + 启动 task（在流开始前完成，错误走标准错误 envelope）。"""
+    """校验 + 订阅事件通道 + 启动 task（在流开始前完成，错误走标准错误 envelope）。
+
+    connect/resume（CopilotKit v2 挂载 <CopilotChat> 时先 setMessages([]) 再 POST /connect，messages 为空）
+    落在「无用户文本」分支：不启动 task，改回放该会话历史为 MESSAGES_SNAPSHOT（重进页面看到历史对话）。
+    """
     text = _last_user_text(body)
-    if not text:
-        raise ApiError(Err.VALIDATION_FAILED, "RunAgentInput.messages 缺少用户文本")
+    thread_id = str(body.get("threadId") or run_id)
     agui_run_id = str(body.get("runId") or uuid.uuid4())
+    if not text:
+        return {"mode": "connect", "run_id": run_id, "thread_id": thread_id,
+                "agui_run_id": agui_run_id, "history": await _load_transcript(run_id)}
     q, _replay, _ = events.subscribe(run_id, None)  # 只订阅新事件（历史恢复走 /state）
     try:
         task = await run_state_service.start_task(
@@ -99,6 +135,16 @@ def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
 
 async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
     """事件翻译主循环：openops.* → AG-UI；task 终态 → RUN_FINISHED / RUN_ERROR。"""
+    if ctx.get("mode") == "connect":
+        # connect/resume：回放历史对话为 MESSAGES_SNAPSHOT（CopilotChat 挂载后原生渲染），不启动 task。
+        # 空历史（全新会话首次挂载）→ 空快照，聊天区保持空态。
+        yield _sse({"type": "RUN_STARTED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
+        yield _sse({"type": "MESSAGES_SNAPSHOT", "messages": [
+            {"id": f"hist-{i}", "role": m["role"], "content": m["content"]}
+            for i, m in enumerate(ctx["history"])
+        ]})
+        yield _sse({"type": "RUN_FINISHED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
+        return
     q: asyncio.Queue[dict[str, Any]] = ctx["queue"]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + HARD_TIMEOUT_S
