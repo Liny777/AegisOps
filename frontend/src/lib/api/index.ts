@@ -418,6 +418,7 @@ const realApi: OpenOpsApi = {
       meta: `${r.asset_type === "mcp" ? "HTTP MCP" : "Skill"} · ${r.source_type === "platform" ? "平台" : "我的"} · main`,
       bound: true,
       kind: (r.asset_type === "mcp" ? "mcp" : "skill") as "skill" | "mcp",
+      sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
       assetId: String(r.skill_id ?? r.mcp_id ?? ""),
     }));
   },
@@ -427,12 +428,14 @@ const realApi: OpenOpsApi = {
     return rows.map((r) => ({
       id: String(r.skill_id),
       name: String(r.display_name),
-      version: `v${r.version_no ?? 1}`,
+      // 版本优先 SkillHub §2.2 semver（latest_version），缺失回退本地 v{version_no}（用户上传前/mock）
+      version: r.latest_version ? String(r.latest_version) : `v${r.version_no ?? 1}`,
       status: String(r.status),
       statusTone: r.status === "active" ? "good" as const : "warning" as const,
       meta: r.source_type === "platform" ? "平台 Skill" : "我的 Skill",
       bound: false,
       kind: "skill" as const,
+      sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
       versionId: r.skill_version_id ? String(r.skill_version_id) : undefined,
       skillKey: r.skill_key ? String(r.skill_key) : undefined, // 模板编辑器勾选用（运行时白名单键）
     }));
@@ -608,6 +611,25 @@ const realApi: OpenOpsApi = {
             r.role === "platform_admin"
               ? { text: "撤销管理员", kind: "action" as const, onClickKey: "role-user" }
               : { text: "设为管理员", kind: "action" as const, onClickKey: "role-admin" },
+          ],
+        })),
+      };
+    }
+    if (key === "skills") {
+      // Skill 基线（只读）：系统自带（platform）skill 清单 + §2.2 semver 版本。复用 /assets/skills（含 latest_version）。
+      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/skills");
+      const platform = rows.filter((r) => r.source_type === "platform");
+      return {
+        title: "Skill 基线",
+        cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
+        rows: platform.map((r) => ({
+          id: String(r.skill_id),
+          cells: [
+            { text: String(r.display_name) },
+            { text: String(r.skill_key ?? ""), mono: true },
+            { text: r.latest_version ? String(r.latest_version) : `v${r.version_no ?? 1}` },
+            { text: String(r.category ?? "—") },
+            { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
           ],
         })),
       };

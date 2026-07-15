@@ -11,7 +11,16 @@ from infra.repositories import agent_teams, assets
 
 
 async def list_skills(user: dict[str, Any]) -> list[dict[str, Any]]:
-    return [row_json(r) for r in await assets.list_skills(user["user_id"])]
+    out: list[dict[str, Any]] = []
+    for r in await assets.list_skills(user["user_id"]):
+        d = row_json(r)
+        # §2.2 semver 与分类存在最新版本的 manifest_json 里（reconcile/upload 落库）；抽到行顶层供 UI 展示
+        manifest = d.pop("manifest_json", None) or {}  # 抽完即弃，不把内部 manifest 透给前端
+        if isinstance(manifest, dict):
+            d["latest_version"] = manifest.get("latest_version")  # None → 前端回退 v{version_no}
+            d["category"] = manifest.get("category")
+        out.append(d)
+    return out
 
 
 async def upload_skill(user: dict[str, Any], req: Any) -> dict[str, Any]:
@@ -39,7 +48,8 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
 
     skill_key = meta["skill_key"]
     manifest = {"entrypoint": meta.get("entrypoint") or "python3 run.py",
-                "category": category, "tags": tags, "synced_from": "upload"}
+                "category": category, "tags": tags, "synced_from": "upload",
+                "latest_version": result.get("version")}  # §2.1 上传响应 version → 上传后即刻可展示 semver
     existing = await assets.get_skill_by_key("user", skill_key)
     if existing is None:
         row = await assets.create_skill(user["user_id"], "user", meta["name"], skill_key, manifest, checksum)

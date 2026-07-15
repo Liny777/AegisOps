@@ -12,6 +12,7 @@ import { TemplateEditorModal } from "./TemplateEditorModal";
 const TITLES: Record<string, string> = {
   templates: "模板管理",
   "model-assets": "模型资产",
+  skills: "Skill 基线",
   users: "用户与白名单",
   sandbox: "沙箱与容量",
   audit: "审计与 Trace 回放",
@@ -36,7 +37,7 @@ export function AdminConsole() {
   const [actionErr, setActionErr] = useState("");
   const [traceFilter, setTraceFilter] = useState("");
 
-  const isTable = ["templates", "model-assets", "users"].includes(page);
+  const isTable = ["templates", "model-assets", "skills", "users"].includes(page);
 
   const load = useCallback(async () => {
     if (page === "templates") {
