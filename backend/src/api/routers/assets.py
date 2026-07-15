@@ -48,17 +48,15 @@ async def upload_skill(req: UploadSkillRequest, user: User):
 async def upload_skill_package(
     user: User,
     file: UploadFile = File(...),
-    category: str = Form(...),
+    category: str = Form(""),  # 分类/标签已从上传流程移除：可选，缺省即不带（仍接受显式传入）
     tags: str = Form(""),
 ):
-    """上传 Skill ZIP（29.3 §2.1 multipart）：转发 SkillHub + 写本地目录即时可见。"""
+    """上传 Skill ZIP（29.3 §2.1 multipart）：转发 SkillHub + 写本地目录即时可见。分类/标签可选。"""
     data = await file.read()
     if len(data) > _MAX_SKILL_ZIP:
         raise ApiError(Err.VALIDATION_FAILED, "ZIP 超过 50MB 上限（29.3 §2.1）")
     if data[:2] != b"PK":  # ZIP 魔数——非 zip 直接拒，避免下游 BadZipFile 迷惑定位
         raise ApiError(Err.SKILL_PACKAGE_INVALID, "文件不是有效的 ZIP 包")
-    if not category.strip():
-        raise ApiError(Err.VALIDATION_FAILED, "分类（category）必填")
     return ok(await asset_registry_service.upload_skill_package(
         user, file.filename or "skill.zip", data, category.strip(), _parse_tags(tags)))
 
