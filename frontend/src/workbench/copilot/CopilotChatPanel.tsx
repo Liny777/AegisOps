@@ -6,13 +6,14 @@
 // 发送按钮两态/停止（原生）：运行中变停止 → abort 流 → 后端断流取消桥停任务。
 // RCA/HITL 卡与活动栏不在本组件渲染；本组件把同流 CUSTOM 事件桥接给 Workbench，
 // 再与备用 SSE、/state 和审计分页统一去重投影（30.4 三层模型不变）。
-import { useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { CopilotChat, CopilotKit, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
+import type { Message } from "@ag-ui/core";
 import "@copilotkit/react-core/v2/styles.css";
 import "./CopilotChatPanel.css";
 
 import { api, demoIdentity } from "../../lib/api";
-import type { OpenOpsEvent, TranscriptMessage } from "../../lib/api/types";
+import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
@@ -73,10 +74,11 @@ export function CopilotChatPanel({
   return (
     <CopilotThreadGate runId={runId} blocked={blocked} blockedMessage={blockedMessage}>
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
+      {/* 历史对话：重进会话时 CopilotKit v2 的 connect 走 sidecar 内存回放、拿不到历史；这里 REST 拉后端
+          transcript 注入 CopilotChat 自己的 agent.messages，让历史与实时对话渲染成同一条会话（一个滚动区/
+          一个输入框），用户在历史下面接着聊、新一轮正常追加。放在 CopilotChat 之前使其订阅先于 connect 附着。 */}
+      <CopilotHistoryInjector runId={runId} />
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
-        {/* 历史对话：重进会话时 CopilotKit v2 的 connect 走 sidecar 内存回放、拿不到历史，故这里直接
-            REST 拉后端 transcript 自渲染在 live 对话上方（有历史才显示）。 */}
-        <HistoryDock runId={runId} />
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         <CopilotChat
           agentId={AGENT_ID}
@@ -96,56 +98,57 @@ export function CopilotChatPanel({
 }
 
 /**
- * 历史对话 dock（B1）：进入/重开一个 run 时 REST 拉后端 transcript 自渲染，绕开 CopilotKit connect
- * （v2 的 connect 由 sidecar InMemoryAgentRunner 从进程内存回放，内存 miss 即空流、拿不到历史）。
- * 只读回放，不进 agent 消息管线（故不会被 CopilotChat 挂载时的 setMessages([]) 清空）；有历史才显示。
- * 新一轮对话仍由下方 live CopilotChat 承载，下次重开时该轮已并入 state_json → 出现在本 dock。
+ * 历史对话注入器（B1，无缝版）：进入/重开一个 run 时 REST 拉后端 transcript，注入 CopilotChat 自己的
+ * `agent.messages`，让历史与实时对话渲染成同一条会话（一个滚动区/一个输入框），用户在历史下面接着聊、
+ * 新一轮正常追加（runAgent 发全量 messages、从不清空）。渲染器为 null，不占布局。
+ *
+ * 难点：v2 的 `<CopilotChat threadId>` 挂载即 connect，fresh-restore 时 `agent.setMessages([])` 清空
+ * （sidecar InMemoryAgentRunner 内存 miss 返回空流）。用 `onRunFinalized`（connect run 结束、清空已发生）
+ * 作门、按 threadId 只注一次：同 threadId 后续 connect 不再清、runAgent 也不清，故注入存活；历史晚于
+ * connect 结束才到则用 finalized 标记补注；切 runId 时对新 thread 的 connect 再注入。
  */
-function HistoryDock({ runId }: { runId: string }) {
-  const [history, setHistory] = useState<TranscriptMessage[]>([]);
+function CopilotHistoryInjector({ runId }: { runId: string }) {
+  const { agent } = useAgent({ agentId: AGENT_ID });
+  const [mapped, setMapped] = useState<Message[]>([]);
+  const injectedFor = useRef<string | null>(null);
+  const finalized = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     const ac = new AbortController();
-    setHistory([]);
+    setMapped([]);
+    injectedFor.current = null;
     api.getMessages(runId, { signal: ac.signal })
-      .then((msgs) => setHistory(Array.isArray(msgs) ? msgs : []))
+      .then((h) =>
+        setMapped(
+          (Array.isArray(h) ? h : []).map((m, i) => ({ id: `hist-${runId}-${i}`, role: m.role, content: m.content }) as Message),
+        ),
+      )
       .catch(() => undefined); // 拉不到历史不阻断聊天
     return () => ac.abort();
   }, [runId]);
 
-  if (!history.length) return null;
-  return (
-    <div
-      data-testid="chat-history-dock"
-      style={{ flex: "0 0 auto", maxHeight: "46%", overflowY: "auto", borderBottom: "1px solid #eef0f3", background: "#fbfcfd" }}
-    >
-      <div style={{ width: "min(100%, 760px)", margin: "0 auto", padding: "14px 24px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-        <div style={{ fontSize: 11.5, color: "#9aa3b0", fontWeight: 600 }}>历史对话</div>
-        {history.map((m, i) => (
-          <HistoryBubble key={`h-${runId}-${i}`} role={m.role} content={m.content} />
-        ))}
-      </div>
-    </div>
-  );
-}
+  useEffect(() => {
+    const inject = () => {
+      // 只注入当前 thread、且每 thread 只一次；空历史不动
+      if (agent.threadId !== runId || injectedFor.current === runId || mapped.length === 0) return;
+      // 一般化：历史在前；connect/实时已产出的消息去重接在后（sidecar miss 时 messages 为空 → 就是纯历史）
+      const seen = new Set(mapped.map((m) => m.id));
+      const tail = agent.messages.filter((m) => !seen.has(m.id));
+      agent.setMessages([...mapped, ...tail]);
+      injectedFor.current = runId;
+    };
+    const sub = agent.subscribe({
+      onRunFinalized() {
+        finalized.current.add(agent.threadId ?? "");
+        inject();
+      },
+    });
+    // 历史晚到、而该 thread 的 connect 已 finalize（不会再 fire）→ 立即补注
+    if (finalized.current.has(runId)) inject();
+    return () => sub.unsubscribe();
+  }, [agent, runId, mapped]);
 
-function HistoryBubble({ role, content }: { role: "user" | "assistant"; content: string }) {
-  const isUser = role === "user";
-  return (
-    <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
-      <div
-        style={{
-          maxWidth: "82%", whiteSpace: "pre-wrap", overflowWrap: "anywhere",
-          fontSize: 14, lineHeight: 1.52, color: "#1f2430",
-          padding: isUser ? "8px 12px" : "2px 0",
-          borderRadius: isUser ? 12 : 0,
-          background: isUser ? "#eef2ff" : "transparent",
-        }}
-      >
-        {content}
-      </div>
-    </div>
-  );
+  return null;
 }
 
 /**
