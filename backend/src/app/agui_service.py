@@ -158,8 +158,9 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + HARD_TIMEOUT_S
     open_msg: str | None = None  # 当前打开的 TEXT_MESSAGE（messageId）
-    streamed = False  # 是否已流式输出过文本（决定 task.completed 是否需要合成结论消息）
-    tool_stack: list[str] = []  # started/succeeded 顺序配对（一次一个工具调用）
+    streamed = False  # 是否已流式输出过非空文本（决定 task.completed 是否需要合成结论消息）
+    open_tool_calls: set[str] = set()
+    legacy_tool_stack: list[str] = []  # 兼容没有 tool_call_id 的旧事件；新事件不再依赖到达顺序
 
     def text_start(mid: str) -> str:
         return _sse({"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"})
@@ -184,6 +185,9 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
 
             # 文本增量：openops.assistant.delta（内部传输事件）→ TEXT_MESSAGE_*
             if et == "openops.assistant.delta":
+                delta = str(p.get("delta") or "")
+                if not delta:
+                    continue
                 mid = str(p.get("message_id") or "assistant")
                 if open_msg != mid:
                     if open_msg is not None:
@@ -191,7 +195,7 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                     open_msg = mid
                     yield text_start(mid)
                 streamed = True
-                yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": str(p.get("delta") or "")})
+                yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": delta})
                 continue
             if open_msg is not None:  # 其它事件到来即闭合文本块（AG-UI 消息内不插其它事件）
                 yield text_end(open_msg)
@@ -225,21 +229,31 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
 
             # 标准工具事件（30.4 五：tool.call.* 同时走标准 + 自定义）
             if et == "openops.tool.call.started":
-                tcid = str(e.get("event_id") or uuid.uuid4())
-                tool_stack.append(tcid)
+                payload_tcid = p.get("tool_call_id")
+                tcid = str(payload_tcid or e.get("event_id") or uuid.uuid4())
+                open_tool_calls.add(tcid)
+                if not payload_tcid:
+                    legacy_tool_stack.append(tcid)
                 yield _sse({"type": "TOOL_CALL_START", "toolCallId": tcid,
                             "toolCallName": str(p.get("tool") or "tool")})
                 # 入参 → TOOL_CALL_ARGS（内网实测缺口：不发它 CopilotChat 工具卡 arguments 恒空）
                 if p.get("arguments") is not None:
                     yield _sse({"type": "TOOL_CALL_ARGS", "toolCallId": tcid,
                                 "delta": json.dumps(p["arguments"], ensure_ascii=False)})
-            elif et in ("openops.tool.call.succeeded", "openops.tool.call.failed") and tool_stack:
-                tcid = tool_stack.pop()
+            elif et in ("openops.tool.call.succeeded", "openops.tool.call.failed"):
+                payload_tcid = p.get("tool_call_id")
+                tcid = str(payload_tcid) if payload_tcid else (legacy_tool_stack.pop() if legacy_tool_stack else "")
+                if not tcid or tcid not in open_tool_calls:
+                    # 缺 started 的终态不能制造孤立 TOOL_CALL_END/RESULT；CUSTOM 仍已在上方透传供审计查看。
+                    continue
+                open_tool_calls.discard(tcid)
                 yield _sse({"type": "TOOL_CALL_END", "toolCallId": tcid})
                 # Result 正文优先工具真实输出（succeeded=payload.result_summary / failed=payload.error），
                 # 回退事件 message——内网实测：只发 message 时工具卡 Result 恒为「xxx 返回」占位文案。
                 # result_summary 与回给 LLM 的 ToolResponse 同源（http_mcp_client._summarize）；4000 字防撑卡
-                body = str(p.get("result_summary") or p.get("error_summary") or e.get("message") or "")[:4000]
+                body = str(
+                    p.get("result_summary") or p.get("error_summary") or p.get("error") or e.get("message") or ""
+                )[:4000]
                 yield _sse({"type": "TOOL_CALL_RESULT", "messageId": str(e.get("event_id") or uuid.uuid4()),
                             "toolCallId": tcid, "content": body, "role": "tool"})
 

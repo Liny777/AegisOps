@@ -15,6 +15,7 @@ fail-closed：发 `tool.blocked`（审计+SSE，带 reason_code）并抛 ToolBlo
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 from infra.external import http_mcp_client
@@ -166,6 +167,9 @@ async def invoke(
     server_url: str | None = None,
 ) -> dict[str, Any]:
     """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。"""
+    # 同一次调用的 started/succeeded/failed 必须共享稳定 ID。不能再让 AG-UI 根据事件到达
+    # 顺序猜配对关系：并发子 Agent 的完成顺序与启动顺序通常不同，LIFO 会把结果挂错卡片。
+    tool_call_id = str(uuid.uuid4())
     headers: dict[str, str] = {}
     if source_type == "platform":
         if st.template_tools is not None and tool_name not in st.template_tools:
@@ -200,6 +204,7 @@ async def invoke(
     await emit(st, run, "openops.tool.call.started", action=tool_name,
                message=started_msg or f"调用工具 {tool_name}",
                payload={"tool": tool_name, "source_type": source_type,
+                        "tool_call_id": tool_call_id,
                         "agent_key": st.agent_key,  # D 块：前端活动栏按 agent 分组
                         # 入参进事件（前端工具卡展示；内网实测缺口：agent 真带参但界面显示空）。
                         # Secret 不在 arguments（gateway 在调用边界注 header，28.2 不破）；超长截断防事件膨胀
@@ -209,12 +214,13 @@ async def invoke(
     except Exception as e:
         await emit(st, run, "openops.tool.call.failed", severity="error", action=tool_name,
                    message=f"工具 {tool_name} 调用失败", reason_code="TOOL_CALL_FAILED",
-                   payload={"tool": tool_name, "error": str(e)[:200]})
+                   payload={"tool": tool_name, "tool_call_id": tool_call_id, "error": str(e)[:200]})
         raise
     await emit(st, run, "openops.tool.call.succeeded", action=tool_name,
                message=succeeded_msg or f"工具 {tool_name} 调用完成",
                external_request_id=result.get("request_id"),
                payload={"tool": tool_name,  # 审计查询体验：成功事件也带 tool 名（B5-OBS-002）
+                        "tool_call_id": tool_call_id,
                         "agent_key": st.agent_key,  # D 块：前端活动栏按 agent 分组
                         **{k: v for k, v in result.items() if k in ("result_summary", "execution_id", "status")}})
     return result

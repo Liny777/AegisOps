@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import uuid
 from typing import Any
 
 from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
@@ -87,12 +88,38 @@ def _build_stub_model() -> Any:
             # 跳过 super().__init__（无真 credential）；手设 agent 循环会读的属性
             self._step = 0
             self.model = "stub-rca"
-            self.stream = False
+            self.stream = True
             self.max_retries = 0
             self.retry_delay = 0.0
             self.context_size = 128000
             self.parameters = None
             self.credential = None
+
+        @staticmethod
+        async def _stream_response(content: list[Any], *, text: str | None = None):
+            """复刻 AgentScope streaming 契约：增量块 is_last=False，末块给累计全文。"""
+            if text is None:
+                # 工具调用也先发一个增量块；最终累计块供 Agent 写上下文并进入 acting。
+                yield ChatResponse(content=content, is_last=False)
+                yield ChatResponse(content=content, is_last=True)
+                return
+
+            block_id = f"stub-text-{uuid.uuid4()}"
+            # 固定多段，便于无凭证环境稳定验证浏览器在 RUN_FINISHED 前发生多次增长。
+            chunks = ["已确认根因 H1（Redis 连接泄漏）：", "重启 svc-a 后连接回落、", "P99 恢复 210ms，事件闭环。"]
+            # 段间停顿要够长：太快（如 30ms）会被 SSE→sidecar→CopilotKit 渲染管线合并，浏览器只见
+            # 一次到位，既看不出流式、也让「完成前多次增长」的验收无法稳定观测。真实模型逐 token 到达
+            # 本就有节奏，此处只补齐无凭证 stub 的可感知节奏。
+            for chunk in chunks:
+                yield ChatResponse(
+                    content=[TextBlock(type="text", id=block_id, text=chunk)],
+                    is_last=False,
+                )
+                await asyncio.sleep(0.4)
+            yield ChatResponse(
+                content=[TextBlock(type="text", id=block_id, text=text)],
+                is_last=True,
+            )
 
         async def _call_api(self, model_name, messages, tools=None, tool_choice=None, **kw):  # noqa: ANN001
             self._step += 1
@@ -100,25 +127,29 @@ def _build_stub_model() -> Any:
             # 默认关不改现有 demo 序列（recover 仍是第 3 步）；真 GLM 无论此开关都可自主调该工具。
             sbx_on = os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1"
             if self._step in (1, 2):  # 巡检 + 定界
-                return ChatResponse(content=[ToolCallBlock(
+                return self._stream_response([ToolCallBlock(
                     type="tool_call", id=f"q{self._step}", name="query_resource",
-                    input=json.dumps({"appid": "APP-A"}))], is_last=False)
+                    input=json.dumps({"appid": "APP-A"}))])
             if sbx_on and self._step == 3:  # 容器内跑巡检 Skill（真 ZIP 投递 + 容器执行）
-                return ChatResponse(content=[ToolCallBlock(
+                return self._stream_response([ToolCallBlock(
                     type="tool_call", id="sk", name="run_platform_skill",
-                    input=json.dumps({"skill_name": "inspection"}))], is_last=False)
+                    input=json.dumps({"skill_name": "inspection"}))])
             if sbx_on and self._step == 4:  # 容器内只读诊断命令
-                return ChatResponse(content=[ToolCallBlock(
+                return self._stream_response([ToolCallBlock(
                     type="tool_call", id="cmd", name="run_container_command",
-                    input=json.dumps({"command": "ls -la"}))], is_last=False)
+                    input=json.dumps({"command": "ls -la"}))])
             if self._step == (5 if sbx_on else 3):  # 恢复动作（ask → 审批）
-                return ChatResponse(content=[ToolCallBlock(
+                return self._stream_response([ToolCallBlock(
                     type="tool_call", id="rec", name="recover_execute",
-                    input=json.dumps({"appid": "APP-A", "action": "restart"}))], is_last=False)
-            return ChatResponse(content=[TextBlock(
+                    input=json.dumps({"appid": "APP-A", "action": "restart"}))])
+            final_text = (
+                "已确认根因 H1（Redis 连接泄漏）：重启 svc-a 后连接回落、"
+                "P99 恢复 210ms，事件闭环。"
+            )
+            return self._stream_response([TextBlock(
                 type="text",
-                text="已确认根因 H1（Redis 连接泄漏）：重启 svc-a 后连接回落、P99 恢复 210ms，事件闭环。",
-            )], is_last=True)
+                text=final_text,
+            )], text=final_text)
 
     return StubRcaModel()
 
@@ -172,7 +203,7 @@ async def _build_model(st: TaskState) -> Any:
         return OpenAIChatModel(
             credential=OpenAICredential(api_key=api_key),
             model=spec["model_id"],
-            stream=False,
+            stream=True,
             client_kwargs=client_kwargs,
         )
     print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）——"
@@ -412,13 +443,14 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             )])
 
         summary = chart_result_summary(chart)
+        tool_call_id = str(uuid.uuid4())
         await emit(
             st,
             run,
             "openops.tool.call.started",
             action="render_chart",
             message=f"生成图表 · {chart['title']}",
-            payload={"tool": "render_chart", "arguments": chart},
+            payload={"tool": "render_chart", "tool_call_id": tool_call_id, "arguments": chart},
         )
         await emit(
             st,
@@ -426,7 +458,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             "openops.tool.call.succeeded",
             action="render_chart",
             message=summary,
-            payload={"tool": "render_chart", "result_summary": summary},
+            payload={"tool": "render_chart", "tool_call_id": tool_call_id, "result_summary": summary},
         )
         return ToolResponse(content=[TextBlock(type="text", text=summary)])
 
