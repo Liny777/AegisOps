@@ -284,7 +284,9 @@ test.describe("真实历史会话快速切换", () => {
     const burstHistoryCalls = metrics.historyCalls - baseline.historyCalls;
     expect(burstStateCalls).toBe(1);
     expect(burstHistoryCalls).toBe(0);
-    expect(metrics.runtimeInfoCalls).toBeLessThanOrEqual(1);
+    // 每个 resolved run 有独立 Provider；latest-wins 后只允许最终 Provider
+    // 额外读取一次 runtime info，旧 Provider 的首次读取计入 baseline。
+    expect(metrics.runtimeInfoCalls - baseline.runtimeInfoCalls).toBeLessThanOrEqual(1);
     expect(metrics.activeOpenOpsSse.size).toBeLessThanOrEqual(1);
     expect(metrics.activeCopilotRequests.size).toBeLessThanOrEqual(1);
     expectCopilotRequestsConverged(metrics, finalRunId);
@@ -299,7 +301,7 @@ test.describe("真实历史会话快速切换", () => {
       finalRunId,
       burstStateCalls,
       burstHistoryCalls,
-      runtimeInfoCalls: metrics.runtimeInfoCalls,
+      runtimeInfoCalls: metrics.runtimeInfoCalls - baseline.runtimeInfoCalls,
       copilotMethods: metrics.copilotMethods,
       failedRequests: metrics.failed,
       activeOpenOpsSse: metrics.activeOpenOpsSse.size,
@@ -393,6 +395,7 @@ test.describe("真实历史会话快速切换", () => {
       timeout: 15_000,
     });
     await expect(page.getByTestId("workbench-switch-overlay")).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByText(question, { exact: true })).toHaveCount(0);
     // 离开源 Run 只脱离浏览器消费者；底层任务仍继续，且不得隐式发 stop。
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect((await readSidecarHealth()).activity.activeUpstreamRuns).toBeGreaterThan(0);
@@ -414,6 +417,14 @@ test.describe("真实历史会话快速切换", () => {
     await expect.poll(async () => (await readSidecarHealth()).activity.activeUpstreamRuns, {
       timeout: 30_000,
     }).toBe(0);
+
+    // 新 run 必须得到全新的 Provider/Agent 生命周期，不能继承源会话消息。
+    await page.getByTestId("new-conversation").click();
+    await page.waitForURL(/\/agent-teams\/[^/]+\/chat\?run_id=/, { timeout: 30_000 });
+    await expect(page.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+      timeout: 30_000,
+    });
+    await expect(page.getByText(question, { exact: true })).toHaveCount(0);
   });
 
   test("三轮 1/3/5 浏览器上下文三档压力回归", async ({ browser }, testInfo) => {

@@ -21,7 +21,6 @@ import type {
   ModelOption,
   ActivityNode,
   ActivityEventsPage,
-  TranscriptMessage,
 } from "./types";
 import * as M from "./mockData";
 import { apiFetch, crid, demoIdentity, setDemoUser } from "./client";
@@ -79,8 +78,6 @@ export interface OpenOpsApi {
   renameRun(runId: string, title: string): Promise<void>;
   deleteRun(runId: string): Promise<void>;
   getRunState(runId: string, options?: RequestOptions): Promise<Record<string, unknown>>;
-  /** 历史对话 transcript（B1：重进会话前端自渲染，绕开 CopilotKit connect——它走 sidecar 内存拿不到历史）。 */
-  getMessages(runId: string, options?: RequestOptions): Promise<TranscriptMessage[]>;
   startTask(runId: string, text: string): Promise<{ task_id: string }>;
   cancelTask(taskId: string): Promise<void>;
   closeRun(runId: string): Promise<void>;
@@ -351,9 +348,6 @@ const realApi: OpenOpsApi = {
     invalidateConversationHistory();
   },
   getRunState: (runId, options) => apiFetch(`/openops/v1/agent-runs/${runId}/state`, {
-    signal: options?.signal,
-  }),
-  getMessages: (runId, options) => apiFetch(`/openops/v1/agent-runs/${runId}/messages`, {
     signal: options?.signal,
   }),
   async startTask(runId, text) {
@@ -916,7 +910,6 @@ const mockApi: OpenOpsApi = {
     return delay(undefined as unknown as void).then(() => invalidateConversationHistory());
   },
   getRunState: (_runId, options) => waitWithSignal(delay({}), options?.signal),
-  getMessages: (_runId, options) => waitWithSignal(delay([] as TranscriptMessage[]), options?.signal),
   startTask: () => delay({ task_id: "tsk_demo" }),
   cancelTask: () => delay(undefined as unknown as void),
   closeRun: () => delay(undefined as unknown as void).then(() => invalidateConversationHistory()),

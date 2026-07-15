@@ -1,7 +1,7 @@
 // CopilotKit Runtime sidecar（Part B：CopilotChat 接管对话区）。
 //
 // 浏览器 <CopilotKit runtimeUrl=/api/copilotkit>（vite proxy → 本进程 :4002）
-//   → CopilotRuntime(v2) + SharedConnectAgentRunner(InMemoryAgentRunner)
+//   → CopilotRuntime(v2) + PersistentConnectAgentRunner(SharedConnectAgentRunner(InMemoryAgentRunner))
 //   → HttpAgent → FastAPI per-run `/agui`（AG-UI 标准流）
 //
 // threadId 即 runId。浏览器离开会话只断开该消费者；后台 Run 继续执行，只有显式
@@ -22,9 +22,14 @@ import { resolve } from "node:path";
 import { monitorEventLoopDelay, performance } from "node:perf_hooks";
 import { identityFromIncoming, identityHeaders, runWithIdentity } from "./identity";
 import {
+  createBackendTranscriptLoader,
+  PersistentConnectAgentRunner,
+} from "./persistent-runner";
+import {
   SharedConnectAgentRunner,
   type LifecycleEvent,
   type LifecycleLogger,
+  type RunnerActivity,
 } from "./shared-runner";
 
 const DEFAULT_PORT = Number(process.env.COPILOTKIT_RUNTIME_PORT ?? 4002);
@@ -39,7 +44,7 @@ eventLoopDelay.enable();
 
 export interface CopilotRuntimeAppOptions {
   runtime: CopilotRuntimeLike;
-  runner: SharedConnectAgentRunner;
+  runner: { activity(): RunnerActivity };
   backendBase: string;
   agentId: string;
   log?: LifecycleLogger;
@@ -202,7 +207,12 @@ export function createRuntimeSidecar(options: RuntimeSidecarOptions = {}) {
   const backendBase = (options.backendBase ?? DEFAULT_BACKEND_BASE).replace(/\/+$/, "");
   const agentId = options.agentId ?? DEFAULT_AGENT_ID;
   const log = options.log ?? structuredLog;
-  const runner = new SharedConnectAgentRunner(new InMemoryAgentRunner(), log);
+  const sharedRunner = new SharedConnectAgentRunner(new InMemoryAgentRunner(), log);
+  const runner = new PersistentConnectAgentRunner(
+    sharedRunner,
+    createBackendTranscriptLoader(backendBase, options.fetchImpl),
+    log,
+  );
   const aguiFetch = createAguiFetch(backendBase, options.fetchImpl);
   const runtime = new CopilotRuntime({
     // url 为占位；真实目标每次请求在 aguiFetch 中按 threadId 计算。

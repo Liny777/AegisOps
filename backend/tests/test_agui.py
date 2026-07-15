@@ -74,7 +74,6 @@ def test_agui_full_flow_standard_and_custom_events(client):
     assert rca["value"]["sequence"] > 0
     assert rca["value"]["payload_redacted_json"]["revision"] >= 1
 
-
 def test_agui_tool_call_pairing(client):
     """TOOL_CALL_START/END 按调用配对（toolCallId 一致）。"""
     _annotate_recover_no_ask(client)
@@ -145,16 +144,19 @@ def test_agui_closed_run_rejects(client):
     assert r.json()["error"]["code"] == "RUN_ALREADY_CLOSED"
 
 
-def test_agui_empty_messages_is_connect_not_error(client):
-    """空 messages 不再是 400——它是 CopilotKit v2 的 connect/resume：返回 MESSAGES_SNAPSHOT（此 run 无历史→
-    空快照）、不启动 task。（旧语义 empty→VALIDATION_FAILED 已被会话历史回放取代。）"""
+def test_agui_empty_messages_rejected(client):
+    """真实 connect 由 sidecar /connect 处理；/agui 的空消息不是合法的新 run 请求。"""
     instance = create_instance(client)
     run = create_run(client, instance["instance_id"])
     body = _run_input()
     body["messages"] = []
-    evs = _collect_events(client, run["agent_run_id"], body)
-    assert [e["type"] for e in evs] == ["RUN_STARTED", "MESSAGES_SNAPSHOT", "RUN_FINISHED"]
-    assert next(e for e in evs if e["type"] == "MESSAGES_SNAPSHOT")["messages"] == []  # 全新 run 无历史
+    response = client.post(
+        f"/api/openops/v1/agent-runs/{run['agent_run_id']}/agui",
+        headers=USER_HEADERS,
+        json=body,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "VALIDATION_FAILED"
     state = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/state", headers=USER_HEADERS))
     assert state.get("active_task") is None  # 未启动 task
 
@@ -192,6 +194,45 @@ def test_agui_disconnect_triggers_cancel_bridge(client):
     assert status == "cancelled"
 
 
+def test_agui_terminal_frame_waits_for_runtime_persistence():
+    """task.* publish 早于 AgentState finally 回写；最终 AG-UI 帧必须等待 orchestrator 收口。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import task_registry
+    from runtime.task_registry import TaskState
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+        persisted = False
+
+        async def runtime_finally() -> None:
+            nonlocal persisted
+            await release.wait()
+            persisted = True
+
+        state = TaskState(
+            task_id="terminal-persistence-task",
+            run_id="terminal-persistence-run",
+            user_id="user",
+            instance_id="instance",
+            input_text="question",
+        )
+        state.orchestrator = asyncio.create_task(runtime_finally())
+        task_registry.put(state)
+        waiter = asyncio.create_task(agui_service._await_terminal_persistence({"task_id": state.task_id}))
+        await asyncio.sleep(0)
+        assert not waiter.done() and not persisted
+        release.set()
+        await waiter
+        assert persisted
+
+    try:
+        asyncio.run(scenario())
+    finally:
+        task_registry.reset()
+
+
 def test_agui_project_transcript_filters_tool_noise():
     """project_transcript：只留 user/assistant 的 text block，滤掉 system/thinking/tool_call/tool_result；
     纯工具调用（无文本）的 assistant 消息跳过。"""
@@ -199,7 +240,7 @@ def test_agui_project_transcript_filters_tool_noise():
 
     state = {"context": [
         {"role": "system", "content": [{"type": "text", "text": "SYS"}]},           # system 滤
-        {"role": "user", "content": [{"type": "text", "text": "查支付延迟"}]},
+        {"id": "msg-user", "role": "user", "content": [{"type": "text", "text": "查支付延迟"}]},
         {"role": "assistant", "content": [
             {"type": "thinking", "thinking": "先看日志"},                              # 思考 滤
             {"type": "text", "text": "我先查日志"},
@@ -209,47 +250,15 @@ def test_agui_project_transcript_filters_tool_noise():
         ]},
         {"role": "assistant", "content": [{"type": "tool_call", "id": "c2", "name": "x", "input": "{}"}]},  # 无文本 跳过
     ]}
-    assert project_transcript(state) == [
-        {"role": "user", "content": "查支付延迟"},
-        {"role": "assistant", "content": "我先查日志\n根因是连接池饱和"},
+    assert project_transcript(state, "run-test") == [
+        {"id": "msg-user", "role": "user", "content": "查支付延迟"},
+        {"id": "history-run-test-2", "role": "assistant", "content": "我先查日志\n根因是连接池饱和"},
     ]
-    assert project_transcript(None) == [] and project_transcript({}) == []
-
-
-def test_agui_connect_replays_history_snapshot(client):
-    """connect/resume（空 messages，CopilotKit v2 挂载时 setMessages([]) 后 POST）→ 不启动 task，
-    回放已持久化 AgentState 的历史对话为 MESSAGES_SNAPSHOT（重进会话看到历史）。直接种 state 保 runtime 无关。"""
-    import asyncio
-
-    from infra.repositories import agent_session_states, runs
-
-    instance = create_instance(client)
-    run = create_run(client, instance["instance_id"])
-
-    async def seed() -> None:
-        r = await runs.get_run(run["agent_run_id"])
-        await agent_session_states.upsert_state_json(str(r["framework_session_id"]), {"context": [
-            {"role": "user", "content": [{"type": "text", "text": "历史提问A"}]},
-            {"role": "assistant", "content": [{"type": "text", "text": "历史回复B"}]},
-        ]}, "main")
-
-    asyncio.run(seed())
-
-    connect_body = {"threadId": "th", "runId": f"c_{time.time_ns()}", "state": {},
-                    "messages": [], "tools": [], "context": [], "forwardedProps": {}}
-    evs = _collect_events(client, run["agent_run_id"], connect_body)
-    types = [e["type"] for e in evs]
-    assert types[0] == "RUN_STARTED" and types[-1] == "RUN_FINISHED"
-    snap = next(e for e in evs if e["type"] == "MESSAGES_SNAPSHOT")
-    assert [(m["role"], m["content"]) for m in snap["messages"]] == [
-        ("user", "历史提问A"), ("assistant", "历史回复B"),
-    ]
-    assert all("id" in m for m in snap["messages"])  # AG-UI Message 必填 id
+    assert project_transcript(None, "run-test") == [] and project_transcript({}, "run-test") == []
 
 
 def test_agui_messages_endpoint_returns_transcript(client):
-    """GET /agent-runs/{id}/messages（B1 前端拉历史用，绕开 CopilotKit connect）：返回投影 transcript；
-    空 run 返回 []；跨用户 403。"""
+    """runner 的持久恢复接口返回稳定消息；空/closed run 可读，跨用户不可读。"""
     import asyncio
 
     from infra.repositories import agent_session_states, runs
@@ -264,7 +273,7 @@ def test_agui_messages_endpoint_returns_transcript(client):
     async def seed() -> None:
         r = await runs.get_run(rid)
         await agent_session_states.upsert_state_json(str(r["framework_session_id"]), {"context": [
-            {"role": "user", "content": [{"type": "text", "text": "问题X"}]},
+            {"id": "msg-user-x", "role": "user", "content": [{"type": "text", "text": "问题X"}]},
             {"role": "assistant", "content": [
                 {"type": "tool_call", "id": "c", "name": "n", "input": "{}"},  # 工具噪声滤掉
                 {"type": "text", "text": "回答Y"}]},
@@ -272,7 +281,14 @@ def test_agui_messages_endpoint_returns_transcript(client):
 
     asyncio.run(seed())
     got = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=USER_HEADERS))
-    assert got == [{"role": "user", "content": "问题X"}, {"role": "assistant", "content": "回答Y"}]
+    assert got == [
+        {"id": "msg-user-x", "role": "user", "content": "问题X"},
+        {"id": f"history-{rid}-1", "role": "assistant", "content": "回答Y"},
+    ]
+
+    # 终态会话仍由同一接口恢复历史。
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{rid}:close", headers=USER_HEADERS, json={}))
+    assert unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=USER_HEADERS)) == got
 
     # 跨用户 403（owned_run 守卫）
     assert client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=OTHER_HEADERS).status_code == 403

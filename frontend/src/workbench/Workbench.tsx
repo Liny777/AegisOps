@@ -110,6 +110,7 @@ export function Workbench({
   const [agentName, setAgentName] = useState<string | null>(null);   // /state 的 instance.instance_name
   const [initializationIssue, setInitializationIssue] = useState<WorkbenchRecoveryIssue | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
+  const [copilotConnectionGeneration, setCopilotConnectionGeneration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [taskId, setTaskId] = useState<string | null>(null);
@@ -705,7 +706,7 @@ export function Workbench({
     </div>
   );
 
-  const copilotChat = runId && runStatus !== "closed" ? (
+  const copilotChat = runId ? (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
       {rca ? (
         <div className="oa-chat-rca-dock" style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, background: color.pageBg }}>
@@ -717,21 +718,24 @@ export function Workbench({
       <CopilotChatPanel
         runId={runId}
         instanceId={effectiveInstanceId}
+        readOnly={runStatus === "closed"}
         blocked={workbenchInputBlocked}
         blockedMessage={failedCurrentTarget ? "目标会话恢复失败，请使用上方“重试”后再继续" : undefined}
         autoQuestion={autoQuestion}
         onAutoSent={() => setAutoQuestion(null)}
         onOpenOps={handleOpenOpsEvent}
+        onRetryConnection={() => setCopilotConnectionGeneration((generation) => generation + 1)}
       />
-      {shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
+      {runStatus === "active" && shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
         ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
         : null}
     </div>
   ) : fallbackChat;
 
-  const chatSurface = USE_COPILOT_CHAT ? (
-    <CopilotErrorBoundary resetKey={runId ?? targetKey}>
-      <CopilotWorkbenchProvider>{copilotChat}</CopilotWorkbenchProvider>
+  const copilotProviderKey = `${runId ?? targetKey}:${copilotConnectionGeneration}`;
+  const chatSurface = USE_COPILOT_CHAT && runId ? (
+    <CopilotErrorBoundary resetKey={copilotProviderKey}>
+      <CopilotWorkbenchProvider key={copilotProviderKey}>{copilotChat}</CopilotWorkbenchProvider>
     </CopilotErrorBoundary>
   ) : fallbackChat;
   return (

@@ -343,7 +343,7 @@ test("recent_events 缺少最新 task 身份时不猜测助手历史", () => {
   ]);
 });
 
-test("Copilot 输入只在共享 Agent 已绑定本次 commit 的 Run 后开放", () => {
+test("Copilot 输入只在当前 Provider Agent 已绑定本次 commit 的 Run 后开放", () => {
   const agent: { threadId?: string } = { threadId: "run-old" };
   assert.equal(isCopilotThreadReady("run-new", "run-new", agent.threadId), false);
 

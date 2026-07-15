@@ -6,13 +6,12 @@
 // 发送按钮两态/停止（原生）：运行中变停止 → abort 流 → 后端断流取消桥停任务。
 // RCA/HITL 卡与活动栏不在本组件渲染；本组件把同流 CUSTOM 事件桥接给 Workbench，
 // 再与备用 SSE、/state 和审计分页统一去重投影（30.4 三层模型不变）。
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
 import { CopilotChat, CopilotKit, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
-import type { Message } from "@ag-ui/core";
 import "@copilotkit/react-core/v2/styles.css";
 import "./CopilotChatPanel.css";
 
-import { api, demoIdentity } from "../../lib/api";
+import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
@@ -53,14 +52,18 @@ function identityHeaders(): Record<string, string> {
 export function CopilotChatPanel({
   runId,
   instanceId,
+  readOnly = false,
   blocked = false,
   blockedMessage,
   autoQuestion,
   onAutoSent,
   onOpenOps,
+  onRetryConnection,
 }: {
   runId: string;
   instanceId: string;
+  /** closed run 仍使用同一 CopilotChat，只把官方 input slot 替换为只读提示。 */
+  readOnly?: boolean;
   /** URL 已切换但新 Run 尚未完成状态恢复时，旧 composer 必须真正不可输入。 */
   blocked?: boolean;
   /** 切换失败时解释为何旧会话仍不可输入。 */
@@ -70,14 +73,28 @@ export function CopilotChatPanel({
   onAutoSent?: () => void;
   /** 官方 CopilotChat 所消费的同一条 AG-UI 流中的 openops.* CUSTOM 事件。 */
   onOpenOps?: (event: OpenOpsEvent) => void;
+  /** connect 恢复失败时重挂当前 run 的 Provider。 */
+  onRetryConnection?: () => void;
 }) {
+  const [connectionStatus, setConnectionStatus] = useState<"connecting" | "ready" | "error">(
+    "connecting",
+  );
+  const handleConnected = useCallback(
+    () => setConnectionStatus((current) => (current === "error" ? current : "ready")),
+    [],
+  );
+
   return (
-    <CopilotThreadGate runId={runId} blocked={blocked} blockedMessage={blockedMessage}>
+    <CopilotThreadGate
+      runId={runId}
+      blocked={blocked}
+      blockedMessage={blockedMessage}
+      connectionStatus={connectionStatus}
+      onRetryConnection={onRetryConnection}
+    >
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
-      {/* 历史对话：重进会话时 CopilotKit v2 的 connect 走 sidecar 内存回放、拿不到历史；这里 REST 拉后端
-          transcript 注入 CopilotChat 自己的 agent.messages，让历史与实时对话渲染成同一条会话（一个滚动区/
-          一个输入框），用户在历史下面接着聊、新一轮正常追加。放在 CopilotChat 之前使其订阅先于 connect 附着。 */}
-      <CopilotHistoryInjector runId={runId} />
+      {/* 先于 CopilotChat 订阅 connect 首帧/终态，恢复开始前 composer 始终不可用。 */}
+      <CopilotConnectMonitor onConnected={handleConnected} />
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         <CopilotChat
@@ -87,9 +104,17 @@ export function CopilotChatPanel({
           className="copilot-chat-panel"
           messageView={OPENOPS_MESSAGE_VIEW}
           welcomeScreen={false}
+          input={readOnly ? CLOSED_INPUT_SLOT : undefined}
+          onError={() =>
+            setConnectionStatus((current) => (current === "ready" ? current : "error"))
+          }
         />
-        <CopilotSkillSlash instanceId={instanceId} />
-        {autoQuestion && onAutoSent && shouldMountCopilotAutoSend(blocked, autoQuestion, true) ? (
+        {!readOnly ? <CopilotSkillSlash instanceId={instanceId} /> : null}
+        {!readOnly && autoQuestion && onAutoSent && shouldMountCopilotAutoSend(
+          blocked || connectionStatus !== "ready",
+          autoQuestion,
+          true,
+        ) ? (
           <CopilotAutoSend question={autoQuestion} threadId={runId} agentId={AGENT_ID} onSent={onAutoSent} />
         ) : null}
       </div>
@@ -97,74 +122,66 @@ export function CopilotChatPanel({
   );
 }
 
-/**
- * 历史对话注入器（B1，无缝版）：进入/重开一个 run 时 REST 拉后端 transcript，注入 CopilotChat 自己的
- * `agent.messages`，让历史与实时对话渲染成同一条会话（一个滚动区/一个输入框），用户在历史下面接着聊、
- * 新一轮正常追加（runAgent 发全量 messages、从不清空）。渲染器为 null，不占布局。
- *
- * 难点：v2 的 `<CopilotChat threadId>` 挂载即 connect，fresh-restore 时 `agent.setMessages([])` 清空
- * （sidecar InMemoryAgentRunner 内存 miss 返回空流）。用 `onRunFinalized`（connect run 结束、清空已发生）
- * 作门、按 threadId 只注一次：同 threadId 后续 connect 不再清、runAgent 也不清，故注入存活；历史晚于
- * connect 结束才到则用 finalized 标记补注；切 runId 时对新 thread 的 connect 再注入。
- */
-function CopilotHistoryInjector({ runId }: { runId: string }) {
+function CopilotConnectMonitor({ onConnected }: { onConnected: () => void }) {
   const { agent } = useAgent({ agentId: AGENT_ID });
-  const [mapped, setMapped] = useState<Message[]>([]);
-  const injectedFor = useRef<string | null>(null);
-  const finalized = useRef<Set<string>>(new Set());
-
   useEffect(() => {
-    const ac = new AbortController();
-    setMapped([]);
-    injectedFor.current = null;
-    api.getMessages(runId, { signal: ac.signal })
-      .then((h) =>
-        setMapped(
-          (Array.isArray(h) ? h : []).map((m, i) => ({ id: `hist-${runId}-${i}`, role: m.role, content: m.content }) as Message),
-        ),
-      )
-      .catch(() => undefined); // 拉不到历史不阻断聊天
-    return () => ac.abort();
-  }, [runId]);
-
-  useEffect(() => {
-    const inject = () => {
-      // 只注入当前 thread、且每 thread 只一次；空历史不动
-      if (agent.threadId !== runId || injectedFor.current === runId || mapped.length === 0) return;
-      // 一般化：历史在前；connect/实时已产出的消息去重接在后（sidecar miss 时 messages 为空 → 就是纯历史）
-      const seen = new Set(mapped.map((m) => m.id));
-      const tail = agent.messages.filter((m) => !seen.has(m.id));
-      agent.setMessages([...mapped, ...tail]);
-      injectedFor.current = runId;
-    };
     const sub = agent.subscribe({
+      onRunStartedEvent() {
+        // Active runs keep their connect stream open until the task ends. The
+        // first replayed event proves attachment succeeded; waiting for final
+        // would hide all live progress behind the recovery gate.
+        onConnected();
+      },
       onRunFinalized() {
-        finalized.current.add(agent.threadId ?? "");
-        inject();
+        onConnected();
       },
     });
-    // 历史晚到、而该 thread 的 connect 已 finalize（不会再 fire）→ 立即补注
-    if (finalized.current.has(runId)) inject();
     return () => sub.unsubscribe();
-  }, [agent, runId, mapped]);
+  }, [agent, onConnected]);
 
   return null;
 }
 
+function ClosedConversationInput() {
+  return (
+    <div
+      data-testid="closed-conversation-readonly"
+      style={{
+        flex: "0 0 auto",
+        padding: "14px 24px 18px",
+        textAlign: "center",
+        color: "#788192",
+        fontSize: 12.5,
+        background: "#f7f8fa",
+      }}
+    >
+      会话已关闭：只读查看历史与审计，不能再启动新任务。
+    </div>
+  );
+}
+
+const CLOSED_INPUT_SLOT = {
+  children: () => <ClosedConversationInput />,
+};
+
 /**
- * Provider 常驻时所有历史会话共享同一个 AbstractAgent。CopilotChat 自身在 passive effect
- * 才写 `agent.threadId`，所以 Run 刚切换的一帧内输入可能仍发往旧 Run。这里在 layout phase
- * 先同步绑定，并在该次 commit 确认前把整个 composer 设为 inert；不重挂 Provider。
+ * 每个 Provider 只服务一个 run，但 CopilotChat 仍要到 passive effect 才写
+ * `agent.threadId`。这里在 layout phase 先同步绑定，并在该次 commit 与首次 connect
+ * 都确认前把 composer 设为 inert。
  */
 function CopilotThreadGate({
   runId,
   blocked,
   blockedMessage,
+  connectionStatus,
+  onRetryConnection,
   children,
 }: {
   runId: string;
   blocked: boolean;
   blockedMessage?: string;
+  connectionStatus: "connecting" | "ready" | "error";
+  onRetryConnection?: () => void;
   children: ReactNode;
 }) {
   const { agent } = useAgent({ agentId: AGENT_ID });
@@ -190,7 +207,9 @@ function CopilotThreadGate({
   const registeredAgent = copilotkit.getAgent(AGENT_ID) === agent;
   const ready = registeredAgent &&
     committedBinding?.agent === agent &&
+    connectionStatus === "ready" &&
     isCopilotThreadReady(runId, committedBinding.runId, agent.threadId, blocked);
+  const connectFailed = connectionStatus === "error" && !blockedMessage;
   return (
     <div
       data-testid="copilot-thread-gate"
@@ -207,12 +226,25 @@ function CopilotThreadGate({
       </div>
       {!ready ? (
         <div
-          role="status"
+          role={connectFailed ? "alert" : "status"}
           aria-live="polite"
-          data-testid={blockedMessage ? "copilot-thread-blocked" : undefined}
+          data-testid={connectFailed ? "agent-connect-failed" : blockedMessage ? "copilot-thread-blocked" : undefined}
           style={{ position: "absolute", inset: 0, zIndex: 30, display: "grid", placeItems: "center", background: "rgba(247,248,250,.72)", color: "#788192", fontSize: 12.5 }}
         >
-          {blockedMessage ?? "正在绑定会话…"}
+          {connectFailed ? (
+            <div style={{ textAlign: "center" }}>
+              <div>会话历史恢复失败，请重试。</div>
+              {onRetryConnection ? (
+                <button
+                  type="button"
+                  onClick={onRetryConnection}
+                  style={{ marginTop: 10, border: "1px solid #ccd3df", borderRadius: 7, background: "#fff", padding: "6px 12px", cursor: "pointer" }}
+                >
+                  重试恢复
+                </button>
+              ) : null}
+            </div>
+          ) : blockedMessage ?? (connectionStatus === "connecting" ? "正在恢复会话…" : "正在绑定会话…")}
         </div>
       ) : null}
     </div>
@@ -220,9 +252,9 @@ function CopilotThreadGate({
 }
 
 /**
- * One provider for the entire AppShell lifetime. `threadId` belongs to
- * CopilotChat, so changing history entries no longer repeats runtime-info or
- * recreates the provider.
+ * One provider per resolved run. Workbench keys this component by runId (plus
+ * an explicit retry generation), so messages/state can never leak across
+ * conversation lifecycles.
  */
 export function CopilotWorkbenchProvider({ children }: { children: ReactNode }) {
   return (

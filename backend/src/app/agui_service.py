@@ -3,7 +3,8 @@
 三层模型（30.4）：
 - AG-UI 标准事件（RUN_STARTED / TEXT_MESSAGE_* / TOOL_CALL_* / RUN_FINISHED / RUN_ERROR）承载对话主区；
 - `openops.*` 自定义事件原样以 CUSTOM(name=event_type, value=envelope) 透传，驱动活动线 / RCA 卡 / ASK 卡；
-- 断线 / 刷新恢复仍以 `GET /agent-runs/{id}/state` 为准 —— 本流不回放历史，只送本次 task 起的新事件。
+- 本流只送本次 task 的新事件；断线 / 刷新由 sidecar `/connect` 优先回放内存事件，内存 miss 再读
+  `GET /agent-runs/{id}/messages` 的持久 transcript。
 
 wire 契约对齐 @ag-ui/client(0.0.56)：POST RunAgentInput(threadId/runId/messages/...)，
 响应 text/event-stream，每条 `data: {json}`，字段 camelCase（messageId/delta/toolCallId/toolCallName…）。
@@ -43,14 +44,16 @@ def _last_user_text(body: dict[str, Any]) -> str:
     return ""
 
 
-def project_transcript(state_json: dict[str, Any] | None) -> list[dict[str, str]]:
-    """AgentState.model_dump() → 用户可见对话 [{role, content}]。
+def project_transcript(state_json: dict[str, Any] | None, run_id: str) -> list[dict[str, str]]:
+    """AgentState.model_dump() → 带稳定消息 ID 的用户可见对话。
 
     对话历史在 AgentState.context（list[Msg]）；只取 user/assistant 两种 role，content blocks 里只留
     TextBlock（type=="text"），丢弃 thinking / tool_call / tool_result / hint / data（工具噪声不进 transcript）。
+    AgentScope 2.x 的 Msg.id 会随 AgentState 持久化；兼容缺 id 的旧数据时，用 run + context 序号生成
+    稳定 fallback，保证 CopilotKit 重连时可以按 id 正确替换而非重复追加。
     """
     out: list[dict[str, str]] = []
-    for m in (state_json or {}).get("context", []) or []:
+    for index, m in enumerate((state_json or {}).get("context", []) or []):
         role = m.get("role")
         if role not in ("user", "assistant"):
             continue
@@ -59,7 +62,8 @@ def project_transcript(state_json: dict[str, Any] | None) -> list[dict[str, str]
             if isinstance(b, dict) and b.get("type") == "text"
         )
         if text.strip():
-            out.append({"role": role, "content": text})
+            message_id = str(m.get("id") or f"history-{run_id}-{index}")
+            out.append({"id": message_id, "role": role, "content": text})
     return out
 
 
@@ -69,22 +73,16 @@ async def _load_transcript(run_id: str) -> list[dict[str, str]]:
     if not run:
         return []
     state = await agent_session_states.get_state_json(str(run["framework_session_id"]), "main")
-    return project_transcript(state)
+    return project_transcript(state, run_id)
 
 
 async def start(user: dict[str, Any], run_id: str, body: dict[str, Any]) -> dict[str, Any]:
-    """校验 + 订阅事件通道 + 启动 task（在流开始前完成，错误走标准错误 envelope）。
-
-    connect/resume（CopilotKit v2 挂载 <CopilotChat> 时先 setMessages([]) 再 POST /connect，messages 为空）
-    落在「无用户文本」分支：不启动 task，改回放该会话历史为 MESSAGES_SNAPSHOT（重进页面看到历史对话）。
-    """
+    """校验 + 订阅事件通道 + 启动 task（在流开始前完成，错误走标准错误 envelope）。"""
     text = _last_user_text(body)
-    thread_id = str(body.get("threadId") or run_id)
     agui_run_id = str(body.get("runId") or uuid.uuid4())
     if not text:
-        return {"mode": "connect", "run_id": run_id, "thread_id": thread_id,
-                "agui_run_id": agui_run_id, "history": await _load_transcript(run_id)}
-    q, _replay, _ = events.subscribe(run_id, None)  # 只订阅新事件（历史恢复走 /state）
+        raise ApiError(Err.VALIDATION_FAILED, "RunAgentInput.messages 缺少用户文本")
+    q, _replay, _ = events.subscribe(run_id, None)  # 只订阅新事件（历史恢复走 runner /connect）
     try:
         task = await run_state_service.start_task(
             user, run_id, _TaskReq(client_request_id=f"agui_{agui_run_id}", input_text=text)
@@ -133,18 +131,29 @@ def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
     t.add_done_callback(_cancel_tasks.discard)
 
 
+async def _await_terminal_persistence(ctx: dict[str, Any]) -> None:
+    """终态 AG-UI 帧必须晚于 runtime finally 中的 AgentState 回写。
+
+    AgentScope 先 publish task.* 事件，再在 run_task.finally 持久化 state。若这里立即发
+    RUN_FINISHED/RUN_ERROR，用户在完成瞬间刷新可能先命中空 transcript。等待同一个 orchestrator
+    收口即可关闭这个窗口；mock runtime 没有 AgentState，但同样安全地等待任务结束。
+    """
+    st = task_registry.get_by_task(ctx["task_id"])
+    orchestrator = st.orchestrator if st is not None else None
+    if orchestrator is None or orchestrator.done() or orchestrator is asyncio.current_task():
+        return
+    try:
+        await asyncio.shield(orchestrator)
+    except asyncio.CancelledError:
+        # 任务自身取消属于 cancelled 终态；若是当前 stream 被取消则继续向上传播。
+        if not orchestrator.cancelled():
+            raise
+    except Exception:  # runtime 已负责发 failed/log；不要用持久化等待覆盖原终态帧
+        pass
+
+
 async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
     """事件翻译主循环：openops.* → AG-UI；task 终态 → RUN_FINISHED / RUN_ERROR。"""
-    if ctx.get("mode") == "connect":
-        # connect/resume：回放历史对话为 MESSAGES_SNAPSHOT（CopilotChat 挂载后原生渲染），不启动 task。
-        # 空历史（全新会话首次挂载）→ 空快照，聊天区保持空态。
-        yield _sse({"type": "RUN_STARTED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
-        yield _sse({"type": "MESSAGES_SNAPSHOT", "messages": [
-            {"id": f"hist-{i}", "role": m["role"], "content": m["content"]}
-            for i, m in enumerate(ctx["history"])
-        ]})
-        yield _sse({"type": "RUN_FINISHED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
-        return
     q: asyncio.Queue[dict[str, Any]] = ctx["queue"]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + HARD_TIMEOUT_S
@@ -198,6 +207,7 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                     yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": conclusion})
                     yield text_end(mid)
                 yield _sse({"type": "CUSTOM", "name": et, "value": e})
+                await _await_terminal_persistence(ctx)
                 yield _sse({"type": "RUN_FINISHED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
                 return
             if et == "openops.task.cancelled":
@@ -206,6 +216,7 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": str(e.get("message") or "任务已取消")})
                 yield text_end(mid)
                 yield _sse({"type": "CUSTOM", "name": et, "value": e})
+                await _await_terminal_persistence(ctx)
                 yield _sse({"type": "RUN_FINISHED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
                 return
 
@@ -244,6 +255,7 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 err: dict[str, Any] = {"type": "RUN_ERROR", "message": fail_text}
                 if e.get("reason_code"):
                     err["code"] = str(e["reason_code"])  # zod optional：无值时不带 key
+                await _await_terminal_persistence(ctx)
                 yield _sse(err)
                 return
             elif et == "openops.run.closed":

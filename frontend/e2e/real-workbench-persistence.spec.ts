@@ -85,4 +85,54 @@ test.describe("真实 AG-UI 会话常驻", () => {
     await expect(page.getByRole("button", { name: "重试" })).toBeVisible();
     await expect(page.getByText(/当前使用：支付域感知快恢/)).toHaveCount(0);
   });
+
+  test("closed run 重开仍在同一聊天区显示历史且没有输入框", async ({ page, browser }, testInfo) => {
+    test.setTimeout(180_000);
+    const question = `closed-只读恢复-${Date.now()}`;
+
+    await page.goto("./");
+    await expect(page.getByText("实时", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("new-conversation").click();
+    await page.waitForURL(/\/agent-teams\/[^/]+\/chat\?run_id=/, { timeout: 30_000 });
+    const runId = new URL(page.url()).searchParams.get("run_id");
+    expect(runId).toBeTruthy();
+    await expect(page.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+      timeout: 30_000,
+    });
+
+    const input = page.locator(".copilot-chat-panel textarea");
+    await input.fill(question);
+    await input.press("Enter");
+    await expect(page.getByText(question, { exact: true })).toHaveCount(1);
+
+    // 终止仍在运行的验收任务，等待 AgentState 终态回写后再关闭会话。
+    const cancelTask = page.getByRole("button", { name: "取消任务" });
+    if (await cancelTask.isVisible()) await cancelTask.click();
+    await expect.poll(async () => {
+      const health = await fetch("http://127.0.0.1:4002/healthz").then((response) => response.json()) as {
+        activity: { activeUpstreamRuns: number };
+      };
+      return health.activity.activeUpstreamRuns;
+    }, { timeout: 60_000 }).toBe(0);
+
+    await page.getByRole("button", { name: "关闭会话" }).click();
+    await expect(page.getByTestId("closed-conversation-readonly")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".copilot-chat-panel textarea")).toHaveCount(0);
+    await expect(page.getByText(question, { exact: true })).toHaveCount(1);
+
+    // 新浏览器上下文验证关页重开，而非仅依赖当前 React 树。
+    const reopenedContext = await browser.newContext({ baseURL: String(testInfo.project.use.baseURL) });
+    try {
+      const reopened = await reopenedContext.newPage();
+      await reopened.goto(`./agent-runs/${runId}`);
+      await expect(reopened.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+        timeout: 30_000,
+      });
+      await expect(reopened.getByTestId("closed-conversation-readonly")).toBeVisible();
+      await expect(reopened.locator(".copilot-chat-panel textarea")).toHaveCount(0);
+      await expect(reopened.getByText(question, { exact: true })).toHaveCount(1);
+    } finally {
+      await reopenedContext.close();
+    }
+  });
 });
