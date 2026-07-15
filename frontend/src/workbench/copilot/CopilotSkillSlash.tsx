@@ -69,7 +69,9 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
   const pick = (s: Skill) => {
     const ta = taRef.current;
     if (!ta || !NATIVE_SETTER) return;
-    NATIVE_SETTER.call(ta, `/${s.name} `);
+    // s.name 已含前导 "/"（getAvailableSkills/mock 约定，同 workbench Composer）——不得再加，
+    // 否则写成 "//skill"，模型只认 "/<skill>" 开头 → 不会触发 run_platform_skill（skill 不执行）
+    NATIVE_SETTER.call(ta, `${s.name} `);
     ta.dispatchEvent(new Event("input", { bubbles: true }));
     ta.focus();
     setOpen(false);
@@ -83,7 +85,7 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
           style={{ padding: "8px 12px", cursor: "pointer", display: "flex", gap: 8, alignItems: "baseline" }}
           onMouseEnter={(e) => ((e.currentTarget.style.background = "#f5f8ff"))}
           onMouseLeave={(e) => ((e.currentTarget.style.background = "transparent"))}>
-          <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, fontWeight: 650, color: color.brand }}>/{s.name}</span>
+          <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 12.5, fontWeight: 650, color: color.brand }}>{s.name}</span>
           <span style={{ fontSize: 12, color: color.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.desc}</span>
         </div>
       ))}
