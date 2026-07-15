@@ -40,8 +40,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         return {"skipped": True}
     _last_run["at"] = time.monotonic()
     summary: dict[str, Any] = {
-        "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "mcps_created": 0,
-        "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
+        "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "skill_manifests_refreshed": 0,
+        "mcps_created": 0, "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
         # ---- Skill Hub（ASSET-001：只 source=openops） ----
@@ -67,6 +67,17 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                     manifest, s["checksum_sha256"], "system",
                 )
                 summary["skill_versions_added"] += 1
+            else:
+                # checksum 未变→不新增版本；但若现有 manifest 缺/旧 semver（改动前的旧行、或 SkillHub 侧改了
+                # latest_version/category）→ 原地合并回填展示元数据，让存量 skill 也能显示 semver（非新版本）
+                cur = latest.get("manifest_json") or {}
+                if (cur.get("latest_version") != s.get("latest_version")
+                        or cur.get("category") != s.get("category")):
+                    await assets.update_skill_version_manifest(
+                        str(latest["skill_version_id"]),
+                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category")},
+                    )
+                    summary["skill_manifests_refreshed"] += 1
 
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
