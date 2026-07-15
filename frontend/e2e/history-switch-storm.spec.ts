@@ -395,7 +395,8 @@ test.describe("真实历史会话快速切换", () => {
       timeout: 15_000,
     });
     await expect(page.getByTestId("workbench-switch-overlay")).toHaveCount(0, { timeout: 15_000 });
-    await expect(page.getByText(question, { exact: true })).toHaveCount(0);
+    // 侧栏会把首条问题作为会话标题显示；隔离断言只能检验聊天消息区。
+    await expect(page.locator(".oa-chat-user-message").getByText(question, { exact: true })).toHaveCount(0);
     // 离开源 Run 只脱离浏览器消费者；底层任务仍继续，且不得隐式发 stop。
     await new Promise((resolve) => setTimeout(resolve, 700));
     expect((await readSidecarHealth()).activity.activeUpstreamRuns).toBeGreaterThan(0);

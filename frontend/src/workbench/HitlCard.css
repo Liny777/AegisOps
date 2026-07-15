@@ -1,0 +1,79 @@
+.oa-hitl-card {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.oa-hitl-card *,
+.oa-hitl-card *::before,
+.oa-hitl-card *::after {
+  box-sizing: border-box;
+}
+
+.oa-hitl-card-grid {
+  grid-template-columns: 28px minmax(0, 1fr);
+  min-width: 0;
+}
+
+.oa-hitl-card-content,
+.oa-hitl-heading,
+.oa-hitl-fact {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.oa-hitl-title,
+.oa-hitl-tool,
+.oa-hitl-summary,
+.oa-hitl-fact-label,
+.oa-hitl-fact-value,
+.oa-hitl-result {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.oa-hitl-tool {
+  min-width: 0;
+  white-space: normal;
+}
+
+.oa-hitl-countdown {
+  flex: 0 1 auto;
+  min-width: 0;
+  margin-left: auto;
+  overflow-wrap: anywhere;
+}
+
+.oa-hitl-reason {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 54px;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: pre-wrap;
+  resize: vertical;
+}
+
+.oa-hitl-actions {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.oa-hitl-result {
+  display: flex;
+  width: fit-content;
+  min-width: 0;
+  white-space: normal;
+}
+
+.oa-hitl-result > i,
+.oa-hitl-result > svg {
+  flex: 0 0 auto;
+}
+

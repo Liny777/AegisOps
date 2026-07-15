@@ -170,6 +170,40 @@ async def test_tool_005_user_mcp_no_platform_headers(quiet_emit):
     assert "Cookie" not in headers and "Authorization" not in headers
 
 
+async def test_tool_005b_call_lifecycle_has_one_stable_correlation_id(quiet_emit):
+    """一次调用的 started/succeeded 共享 ID，且不同调用不会复用。"""
+    st = _st(annotations={})
+    await tool_gateway.invoke(st, _RUN, "user_custom_tool", {"q": "first"}, source_type="user")
+    await tool_gateway.invoke(st, _RUN, "user_custom_tool", {"q": "second"}, source_type="user")
+
+    lifecycle = [
+        event for event in quiet_emit
+        if event["event_type"] in ("openops.tool.call.started", "openops.tool.call.succeeded")
+    ]
+    ids = [event["payload"]["tool_call_id"] for event in lifecycle]
+    assert ids[0] == ids[1]
+    assert ids[2] == ids[3]
+    assert ids[0] != ids[2]
+
+
+async def test_tool_005c_failed_call_reuses_started_correlation_id(quiet_emit, monkeypatch):
+    async def fail_call(*_args, **_kwargs):
+        raise RuntimeError("tool failed")
+
+    monkeypatch.setattr(http_mcp_client, "call_tool", fail_call)
+    with pytest.raises(RuntimeError, match="tool failed"):
+        await tool_gateway.invoke(_st(annotations={}), _RUN, "user_custom_tool", {}, source_type="user")
+
+    lifecycle = [
+        event for event in quiet_emit
+        if event["event_type"] in ("openops.tool.call.started", "openops.tool.call.failed")
+    ]
+    assert [event["event_type"] for event in lifecycle] == [
+        "openops.tool.call.started", "openops.tool.call.failed",
+    ]
+    assert lifecycle[0]["payload"]["tool_call_id"] == lifecycle[1]["payload"]["tool_call_id"]
+
+
 async def test_tool_006_secret_required_order_and_no_leak(quiet_emit, monkeypatch):
     ann = {"tool_x": {"is_approval_required": False, "is_secret_required": True,
                       "scope_mode": "none", "appid_arg_path": None, "status": "allowed", "blocked_reason": None}}

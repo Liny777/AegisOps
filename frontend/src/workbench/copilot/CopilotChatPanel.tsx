@@ -16,6 +16,8 @@ import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
+import { MermaidFullscreenBoundary } from "./MermaidFullscreenBoundary";
+import { OpenOpsChatMessageView } from "./OpenOpsChatMessageView";
 import {
   bindCopilotThread,
   isCopilotThreadReady,
@@ -23,24 +25,6 @@ import {
 } from "./threadBinding";
 
 const AGENT_ID = "sre-agent";
-
-// CopilotKit v2 官方 slots：项目样式只依赖这些 OpenOps class，不绑定 cpk:* 内部实现。
-// 对象放在组件外保持引用稳定，避免流式输出时 slot 组件被不必要地重新解析。
-const OPENOPS_MESSAGE_VIEW = {
-  className: "oa-chat-message-list",
-  assistantMessage: {
-    className: "oa-chat-message oa-chat-assistant-message",
-    markdownRenderer: { className: "oa-chat-markdown" },
-    toolbar: { className: "oa-chat-toolbar oa-chat-assistant-toolbar" },
-    copyButton: { className: "oa-chat-copy-button" },
-  },
-  userMessage: {
-    className: "oa-chat-message oa-chat-user-message",
-    messageRenderer: { className: "oa-chat-user-content" },
-    toolbar: { className: "oa-chat-toolbar oa-chat-user-toolbar" },
-    copyButton: { className: "oa-chat-copy-button" },
-  },
-};
 
 function identityHeaders(): Record<string, string> {
   return {
@@ -95,16 +79,17 @@ export function CopilotChatPanel({
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
       {/* 先于 CopilotChat 订阅 connect 首帧/终态，恢复开始前 composer 始终不可用。 */}
       <CopilotConnectMonitor onConnected={handleConnected} />
-      <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+      <MermaidFullscreenBoundary>
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         <CopilotChat
+          key={`${runId}:${readOnly ? "readonly" : "active"}`}
           agentId={AGENT_ID}
           threadId={runId}
           autoScroll="pin-to-bottom"
           className="copilot-chat-panel"
-          messageView={OPENOPS_MESSAGE_VIEW}
+          messageView={OpenOpsChatMessageView}
           welcomeScreen={false}
-          input={readOnly ? CLOSED_INPUT_SLOT : undefined}
+          input={readOnly ? CLOSED_INPUT_SLOT : OPENOPS_INPUT_SLOT}
           onError={() =>
             setConnectionStatus((current) => (current === "ready" ? current : "error"))
           }
@@ -117,7 +102,7 @@ export function CopilotChatPanel({
         ) ? (
           <CopilotAutoSend question={autoQuestion} threadId={runId} agentId={AGENT_ID} onSent={onAutoSent} />
         ) : null}
-      </div>
+      </MermaidFullscreenBoundary>
     </CopilotThreadGate>
   );
 }
@@ -125,18 +110,38 @@ export function CopilotChatPanel({
 function CopilotConnectMonitor({ onConnected }: { onConnected: () => void }) {
   const { agent } = useAgent({ agentId: AGENT_ID });
   useEffect(() => {
+    let runningFrame: number | null = null;
+    let finalizedFirstFrame: number | null = null;
+    let finalizedSecondFrame: number | null = null;
+    const scheduleFrame = (callback: () => void) => window.requestAnimationFrame(callback);
     const sub = agent.subscribe({
       onRunStartedEvent() {
-        // Active runs keep their connect stream open until the task ends. The
-        // first replayed event proves attachment succeeded; waiting for final
-        // would hide all live progress behind the recovery gate.
-        onConnected();
+        // 活跃任务的 connect 会持续到任务终态；下一帧仍在运行才放行，以便用户回到
+        // 审批中的会话。空会话会在同一事件批次收到 RUN_FINISHED，此时不放行。
+        runningFrame = scheduleFrame(() => {
+          runningFrame = null;
+          if (agent.isRunning) onConnected();
+        });
       },
       onRunFinalized() {
-        onConnected();
+        // 空 transcript 的 RUN_STARTED → SNAPSHOT → RUN_FINISHED 是同步连续到达的。
+        // 再等两个渲染帧，确保 CopilotChat 自身的 connect finally 已写入最新 Agent，
+        // 避免刚输入就被 StrictMode/connect 收尾重挂清空。
+        finalizedFirstFrame = scheduleFrame(() => {
+          finalizedFirstFrame = null;
+          finalizedSecondFrame = scheduleFrame(() => {
+            finalizedSecondFrame = null;
+            onConnected();
+          });
+        });
       },
     });
-    return () => sub.unsubscribe();
+    return () => {
+      sub.unsubscribe();
+      if (runningFrame !== null) window.cancelAnimationFrame(runningFrame);
+      if (finalizedFirstFrame !== null) window.cancelAnimationFrame(finalizedFirstFrame);
+      if (finalizedSecondFrame !== null) window.cancelAnimationFrame(finalizedSecondFrame);
+    };
   }, [agent, onConnected]);
 
   return null;
@@ -162,6 +167,12 @@ function ClosedConversationInput() {
 
 const CLOSED_INPUT_SLOT = {
   children: () => <ClosedConversationInput />,
+};
+
+// 官方 input slot 注入稳定类名；不绑定 CopilotKit 内部 utility class。
+const OPENOPS_INPUT_SLOT = {
+  className: "oa-chat-input",
+  textArea: { className: "oa-chat-textarea" },
 };
 
 /**

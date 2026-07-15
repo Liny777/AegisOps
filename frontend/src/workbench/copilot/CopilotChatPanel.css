@@ -4,6 +4,42 @@
  * 与 Streamdown 的 data-streamdown 语义属性，避免依赖 vendor 内部类名。
  */
 
+.oa-chat-rich-boundary {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.oa-chat-input {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.oa-chat-input *,
+.oa-chat-input *::before,
+.oa-chat-input *::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.oa-chat-textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: pre-wrap;
+}
+
 .oa-chat-message-list {
   width: min(100%, 760px);
   margin-inline: auto;
@@ -13,8 +49,10 @@
 
 .oa-chat-message {
   min-width: 0;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.52;
+  overflow-x: clip;
 }
 
 .oa-chat-assistant-message,
@@ -32,16 +70,131 @@
 }
 
 .oa-chat-user-content {
+  min-width: 0;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.52;
   padding: 7px 40px 7px 12px;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 
 .oa-chat-markdown {
   min-width: 0;
+  max-width: 100%;
   font-size: 14px;
   line-height: 1.52;
   overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.oa-chat-markdown pre,
+.oa-chat-markdown code {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+.oa-chat-markdown pre {
+  overflow-x: hidden;
+  white-space: pre-wrap;
+}
+
+/* 每轮工具聚合：外框管理折叠，内容继续交给官方 CopilotChatToolCallsView。 */
+.oa-tool-call-group {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 8px;
+  overflow: hidden;
+  background: #f8fafc;
+  border: 1px solid #dfe5ee;
+  border-radius: 11px;
+}
+
+.oa-tool-call-group-toggle {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 9px 11px;
+  color: #344054;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.oa-tool-call-status {
+  width: 8px;
+  height: 8px;
+  background: #12b76a;
+  border-radius: 50%;
+}
+
+.oa-tool-call-status.is-running {
+  background: #1683ff;
+  box-shadow: 0 0 0 3px rgba(22, 131, 255, 0.13);
+  animation: oaToolPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes oaToolPulse {
+  50% { opacity: 0.48; }
+}
+
+.oa-tool-call-group-label {
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.oa-tool-call-group-count {
+  min-width: 0;
+  overflow: hidden;
+  color: #667085;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oa-tool-call-group-chevron {
+  width: 20px;
+  color: #667085;
+  font-size: 17px;
+  line-height: 1;
+  text-align: center;
+}
+
+.oa-tool-call-group-body {
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 10px 10px;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  border-top: 1px solid #e7ebf1;
+}
+
+.oa-tool-call-group-body[hidden] {
+  display: none;
+}
+
+.oa-tool-call-group-body * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.oa-tool-call-group-body pre,
+.oa-tool-call-group-body code {
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: pre-wrap;
 }
 
 .oa-chat-markdown p {
@@ -175,6 +328,132 @@
   border: 1px solid #e6e8ec;
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(20, 24, 31, 0.08);
+}
+
+/* Native Fullscreen：直接复用原 Mermaid 实例，缩放/平移状态和控制条都不重建。 */
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  max-width: none;
+  margin: 0;
+  padding: 18px;
+  overflow: hidden;
+  background: #fff;
+  border: 0;
+  border-radius: 0;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen > div:first-child {
+  flex: 0 0 auto;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen > div:last-child {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  margin: 0;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen [role="application"] {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen [aria-label="Mermaid chart"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
+  max-height: calc(100vh - 80px);
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:fullscreen [aria-label="Mermaid chart"] svg {
+  width: 100%;
+  max-width: 100%;
+  max-height: calc(100vh - 80px);
+}
+
+/* requestFullscreen 不可用/失败时，Streamdown 会创建降级弹层。其无前缀 utility class 在
+   CopilotKit 主题中没有 CSS，按稳定的 Exit 按钮结构补齐 fixed overlay，并隐藏原图。 */
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"]) {
+  box-sizing: border-box;
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2000 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  width: 100vw !important;
+  height: 100vh !important;
+  padding: 16px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.98);
+  backdrop-filter: blur(5px);
+}
+
+/* 虚拟消息项使用 transform 定位，会把 fixed 的 vendor 降级层变成局部定位；仅在降级层存在时
+   解开包含它的祖先 transform/overflow，关闭后 :has 自动失效，不影响正常虚拟滚动。 */
+.oa-chat-rich-boundary:has(button[title="Exit fullscreen"]) {
+  overflow: visible;
+}
+
+.oa-chat-rich-boundary:has(button[title="Exit fullscreen"]) *:has(button[title="Exit fullscreen"]) {
+  overflow: visible !important;
+  contain: none !important;
+  transform: none !important;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"]:has(button[title="Exit fullscreen"])
+  > div:last-child {
+  visibility: hidden;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"])
+  > button[title="Exit fullscreen"] {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"])
+  > [role="presentation"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"])
+  > [role="presentation"] > div,
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"])
+  [aria-label="Mermaid chart"] {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.oa-chat-markdown [data-streamdown="mermaid-block"] div:has(> button[title="Exit fullscreen"])
+  [aria-label="Mermaid chart"] svg {
+  width: 100%;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 48px);
 }
 
 .oa-chat-markdown [data-streamdown="table-wrapper"] button,
@@ -355,5 +634,13 @@
 
   .oa-chat-rca-dock {
     padding: 10px 12px 8px;
+  }
+
+  .oa-tool-call-group-toggle {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .oa-tool-call-group-label {
+    display: none;
   }
 }

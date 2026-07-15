@@ -85,6 +85,104 @@ def test_agui_tool_call_pairing(client):
     assert starts and starts == ends  # 顺序执行、一一配对
 
 
+def test_agui_streams_multiple_deltas_before_finish_without_terminal_duplicate():
+    """模型增量逐条透传；收到过 delta 后 task.completed 的累计结论不能再合成一次。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import events
+
+    async def scenario() -> list[dict]:
+        rid = "run-stream-delta-test"
+        q, _replay, _ = events.subscribe(rid, None)
+        ctx = {
+            "queue": q, "run_id": rid, "task_id": "task-stream", "thread_id": "thread-stream",
+            "agui_run_id": "agui-stream", "user": {},
+        }
+        for delta in ("第一段", "，第二段", "，第三段"):
+            events.publish(rid, events.envelope(
+                rid,
+                "openops.assistant.delta",
+                task_id="task-stream",
+                payload={"delta": delta, "message_id": "assistant-stream"},
+            ))
+        events.publish(rid, events.envelope(
+            rid,
+            "openops.task.completed",
+            task_id="task-stream",
+            message="任务完成",
+            payload={"conclusion": "第一段，第二段，第三段"},
+        ))
+
+        frames: list[dict] = []
+        async for line in agui_service.stream(ctx):
+            if line.startswith("data:"):
+                frame = json.loads(line[5:].strip())
+                frames.append(frame)
+                if frame["type"] == "RUN_FINISHED":
+                    break
+        return frames
+
+    frames = asyncio.run(scenario())
+    deltas = [frame["delta"] for frame in frames if frame["type"] == "TEXT_MESSAGE_CONTENT"]
+    assert deltas == ["第一段", "，第二段", "，第三段"]
+    assert len([frame for frame in frames if frame["type"] == "TEXT_MESSAGE_START"]) == 1
+    assert frames[-1]["type"] == "RUN_FINISHED"
+
+
+def test_agui_correlates_interleaved_tool_events_by_tool_call_id():
+    """并发工具即使 A/B 启动、A/B 交错完成，也按 payload ID 关联各自结果。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import events
+
+    async def scenario() -> list[dict]:
+        rid = "run-interleaved-tools"
+        q, _replay, _ = events.subscribe(rid, None)
+        ctx = {
+            "queue": q, "run_id": rid, "task_id": "task-tools", "thread_id": "thread-tools",
+            "agui_run_id": "agui-tools", "user": {},
+        }
+        envelopes = [
+            events.envelope(rid, "openops.tool.call.started", task_id="task-tools",
+                            payload={"tool": "tool_a", "tool_call_id": "call-a", "arguments": {"a": 1}}),
+            events.envelope(rid, "openops.tool.call.started", task_id="task-tools",
+                            payload={"tool": "tool_b", "tool_call_id": "call-b", "arguments": {"b": 2}}),
+            events.envelope(rid, "openops.tool.call.succeeded", task_id="task-tools",
+                            payload={"tool": "tool_a", "tool_call_id": "call-a", "result_summary": "result-a"}),
+            events.envelope(rid, "openops.tool.call.failed", task_id="task-tools",
+                            payload={"tool": "tool_b", "tool_call_id": "call-b", "error": "error-b"}),
+            events.envelope(rid, "openops.task.completed", task_id="task-tools",
+                            message="done", payload={"conclusion": "done"}),
+        ]
+        for envelope in envelopes:
+            events.publish(rid, envelope)
+
+        frames: list[dict] = []
+        async for line in agui_service.stream(ctx):
+            if line.startswith("data:"):
+                frame = json.loads(line[5:].strip())
+                frames.append(frame)
+                if frame["type"] == "RUN_FINISHED":
+                    break
+        return frames
+
+    frames = asyncio.run(scenario())
+    assert [frame["toolCallId"] for frame in frames if frame["type"] == "TOOL_CALL_START"] == [
+        "call-a", "call-b",
+    ]
+    assert [frame["toolCallId"] for frame in frames if frame["type"] == "TOOL_CALL_END"] == [
+        "call-a", "call-b",
+    ]
+    results = {
+        frame["toolCallId"]: frame["content"]
+        for frame in frames
+        if frame["type"] == "TOOL_CALL_RESULT"
+    }
+    assert results == {"call-a": "result-a", "call-b": "error-b"}
+
+
 def test_agui_task_failed_synthesizes_chat_bubble(client):
     """任务失败→先合成 TEXT_MESSAGE 失败气泡再发 RUN_ERROR（对齐 completed/cancelled）：
     此前只发 RUN_ERROR，CopilotChat 只渲染 TEXT_MESSAGE_* → 聊天区空白「没响应」（内网 401 教训）。

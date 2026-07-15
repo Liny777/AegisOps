@@ -11,6 +11,8 @@ import { HitlCard } from "../HitlCard";
 import type { HitlCardData } from "../../lib/api/types";
 
 const MAX_W = 760;
+const SAFE_INSET = 12;
+const ANCHOR_GAP = 10;
 
 function composerTextarea(): HTMLTextAreaElement | null {
   return document.querySelector<HTMLTextAreaElement>(".copilot-chat-panel textarea");
@@ -20,7 +22,7 @@ export function CopilotHitlFloat({ hitl, onDecide }: {
   hitl: HitlCardData | undefined;
   onDecide: (d: "approved" | "rejected") => void;
 }) {
-  const [anchor, setAnchor] = useState<{ left: number; bottom: number; width: number } | null>(null);
+  const [anchor, setAnchor] = useState<{ left: number; top: number; width: number } | null>(null);
 
   useEffect(() => {
     if (!hitl) {
@@ -34,8 +36,8 @@ export function CopilotHitlFloat({ hitl, onDecide }: {
         const r = ta.getBoundingClientRect();
         // 同值时返回 prev → React bail-out，不空转重渲染
         setAnchor((prev) => {
-          const next = { left: r.left, bottom: window.innerHeight - r.top + 10, width: r.width };
-          return prev && prev.left === next.left && prev.bottom === next.bottom && prev.width === next.width
+          const next = { left: r.left, top: r.top, width: r.width };
+          return prev && prev.left === next.left && prev.top === next.top && prev.width === next.width
             ? prev : next;
         });
       }
@@ -46,13 +48,18 @@ export function CopilotHitlFloat({ hitl, onDecide }: {
   }, [hitl]);
 
   if (!hitl || !anchor) return null;
-  const width = Math.min(anchor.width, MAX_W);
-  const left = anchor.left + (anchor.width - width) / 2; // 比输入框宽时水平居中对齐
+  const viewportWidth = window.innerWidth;
+  const width = Math.max(0, Math.min(anchor.width, MAX_W, viewportWidth - SAFE_INSET * 2));
+  const idealLeft = anchor.left + (anchor.width - width) / 2;
+  const left = Math.min(Math.max(SAFE_INSET, idealLeft), viewportWidth - SAFE_INSET - width);
+  const bottom = Math.max(SAFE_INSET, window.innerHeight - anchor.top + ANCHOR_GAP);
+  const maxHeight = Math.max(0, window.innerHeight - bottom - SAFE_INSET);
   // 经 portal 挂到 body：CopilotChat 虚拟消息列表容器会建独立层叠上下文，作为其兄弟的浮层
   // （原 zIndex:50）会被内联工具卡盖住。挂 body 后彻底脱离该子树，position:fixed 仍按视口坐标
   // 定位（锚定数学不变），zIndex 压过一切内联渲染，审批卡稳定置顶。
   return createPortal(
-    <div style={{ position: "fixed", left, bottom: anchor.bottom, width, zIndex: 1000,
+    <div className="oa-hitl-float" style={{ position: "fixed", left, bottom, width, maxHeight, zIndex: 1000,
+                  overflowX: "hidden", overflowY: "auto", overscrollBehavior: "contain",
                   boxShadow: "0 12px 32px rgba(20,24,31,.16)", borderRadius: 14 }}>
       <HitlCard key={hitl.approval_request_id + hitl.status} hitl={hitl} onDecide={onDecide} />
     </div>,
