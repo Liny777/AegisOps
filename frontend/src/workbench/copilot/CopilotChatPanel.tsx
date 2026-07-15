@@ -11,8 +11,8 @@ import { CopilotChat, CopilotKit, useAgent, useCopilotKit } from "@copilotkit/re
 import "@copilotkit/react-core/v2/styles.css";
 import "./CopilotChatPanel.css";
 
-import { demoIdentity } from "../../lib/api";
-import type { OpenOpsEvent } from "../../lib/api/types";
+import { api, demoIdentity } from "../../lib/api";
+import type { OpenOpsEvent, TranscriptMessage } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
@@ -74,6 +74,9 @@ export function CopilotChatPanel({
     <CopilotThreadGate runId={runId} blocked={blocked} blockedMessage={blockedMessage}>
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
       <div style={{ position: "relative", flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}>
+        {/* 历史对话：重进会话时 CopilotKit v2 的 connect 走 sidecar 内存回放、拿不到历史，故这里直接
+            REST 拉后端 transcript 自渲染在 live 对话上方（有历史才显示）。 */}
+        <HistoryDock runId={runId} />
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         <CopilotChat
           agentId={AGENT_ID}
@@ -89,6 +92,59 @@ export function CopilotChatPanel({
         ) : null}
       </div>
     </CopilotThreadGate>
+  );
+}
+
+/**
+ * 历史对话 dock（B1）：进入/重开一个 run 时 REST 拉后端 transcript 自渲染，绕开 CopilotKit connect
+ * （v2 的 connect 由 sidecar InMemoryAgentRunner 从进程内存回放，内存 miss 即空流、拿不到历史）。
+ * 只读回放，不进 agent 消息管线（故不会被 CopilotChat 挂载时的 setMessages([]) 清空）；有历史才显示。
+ * 新一轮对话仍由下方 live CopilotChat 承载，下次重开时该轮已并入 state_json → 出现在本 dock。
+ */
+function HistoryDock({ runId }: { runId: string }) {
+  const [history, setHistory] = useState<TranscriptMessage[]>([]);
+
+  useEffect(() => {
+    const ac = new AbortController();
+    setHistory([]);
+    api.getMessages(runId, { signal: ac.signal })
+      .then((msgs) => setHistory(Array.isArray(msgs) ? msgs : []))
+      .catch(() => undefined); // 拉不到历史不阻断聊天
+    return () => ac.abort();
+  }, [runId]);
+
+  if (!history.length) return null;
+  return (
+    <div
+      data-testid="chat-history-dock"
+      style={{ flex: "0 0 auto", maxHeight: "46%", overflowY: "auto", borderBottom: "1px solid #eef0f3", background: "#fbfcfd" }}
+    >
+      <div style={{ width: "min(100%, 760px)", margin: "0 auto", padding: "14px 24px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
+        <div style={{ fontSize: 11.5, color: "#9aa3b0", fontWeight: 600 }}>历史对话</div>
+        {history.map((m, i) => (
+          <HistoryBubble key={`h-${runId}-${i}`} role={m.role} content={m.content} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function HistoryBubble({ role, content }: { role: "user" | "assistant"; content: string }) {
+  const isUser = role === "user";
+  return (
+    <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+      <div
+        style={{
+          maxWidth: "82%", whiteSpace: "pre-wrap", overflowWrap: "anywhere",
+          fontSize: 14, lineHeight: 1.52, color: "#1f2430",
+          padding: isUser ? "8px 12px" : "2px 0",
+          borderRadius: isUser ? 12 : 0,
+          background: isUser ? "#eef2ff" : "transparent",
+        }}
+      >
+        {content}
+      </div>
+    </div>
   );
 }
 

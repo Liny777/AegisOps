@@ -47,6 +47,12 @@ export interface ChatMessage {
   showCopy?: boolean;
 }
 
+/** 历史对话 transcript 条目（B1：重进会话拉历史自渲染，绕开 CopilotKit connect）。后端 project_transcript 投影。 */
+export interface TranscriptMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface Skill {
   skill_id: string;
   name: string; // /slash 名，mono

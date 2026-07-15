@@ -245,3 +245,34 @@ def test_agui_connect_replays_history_snapshot(client):
         ("user", "历史提问A"), ("assistant", "历史回复B"),
     ]
     assert all("id" in m for m in snap["messages"])  # AG-UI Message 必填 id
+
+
+def test_agui_messages_endpoint_returns_transcript(client):
+    """GET /agent-runs/{id}/messages（B1 前端拉历史用，绕开 CopilotKit connect）：返回投影 transcript；
+    空 run 返回 []；跨用户 403。"""
+    import asyncio
+
+    from infra.repositories import agent_session_states, runs
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+
+    # 空会话（无 state）→ []
+    assert unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=USER_HEADERS)) == []
+
+    async def seed() -> None:
+        r = await runs.get_run(rid)
+        await agent_session_states.upsert_state_json(str(r["framework_session_id"]), {"context": [
+            {"role": "user", "content": [{"type": "text", "text": "问题X"}]},
+            {"role": "assistant", "content": [
+                {"type": "tool_call", "id": "c", "name": "n", "input": "{}"},  # 工具噪声滤掉
+                {"type": "text", "text": "回答Y"}]},
+        ]}, "main")
+
+    asyncio.run(seed())
+    got = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=USER_HEADERS))
+    assert got == [{"role": "user", "content": "问题X"}, {"role": "assistant", "content": "回答Y"}]
+
+    # 跨用户 403（owned_run 守卫）
+    assert client.get(f"/api/openops/v1/agent-runs/{rid}/messages", headers=OTHER_HEADERS).status_code == 403

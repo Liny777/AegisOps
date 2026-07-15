@@ -29,6 +29,15 @@ async def state(run_id: str, user: User):
     return ok(await run_state_service.get_state(user, run_id))
 
 
+@router.get("/agent-runs/{run_id}/messages")
+async def messages(run_id: str, user: User):
+    """历史对话 transcript（重进会话前端自渲染用）：run→framework_session_id→已持久化 AgentState→
+    投影成 [{role, content}]。CopilotKit v2 的 connect 走 sidecar 内存回放、拿不到历史，故前端绕开它
+    直接拉本端点。数据源与活动栏无关（活动栏走 sre_audit_event）。"""
+    await run_state_service.owned_run(user["user_id"], run_id)
+    return ok(await agui_service._load_transcript(run_id))
+
+
 @router.get("/agent-runs/{run_id}/events")
 async def events_page(
     run_id: str,
