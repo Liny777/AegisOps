@@ -48,12 +48,15 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         for s in await skill_hub_client.list_skills("system"):
             if s.get("source") != "openops":
                 continue
+            # §2.2 semver + category 落进 manifest_json（零迁移展示口径；latest_version=SkillHub 原串）
+            manifest = {"synced_from": "skill_hub", "latest_version": s.get("latest_version"),
+                        "category": s.get("category")}
             row = await assets.get_skill_by_key(s["source_type"], s["skill_key"])
             if row is None:
                 await assets.create_skill(
                     None if s["source_type"] == "platform" else s.get("owner_user_id"),
                     s["source_type"], s["display_name"], s["skill_key"],
-                    {"synced_from": "skill_hub"}, s["checksum_sha256"],
+                    manifest, s["checksum_sha256"],
                 )
                 summary["skills_created"] += 1
                 continue
@@ -61,7 +64,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             if latest is None or latest["checksum_sha256"] != s["checksum_sha256"]:
                 await assets.add_skill_version(
                     str(row["skill_id"]), (latest["version_no"] if latest else 0) + 1,
-                    {"synced_from": "skill_hub"}, s["checksum_sha256"], "system",
+                    manifest, s["checksum_sha256"], "system",
                 )
                 summary["skill_versions_added"] += 1
 

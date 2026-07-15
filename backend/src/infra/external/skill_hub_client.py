@@ -55,6 +55,8 @@ _MOCK_LIST = [
         "source": "openops",
         "source_type": "platform",
         "version_no": 2,
+        "latest_version": "2.0.0",  # SkillHub §2.2 semver（展示用）；version_no 仅本地排序
+        "category": "运维",
         "checksum_sha256": MOCK_INSPECTION_CHECKSUM,
         "status": "active",
     }
@@ -85,7 +87,10 @@ def _semver_to_int(semver: str | None) -> int:
 
 def _map_skill(it: dict[str, Any]) -> dict[str, Any]:
     """29.3 skill item → OpenOps 词汇（29.4：skill_id→skill_key、name→display_name、is_system→source_type、
-    created_by→owner_user_id、latest_version→version_no）。返回键与 mock/_MOCK_LIST 一致，供 reconcile 消费。"""
+    created_by→owner_user_id）。返回键与 mock/_MOCK_LIST 一致，供 reconcile 消费。
+
+    版本双轨：`version_no`(int) 供本地版本链排序/唯一键；`latest_version`(§2.2 semver 原串) 供 UI 展示，
+    不再丢弃（reconcile 落进 manifest_json → list_skills 透出 → 管理台/插件页展示）。"""
     return {
         "skill_key": it.get("skill_id"),
         "display_name": it.get("name"),
@@ -93,6 +98,8 @@ def _map_skill(it: dict[str, Any]) -> dict[str, Any]:
         "source_type": "platform" if bool(it.get("is_system")) else "user",
         "owner_user_id": it.get("created_by"),
         "version_no": _semver_to_int(it.get("latest_version")),
+        "latest_version": it.get("latest_version"),  # §2.2 semver 原串（展示口径）
+        "category": it.get("category"),
         "checksum_sha256": it.get("checksum_sha256"),
         "status": it.get("status", "active"),
     }

@@ -110,6 +110,7 @@ export function Sidebar() {
   const adminNav: NavItem[] = [
     { key: "templates", label: "模板管理", icon: "layout-grid", to: "/admin/templates" },
     { key: "model-assets", label: "模型资产", icon: "cpu", to: "/admin/model-assets" },
+    { key: "skills", label: "Skill 基线", icon: "file-code", to: "/admin/skills" },
     { key: "users", label: "用户与白名单", icon: "users", to: "/admin/users" },
     { key: "sandbox", label: "沙箱与容量", icon: "box", to: "/admin/sandbox" },
     { key: "audit", label: "审计回放", icon: "history", to: "/admin/audit" },

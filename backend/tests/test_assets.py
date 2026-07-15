@@ -95,6 +95,11 @@ def test_asset_reconcile_source_openops_and_versions(client):
     assert first["tools_unchanged"] == 2  # query_resource / recover_execute schema 未变
     second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert second["skill_versions_added"] == 0  # 幂等
+    # §2.2 semver 经 reconcile 落 manifest_json → list_skills 透出（展示口径，非本地整数 version_no）
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    insp = next(s for s in skills if s["skill_key"] == "inspection")
+    assert insp["latest_version"] == "2.0.0"  # _MOCK_LIST 的 latest_version 原串
+    assert "manifest_json" not in insp  # 内部 manifest 不透给前端
 
 
 def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runtime_backend):
@@ -264,6 +269,7 @@ def test_skill_zip_upload_writes_local_catalog(client):
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
     row = next(s for s in skills if s["skill_key"] == "zip-upload-demo")
     assert row["checksum_sha256"] == hashlib.sha256(data).hexdigest()
+    assert row["latest_version"] == "0.0.1"  # §2.1 上传响应 version → manifest → 透出（上传即可展示 semver）
 
     # 重复上传同 skill_key → 加版本
     again = unwrap(client.post(

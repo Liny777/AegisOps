@@ -10,7 +10,7 @@ from infra.db import exec1, jsonb, q_all, q_one
 async def list_skills(owner: str | None, include_platform: bool = True) -> list[dict[str, Any]]:
     return await q_all(
         """
-        select s.*, v.skill_version_id, v.version_no, v.checksum_sha256
+        select s.*, v.skill_version_id, v.version_no, v.checksum_sha256, v.manifest_json
         from sre_skill_asset s
         left join lateral (
           select * from sre_skill_asset_version sv

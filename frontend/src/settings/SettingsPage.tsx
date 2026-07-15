@@ -242,15 +242,18 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
 
   const treeRow = (r: AssetRow) => {
     const on = selectedId === r.id;
-    const isBound = boundByAsset.has(r.id);
-    const deletable = r.meta.includes("我的");
+    const isSystem = r.sourceType ? r.sourceType === "platform" : !r.meta.includes("我的");
+    // skill：运行时无条件纳入可执行集 → 恒「已装配」；mcp：看是否绑定
+    const attached = isSkill || boundByAsset.has(r.id);
+    const deletable = !isSystem;
     return (
       <Interactive key={r.id} onClick={() => setSelectedId(r.id)}
         baseStyle={{ display: "flex", alignItems: "center", gap: 7, padding: "7px 10px", margin: "1px 0", borderRadius: radius.md, cursor: "pointer", background: on ? color.brandTintBg : "transparent" }}
         hoverStyle={on ? {} : { background: "#f5f6f8" }}>
         <Icon name={isSkill ? "file-code" : "plug"} size={14} color={on ? color.brand : color.textSubtle} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: on ? 650 : 500, color: on ? color.brand : color.textBody, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
-        {isBound ? <span title="已绑定当前 Agent" style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
+        <span style={{ fontSize: 11, color: color.textFaint, flex: "0 0 auto", fontVariantNumeric: "tabular-nums" }}>{r.version}</span>
+        {attached ? <span title={isSkill ? "已自动装配到本 Agent" : "已绑定当前 Agent"} style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
         {deletable ? (
           <Icon name="trash" size={13} color={color.textFaint} title="删除"
             onClick={() => { if (confirm(`删除「${r.name}」？`)) run(api.deleteAsset(kind, r.id)); }} />
@@ -303,11 +306,14 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
               <SectionLabel>说明</SectionLabel>
               <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18 }}>
                 {isSkill
-                  ? "在你的隔离沙箱容器内受控执行的技能包（对话里可用 / 名称直接触发）。绑定到当前 Agent 后进入其装配集。"
+                  ? "在你的隔离沙箱容器内受控执行的技能包（对话里可用 / 名称直接触发）。管理员配置的系统技能与你上传的技能都会自动装配到本 Agent，无需手动绑定。"
                   : "经 Tool Gateway 受控调用的 HTTP MCP 服务（scope 校验 / 审批门 / 审计留痕）。其工具在运行时动态装配给 Agent。"}
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {selBinding ? (
+                {isSkill ? (
+                  // skill 自动装配（运行时无条件纳入），只读展示，无绑定/解绑动作
+                  <Pill tone="good">已自动装配到本 Agent</Pill>
+                ) : selBinding ? (
                   <>
                     <Pill tone="good">已绑定当前 Agent</Pill>
                     <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindAsset(selBinding.id))}>解绑</Button>

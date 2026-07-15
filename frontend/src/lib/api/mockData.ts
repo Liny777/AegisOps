@@ -327,6 +327,15 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "active", kind: "badge", tone: "good" }, { text: "8 tools" } ] },
     ],
   },
+  skills: {
+    title: "Skill 基线",
+    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
+    rows: [
+      { id: "skill_inspection", cells: [
+        { text: "巡检 inspection" }, { text: "inspection", mono: true }, { text: "2.0.0" },
+        { text: "运维" }, { text: "active", kind: "badge", tone: "good" } ] },
+    ],
+  },
   users: {
     title: "用户与白名单",
     primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
