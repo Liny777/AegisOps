@@ -31,11 +31,32 @@ def parse_deny_prefixes(raw: Any) -> list[str]:
         return [p.strip() for p in raw.split(",") if p.strip()]
     return [str(p).strip() for p in raw if str(p).strip()]
 
-# 回退分类器用（无 agentscope 时）：已知只读命令前缀（自动放行）
+# 只读命令前缀（自动放行）——guard 自己的白名单，比 agentscope 硬编码窄清单更全，覆盖 SRE 诊断类。
+# 只收「确无写/删/改」的观察类命令；多词项（`kubectl get`）只放行读子命令，写子命令（`kubectl delete`）
+# 不在列 → 落 ask。刻意不含 dual-use（curl/wget/nc/ssh）与可变更的 ip/route/ifconfig/iptables/awk/sed/tee。
 _READONLY_PREFIXES = (
-    "ls", "pwd", "cat", "head", "tail", "grep", "find", "echo", "wc", "stat", "file",
-    "df", "du", "ps", "top", "env", "printenv", "whoami", "id", "date", "uname",
-    "git status", "git log", "git diff", "git show", "git branch",
+    # 文件/文本（只读）
+    "ls", "pwd", "cat", "head", "tail", "grep", "egrep", "fgrep", "find", "echo", "wc", "stat",
+    "file", "less", "more", "tree", "which", "whereis", "type", "readlink", "realpath",
+    "sort", "uniq", "cut", "tr", "diff", "cmp", "column", "md5sum", "sha256sum", "cksum", "printf",
+    # 系统/进程（只读观察）
+    "df", "du", "ps", "pgrep", "pstree", "top", "free", "vmstat", "iostat", "uptime",
+    "lscpu", "lsblk", "lsof", "lsmod", "dmesg", "env", "printenv", "whoami", "id", "date",
+    "uname", "hostname",
+    # 网络诊断（只读/无变更）
+    "netstat", "ss", "dig", "host", "nslookup", "ping", "traceroute",
+    "journalctl",
+    # git 只读子命令
+    "git status", "git log", "git diff", "git show", "git branch", "git remote", "git rev-parse",
+    # kubectl 只读子命令
+    "kubectl get", "kubectl describe", "kubectl logs", "kubectl top", "kubectl explain",
+    "kubectl version", "kubectl cluster-info", "kubectl api-resources",
+    # systemctl 只读子命令
+    "systemctl status", "systemctl list-units", "systemctl is-active", "systemctl is-enabled",
+    "systemctl show", "systemctl cat",
+    # docker 只读子命令
+    "docker ps", "docker images", "docker inspect", "docker logs", "docker stats",
+    "docker top", "docker version", "docker info",
 )
 # 回退分类器用：危险命令模式（拦截为 ask[dangerous]）
 _DANGEROUS = re.compile(
@@ -63,6 +84,25 @@ def _segments(command: str) -> list[str]:
     return [s.strip() for s in _CHAIN_SPLIT.split(command) if s.strip()]
 
 
+# 写到真实文件的重定向（`> f` / `>> f`），排除 `2>/dev/null`/`>/dev/null`/`>&2` 这类无害丢弃
+_WRITE_REDIRECT = re.compile(r">>?\s*(?!/dev/null|&)")
+
+
+def _guard_read_only(command: str) -> bool:
+    """guard 自己的只读识别（比 agentscope 窄清单更全，覆盖 SRE 诊断）：每个子命令段的首 token 都在
+    只读白名单，且无写到真实文件的重定向。命令替换 `$(...)`/反引号会被 _segments 拆出无法匹配的残段
+    （如 `ls)`）→ 判非只读（这类由 agentscope 层 2 注入检查另行 ask，此处再兜一层）。"""
+    if _WRITE_REDIRECT.search(command):
+        return False
+    segs = _segments(command)
+    if not segs:
+        return False
+    for seg in segs:
+        if not any(seg == p or seg.startswith(p + " ") for p in _READONLY_PREFIXES):
+            return False
+    return True
+
+
 def _matches_deny(command: str, deny_prefixes: list[str]) -> str | None:
     """token 级 deny：对每个子命令段的首 token 词边界匹配（B8-SEC-001 串联绕过 + B8-OBS-002 前缀误伤）。
 
@@ -87,7 +127,7 @@ def _fallback_decide(command: str) -> GuardDecision:
     cmd = command.strip()
     if _DANGEROUS.search(cmd):
         return GuardDecision("ask", "危险命令模式（删除/权限/磁盘），需人工确认", 2)
-    if any(cmd == p or cmd.startswith(p + " ") for p in _READONLY_PREFIXES):
+    if _guard_read_only(cmd):
         return GuardDecision("allow", "只读命令自动放行", 2)
     if _NONREADONLY_HINT.match(cmd):
         return GuardDecision("ask", "非只读命令，需人工确认", 3)
@@ -115,7 +155,9 @@ async def decide_async(command: str, *, deny_prefixes: list[str] | None = None) 
         return GuardDecision("ask", "内置分析：危险命令，需人工确认", 2)
     if d.behavior == PermissionBehavior.DENY:
         return GuardDecision("deny", "内置分析：拒绝执行", 2)
-    # PASSTHROUGH（层 3）：只读放行、非只读 ask
-    if await bash.check_read_only({"command": command}):
-        return GuardDecision("allow", "只读命令放行", 3)
+    # PASSTHROUGH（层 3）：agentscope 未定性（既非 ALLOW/ASK/DENY）。用 guard 自己的更宽只读白名单放行
+    # ——agentscope 的 check_read_only 复用其硬编码窄清单（ps/df/netstat/systemctl status… 均不识别、
+    # 且不可外部扩展），直接用它这里恒为 False、只读永远被 ask（此前的死代码）。改用 _guard_read_only。
+    if _guard_read_only(command):
+        return GuardDecision("allow", "只读命令放行（guard 白名单）", 3)
     return GuardDecision("ask", "非只读命令，需人工确认", 3)

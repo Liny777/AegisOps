@@ -849,3 +849,25 @@ def test_docker_real_config_applied(client):
         await purge_orphan_containers()  # 清本 scope 所有托管容器
 
     asyncio.run(scenario())
+
+
+def test_guard_read_only_allows_diagnostics_asks_mutations():
+    """只读诊断命令自动放行（ps/df/netstat/systemctl status/kubectl get/journalctl/管道/&&/2>/dev/null），
+    真变更/未识别命令仍走审批（rm/kubectl delete/systemctl restart/mv/写真实文件重定向）；层1 deny 最高优先。
+    两 runtime 一致（agentscope PASSTHROUGH→guard 层3 / 无 agentscope→fallback，均用 _guard_read_only）。"""
+    from sandbox.command_guard import decide_async
+
+    async def act(c, deny=None):
+        return (await decide_async(c, deny_prefixes=deny or [])).action
+
+    async def scenario():
+        for c in ["ps aux", "df -h", "free -m", "netstat -tlnp", "ss -tlnp", "lsof -i:80",
+                  "systemctl status nginx", "journalctl -u nginx", "kubectl get pods", "docker ps",
+                  "ps aux | grep nginx", "ls && df -h", "netstat -tlnp 2>/dev/null", "whoami", "git status"]:
+            assert await act(c) == "allow", c
+        for c in ["rm -rf x", "kubectl delete pod x", "systemctl restart nginx", "mv a b",
+                  "ps aux > /tmp/out"]:
+            assert await act(c) == "ask", c
+        assert await act("sudo whoami", ["sudo"]) == "deny"  # 层1 平台 deny 最高优先，只读也拦
+
+    asyncio.run(scenario())
