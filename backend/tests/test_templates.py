@@ -289,10 +289,14 @@ def test_filter_main_skills_semantics():
     assert filter_main_skills(sk, {"main": {"skills": []}}) == sk             # 空表=不限
     assert filter_main_skills(sk, {"main": {"skills": "oops"}}) == sk         # 非法类型忽略
     assert filter_main_skills(sk, {"main": {"skills": ["a", "ghost"]}}) == {"a": sk["a"]}  # 交集
+    # 用户个人 skill 豁免 main.skills 白名单；平台 skill 仍受收窄
+    mixed = {"u": {"source_type": "user"}, "p": {"source_type": "platform"}}
+    assert filter_main_skills(mixed, {"main": {"skills": ["p"]}}) == mixed              # p 命中、u 豁免 → 都在
+    assert filter_main_skills(mixed, {"main": {"skills": ["x"]}}) == {"u": mixed["u"]}  # p 被收窄、u 豁免
 
 
-def test_main_skills_filters_available_skills_endpoint(client):
-    """展示=可执行同源：模板 main.skills 白名单同时收窄 available-skills 端点与 start_task 装配。"""
+def test_main_skills_whitelist_exempts_user_skills(client):
+    """模板 main.skills 白名单只收窄平台 skill；用户个人 skill 豁免（绑定/自动挂载即可用，Agent 运行时可见）。"""
     # 基线实例（seed 模板 skills=[]=不限）：绑两个用户 Skill，学到真实 skill_key
     inst_a = create_instance(client, name="技能面基线")
     alpha, beta = _upload_skill(client, "skill-alpha"), _upload_skill(client, "skill-beta")
@@ -302,7 +306,7 @@ def test_main_skills_filters_available_skills_endpoint(client):
                              headers=USER_HEADERS))
     ka = next(x["skill_key"] for x in base if x["display_name"] == "skill-alpha")
     kb = next(x["skill_key"] for x in base if x["display_name"] == "skill-beta")
-    # 发布 main.skills=[ka] 的新版本 → 新实例（钉新版）绑同样两个 Skill → 端点只见 ka
+    # 发布 main.skills=[ka]（只列 alpha）的新版本 → 新实例（钉新版）→ 两个用户 skill 都在（豁免白名单）
     tid = _template_id(client)
     ver = unwrap(_save_draft(client, tid, {**_content(["query_resource"]),
                                            "main": {"role": "编排", "default_tools": ["query_resource"],
@@ -314,4 +318,4 @@ def test_main_skills_filters_available_skills_endpoint(client):
     out = unwrap(client.get(f"/api/openops/v1/agent-teams/{inst_b['instance_id']}/available-skills",
                             headers=USER_HEADERS))
     keys = {x["skill_key"] for x in out}
-    assert ka in keys and kb not in keys
+    assert ka in keys and kb in keys  # 用户 skill 豁免 main.skills 白名单（改动前 kb 会被误收窄）
