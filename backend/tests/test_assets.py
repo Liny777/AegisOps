@@ -159,6 +159,43 @@ def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runti
     _assert_recover_blocked(client, run["agent_run_id"], "TOOL_NOT_ANNOTATED")
 
 
+def test_annotation_reannotate_after_soft_delete_revives_not_500(client, monkeypatch):
+    """DEF：schema 变更软删标注后重新标注——复活该行而非再插（唯一索引落 tool_catalog_id 含软删行，
+    纯 INSERT 必撞 ux_mcp_tool_annotation_catalog → 500 UniqueViolation）。复现内网管理台编辑标注报错。"""
+    base = {"tool_name": "recover_execute", "description": "执行受控恢复动作",
+            "input_schema": {"type": "object", "properties": {"appid": {"type": "string"}}}}
+
+    async def discover_v1(_name):
+        return [{**base, "schema_hash": mcp_registry_client._schema_hash(base["input_schema"])}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", discover_v1)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    rec = next(t for t in unwrap(client.get("/api/openops/v1/admin/mcp-tools", headers=ADMIN_HEADERS))
+               if t["tool_name"] == "recover_execute")
+    ann = {"is_approval_required": True, "is_secret_required": False, "scope_mode": "required",
+           "appid_arg_path": "$.appid", "status": "allowed", "blocked_reason": None}
+    put = f"/api/openops/v1/admin/mcp-tools/{rec['tool_catalog_id']}/annotation"
+    unwrap(client.put(put, headers=ADMIN_HEADERS, json=ann))  # 首次标注 → insert
+
+    # schema 变化 → sync_catalog_tool 软删该标注（tool_catalog_id 不变）
+    changed = {**base, "input_schema": {"type": "object", "properties": {
+        "appid": {"type": "string"}, "grace": {"type": "number"}}}}
+
+    async def discover_v2(_name):
+        return [{**changed, "schema_hash": mcp_registry_client._schema_hash(changed["input_schema"])}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", discover_v2)
+    assert unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))["tools_schema_changed"] == 1
+
+    # 重新标注：此前 500 的正是这一步——现应复活成功、且运行时标注生效（allowed）
+    r = client.put(put, headers=ADMIN_HEADERS, json={**ann, "status": "allowed"})
+    assert r.status_code == 200, r.text
+    live = unwrap(client.get("/api/openops/v1/admin/mcp-tools", headers=ADMIN_HEADERS))
+    rec2 = next(t for t in live if t["tool_name"] == "recover_execute")
+    # 列表 LEFT JOIN 标注 on deleted_at is null → annotation_id 非空即证复活成功、运行时生效
+    assert rec2.get("annotation_id") and rec2.get("annotation_status") == "allowed"
+
+
 def _assert_recover_blocked(client, run_id: str, reason_code: str, expect_plan_update: bool = False) -> None:
     """runtime 无关的 fail-closed 不变量（B6-RT-001）：恢复未执行 + 阻断审计在案 + 完成态不得宣称恢复成功。
 
