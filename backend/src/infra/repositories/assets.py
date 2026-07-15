@@ -91,6 +91,15 @@ async def add_skill_version(
     return vid
 
 
+async def update_skill_version_manifest(skill_version_id: str, manifest_json: dict[str, Any]) -> None:
+    """原地刷新缓存版本的 manifest（reconcile 回填 SkillHub 展示元数据 latest_version/category）。
+    不改 version_no/checksum，非新版本——skill_asset(+version) 本就是「外部 SkillHub 为事实源」的缓存表。"""
+    await exec1(
+        "update sre_skill_asset_version set manifest_json=%(m)s, last_update_date=now() where skill_version_id=%(v)s",
+        {"m": jsonb(manifest_json), "v": skill_version_id},
+    )
+
+
 async def list_platform_mcps() -> list[dict[str, Any]]:
     """平台 HTTP MCP（含最新版本 id）：对账 tools/list 用。"""
     return await q_all(

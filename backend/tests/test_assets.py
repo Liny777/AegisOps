@@ -102,6 +102,33 @@ def test_asset_reconcile_source_openops_and_versions(client):
     assert "manifest_json" not in insp  # 内部 manifest 不透给前端
 
 
+def test_asset_reconcile_backfills_missing_semver_without_new_version(client):
+    """存量回填（DEF）：改动前的旧行 manifest 缺 semver 且 checksum 未变→reconcile 原地回填、不新增版本。
+    复现内网现象：latest_version=null / 前端显示 v{n}。"""
+    import asyncio
+
+    from infra.repositories import assets
+
+    async def _seed_old_manifest() -> str:
+        row = await assets.get_skill_by_key("platform", "inspection")
+        latest = await assets.latest_skill_version(str(row["skill_id"]))
+        # 模拟旧 reconcile 写的单键 manifest（无 latest_version）——正是内网 B 检查看到的形状
+        await assets.update_skill_version_manifest(str(latest["skill_version_id"]), {"synced_from": "skill_hub"})
+        return str(latest["version_no"])
+
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 先建 v2（checksum 变）
+    old_vno = asyncio.run(_seed_old_manifest())
+    before = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    assert next(s for s in before if s["skill_key"] == "inspection")["latest_version"] is None  # 回填前=null（复现）
+
+    r = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # checksum 未变
+    assert r["skill_versions_added"] == 0 and r["skill_manifests_refreshed"] >= 1  # 不新增版本、原地回填
+    after = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    insp = next(s for s in after if s["skill_key"] == "inspection")
+    assert insp["latest_version"] == "2.0.0"  # semver 已回填
+    assert str(insp["version_no"]) == old_vno  # 版本号不变（非新版本）
+
+
 def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runtime_backend):
     """schema_hash 变化 → 新 catalog 行不继承标注 → 运行时 TOOL_NOT_ANNOTATED fail-closed（ASSET-005，双 runtime）。"""
     tools = [
