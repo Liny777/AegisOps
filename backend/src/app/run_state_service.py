@@ -276,7 +276,9 @@ def filter_main_skills(skills: dict[str, dict[str, Any]], content: dict[str, Any
     if not isinstance(ms, list) or not ms:
         return skills
     allow = {str(x) for x in ms}
-    return {k: v for k, v in skills.items() if k in allow}
+    # 白名单只收窄平台 skill；用户个人 skill（已绑定/自动挂载、执行受沙箱管控）恒保留——否则真实模板设了
+    # 平台白名单后，用户绑定的个人 skill 会被静默剔除、Agent 运行时看不到（左树却显示已装配，不同源）。
+    return {k: v for k, v in skills.items() if v.get("source_type") == "user" or k in allow}
 
 
 async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str, dict[str, Any]]:
