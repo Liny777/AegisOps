@@ -141,8 +141,11 @@ async def save_annotation(
     tool_catalog_id: str, is_approval_required: bool, is_secret_required: bool,
     scope_mode: str, appid_arg_path: str | None, status: str, blocked_reason: str | None, by: str,
 ) -> None:
+    # 唯一索引 ux_mcp_tool_annotation_catalog 落在 (tool_catalog_id)（非 partial，软删行也占位）→ 每 tool 至多一行。
+    # 故不能过滤 deleted_at：schema 变更（sync_catalog_tool）软删旧标注后，tool_catalog_id 不变，重新标注
+    # 必须**复活**该行（就地 update + 清 deleted_at），否则纯 INSERT 撞唯一约束 → 500 UniqueViolation（内网实测）。
     row = await q_one(
-        "select annotation_id from sre_mcp_tool_annotation where tool_catalog_id=%(t)s and deleted_at is null",
+        "select annotation_id from sre_mcp_tool_annotation where tool_catalog_id=%(t)s",
         {"t": tool_catalog_id},
     )
     if row:
@@ -150,7 +153,7 @@ async def save_annotation(
             """
             update sre_mcp_tool_annotation
             set is_approval_required=%(a)s, is_secret_required=%(s)s, scope_mode=%(m)s,
-                appid_arg_path=%(p)s, status=%(st)s, blocked_reason=%(r)s,
+                appid_arg_path=%(p)s, status=%(st)s, blocked_reason=%(r)s, deleted_at=null,
                 annotated_by=%(b)s, annotated_at=now(), last_updated_by=%(b)s, last_update_date=now()
             where annotation_id=%(id)s
             """,
