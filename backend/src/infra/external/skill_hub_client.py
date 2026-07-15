@@ -183,12 +183,17 @@ async def upload_skill(filename: str, zip_bytes: bytes, category: str, tags: lis
 
         # multipart：console_client_kwargs 从不设 Content-Type，httpx 的 files= 自动带 boundary（无冲突）；
         # cookie / 浏览器 UA / IAM-Client-Ip 透传同 list/download。
+        # 分类/标签已从上传流程移除：仅在显式提供时才带给上游（缺省不发空串/空表）。
+        form: dict[str, str] = {"source": source, "is_system": "true" if is_system else "false"}
+        if category:
+            form["category"] = category
+        if tags:
+            form["tags"] = _json.dumps(tags, ensure_ascii=False)
         async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE", timeout=60)) as cli:
             r = await cli.post(
                 f"{base}{console_api_prefix()}/skills/upload",
                 files={"file": (filename, zip_bytes, "application/zip")},
-                data={"category": category, "tags": _json.dumps(tags, ensure_ascii=False),
-                      "source": source, "is_system": "true" if is_system else "false"},
+                data=form,
             )
             raise_with_body(r)  # 非 2xx 带响应体前 300 字（401 cookie 失效 / 2003 发布冲突等）
             return _unwrap_data(r.json())

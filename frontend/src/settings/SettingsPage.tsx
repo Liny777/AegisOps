@@ -343,7 +343,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
           onClose={() => setDialog(false)}
           onSubmit={(p) => {
             const promise = p.kind === "skill"
-              ? api.uploadSkill(p.file, p.category, p.tags)
+              ? api.uploadSkill(p.file)
               : api.registerMcp(p.name, p.endpoint);
             run(promise.then(() => setDialog(false)));
           }}
@@ -378,7 +378,7 @@ function ConfigVersionsBlock({ versions }: { versions: ConfigVersionRow[] }) {
 
 /** AssetDialog 提交载荷：skill = ZIP 包上传（29.3 §2.1）；mcp = HTTP MCP 注册。 */
 type AssetSubmit =
-  | { kind: "skill"; file: File; category: string; tags: string[] }
+  | { kind: "skill"; file: File }
   | { kind: "mcp"; name: string; endpoint: string };
 
 const _MAX_SKILL_ZIP = 50 * 1024 * 1024;  // 29.3 §2.1：ZIP ≤ 50MB
@@ -390,8 +390,6 @@ function AssetDialog({ kind, busy, onClose, onSubmit }: {
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("https://");
   const [file, setFile] = useState<File | null>(null);
-  const [category, setCategory] = useState("");
-  const [tags, setTags] = useState("");
   const [fileErr, setFileErr] = useState("");
 
   const pickFile = (f: File | null) => {
@@ -401,13 +399,12 @@ function AssetDialog({ kind, busy, onClose, onSubmit }: {
     setFile(f);
   };
   const ok = kind === "skill"
-    ? Boolean(file && category.trim())
+    ? Boolean(file)
     : name.trim().length > 0 && endpoint.trim().length > 8;
   const submit = () => {
     if (!ok || busy) return;
     if (kind === "skill" && file) {
-      const tagList = tags.replace(/，/g, ",").split(",").map((t) => t.trim()).filter(Boolean);
-      onSubmit({ kind: "skill", file, category: category.trim(), tags: tagList });
+      onSubmit({ kind: "skill", file });
     } else {
       onSubmit({ kind: "mcp", name: name.trim(), endpoint: endpoint.trim() });
     }
@@ -428,12 +425,6 @@ function AssetDialog({ kind, busy, onClose, onSubmit }: {
                 onChange={(e) => pickFile(e.target.files?.[0] ?? null)} />
             </label>
             {fileErr ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 6 }}>{fileErr}</div> : null}
-            <div style={{ height: 12 }} />
-            <SectionLabel>分类（必填）</SectionLabel>
-            <TextInput value={category} onChange={setCategory} placeholder="例：运维 / 日志 / 告警" />
-            <div style={{ height: 12 }} />
-            <SectionLabel>标签（可选，逗号分隔）</SectionLabel>
-            <TextInput value={tags} onChange={setTags} placeholder="例：监控,告警" />
           </>
         ) : (
           <>

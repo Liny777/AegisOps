@@ -48,7 +48,7 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
 
     skill_key = meta["skill_key"]
     manifest = {"entrypoint": meta.get("entrypoint") or "python3 run.py",
-                "category": category, "tags": tags, "synced_from": "upload",
+                "category": category or None, "tags": tags, "synced_from": "upload",  # 分类/标签可空（上传流程已移除该输入）→ 列表回退「—」
                 "latest_version": result.get("version")}  # §2.1 上传响应 version → 上传后即刻可展示 semver
     existing = await assets.get_skill_by_key("user", skill_key)
     if existing is None:

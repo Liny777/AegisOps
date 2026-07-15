@@ -345,16 +345,23 @@ def test_skill_zip_upload_writes_local_catalog(client):
 
 
 def test_skill_zip_upload_rejects_bad_package(client):
-    """守卫：非 zip → SKILL_PACKAGE_INVALID；缺 SKILL.md → SKILL_PACKAGE_INVALID；缺分类 → 400。"""
+    """守卫：非 zip → SKILL_PACKAGE_INVALID；缺 SKILL.md → SKILL_PACKAGE_INVALID。（分类/标签已移除，非必填）"""
     not_zip = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
-                          files={"file": ("x.zip", b"not a zip", "application/zip")}, data={"category": "运维"})
+                          files={"file": ("x.zip", b"not a zip", "application/zip")})
     assert not_zip.status_code == 400 and not_zip.json()["error"]["code"] == "SKILL_PACKAGE_INVALID"
 
     no_md = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
-                        files={"file": ("x.zip", _make_skill_zip("x", with_skill_md=False), "application/zip")},
-                        data={"category": "运维"})
+                        files={"file": ("x.zip", _make_skill_zip("x", with_skill_md=False), "application/zip")})
     assert no_md.status_code == 400 and no_md.json()["error"]["code"] == "SKILL_PACKAGE_INVALID"
 
-    no_cat = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
-                        files={"file": ("x.zip", _make_skill_zip("x"), "application/zip")}, data={"category": "  "})
-    assert no_cat.status_code == 400
+
+def test_skill_zip_upload_without_category(client):
+    """分类/标签已从上传流程移除：不带 category/tags 也能上传，列表该项 category 为 None（前端回退「—」）。"""
+    res = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("nocat.zip", _make_skill_zip("nocat-skill"), "application/zip")},
+    ))
+    assert res["skill_key"] == "nocat-skill" and res["action"] == "created"
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    row = next(s for s in skills if s["skill_key"] == "nocat-skill")
+    assert row.get("category") is None

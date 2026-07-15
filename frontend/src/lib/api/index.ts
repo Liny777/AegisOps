@@ -107,8 +107,8 @@ export interface OpenOpsApi {
   /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。 */
   testLlmConnection(input: { base_url: string; model_name: string; api_key: string }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
-  /** 上传 Skill ZIP（29.3 §2.1 multipart）：file 必填、category 必填、tags 可选。 */
-  uploadSkill(file: File, category: string, tags?: string[]): Promise<{ skill_key: string; action: string }>;
+  /** 上传 Skill ZIP（29.3 §2.1 multipart）：仅 file 必填（分类/标签已移除）。 */
+  uploadSkill(file: File): Promise<{ skill_key: string; action: string }>;
   registerMcp(name: string, endpoint: string): Promise<void>;
   deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
   bindAsset(instanceId: string, row: AssetRow): Promise<void>;
@@ -455,11 +455,9 @@ const realApi: OpenOpsApi = {
     }));
   },
   // ---- settings 写闭环（B6） ----
-  async uploadSkill(file, category, tags) {
+  async uploadSkill(file) {
     const fd = new FormData();
     fd.append("file", file);
-    fd.append("category", category);
-    if (tags && tags.length) fd.append("tags", JSON.stringify(tags));
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/assets/skills:upload", { method: "POST", body: fd });
     return { skill_key: String(d.skill_key ?? ""), action: String(d.action ?? "created") };
   },
