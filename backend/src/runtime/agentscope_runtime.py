@@ -107,12 +107,15 @@ def _build_stub_model() -> Any:
             block_id = f"stub-text-{uuid.uuid4()}"
             # 固定多段，便于无凭证环境稳定验证浏览器在 RUN_FINISHED 前发生多次增长。
             chunks = ["已确认根因 H1（Redis 连接泄漏）：", "重启 svc-a 后连接回落、", "P99 恢复 210ms，事件闭环。"]
+            # 段间停顿要够长：太快（如 30ms）会被 SSE→sidecar→CopilotKit 渲染管线合并，浏览器只见
+            # 一次到位，既看不出流式、也让「完成前多次增长」的验收无法稳定观测。真实模型逐 token 到达
+            # 本就有节奏，此处只补齐无凭证 stub 的可感知节奏。
             for chunk in chunks:
                 yield ChatResponse(
                     content=[TextBlock(type="text", id=block_id, text=chunk)],
                     is_last=False,
                 )
-                await asyncio.sleep(0.03)
+                await asyncio.sleep(0.4)
             yield ChatResponse(
                 content=[TextBlock(type="text", id=block_id, text=text)],
                 is_last=True,

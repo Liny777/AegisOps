@@ -197,10 +197,22 @@ test.describe("真实 AG-UI 会话常驻", () => {
     const input = await waitForComposerIdle(page);
     await sendFromComposer(page, input, `stub-stream-tool-group-${Date.now()}`);
 
-    // Stub 的第三个工具在允许时会进入审批；若当前 Agent 白名单拒绝该恢复动作，
-    // 后端会 fail-closed 并仍输出三段结论。两条路径都必须保持可见流式增长。
+    // Stub 第三步 recover_execute 是写动作 → 触发审批：必须等审批卡真正出现再批准，最终三段
+    // 结论才会开始流式。isVisible 是立即判定不等待，发送后审批卡还没来 → 恒 false 不批准、任务
+    // 卡在审批、结论不产出（原实现在真链路必挂）。改用 waitFor 自动等待；同时兼容白名单拒绝该
+    // 动作、后端 fail-closed 直接输出三段结论、审批卡不出现的路径——谁先到就走谁。
     const approve = page.getByRole("button", { name: "批准", exact: true });
-    if (await approve.isVisible({ timeout: 2_500 })) await approve.click();
+    const growthStarted = page.waitForFunction(() => {
+      const samples = (window as Window & {
+        __openopsGrowth?: Array<{ running: boolean }>;
+      }).__openopsGrowth ?? [];
+      return samples.some((sample) => sample.running);
+    }, undefined, { timeout: 90_000 }).catch(() => undefined);
+    await Promise.race([
+      approve.waitFor({ state: "visible", timeout: 90_000 }).catch(() => undefined),
+      growthStarted,
+    ]);
+    if (await approve.isVisible().catch(() => false)) await approve.click();
 
     await expect.poll(() => page.evaluate(() => {
       const samples = (window as typeof window & {
