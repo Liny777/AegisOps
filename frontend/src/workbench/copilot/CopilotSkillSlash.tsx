@@ -26,18 +26,20 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
     if (!instanceId) return;
     api.getAvailableSkills(instanceId)
       .then((list) => { if (!dead) setSkills(list); })
-      .catch(() => undefined);
+      // 不再静默吞错（内网实测坑：403 非属主/未同步 → 列表空 → 「/」死寂无从定位）——留控制台线索
+      .catch((e) => console.warn("[openops] available-skills 加载失败（「/」菜单将显示空态提示）:", e));
     return () => { dead = true; };
   }, [instanceId]);
 
   useEffect(() => {
-    if (skills.length === 0) return;
+    // 监听不再以 skills 非空为前提：列表空/加载失败时「/」也要有可见反馈（空态提示），而非毫无反应
     let raf = 0;
     const onInput = () => {
       const ta = taRef.current;
       if (!ta) return;
       const v = ta.value;
-      if (v.startsWith("/")) {
+      // 「、」= 中文输入法下的 / 键（内网常见：IME 开着按 / 出「、」→ 菜单永不触发）
+      if (v.startsWith("/") || v.startsWith("、")) {
         setQuery(v.slice(1).trim().toLowerCase());
         const r = ta.getBoundingClientRect();
         setAnchor({ left: r.left, bottom: window.innerHeight - r.top + 6, width: r.width });
@@ -59,11 +61,24 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
     return () => {
       cancelAnimationFrame(raf);
       taRef.current?.removeEventListener("input", onInput);
+      // 必须清空：否则 effect 重跑时 attach 的 `ta !== taRef.current` 恒 false → 监听永不重挂
+      //（skills.length 依赖时代的隐性坑——加载完成触发 cleanup+重跑即失聪）
+      taRef.current = null;
     };
-  }, [skills.length]);
+    // onInput 只用 setState 不读 skills：挂载一次即可，与 skills 加载时序解耦
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!open || !anchor) return null;
   const filtered = skills.filter((s) => !query || s.name.toLowerCase().includes(query));
+  // 列表本身为空（未装配/加载失败/403 非属主）：给可见空态而非无反应——用户至少知道菜单在、数据不在
+  if (!skills.length) {
+    return (
+      <div style={{ position: "fixed", left: anchor.left, bottom: anchor.bottom, width: Math.min(anchor.width, 420), background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, boxShadow: shadow.menu, zIndex: 60, padding: "10px 12px", fontSize: 12, color: color.textSubtle }}>
+        暂无可用 Skill——可能未同步/未装配，或你不是该 Agent 的属主（控制台有具体原因）。
+      </div>
+    );
+  }
   if (!filtered.length) return null;
 
   const pick = (s: Skill) => {
