@@ -82,7 +82,14 @@ async def _log_outbound_request(request: Any) -> None:
             masked.append(f"{k}=<set>")
         else:
             masked.append(f"{k}={v}")
-    body = request.content.decode("utf-8", "replace")[:500] if request.content else ""
+    # multipart（files=，如 skills:upload）的体是 httpx MultipartStream 流式体，构造时不预读 _content：
+    # 直接读 request.content 会 raise RequestNotRead（"…without having called read()"），诊断钩子反把上传
+    # 打成 502。流式/二进制体（含 ZIP）也不该 decode 进日志——按 content-type 打占位（与
+    # _log_outbound_response 对二进制的处理一致；hasattr(_content) 即 httpx .content 内部同款判定）。
+    if hasattr(request, "_content"):
+        body = request.content.decode("utf-8", "replace")[:500] if request.content else ""
+    else:
+        body = f"<streaming body {request.headers.get('content-type', '')}>"
     log.warning("[OpenOps][mcpreg][debug] → %s %s body=%s", request.method, request.url, body)
     log.warning("[OpenOps][mcpreg][debug] → headers: %s", "; ".join(masked))
 
