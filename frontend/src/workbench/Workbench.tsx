@@ -13,11 +13,9 @@ import type {
   ChatMessage,
   HitlCardData,
   OpenOpsEvent,
-  RcaCardData,
   WorkbenchState,
   Skill,
 } from "../lib/api/types";
-import { RcaCard } from "./RcaCard";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
 import { ActivityRail } from "./ActivityRail";
@@ -116,7 +114,6 @@ export function Workbench({
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [rca, setRca] = useState<RcaCardData | undefined>(undefined);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
   const [nodes, setNodes] = useState<ActivityNode[]>([]);
@@ -237,9 +234,6 @@ export function Workbench({
         setTaskStatus("running");
         if (e.task_id) setTaskId(e.task_id);
         break;
-      case "openops.rca.updated":
-        setRca(p as unknown as RcaCardData);
-        break;
       case "openops.approval.required": {
         const tool = String(p.tool ?? "recover_execute");
         // 首选后端透传的通用入参字典（buildApprovalFacts 逐项展示）；缺失回退旧派生字段（兼容旧后端）
@@ -315,7 +309,6 @@ export function Workbench({
       setTaskId(activeTask?.task_id ? String(activeTask.task_id) : null);
       setTaskStatus(activeTask?.status ? String(activeTask.status) : null);
       setMessages(recoverSnapshotMessages(d, rid));
-      setRca(d.rca ? d.rca as RcaCardData : undefined);
       setNodes([]);
       seen.current = new Set();
     } else if (activeTask) {
@@ -332,7 +325,6 @@ export function Workbench({
           ? current
           : [...current, recoveredTerminal]);
       }
-      if (d.rca) setRca(d.rca as RcaCardData);
     }
 
     const pending = (d.pending_approvals ?? []) as Record<string, unknown>[];
@@ -411,7 +403,6 @@ export function Workbench({
   useEffect(() => {
     if (API_MODE !== "real" || (!instanceId && !explicitRunId)) {
       setMessages(demo.messages);
-      setRca(demo.rca);
       setHitl(demo.hitl);
       setNodes(demo.activity.flatMap((group) => group.items));
       if (demo.activitySnapshot) dispatchActivity({ type: "hydrate", snapshot: demo.activitySnapshot });
@@ -553,7 +544,6 @@ export function Workbench({
     }
     if (!runId) return;  // 上方两分支已保证非空；此守卫仅为类型收窄
     const actionRunId = runId;
-    setRca(undefined);
     setHitl(undefined);
     if (TRANSPORT === "agui") {
       // B5：任务经 AG-UI 端点启动并流式接收（标准事件→对话区；CUSTOM→同一 openops 处理器）
@@ -681,7 +671,6 @@ export function Workbench({
           {messages.map((message) => (message.role === "user"
             ? <UserBubble key={message.id} text={message.text} />
             : <BotBubble key={message.id} text={message.text} showCopy={message.showCopy} />))}
-          {rca ? <RcaCard rca={rca} /> : null}
           {hitl ? (
             <HitlCard
               key={hitl.approval_request_id + hitl.status}
@@ -708,13 +697,6 @@ export function Workbench({
 
   const copilotChat = runId ? (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-      {rca ? (
-        <div className="oa-chat-rca-dock" style={{ flex: "0 0 auto", maxHeight: "44%", overflowY: "auto", borderBottom: `1px solid ${color.border}`, background: color.pageBg }}>
-          <div style={{ maxWidth: 760, margin: "0 auto" }}>
-            <RcaCard rca={rca} />
-          </div>
-        </div>
-      ) : null}
       <CopilotChatPanel
         runId={runId}
         instanceId={effectiveInstanceId}
