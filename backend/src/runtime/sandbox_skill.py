@@ -38,18 +38,37 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
                message=f"Skill 执行：{skill_name}", payload={"skill": skill_name})
     try:
         pkg = await skill_hub_client.download_skill_package(skill_name, int(meta.get("version_no") or 1))
-        # 双形态分型（2026-07-14 内网 exit 2 实锤）：SkillHub 老形态 Skill 只有 SKILL.md 排查手册、
-        # 无可执行脚本（entrypoint=None）——不进沙箱，把手册正文返回给模型照做（老「查阅排查手册」语义）
+        # 双形态分型（2026-07-14 内网 exit 2 实锤）：SkillHub 老形态 Skill 只有 SKILL.md 排查手册
+        # （entrypoint=None）。统一进容器（2026-07-15 拍板）：手册型也把整包投递进沙箱——
+        # references/ 等参考文件供 agent 经 run_container_command（只读命令自动放行）按需读取，
+        # 不再只回 SKILL.md 正文（此前 references 全被丢弃 → agent「没按 skill 内容执行」）。
         if pkg.get("entrypoint") is None:
-            md = (pkg.get("files") or {}).get("SKILL.md", b"").decode("utf-8", "replace").strip()
+            files: dict[str, bytes] = pkg.get("files") or {}
+            md = files.get("SKILL.md", b"").decode("utf-8", "replace").strip()
             if not md:
                 raise ApiError(Err.SKILL_PACKAGE_INVALID, "Skill 包既无可执行 entrypoint 也无 SKILL.md 手册")
             cap = int(os.environ.get("OPENOPS_SKILL_MANUAL_CAP", "12000"))
+            # 投递优雅降级：手册正文独立有值，容器抖动/校验失败不让整个调用失败，只在文本里说明
+            n_refs = 0
+            try:
+                abs_dir, names = await sandbox_executor.stage_files(
+                    st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
+                    files=files, expected_checksum=pkg["checksum"],
+                    run_id=st.run_id, cfg=st.sandbox_cfg,
+                )
+                n_refs = sum(1 for n in names if n != "SKILL.md")
+                listing = "\n".join(f"  - {n}（{len(files[n]) / 1024:.1f}KB）" for n in names)
+                example = next((n for n in names if n != "SKILL.md"), "SKILL.md")
+                staged_note = (f"手册全文与参考文件已放入你的容器目录 {abs_dir}/：\n{listing}\n"
+                               f"需要细则时用 run_container_command 读取（如 cat {abs_dir}/{example}）。\n")
+            except Exception as e:  # noqa: BLE001 — 投递失败降级：仅手册正文可用
+                log.warning("[skill] %s 参考文件投递失败 %s: %s", skill_name, type(e).__name__, str(e)[:200])
+                staged_note = f"⚠ 参考文件投递失败（{type(e).__name__}），仅手册正文可用。\n"
             await emit(st, run, "openops.skill.call.succeeded", action=skill_name,
-                       message=f"Skill 手册已装载：{skill_name}",
+                       message=f"Skill 手册已装载：{skill_name}（含 {n_refs} 个参考文件）",
                        payload={"skill": skill_name, "mode": "manual", "chars": len(md)})
-            return (f"Skill 「{skill_name}」是手册型技能（无可执行脚本）。以下是手册内容，"
-                    f"请按其中的指引使用可用工具完成任务：\n\n{md[:cap]}")
+            return (f"Skill 「{skill_name}」是手册型技能（无可执行脚本）。{staged_note}"
+                    f"请先阅读以下手册正文，按其中的指引使用可用工具完成任务：\n\n{md[:cap]}")
         # 脚本型：entrypoint 指向的脚本必须真的在包里——缺失给结构化错误，而不是让 python 的 exit 2 出面
         if not any(tok in pkg["files"] for tok in str(pkg["entrypoint"]).split()):
             raise ApiError(Err.SKILL_PACKAGE_INVALID,
@@ -83,4 +102,9 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
                message=f"Skill 执行完成：{skill_name}",
                payload={"skill": skill_name, "result": res.result_json, "stdout": res.stdout[:1000]})
     body = res.result_json if res.result_json is not None else res.stdout[:1000]
-    return f"Skill 「{skill_name}」结果：{body}"
+    # 统一进容器口径：脚本型的包（含 references/ 等）本就随 run_skill 投递在容器里——把目录告知模型，
+    # 需要时可 run_container_command 查阅参考文件（与手册型同一指引）
+    c = sandbox_executor.get(st.user_id)
+    note = (f"\n（Skill 包已投递至容器目录 {c.backend.workdir}/skills/{st.task_id}/{tool_call_id}/，"
+            f"含 {len(pkg['files'])} 个文件，需要时可用 run_container_command 查阅）") if c else ""
+    return f"Skill 「{skill_name}」结果：{body}{note}"

@@ -197,12 +197,34 @@ class SandboxExecutor:
             raise ApiError(Err.SANDBOX_CONTAINER_FAILED, "用户容器不存在（run 未开启或已回收）")
         return c
 
+    async def _stage(self, c: Container, rel_dir: str, files: dict[str, bytes],
+                     expected_checksum: str | None) -> None:
+        """投递整包进容器（只写不执行）：checksum 校验 → 逐文件写入（嵌套路径两后端均自动建父目录）。"""
+        if expected_checksum and package_checksum(files) != expected_checksum:
+            raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝投递")
+        for name, data in files.items():
+            await c.backend.write_file(f"{rel_dir}/{name}", data)
+
+    async def stage_files(
+        self, user_id: str, *, task_id: str, tool_call_id: str, files: dict[str, bytes],
+        expected_checksum: str | None = None,
+        run_id: str | None = None, cfg: dict[str, Any] | None = None,
+    ) -> tuple[str, list[str]]:
+        """统一投递原语（skill 不分脚本型/手册型都进容器）：返回 (容器内绝对目录, 排序文件名)。
+
+        手册型 Skill 由 run_bound_skill 显式调用（references/ 供 agent 经 run_container_command 按需读取）；
+        脚本型经 run_skill 内部同一 `_stage` 路径。传 `run_id`+`cfg` 时容器缺失自动重建（_get_or_revive）。"""
+        c = await self._get_or_revive(user_id, run_id, cfg)
+        rel_dir = f"skills/{task_id}/{tool_call_id}"
+        await self._stage(c, rel_dir, files, expected_checksum)
+        return f"{c.backend.workdir}/{rel_dir}", sorted(files)
+
     async def run_skill(
         self, user_id: str, *, task_id: str, tool_call_id: str, entrypoint: str,
         files: dict[str, bytes], expected_checksum: str | None = None, timeout: float | None = None,
         run_id: str | None = None, cfg: dict[str, Any] | None = None,
     ) -> SkillResult:
-        """在该用户容器内执行一个脚本型 Skill（28.3）：checksum 校验 → 装包 → 执行 entrypoint。
+        """在该用户容器内执行一个脚本型 Skill（28.3）：checksum 校验 → 装包（_stage 同投递原语）→ 执行 entrypoint。
 
         - `files`：Skill 包内文件（相对 skill 目录），执行前按 `expected_checksum` 校验整包一致性。
         - `entrypoint`：容器内一条 shell 命令（`python run.py` / `bash run.sh`），经 sh 通道执行。
@@ -210,11 +232,8 @@ class SandboxExecutor:
         - 传 `run_id`+`cfg` 时容器缺失自动重建（_get_or_revive）；否则缺失即 SANDBOX_CONTAINER_FAILED。
         """
         c = await self._get_or_revive(user_id, run_id, cfg)
-        if expected_checksum and package_checksum(files) != expected_checksum:
-            raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝执行")
         rel_dir = f"skills/{task_id}/{tool_call_id}"
-        for name, data in files.items():
-            await c.backend.write_file(f"{rel_dir}/{name}", data)
+        await self._stage(c, rel_dir, files, expected_checksum)
         cmd = ["sh", "-lc", f"cd {c.backend.workdir}/{rel_dir} && {entrypoint}"]
         r = await c.backend.exec_shell(cmd, timeout=timeout or _SKILL_TIMEOUT_S, max_output_bytes=_OUTPUT_MAX_BYTES)
         if r.timed_out:

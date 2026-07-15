@@ -652,6 +652,104 @@ def test_skill_015_entrypoint_missing_structured_error(client, monkeypatch):
     assert fails and fails[0]["reason_code"] == "SKILL_PACKAGE_INVALID"
 
 
+def _skill_run_ctx(client, *, crid: str, task_id: str, skill_key: str):
+    """016-018 共用脚手架：建实例+run（run 创建边界已 ensure 容器）→ 直接构造 TaskState（014 模式）。"""
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": crid, "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id=task_id, run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {skill_key: {"version_no": 1}}
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+    return st, run, run_row
+
+
+def test_skill_016_manual_skill_stages_references_into_container(client, monkeypatch):
+    """统一进容器（2026-07-15 拍板）：手册型 Skill 整包投递沙箱，references/ 经容器命令真读回；
+    返回文本含 目录+文件清单+cat 指引+手册正文（修「agent 没按 skill 内容执行」：此前 references 全被丢弃）。"""
+    import re
+
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from sandbox.executor import executor as sandbox_executor
+    from sandbox.executor import package_checksum
+
+    ref_body = "细则：先查 A 再查 B，阈值 0.95。".encode()
+    files = {"SKILL.md": "# alarm-query 手册\n先读 references/steps.md 再操作。".encode(),
+             "references/steps.md": ref_body}
+
+    async def _pkg(_key, _ver):
+        return {"files": dict(files), "entrypoint": None, "checksum": package_checksum(files)}
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _pkg)
+    st, run, run_row = _skill_run_ctx(client, crid="sk_ref", task_id="tk-ref", skill_key="alarm-query")
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "alarm-query")
+        assert "手册型技能" in txt and "references/steps.md" in txt and "run_container_command" in txt
+        assert st.tool_blocked is False
+        # 从返回文本取出容器目录，经容器命令真读回 references 内容（fake 后端 exec_shell 是真 subprocess）
+        m = re.search(r"容器目录 (\S+)/：", txt)
+        assert m, txt
+        res = await sandbox_executor.run_command("0026demo01", f"cat {m.group(1)}/references/steps.md")
+        assert res.exit_code == 0 and ref_body.decode() in res.stdout
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    ok = [e for e in events if e["event_type"] == "openops.skill.call.succeeded"]
+    assert ok and "含 1 个参考文件" in str(ok[0]["payload_redacted_json"].get("summary", ""))
+
+
+def test_skill_017_manual_stage_failure_degrades_gracefully(client, monkeypatch):
+    """投递优雅降级：stage 失败（容器抖动等）不让手册型调用整体失败——正文照常返回 + 文本说明降级。"""
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from sandbox.executor import executor as sandbox_executor
+
+    async def _pkg(_key, _ver):
+        return {"files": {"SKILL.md": "# 手册\n降级演练正文。".encode()}, "entrypoint": None, "checksum": ""}
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("container down")
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _pkg)
+    monkeypatch.setattr(sandbox_executor, "stage_files", _boom)
+    st, run, _ = _skill_run_ctx(client, crid="sk_deg", task_id="tk-deg", skill_key="alarm-query")
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "alarm-query")
+        assert "手册型技能" in txt and "降级演练正文" in txt  # 手册主体仍达
+        assert "投递失败" in txt  # 降级显式说明
+        assert st.tool_blocked is False  # 不算拦截/失败
+
+    asyncio.run(scenario())
+
+
+def test_skill_018_script_skill_notes_staged_dir(client, monkeypatch):
+    """脚本型统一口径：执行结果文本追加「已投递至容器目录」一行（同一指引，模型可查阅包内参考文件）。"""
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from sandbox.executor import package_checksum
+
+    files = {"SKILL.md": b"entrypoint: python3 run.py", "run.py": b"print('SCRIPT-OK')"}
+
+    async def _pkg(_key, _ver):
+        return {"files": dict(files), "entrypoint": "python3 run.py", "checksum": package_checksum(files)}
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _pkg)
+    st, run, _ = _skill_run_ctx(client, crid="sk_scr", task_id="tk-scr", skill_key="change-query")
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "change-query")
+        assert "SCRIPT-OK" in txt  # 脚本真执行（fake 后端真 subprocess python3）
+        assert "已投递至容器目录" in txt and "run_container_command" in txt
+
+    asyncio.run(scenario())
+
+
 # ────────────────── docker 档产品化批（2026-07-15）──────────────────
 
 def test_build_container_config_shape():
