@@ -225,11 +225,11 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
 
     # 实例默认模型：active 配置 overlay 绑定的用户自定义 LLM 作为该实例默认（InitWizard custom 分支 / 30.5）。
     # 会话级 select-model 在本 task 内直接改 st.selected_model 覆盖；无绑定则 None→平台默认（B7 ACL 解析）。
+    active_cv = await agent_teams.get_config_version(str(inst["active_config_version_id"]))
+    _overlay = (active_cv or {}).get("overlay_json") or {}  # user_llm_config_id + platform_model_id + main_role_append 同源
     if not st.selected_model:
-        active_cv = await agent_teams.get_config_version(str(inst["active_config_version_id"]))
-        overlay_json = (active_cv or {}).get("overlay_json") or {}
-        bound_llm = overlay_json.get("user_llm_config_id")
-        bound_platform = overlay_json.get("platform_model_id")  # InitWizard 选中的平台模型（管理员注册且授权）
+        bound_llm = _overlay.get("user_llm_config_id")
+        bound_platform = _overlay.get("platform_model_id")  # InitWizard 选中的平台模型（管理员注册且授权）
         if bound_llm:
             st.selected_model = str(bound_llm)
         elif bound_platform:
@@ -244,6 +244,10 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     _content = (tpl_ver or {}).get("content_json") or {}
     _main = _content.get("main", {})
     st.template_tools = set(_main.get("default_tools", []))
+    # 主 Agent 人设：模板 main.role + 实例 overlay main_role_append → run_task 装配进 system_prompt
+    # （对齐子 Agent 的 sub['role']，修「主 Agent 人设运行时被丢弃、自行发挥」）
+    st.main_role = _main.get("role")
+    st.main_role_append = _overlay.get("main_role_append")
     st.activity_tool_labels = dict((_content.get("activity_labels") or {}).get("tools") or {})
     # D 块：sub_agents 画像装配到 main task（子 task 恒 None=禁二层派发）；派发预算随模板
     _subs = _content.get("sub_agents") or []
@@ -263,8 +267,13 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     # （只收窄 main 自己；available-skills 端点吃同一过滤，展示=可执行）
     st.skills_pool = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
     st.available_skills = filter_main_skills(st.skills_pool, _content)
-    # skill_hint（/<skill> 显式触发）：仅当命中本轮可执行集才生效（未命中/未传→忽略，防脏注入无效名）。
+    # skill_hint（/<skill> 显式触发）：显式字段优先；否则从 input_text 前导 /<token> 推导（前端 / 菜单只把
+    # skill 名塞进文本、不发结构化 hint，故服务端兜底解析）。仅当命中本轮可执行集才生效（未命中/未传→忽略，防脏注入）。
     _hint = getattr(req, "skill_hint", None)
+    if not _hint:
+        _txt = (req.input_text or "").lstrip()
+        if _txt.startswith("/") and len(_txt) > 1:
+            _hint = _txt[1:].split(None, 1)[0]  # / 后首个空白分隔 token（skill_key 无空格）
     if _hint and _hint in (st.available_skills or {}):
         st.skill_hint = _hint
     # P2：初始 running 快照（task.started 审计在上方直发不走 emit，此处补单点落盘）；失败降级不阻断

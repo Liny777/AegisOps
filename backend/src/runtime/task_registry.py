@@ -37,6 +37,10 @@ class TaskState:
     # 本轮用户显式指定优先执行的 Skill（StartTaskRequest.skill_hint，已按 available_skills 校验命中；
     # 未命中/未传=None）。run_task 据此在 system_prompt 追加确定性执行指令（发现链路：/<skill> 显式触发）。
     skill_hint: str | None = None
+    # 主 Agent 人设（run_task 装配进 system_prompt）：main_role=模板 content_json.main.role；
+    # main_role_append=实例 overlay_json.main_role_append。对齐子 Agent 的 sub['role']——修「主 Agent 人设被丢弃」。
+    main_role: str | None = None
+    main_role_append: str | None = None
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

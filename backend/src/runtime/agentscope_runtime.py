@@ -343,6 +343,33 @@ def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:
             f"当前可用 Skill：\n{lines}")
 
 
+# 主 Agent 人设兜底（模板 main.role 必填，通常不会走到；仅防御 role 缺失/空）
+_DEFAULT_MAIN_ROLE = "你是资深 SRE 诊断 Agent：理解用户任务，调度平台巡检/定界/恢复能力完成诊断与恢复。"
+# 平台层固定规则：始终附在角色人设之后。含「优先用匹配 Skill、别自行发挥」引导 + 安全护栏
+# （审批/图表/不臆造）——安全项声明优先级高于角色设定，用户人设无法绕过。
+_PLATFORM_RULES = (
+    "\n\n【平台规则（始终遵守；安全项优先级高于以上角色设定）】\n"
+    "- 当某个可用 Skill 的用途与当前任务匹配时，必须优先调用该 Skill（run_platform_skill）并严格按其步骤/流程执行，"
+    "不要自行发挥；只有在没有任何匹配 Skill 时，才用通用工具（查询/命令/Read/Grep）自己诊断。\n"
+    "- 恢复类/写操作必须先请求人工批准、获批后才执行。\n"
+    "- 仅当本轮已取得的数值适合做趋势或对比时才调用 render_chart；不得为图表臆造数据。"
+)
+
+
+def _build_system_prompt(st: TaskState) -> str:
+    """装配主 Agent 的 system_prompt：用户人设（模板 main.role + 实例 main_role_append）在前领跑，
+    平台规则在后固定兜底，skill_hint 命中时再追加确定性执行指令。修「主 Agent 人设被丢弃、
+    硬编码『先巡检定界』逼模型自行诊断」——子 Agent 早已走 sub['role']，主 Agent 对齐。"""
+    persona = (st.main_role or _DEFAULT_MAIN_ROLE).strip() or _DEFAULT_MAIN_ROLE
+    if st.main_role_append:
+        persona = f"{persona}\n{st.main_role_append.strip()}"
+    prompt = persona + _PLATFORM_RULES
+    if st.skill_hint:  # /<skill> 显式触发：确定性优先执行指定 Skill（start_task 已按 available_skills 校验命中）
+        prompt += (f"\n- 本轮用户已显式指定优先执行 Skill `{st.skill_hint}`："
+                   f"请第一步调用 run_platform_skill(skill_name='{st.skill_hint}')，除非用户另有明确指示。")
+    return prompt
+
+
 async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     """工具统一走 runtime.tool_gateway（B4：标注/APPID/Secret/header/审计）；RCA 卡更新留在工具内。
 
@@ -722,12 +749,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             from agentscope.agent import ContextConfig, ModelConfig, ReActConfig
         except ImportError:  # pragma: no cover
             from agentscope.agent._config import ContextConfig, ModelConfig, ReActConfig
-        _system_prompt = ("你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；"
-                          "恢复类动作必须请求人工批准。只有当本轮已取得的数值适合做趋势或对比时，"
-                          "才调用 render_chart 提升可读性；不得为图表臆造数据。")
-        if st.skill_hint:  # /<skill> 显式触发：确定性优先执行指定 Skill（start_task 已按 available_skills 校验命中）
-            _system_prompt += (f"\n本轮用户已显式指定优先执行 Skill `{st.skill_hint}`："
-                               f"请第一步调用 run_platform_skill(skill_name='{st.skill_hint}')，除非用户另有明确指示。")
+        _system_prompt = _build_system_prompt(st)  # 用户人设(main.role+append) + 平台规则 + skill_hint
         agent = Agent(
             name="sre-rca",
             system_prompt=_system_prompt,

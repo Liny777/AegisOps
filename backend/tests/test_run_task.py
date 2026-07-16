@@ -170,6 +170,58 @@ def test_render_skill_catalog_injects_purpose():
     assert "（当前实例未装配任何 Skill）" in rt._render_skill_catalog({})
 
 
+def test_build_system_prompt_uses_role_and_platform_rules():
+    """主 Agent 人设装配：用户 main.role/append 进 prompt（不再被丢弃、旧硬编码自诊断默认移除）；
+    平台层固定「优先用匹配 Skill、别自行发挥」+ 安全规则；skill_hint 命中时追加确定性执行指令。"""
+    import pytest as _pytest
+
+    rt = _pytest.importorskip("runtime.agentscope_runtime")  # 需 agentscope 依赖
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.main_role = "遇到告警诊断请调用 fault-diagnosis 技能并走五步法"
+    p = rt._build_system_prompt(st)
+    assert "fault-diagnosis 技能并走五步法" in p                 # 用户人设进了 prompt
+    assert "必须优先调用该 Skill" in p and "不要自行发挥" in p    # 平台层 skill 引导
+    assert "人工批准" in p and "臆造数据" in p                    # 安全规则保留
+    assert "先巡检定界" not in p                                  # 旧硬编码自诊断默认已移除
+
+    st.main_role_append = "补充：优先看 redis 指标"
+    assert "补充：优先看 redis 指标" in rt._build_system_prompt(st)   # 实例级追加生效
+
+    st.skill_hint = "fault-diagnosis"
+    assert "第一步调用 run_platform_skill(skill_name='fault-diagnosis')" in rt._build_system_prompt(st)
+
+    st_bare = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    assert rt._DEFAULT_MAIN_ROLE in rt._build_system_prompt(st_bare)  # role 缺失 → 兜底默认
+
+
+def test_start_task_populates_main_role_not_dropped(client):
+    """回归根因：start_task 把模板 content_json.main.role 流入 st.main_role（此前被丢弃）。
+    自然语言（无 / 前缀）→ skill_hint 不强制。"""
+    from runtime import task_registry
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    start_task(client, run["agent_run_id"], "帮我诊断告警 X")
+    st = task_registry.get_by_run(run["agent_run_id"])
+    assert st is not None
+    assert st.main_role and "调度" in st.main_role   # seed 模板 main.role 已流入（不再被丢弃）
+    assert st.skill_hint is None                       # 无 / 前缀 → 不强制某个 skill
+
+
+def test_start_task_slash_prefix_sets_skill_hint(client):
+    """/skill 确定性触发：input_text 前导 /<skill> 且命中 available_skills → st.skill_hint 被填充
+    （前端只把 skill 名塞文本、不发结构化 hint，服务端兜底解析）。"""
+    from runtime import task_registry
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    start_task(client, run["agent_run_id"], "/inspection 帮我巡检 APP-A")
+    st = task_registry.get_by_run(run["agent_run_id"])
+    assert st is not None and st.skill_hint == "inspection"  # seed 平台 skill，main.skills=[] 不收窄
+
+
 def test_available_skills_endpoint_shape_and_ownership(client):
     """GET /agent-teams/{id}/available-skills：与执行门禁同源；他人实例 403。"""
     from conftest import OTHER_HEADERS, USER_HEADERS, create_instance, unwrap
