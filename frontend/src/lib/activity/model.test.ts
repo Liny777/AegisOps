@@ -31,6 +31,8 @@ test("state/audit/live 使用 event_id 去重、按时间与 sequence 稳定排�
     { ...auditEvent("e2", "openops.tool.call.started", "2026-07-14T02:00:00Z"), sequence: 2 },
     { ...auditEvent("e1", "openops.subagent.started", "2026-07-14T02:00:00Z"), sequence: 1 },
     auditEvent("hidden", "openops.model.thinking.delta", "2026-07-14T02:00:01Z"),
+    // 新增：模型思考增量走 assistant 流展示为 reasoning 折叠卡，同样不进活动栏（regex 命中 .thinking.）。
+    auditEvent("hidden2", "openops.assistant.thinking.delta", "2026-07-14T02:00:01Z"),
   ], "state");
   events = mergeActivityEvents(events, [{
     event_id: "e1",
