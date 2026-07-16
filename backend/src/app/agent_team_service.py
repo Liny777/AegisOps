@@ -11,7 +11,19 @@ from infra.repositories import agent_teams, audit, templates
 from runtime import task_registry
 
 # 初始化 payload 白名单（INIT-004：非 V1 字段忽略）
-_OVERLAY_ALLOWED = {"main_role_append", "user_llm_config_id"}
+# user_llm_config_id = 用户自带 LLM 作实例默认；platform_model_id = 平台模型（管理员注册且已授权）作实例默认。
+# 二者互斥，均缺省 → 平台默认（OPENOPS_RUNTIME_MODEL）。运行时解析见 run_state_service 实例默认段。
+_OVERLAY_ALLOWED = {"main_role_append", "user_llm_config_id", "platform_model_id"}
+
+
+async def _ensure_platform_model_authorized(user_id: str, model_id: Any) -> None:
+    """选平台模型作实例默认时按用户授权 fail-closed 校验（同 select-model / Model Gateway 口径）；
+    前端只列已授权模型，此处是防越权直调的服务端兜底。"""
+    if not model_id:
+        return
+    from app import model_asset_service  # 延迟导入：避免与 model_asset_service 潜在环
+    if not await model_asset_service.is_authorized(user_id, str(model_id)):
+        raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该平台模型未对你授权，请联系管理员申请白名单")
 
 
 def _owner_check(row: dict[str, Any] | None, user_id: str) -> dict[str, Any]:
@@ -54,6 +66,7 @@ async def _create_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
         raise ApiError(Err.VALIDATION_FAILED, "同名实例已存在")
 
     overlay = {k: v for k, v in (req.initial_overlay_json or {}).items() if k in _OVERLAY_ALLOWED}
+    await _ensure_platform_model_authorized(uid, overlay.get("platform_model_id"))
     inst = await agent_teams.create_instance(
         uid, str(tv["template_id"]), req.template_version_id, req.name,
         req.workspace_id, req.scope_revision or ws["scope_revision"], overlay,
@@ -119,12 +132,16 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
         if ws["sync_status"] != "ready":
             raise ApiError(Err.WORKSPACE_NOT_READY, "workspace 未就绪，暂不能激活")  # INIT-003 口径
 
-    # 模型 overlay：save_config 是整体替换，这里必须读旧值合并、只动 user_llm_config_id（保 main_role_append）
+    # 模型 overlay：save_config 是整体替换，这里必须读旧值合并、只动模型两键（保 main_role_append）。
+    # user_llm_config_id（自带 LLM）与 platform_model_id（平台模型）互斥，二者皆空 = 回平台默认。
     prev = await agent_teams.get_config_version(str(row["active_config_version_id"]))
     prev_overlay = dict((prev or {}).get("overlay_json") or {})
-    new_overlay = {k: v for k, v in prev_overlay.items() if k != "user_llm_config_id"}
+    new_overlay = {k: v for k, v in prev_overlay.items() if k not in ("user_llm_config_id", "platform_model_id")}
     if req.user_llm_config_id:
         new_overlay["user_llm_config_id"] = req.user_llm_config_id
+    elif req.platform_model_id:
+        await _ensure_platform_model_authorized(uid, req.platform_model_id)
+        new_overlay["platform_model_id"] = req.platform_model_id
 
     changed: dict[str, Any] = {}
     if rename:
@@ -137,6 +154,7 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
     if new_overlay != prev_overlay:  # 纯改名/换范围不涨配置版本
         await derive_config_version(row, uid, "edit: 模型变更", overlay=new_overlay)
         changed["user_llm_config_id"] = req.user_llm_config_id
+        changed["platform_model_id"] = req.platform_model_id
     if changed:  # payload 只含变化字段的纯标识符（SEC-001）
         await audit.insert_event(
             audit_trace_id=instance_id, event_type="instance.updated",

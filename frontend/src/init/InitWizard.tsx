@@ -4,7 +4,7 @@ import { color, radius, shadow } from "../theme/tokens";
 import { Icon, useHover, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
-import type { Template, Workspace } from "../lib/api/types";
+import type { ModelOption, Template, Workspace } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm, useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
@@ -37,7 +37,8 @@ export function InitWizard() {
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
-  const [platformDefaultLabel, setPlatformDefaultLabel] = useState(""); // 平台默认模型名（后台驱动，替代写死 Qwen3.5）
+  const [platformModels, setPlatformModels] = useState<ModelOption[]>([]); // 管理员注册且对本用户授权的平台模型全集（可选）
+  const [selectedPlatformId, setSelectedPlatformId] = useState(""); // 选中的平台模型 model_id（裸 id；空=平台默认兜底）
   const [wsDialog, setWsDialog] = useState(false);
   const [omodelReady, setOmodelReady] = useState(false);  // step1 OModel 看护空间初始化 loading 是否转完
   const [activating, setActivating] = useState(false);
@@ -55,10 +56,15 @@ export function InitWizard() {
           setName(d.name);
           setWsId(d.workspace_id);
           const llmId = typeof d.overlay.user_llm_config_id === "string" ? d.overlay.user_llm_config_id : "";
+          const platformId = typeof d.overlay.platform_model_id === "string" ? d.overlay.platform_model_id : "";
           if (llmId) {
             setLlm("custom");
             setCustomLlmId(llmId);
             setCustomLlmLabel(models.find((m) => m.llm_config_id === llmId)?.label ?? "自定义模型");
+          } else if (platformId) {
+            // 编辑态预填：实例默认绑的是平台模型 → 选中它（无绑定则由上面清单 effect 保持默认）
+            setLlm("platform");
+            setSelectedPlatformId(platformId);
           }
         })
         .catch((e: unknown) => setErr(e instanceof Error ? e.message : "加载失败，请重试"));
@@ -68,16 +74,20 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, [editing, instanceId]);
 
-  // 平台默认模型名（后台驱动）：取 /models/platform 中标记为默认（is_default→current）的那个，
-  // 替代此前写死的「Qwen3.5」——真实运行默认由 OPENOPS_RUNTIME_MODEL 决定（如 glm-5.1）。
+  // 平台模型清单（后台驱动）：/models/platform 返回管理员注册且对本用户授权的全部平台模型，逐个可选。
+  // 新建态默认选中后端标记的运行默认（is_default→current）；编辑态由上面的编辑预填决定。
   useEffect(() => {
     api.getModelConfigs()
       .then((models) => {
-        const def = models.find((m) => m.current) ?? models[0];
-        if (def) setPlatformDefaultLabel(def.label);
+        const platforms = models.filter((m) => m.llm_config_id.startsWith("platform:"));
+        setPlatformModels(platforms);
+        if (!editing) {
+          const def = platforms.find((m) => m.current) ?? platforms[0];
+          if (def) setSelectedPlatformId(def.llm_config_id.slice("platform:".length));
+        }
       })
       .catch(() => undefined);
-  }, []);
+  }, [editing]);
 
   // 门条件：step0 配置（名称+范围+模型，custom 须已创建否则死路）；step1 OModel 初始化转完；step2 放行
   const canNext = [!!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), omodelReady, true][step];
@@ -90,10 +100,14 @@ export function InitWizard() {
       ? api.updateAgentTeam(instanceId, {
           name, workspace_id: wsId,
           user_llm_config_id: llm === "custom" && customLlmId ? customLlmId : null,
+          platform_model_id: llm === "platform" && selectedPlatformId ? selectedPlatformId : null,
         }).then(() => { refresh(); nav("/agents"); })
       : api.createAgentTeam({
           template_version_id: tplId, name, workspace_id: wsId,
-          initial_overlay_json: llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId } : undefined,
+          initial_overlay_json:
+            llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId }
+            : llm === "platform" && selectedPlatformId ? { platform_model_id: selectedPlatformId }
+            : undefined,
         }).then((r) => { nav(`/agent-teams/${r.instance_id}/chat`); });
     done.catch((e: unknown) => {
       // 无 .catch 时 400 会让 activating 永远为 true → 一直转圈；这里收口：停转 + 显因（如"同名实例已存在"）
@@ -138,7 +152,8 @@ export function InitWizard() {
               name={name} onName={setName}
               workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog(true)}
               llm={llm} onLlm={setLlm}
-              platformDefaultLabel={platformDefaultLabel}
+              platformModels={platformModels} selectedPlatformId={selectedPlatformId}
+              onPickPlatform={(id) => { setSelectedPlatformId(id); setLlm("platform"); }}
               customLlmId={customLlmId} customLlmLabel={customLlmLabel} customLlmMeta={customLlmMeta}
               onCustomCreated={(id, label, meta) => {
                 setCustomLlmId(id); setCustomLlmLabel(label); setCustomLlmMeta(meta); setLlm("custom");
@@ -274,13 +289,13 @@ function RadioDot({ on }: { on: boolean }) {
 function StepConfigure({
   name, onName,
   workspaces, wsId, onPickWs, onCreateWs,
-  llm, onLlm, platformDefaultLabel,
+  llm, onLlm, platformModels, selectedPlatformId, onPickPlatform,
   customLlmId, customLlmLabel, customLlmMeta, onCustomCreated, onCustomRemoved,
 }: {
   name: string; onName: (v: string) => void;
   workspaces: Workspace[]; wsId: string; onPickWs: (id: string) => void; onCreateWs: () => void;
   llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void;
-  platformDefaultLabel: string;
+  platformModels: ModelOption[]; selectedPlatformId: string; onPickPlatform: (id: string) => void;
   customLlmId: string; customLlmLabel: string; customLlmMeta: CustomLlmMeta | null;
   onCustomCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
   onCustomRemoved: () => void;
@@ -323,9 +338,20 @@ function StepConfigure({
           <SectionLabel text="模型供应商" />
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 10px" }}>选择 Agent 使用的模型：可用平台提供的模型，也可接入自带模型（OpenAI 兼容，须支持 tool calling）。</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <LlmCard selected={llm === "platform"} onClick={() => onLlm("platform")}
-              icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
-              label={`平台默认模型${platformDefaultLabel ? `（${platformDefaultLabel}）` : ""}`} badge="平台提供" />
+            {platformModels.length > 0 ? platformModels.map((m) => {
+              const mid = m.llm_config_id.slice("platform:".length);
+              return (
+                <LlmCard key={mid} selected={llm === "platform" && selectedPlatformId === mid}
+                  onClick={() => onPickPlatform(mid)}
+                  icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
+                  label={m.label} badge={m.current ? "平台默认" : "平台提供"} badgeTone={m.current ? "good" : undefined} />
+              );
+            }) : (
+              // 无已授权平台模型（管理员未注册/未授权）：仍给一个走后端默认的兜底卡，避免无模型可选
+              <LlmCard selected={llm === "platform"} onClick={() => onPickPlatform("")}
+                icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
+                label="平台默认模型" badge="平台提供" />
+            )}
 
             {customLlmId ? (
               <LlmCard selected={llm === "custom"} onClick={() => onLlm("custom")}
