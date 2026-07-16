@@ -969,3 +969,137 @@ def test_guard_read_only_allows_diagnostics_asks_mutations():
         assert await act("sudo whoami", ["sudo"]) == "deny"  # 层1 平台 deny 最高优先，只读也拦
 
     asyncio.run(scenario())
+
+
+# ────────────────── B8·补3：容器内 Read/Glob 工具 + 放宽输出上限（Skill 截断修复）──────────────────
+
+def _bash_ctx(client, *, crid: str, task_id: str):
+    """B8·补3 共用脚手架：建实例+run（创建边界已 ensure 容器）→ TaskState（带 sandbox_cfg）+ run dict。"""
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": crid, "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id=task_id, run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.sandbox_cfg = {}  # 非 None → 工具不 fail-closed；容器缺失时经 run_id+cfg 自愈重建
+    return st, _run_dict(run_row), run_row
+
+
+def test_read_container_file_paginates_full_content(client):
+    """B8·补3：read_container_file 按行读全大文件（带行号 + offset/limit 分页），不受 2000 上限约束——
+    这是「Skill references 大文件被 run_container_command 截断读不全」的正解。"""
+    from runtime.sandbox_bash import read_container_file
+
+    st, run, _ = _bash_ctx(client, crid="rcf", task_id="tk_rcf")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        big = ("\n".join(f"line-{i}" for i in range(1, 251)) + "\n").encode()  # 250 行、每行有换行
+        await c.backend.write_file("big.txt", big)
+        p = f"{c.backend.workdir}/big.txt"
+
+        page1 = await read_container_file(st, run, p, offset=1, limit=100)
+        assert "line-1" in page1 and "line-100" in page1 and "line-101" not in page1  # 只到窗口末行
+        assert "共 250 行" in page1 and "还有 150 行" in page1 and "offset=101" in page1  # 续读指引
+        assert "\tline-1" in page1  # cat -n 行号（右对齐数字 + tab）
+
+        page2 = await read_container_file(st, run, p, offset=101, limit=100)
+        assert "line-101" in page2 and "line-200" in page2 and "还有 50 行" in page2
+
+        tail = await read_container_file(st, run, p, offset=201, limit=100)
+        assert "line-250" in tail and "还有" not in tail  # 末页无续读提示
+
+    asyncio.run(scenario())
+
+
+def test_read_container_file_missing_file_reports_failure(client):
+    """B8·补3：读不存在的文件明确报「读取失败」（首段判存在，避免末尾管道 head 把缺失吞成空文件）。"""
+    from runtime.sandbox_bash import read_container_file
+
+    st, run, run_row = _bash_ctx(client, crid="rcf_miss", task_id="tk_rcf_miss")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        miss = await read_container_file(st, run, f"{c.backend.workdir}/nope.txt")
+        assert "读取失败" in miss
+        # 空文件：不算失败，给「无更多内容」提示
+        await c.backend.write_file("empty.txt", b"")
+        empty = await read_container_file(st, run, f"{c.backend.workdir}/empty.txt")
+        assert "读取失败" not in empty and "无更多内容" in empty
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "openops.sandbox.file.read" for e in events)  # 读取入审计闭环
+
+
+def test_list_container_files_lists_and_filters(client):
+    """B8·补3：list_container_files 列目录 + 可选通配过滤（find 可移植 flag，直接经 executor 只读执行）。"""
+    from runtime.sandbox_bash import list_container_files
+
+    st, run, run_row = _bash_ctx(client, crid="lcf", task_id="tk_lcf")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        await c.backend.write_file("refs/a.md", b"aaa")
+        await c.backend.write_file("refs/b.txt", b"bbb")
+        d = f"{c.backend.workdir}/refs"
+
+        allf = await list_container_files(st, run, d)
+        assert "a.md" in allf and "b.txt" in allf
+
+        only_md = await list_container_files(st, run, d, pattern="*.md")
+        assert "a.md" in only_md and "b.txt" not in only_md
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    assert any(e["event_type"] == "openops.sandbox.file.list" for e in events)
+
+
+def test_run_container_command_output_cap_relaxed_with_notice(client):
+    """B8·补3：run_container_command 回模型上限从硬 2000 放宽到 _BASH_OUTPUT_CHARS(16000)；超限时截断并
+    追加可续读提示（指向 read_container_file）。用 cat 已暂存文件——只读自动放行，不触 HITL。"""
+    from runtime.sandbox_bash import _BASH_OUTPUT_CHARS, run_container_command
+
+    st, run, _ = _bash_ctx(client, crid="cap", task_id="tk_cap")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        # 3000 字符（> 旧 2000、< 16000）：现在完整返回，旧口径会截在中途
+        await c.backend.write_file("mid.txt", b"B" * 3000)
+        mid = await run_container_command(st, run, f"cat {c.backend.workdir}/mid.txt")
+        assert ("B" * 3000) in mid and "已截断" not in mid
+
+        # 20000 字符（> 16000）：截断 + 提示，长度回落到上限附近
+        await c.backend.write_file("huge.txt", b"A" * 20000)
+        huge = await run_container_command(st, run, f"cat {c.backend.workdir}/huge.txt")
+        assert "已截断" in huge and "read_container_file" in huge
+        assert len(huge) <= _BASH_OUTPUT_CHARS + 400  # 正文 + 提示语尾巴
+
+    asyncio.run(scenario())
+
+
+def test_manual_skill_body_truncation_marked_and_points_to_read_tool(client, monkeypatch):
+    """B8·补3：手册型 Skill 正文超 cap 时不再静默丢尾——追加截断标记并指向容器内 SKILL.md 全文；
+    staged_note 从 cat 改指向 read_container_file。"""
+    monkeypatch.setenv("OPENOPS_SKILL_MANUAL_CAP", "60")  # 压低 cap 强制截断（无需超大正文）
+    from infra.external import skill_hub_client
+    from runtime.sandbox_skill import run_bound_skill
+    from sandbox.executor import package_checksum
+
+    long_md = ("# 排查手册\n" + "先查 A 再查 B，阈值 0.95。" * 20).encode()  # 远超 60 字符
+    files = {"SKILL.md": long_md, "references/steps.md": b"detail"}
+
+    async def _pkg(_key, _ver):
+        return {"files": dict(files), "entrypoint": None, "checksum": package_checksum(files)}
+
+    monkeypatch.setattr(skill_hub_client, "download_skill_package", _pkg)
+    st, run, _ = _skill_run_ctx(client, crid="sk_trunc", task_id="tk-trunc", skill_key="alarm-query")
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "alarm-query")
+        assert "read_container_file" in txt                       # 提示语改指新工具
+        assert "已截断" in txt and "SKILL.md" in txt and "读取全文" in txt  # 截断标记 + 全文入口
+        assert st.tool_blocked is False
+
+    asyncio.run(scenario())
