@@ -263,6 +263,10 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     # （只收窄 main 自己；available-skills 端点吃同一过滤，展示=可执行）
     st.skills_pool = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
     st.available_skills = filter_main_skills(st.skills_pool, _content)
+    # skill_hint（/<skill> 显式触发）：仅当命中本轮可执行集才生效（未命中/未传→忽略，防脏注入无效名）。
+    _hint = getattr(req, "skill_hint", None)
+    if _hint and _hint in (st.available_skills or {}):
+        st.skill_hint = _hint
     # P2：初始 running 快照（task.started 审计在上方直发不走 emit，此处补单点落盘）；失败降级不阻断
     try:
         await task_states.upsert_snapshot(st, "running", trace)
@@ -294,11 +298,20 @@ async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str
     from infra.repositories import assets
 
     out: dict[str, dict[str, Any]] = {}
+    # skill_key → SKILL.md 的 description（发现链路：注入 run_platform_skill 工具描述，让 Agent 知道每个
+    # skill 干什么、何时用）。list_skills(uid) 覆盖平台 + 本人 user skill 且带 manifest_json，二者的 description
+    # 都从这里取；binding 明细无 manifest，故第二循环覆盖 user skill 时也从此 map 回填。
+    desc_by_key: dict[str, str | None] = {}
     for s in await assets.list_skills(uid, include_platform=True):
-        if s.get("status") == "active" and s.get("skill_key"):
-            out[str(s["skill_key"])] = {"version_no": s.get("version_no"), "checksum": s.get("checksum_sha256"),
-                                        "source_type": s.get("source_type"),
-                                        "display_name": s.get("display_name") or str(s["skill_key"])}
+        key = s.get("skill_key")
+        if not key:
+            continue
+        desc_by_key[str(key)] = (s.get("manifest_json") or {}).get("description")
+        if s.get("status") == "active":
+            out[str(key)] = {"version_no": s.get("version_no"), "checksum": s.get("checksum_sha256"),
+                             "source_type": s.get("source_type"),
+                             "display_name": s.get("display_name") or str(key),
+                             "description": desc_by_key.get(str(key))}
     details = await agent_teams.list_binding_details(config_version_id)
     for b in details:
         if b.get("asset_type") == "skill" and b.get("skill_status") in ("enabled", "validated", "uploaded"):
@@ -306,7 +319,8 @@ async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str
             if not key:
                 continue
             out[str(key)] = {"version_no": b.get("skill_version_no"), "checksum": None, "source_type": "user",
-                             "display_name": b.get("skill_display_name") or str(key)}
+                             "display_name": b.get("skill_display_name") or str(key),
+                             "description": desc_by_key.get(str(key))}  # 覆盖后仍带 description（binding 无 manifest）
     # 个人 skill「解绑」= muted 绑定行：从可执行集剔除（守卫 source_type=='user'——平台 skill 永不可被 mute）
     for b in details:
         if b.get("asset_type") == "skill" and b.get("status") == "muted":

@@ -130,6 +130,23 @@ def test_asset_reconcile_backfills_missing_semver_without_new_version(client):
     assert str(insp["version_no"]) == old_vno  # 版本号不变（非新版本）
 
 
+def test_asset_reconcile_captures_skill_description(client):
+    """发现链路：reconcile 建版本时下载包抽 SKILL.md 的 description 落 manifest_json（list API 不带该字段，
+    唯有解 SKILL.md 才有）→ 供 run_platform_skill 工具描述注入，Agent 才知道 skill 用途、会主动调。"""
+    import asyncio
+
+    from infra.repositories import assets
+
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 建 v2（真 checksum）
+
+    async def _desc() -> str | None:
+        row = await assets.get_skill_by_key("platform", "inspection")
+        latest = await assets.latest_skill_version(str(row["skill_id"]))
+        return (latest.get("manifest_json") or {}).get("description")
+
+    assert asyncio.run(_desc()) == "巡检 Skill"  # _MOCK_SKILL_MD frontmatter 的 description，端到端落库
+
+
 def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runtime_backend):
     """schema_hash 变化 → 新 catalog 行不继承标注 → 运行时 TOOL_NOT_ANNOTATED fail-closed（ASSET-005，双 runtime）。"""
     tools = [

@@ -326,6 +326,23 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
                         is_read_only=bool(spec.get("readonly")))
 
 
+def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:
+    """构造 run_platform_skill 的工具描述（发现链路核心）：逐条列出 `skill_key`（display_name）：用途。
+    用途来自 SKILL.md 的 description（经 resolve_available_skills 流入 available_skills[k]['description']）。
+    LLM 必须"知道"有哪些 skill_key 合法**以及各自用途**，否则零感知、不会主动调、且易传错名被 fail-closed。"""
+    def _line(k: str, v: dict[str, Any]) -> str:
+        dn = v.get("display_name")
+        head = f"`{k}`（{dn}）" if dn and dn != k else f"`{k}`"
+        d = " ".join((v.get("description") or "").split())  # 压平换行/多空格
+        return f"- {head}：{d[:200]}{'…' if len(d) > 200 else ''}" if d else f"- {head}"
+
+    lines = "\n".join(_line(k, v) for k, v in available_skills.items()) or "（当前实例未装配任何 Skill）"
+    return ("执行一个已装配到当前实例的 Skill（在你的隔离容器内受控执行，返回结构化结果）。"
+            "根据下列各 Skill 的用途，判断用户诉求匹配哪个就主动调用；用户消息以 `/<Skill名>` 开头即要求优先执行对应 Skill。"
+            "skill_name 必须取自下列清单（取反引号内的名字），未装配会被拒绝。\n"
+            f"当前可用 Skill：\n{lines}")
+
+
 async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     """工具统一走 runtime.tool_gateway（B4：标注/APPID/Secret/header/审计）；RCA 卡更新留在工具内。
 
@@ -512,16 +529,9 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 容器内 LS/Glob（find 可移植；官方无 LS，Glob 本轮未启用）
     tools.append(FunctionTool(list_container_files, name="list_container_files", is_read_only=True))
     # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
-    # description 动态注入装配集（同 _make_dynamic_tool 的 description 覆盖模式）：LLM 必须"知道"有哪些
-    # skill_key 合法，否则零感知（实测问「介绍 alarm-query」只答同名 MCP）且易传错名被 fail-closed。
-    _sk = st.available_skills or {}
-    _sk_names = "、".join(
-        f"`{k}`（{v.get('display_name')}）" if v.get("display_name") and v.get("display_name") != k else f"`{k}`"
-        for k, v in _sk.items()
-    ) or "（当前实例未装配任何 Skill）"
-    _sk_desc = (f"执行一个已装配到当前实例的 Skill（在你的隔离容器内受控执行，返回结构化结果）。"
-                f"当前可用 Skill：{_sk_names}。用户消息以 `/<Skill名>` 开头即要求优先执行对应 Skill。"
-                f"skill_name 必须取自上述清单（取反引号内的名字），未装配会被拒绝。")
+    # description 动态注入装配集（同 _make_dynamic_tool 的 description 覆盖模式）：实测问「介绍 alarm-query」
+    # 只答同名 MCP——见 _render_skill_catalog（把 skill_key + 用途一并注入，让 Agent 主动发现/调用）。
+    _sk_desc = _render_skill_catalog(st.available_skills or {})
     tools.append(FunctionTool(run_platform_skill, name="run_platform_skill", description=_sk_desc, is_read_only=False))
     # 真工具 list_scope_apps：读 st.scope_ctx（本地、只读、无出站）——「我有哪些应用」有真答案，GLM 不再乱够工具
     st.tool_annotations = dict(st.tool_annotations or {})
@@ -712,11 +722,15 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             from agentscope.agent import ContextConfig, ModelConfig, ReActConfig
         except ImportError:  # pragma: no cover
             from agentscope.agent._config import ContextConfig, ModelConfig, ReActConfig
+        _system_prompt = ("你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；"
+                          "恢复类动作必须请求人工批准。只有当本轮已取得的数值适合做趋势或对比时，"
+                          "才调用 render_chart 提升可读性；不得为图表臆造数据。")
+        if st.skill_hint:  # /<skill> 显式触发：确定性优先执行指定 Skill（start_task 已按 available_skills 校验命中）
+            _system_prompt += (f"\n本轮用户已显式指定优先执行 Skill `{st.skill_hint}`："
+                               f"请第一步调用 run_platform_skill(skill_name='{st.skill_hint}')，除非用户另有明确指示。")
         agent = Agent(
             name="sre-rca",
-            system_prompt=("你是资深 SRE 诊断 Agent：先巡检定界、给假设与验证，再提恢复动作；"
-                           "恢复类动作必须请求人工批准。只有当本轮已取得的数值适合做趋势或对比时，"
-                           "才调用 render_chart 提升可读性；不得为图表臆造数据。"),
+            system_prompt=_system_prompt,
             model=await _build_model(st),
             toolkit=toolkit,
             state=agent_state,

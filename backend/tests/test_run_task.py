@@ -123,6 +123,53 @@ def test_resolve_available_skills_unifies_skill_key(monkeypatch):
     assert out["my-tool"]["source_type"] == "user" and out["my-tool"]["display_name"] == "我的工具"
 
 
+def test_resolve_available_skills_surfaces_description(monkeypatch):
+    """发现链路：manifest_json.description 经 resolve 流入 available_skills；binding 覆盖 user skill 后
+    仍从 desc_by_key 回填 description（否则被绑定的个人 skill 会丢用途、模型仍零感知）。"""
+    import asyncio
+
+    from app import run_state_service as rss
+
+    async def _skills(uid, include_platform=True):
+        return [
+            {"skill_key": "alarm-query", "display_name": "告警查询", "status": "active", "version_no": 2,
+             "checksum_sha256": "abc", "source_type": "platform",
+             "manifest_json": {"description": "按 APPID 查询最近告警"}},
+            {"skill_key": "my-tool", "display_name": "我的工具", "status": "active", "version_no": 1,
+             "checksum_sha256": "d", "source_type": "user", "manifest_json": {"description": "我的自定义排查"}},
+        ]
+
+    async def _bindings(cv):  # my-tool 也走 binding 明细（会用新 dict 覆盖第一循环项）
+        return [{"asset_type": "skill", "skill_status": "enabled", "skill_key": "my-tool",
+                 "skill_display_name": "我的工具", "skill_version_no": 1}]
+
+    from infra.repositories import agent_teams as at_repo
+    from infra.repositories import assets as assets_repo
+
+    monkeypatch.setattr(assets_repo, "list_skills", _skills)
+    monkeypatch.setattr(at_repo, "list_binding_details", _bindings)
+
+    out = asyncio.run(rss.resolve_available_skills("u1", "cv1"))
+    assert out["alarm-query"]["description"] == "按 APPID 查询最近告警"
+    assert out["my-tool"]["description"] == "我的自定义排查"  # 覆盖后未丢
+
+
+def test_render_skill_catalog_injects_purpose():
+    """发现链路终点：_render_skill_catalog 把 description 拼进 run_platform_skill 工具描述（模型据此主动调）；
+    无 description 的 skill 退回仅名字、不拼空冒号；空集给空态文案。"""
+    import pytest as _pytest
+
+    rt = _pytest.importorskip("runtime.agentscope_runtime")  # 需 agentscope 依赖，未装则跳过
+
+    desc = rt._render_skill_catalog({
+        "inspection": {"display_name": "巡检 inspection", "description": "巡检 Skill——检查 redis 连接池、p99"},
+        "bare": {"display_name": "裸技能"},  # 无 description
+    })
+    assert "`inspection`（巡检 inspection）：巡检 Skill——检查 redis 连接池、p99" in desc
+    assert "- `bare`（裸技能）" in desc and "`bare`（裸技能）：" not in desc  # 无 description 不拼冒号
+    assert "（当前实例未装配任何 Skill）" in rt._render_skill_catalog({})
+
+
 def test_available_skills_endpoint_shape_and_ownership(client):
     """GET /agent-teams/{id}/available-skills：与执行门禁同源；他人实例 403。"""
     from conftest import OTHER_HEADERS, USER_HEADERS, create_instance, unwrap

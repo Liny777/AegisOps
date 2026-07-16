@@ -34,6 +34,9 @@ class TaskState:
     # 未过滤全集（平台 active ∪ 实例绑定）：子 Agent 画像切片源——main.skills 收窄只管 main 自己，
     # 不得掐子角色的技能池（老 D6：主从技能面各自独立）
     skills_pool: dict[str, dict[str, Any]] | None = None
+    # 本轮用户显式指定优先执行的 Skill（StartTaskRequest.skill_hint，已按 available_skills 校验命中；
+    # 未命中/未传=None）。run_task 据此在 system_prompt 追加确定性执行指令（发现链路：/<skill> 显式触发）。
+    skill_hint: str | None = None
     # ASK 决策握手（decide/cancel 置位；orchestrator 等待）
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled

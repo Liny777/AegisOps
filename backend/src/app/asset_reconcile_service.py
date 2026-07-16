@@ -34,6 +34,18 @@ def _due() -> bool:
     return (time.monotonic() - _last_run["at"]) >= RECONCILE_TTL_S
 
 
+async def _fetch_skill_description(skill_key: str, version_no: Any) -> str | None:
+    """下载 Skill 包并抽取 SKILL.md 的 description（发现链路）。SkillHub 的 list API 不返回 description，
+    唯有解 SKILL.md frontmatter 才有——故只在 create/checksum 变化/存量缺失时按需下载一次，失败降级
+    None 不阻断对账（description 只影响 Agent 发现时的用途提示丰富度，不影响执行）。"""
+    try:
+        pkg = await skill_hub_client.download_skill_package(skill_key, int(version_no or 1))
+        return pkg.get("description")
+    except Exception as e:  # noqa: BLE001 —— 下载失败不炸整轮对账
+        log.warning("skill description fetch failed (%s): %s", skill_key, str(e)[:200])
+        return None
+
+
 async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str, Any]:
     """执行一轮对账；节流窗口内且非 force → {"skipped": True}。"""
     if not force and not _due():
@@ -52,10 +64,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             if s.get("source") != "openops" or s.get("source_type") != "platform":
                 continue
             # §2.2 semver + category 落进 manifest_json（零迁移展示口径；latest_version=SkillHub 原串）
+            # description 仅存在于 SKILL.md frontmatter（list API 不带）→ create/版本变化/存量缺失时下载抽取
             manifest = {"synced_from": "skill_hub", "latest_version": s.get("latest_version"),
                         "category": s.get("category")}
             row = await assets.get_skill_by_key(s["source_type"], s["skill_key"])
             if row is None:
+                manifest["description"] = await _fetch_skill_description(s["skill_key"], s.get("version_no"))
                 await assets.create_skill(
                     None if s["source_type"] == "platform" else s.get("owner_user_id"),
                     s["source_type"], s["display_name"], s["skill_key"],
@@ -65,6 +79,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 continue
             latest = await assets.latest_skill_version(str(row["skill_id"]))
             if latest is None or latest["checksum_sha256"] != s["checksum_sha256"]:
+                manifest["description"] = await _fetch_skill_description(s["skill_key"], s.get("version_no"))
                 await assets.add_skill_version(
                     str(row["skill_id"]), (latest["version_no"] if latest else 0) + 1,
                     manifest, s["checksum_sha256"], "system",
@@ -72,13 +87,18 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 summary["skill_versions_added"] += 1
             else:
                 # checksum 未变→不新增版本；但若现有 manifest 缺/旧 semver（改动前的旧行、或 SkillHub 侧改了
-                # latest_version/category）→ 原地合并回填展示元数据，让存量 skill 也能显示 semver（非新版本）
+                # latest_version/category）或从未抽过 description（键缺失）→ 原地合并回填（非新版本）。
+                # 用「键是否存在」而非真值判断 description，避免无 description 的 skill 每轮都重复下载。
                 cur = latest.get("manifest_json") or {}
+                need_desc = "description" not in cur
                 if (cur.get("latest_version") != s.get("latest_version")
-                        or cur.get("category") != s.get("category")):
+                        or cur.get("category") != s.get("category") or need_desc):
+                    desc = (await _fetch_skill_description(s["skill_key"], s.get("version_no"))
+                            if need_desc else cur.get("description"))
                     await assets.update_skill_version_manifest(
                         str(latest["skill_version_id"]),
-                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category")},
+                        {**cur, "latest_version": s.get("latest_version"),
+                         "category": s.get("category"), "description": desc},
                     )
                     summary["skill_manifests_refreshed"] += 1
 

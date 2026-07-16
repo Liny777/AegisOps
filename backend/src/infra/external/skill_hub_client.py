@@ -152,9 +152,30 @@ def _entrypoint_from(files: dict[str, bytes]) -> str | None:
     return "python3 run.py" if "run.py" in files else None
 
 
+def _description_from(files: dict[str, bytes]) -> str | None:
+    """从 SKILL.md frontmatter 取 description（发现链路：注入 run_platform_skill 工具描述，让模型
+    知道每个 skill 干什么、何时用）。优先限定在首个 `---…---` frontmatter 段内，避免误取正文里的
+    `description:` 行；无 frontmatter fence 时退回全篇首个匹配。缺该字段 → None（老包/手册型不报错）。"""
+    md = files.get("SKILL.md", b"").decode("utf-8", "replace")
+    lines = md.splitlines()
+    fenced = bool(lines) and lines[0].strip() == "---"
+    in_fm = False
+    for line in lines:
+        s = line.strip()
+        if fenced and s == "---":
+            if not in_fm:
+                in_fm = True
+                continue
+            break  # frontmatter 段结束，不再往正文找
+        if (in_fm or not fenced) and s.startswith("description:"):
+            return s.split(":", 1)[1].strip() or None
+    return None
+
+
 def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
-    """从 ZIP 的 SKILL.md frontmatter 解析 {name, skill_key, entrypoint}。
-    29.3 §2.1：SKILL.md 的 `name` 字段即 skill_id；无 SKILL.md 或缺 name → ValueError（上层转 SKILL_PACKAGE_INVALID）。"""
+    """从 ZIP 的 SKILL.md frontmatter 解析 {name, skill_key, entrypoint, description}。
+    29.3 §2.1：SKILL.md 的 `name` 字段即 skill_id；无 SKILL.md 或缺 name → ValueError（上层转 SKILL_PACKAGE_INVALID）。
+    description 缺失不报错（发现链路可选增强，退回仅名字展示）。"""
     files = _unzip(zip_bytes)
     if "SKILL.md" not in files:
         raise ValueError("ZIP 包内必须包含 SKILL.md（29.3 §2.1）")
@@ -166,7 +187,8 @@ def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
             break
     if not name:
         raise ValueError("SKILL.md frontmatter 缺少 name 字段")
-    return {"name": name, "skill_key": name, "entrypoint": _entrypoint_from(files)}
+    return {"name": name, "skill_key": name, "entrypoint": _entrypoint_from(files),
+            "description": _description_from(files)}
 
 
 async def upload_skill(filename: str, zip_bytes: bytes, category: str, tags: list[str],
@@ -237,6 +259,9 @@ async def download_skill_package(skill_key: str, version_no: int) -> dict[str, A
         files = _unzip(raw)
         # 返回给执行面的 checksum 用 package_checksum（绑文件名，executor.run_skill 内部再校验一致性）。
         # 它与 Skill Hub 的 ZIP checksum 是两套算法、两个用途（传输 vs 执行面防篡改），勿混用。
-        return {"files": files, "entrypoint": _entrypoint_from(files), "checksum": package_checksum(files)}
+        # description 随包解出（发现链路：reconcile 落 manifest；list API 不带该字段，唯有解 SKILL.md 才有）。
+        return {"files": files, "entrypoint": _entrypoint_from(files),
+                "checksum": package_checksum(files), "description": _description_from(files)}
 
-    return {"files": dict(_MOCK_FILES), "entrypoint": _MOCK_ENTRYPOINT, "checksum": MOCK_INSPECTION_CHECKSUM}
+    return {"files": dict(_MOCK_FILES), "entrypoint": _MOCK_ENTRYPOINT,
+            "checksum": MOCK_INSPECTION_CHECKSUM, "description": _description_from(_MOCK_FILES)}

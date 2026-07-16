@@ -105,8 +105,10 @@ async def seed() -> None:
         "面向 SRE 巡检 / 定界 / 恢复闭环的平台模板。", TEMPLATE_CONTENT, "system",
     )
 
-    # 平台 Skill
-    await assets.create_skill(None, "platform", "巡检 inspection", "inspection", {"entrypoint": "run.py"}, "c0ffee")
+    # 平台 Skill（description 供发现链路：注入 run_platform_skill 工具描述；首轮 reconcile 会按真 checksum 补真版本）
+    await assets.create_skill(None, "platform", "巡检 inspection", "inspection",
+                              {"entrypoint": "run.py", "description": "巡检 Skill——检查资源健康度（如 redis 连接池、p99 时延），产出结构化巡检发现"},
+                              "c0ffee")
 
     # 平台 MCP + tool catalog + 标注（query_resource 免审批 / recover_execute 需审批，均 scope required）
     mcp = await assets.create_mcp(None, "platform", "oModel 查询与恢复", "http", {"endpoint": "http://mock"}, {})

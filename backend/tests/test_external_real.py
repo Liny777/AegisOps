@@ -428,6 +428,30 @@ async def test_ext_skillhub_download_url_has_skill_id(monkeypatch):
     assert pkg["entrypoint"] == "python3 run.py"
 
 
+def test_ext_skillhub_parse_meta_extracts_description():
+    """发现链路数据源：parse_skill_meta 从 SKILL.md **frontmatter** 抽 description；正文里的 `description:`
+    行不误取；缺该字段 → None（老包/手册型不报错）。"""
+    import io
+    import zipfile
+
+    from infra.external import skill_hub_client
+
+    def _zip(md: str) -> bytes:
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("SKILL.md", md.encode("utf-8"))
+            z.writestr("run.py", b"print(1)\n")
+        return buf.getvalue()
+
+    meta = skill_hub_client.parse_skill_meta(_zip(
+        "---\nname: alarm-query\nentrypoint: python3 run.py\ndescription: 查询最近告警\n---\n"
+        "# doc\ndescription: 正文里的不算\n"))
+    assert meta["skill_key"] == "alarm-query"
+    assert meta["description"] == "查询最近告警"  # 只取 frontmatter 段内
+
+    assert skill_hub_client.parse_skill_meta(_zip("---\nname: x\n---\n"))["description"] is None
+
+
 # ============================ MCP Registry（29.3） ============================
 
 async def test_ext_mcpregistry_discover_unwraps_result_tools(monkeypatch):
