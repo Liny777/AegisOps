@@ -14,6 +14,7 @@ import type {
   AuditNode,
   Template,
   Workspace,
+  WorkspaceDetail,
   ScopeApp,
   Skill,
   AssetRow,
@@ -156,6 +157,12 @@ export interface OpenOpsApi {
   getWorkspaceStatus(workspaceId: string): Promise<{ sync_status: string; scope_revision: string; app_ids: string[] }>;
   getScopeApps(): Promise<ScopeApp[]>;
   createWorkspace(name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
+  /** 编辑向导预填：范围详情（含 name + 已选 app_ids）。 */
+  getWorkspace(workspaceId: string): Promise<WorkspaceDetail>;
+  /** 编辑系统范围（改名 + 重选应用）：apps 全量覆盖 scopes。 */
+  updateWorkspace(workspaceId: string, name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
+  /** 删除系统范围（软删，幂等）。 */
+  deleteWorkspace(workspaceId: string): Promise<void>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   /** 编辑向导预填：实例真实字段 + active overlay（区别于 listAgents 的卡片展示投影）。 */
   getAgentTeam(instanceId: string): Promise<AgentTeamDetail>;
@@ -854,6 +861,26 @@ const realApi: OpenOpsApi = {
     });
     return { workspace_id: String(d.workspace_id) };
   },
+  async getWorkspace(workspaceId) {
+    const d = await apiFetch<Record<string, unknown>>(`/openops/v1/workspaces/${workspaceId}`);
+    return {
+      workspace_id: String(d.workspace_id),
+      name: String(d.name),
+      app_ids: ((d.app_ids as string[]) ?? []).map(String),
+      scope_revision: String(d.scope_revision ?? ""),
+      sync_status: (d.sync_status as Workspace["sync_status"]) ?? "ready",
+    };
+  },
+  async updateWorkspace(workspaceId, name, apps) {
+    const d = await apiFetch<Record<string, unknown>>(`/openops/v1/workspaces/${workspaceId}`, {
+      method: "PUT",
+      body: { client_request_id: crid(), name, app_ids: apps.map((a) => a.app_id), apps },
+    });
+    return { workspace_id: String(d.workspace_id ?? workspaceId) };
+  },
+  async deleteWorkspace(workspaceId) {
+    await apiFetch(`/openops/v1/workspaces/${workspaceId}`, { method: "DELETE" });
+  },
   async createAgentTeam(input) {
     const d = await apiFetch<{ instance: Record<string, unknown> }>("/openops/v1/agent-teams", {
       method: "POST",
@@ -1008,7 +1035,34 @@ const mockApi: OpenOpsApi = {
     return delay({ sync_status: w?.sync_status ?? "ready", scope_revision: w?.scope_revision ?? "", app_ids: ["APP-A", "APP-B", "APP-C"] });
   },
   getScopeApps: () => delay(M.mockScopeApps),
-  createWorkspace: (_name, _apps) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
+  createWorkspace: (name, apps) => {
+    // 有状态：push 到 mockWorkspaces + 记应用（否则创建后卡片选中态显示「已选：—」；真实语义也应落库）
+    const id = "ws_mock_" + Math.random().toString(36).slice(2, 8);
+    M.mockWorkspaces.push({ workspace_id: id, name, scope_revision: "rev-" + Math.random().toString(36).slice(2, 8), sync_status: "ready", updated: "" });
+    M.mockWorkspaceApps[id] = apps.map((a) => a.app_id);
+    return delay({ workspace_id: id });
+  },
+  getWorkspace: (workspaceId) => {
+    const ws = M.mockWorkspaces.find((w) => w.workspace_id === workspaceId);
+    if (!ws) return Promise.reject(new Error("workspace 不存在"));
+    return delay({
+      workspace_id: ws.workspace_id, name: ws.name,
+      app_ids: M.mockWorkspaceApps[workspaceId] ?? [],
+      scope_revision: ws.scope_revision, sync_status: ws.sync_status,
+    });
+  },
+  updateWorkspace: (workspaceId, name, apps) => {
+    const ws = M.mockWorkspaces.find((w) => w.workspace_id === workspaceId);
+    if (ws) { ws.name = name; ws.scope_revision = "rev-" + Math.random().toString(36).slice(2, 8); }
+    M.mockWorkspaceApps[workspaceId] = apps.map((a) => a.app_id);
+    return delay({ workspace_id: workspaceId });
+  },
+  deleteWorkspace: (workspaceId) => {
+    const i = M.mockWorkspaces.findIndex((w) => w.workspace_id === workspaceId);
+    if (i >= 0) M.mockWorkspaces.splice(i, 1);
+    delete M.mockWorkspaceApps[workspaceId];
+    return delay(undefined as unknown as void);
+  },
   createAgentTeam: () => {
     // 建完即非「全新用户」：清 fresh 缝，后续 getMe/listAgents 恢复带实例形状
     // （支撑 e2e「删光后新建→侧栏 picker 兜底重拉」幕，也贴近真实语义）

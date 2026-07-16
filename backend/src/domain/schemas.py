@@ -19,6 +19,15 @@ class CreateWorkspaceRequest(BaseModel):
     apps: list[WorkspaceAppItem] | None = None  # 可选：带名称的应用清单（省略则 projectCn=app_id）
 
 
+class UpdateWorkspaceRequest(BaseModel):
+    """编辑系统范围（编辑向导）：改名 + 重选应用范围（对齐 umodel 接口 6）。
+    name 必填（编辑含改名）；apps/app_ids 全量覆盖该 workspace 的 scopes。"""
+    client_request_id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    app_ids: list[str] = Field(default_factory=list)
+    apps: list[WorkspaceAppItem] | None = None
+
+
 class CreateAgentTeamRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     template_version_id: str = Field(min_length=1)

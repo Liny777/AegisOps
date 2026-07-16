@@ -26,6 +26,36 @@ async def list_workspaces() -> list[dict[str, Any]]:
     return await omodel_client.list_workspaces()
 
 
+def _map_omodel_error(e: "omodel_client.OModelError", *, action: str) -> ApiError:
+    """OModelError → ApiError 的稳定映射（create/update/delete 共用）。
+
+    action = 创建 / 更新 / 删除，只进文案；上游 status/request_id 只用于服务端诊断（extra），不回显原文。
+    """
+    extra = {"upstream_status": e.status_code or None,
+             "upstream_request_id": e.request_id or None}
+    if e.kind == "auth":
+        return ApiError(Err.OMODEL_AUTH_FAILED,
+                        "oModel 鉴权或同源校验失败，请刷新登录后重试；若持续失败请联系管理员",
+                        extra=extra)
+    if e.kind == "validation":
+        return ApiError(Err.VALIDATION_FAILED,
+                        f"oModel 拒绝 workspace {action}参数，请检查范围名称、当前企业和所选应用",
+                        extra=extra)
+    if e.kind == "timeout":
+        return ApiError(Err.OMODEL_UPSTREAM, f"oModel {action}请求超时",
+                        retryable=True, status=504, extra=extra)
+    if e.kind == "config":
+        return ApiError(Err.OMODEL_UPSTREAM, f"oModel 配置错误：{e.message}", extra=extra)
+    retryable = e.status_code is None or e.status_code >= 500 or e.status_code < 400
+    if e.status_code is not None and 400 <= e.status_code < 500:
+        message = f"oModel 拒绝{action}请求（HTTP {e.status_code}）"
+    elif e.status_code is not None and e.status_code >= 500:
+        message = f"oModel 服务暂时不可用（HTTP {e.status_code}）"
+    else:
+        message = e.message
+    return ApiError(Err.OMODEL_UPSTREAM, message, retryable=retryable, extra=extra)
+
+
 async def create_workspace(name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
     """创建系统范围；上游细节只用于服务端诊断，不向浏览器回显。"""
@@ -34,32 +64,52 @@ async def create_workspace(name: str, app_ids: list[str], *,
     except ApiError:
         raise
     except omodel_client.OModelError as e:
-        extra = {"upstream_status": e.status_code or None,
-                 "upstream_request_id": e.request_id or None}
-        if e.kind == "auth":
-            raise ApiError(Err.OMODEL_AUTH_FAILED,
-                           "oModel 鉴权或同源校验失败，请刷新登录后重试；若持续失败请联系管理员",
-                           extra=extra) from e
-        if e.kind == "validation":
-            raise ApiError(Err.VALIDATION_FAILED,
-                           "oModel 拒绝 workspace 参数，请检查范围名称、当前企业和所选应用",
-                           extra=extra) from e
-        if e.kind == "timeout":
-            raise ApiError(Err.OMODEL_UPSTREAM, "oModel 创建请求超时",
-                           retryable=True, status=504, extra=extra) from e
-        if e.kind == "config":
-            raise ApiError(Err.OMODEL_UPSTREAM, f"oModel 配置错误：{e.message}",
-                           extra=extra) from e
-        retryable = e.status_code is None or e.status_code >= 500 or e.status_code < 400
-        if e.status_code is not None and 400 <= e.status_code < 500:
-            message = f"oModel 拒绝创建请求（HTTP {e.status_code}）"
-        elif e.status_code is not None and e.status_code >= 500:
-            message = f"oModel 服务暂时不可用（HTTP {e.status_code}）"
-        else:
-            message = e.message
-        raise ApiError(Err.OMODEL_UPSTREAM, message, retryable=retryable, extra=extra) from e
+        raise _map_omodel_error(e, action="创建") from e
     except Exception as e:  # noqa: BLE001
         raise ApiError(Err.INTERNAL_ERROR, f"创建系统范围失败：{str(e)[:300]}", retryable=True) from e
+
+
+async def get(workspace_id: str) -> dict[str, Any]:
+    """系统范围详情（编辑向导预填用）：含 name + app_ids（status() 只投影就绪态，故另开一支）。"""
+    ws = await omodel_client.get_workspace(workspace_id)
+    if ws is None:
+        raise ApiError(Err.NOT_FOUND, "workspace 不存在")
+    return {
+        "workspace_id": ws["workspace_id"],
+        "name": ws["name"],
+        "app_ids": ws["app_ids"],
+        "scope_revision": ws["scope_revision"],
+        "sync_status": ws["sync_status"],
+    }
+
+
+async def update_workspace(name: str, app_ids: list[str], *, workspace_id: str,
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
+    """更新系统范围（改名 + 重选应用）：apps/app_ids 全量覆盖 scopes。不存在 → NOT_FOUND。"""
+    try:
+        ws = await omodel_client.update_workspace(workspace_id, name, app_ids, apps=apps, owner=owner)
+    except ApiError:
+        raise
+    except omodel_client.OModelError as e:
+        raise _map_omodel_error(e, action="更新") from e
+    except Exception as e:  # noqa: BLE001
+        raise ApiError(Err.INTERNAL_ERROR, f"更新系统范围失败：{str(e)[:300]}", retryable=True) from e
+    if ws is None:
+        raise ApiError(Err.NOT_FOUND, "workspace 不存在")
+    return ws
+
+
+async def delete_workspace(workspace_id: str) -> dict[str, Any]:
+    """删除（软删）系统范围。幂等：不存在也视作已删除（REST DELETE 语义），避免重复删除/双击报错。"""
+    try:
+        await omodel_client.delete_workspace(workspace_id)
+    except ApiError:
+        raise
+    except omodel_client.OModelError as e:
+        raise _map_omodel_error(e, action="删除") from e
+    except Exception as e:  # noqa: BLE001
+        raise ApiError(Err.INTERNAL_ERROR, f"删除系统范围失败：{str(e)[:300]}", retryable=True) from e
+    return {"workspace_id": workspace_id, "status": "deleted"}
 
 
 async def status(workspace_id: str) -> dict[str, Any]:

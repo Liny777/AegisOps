@@ -290,6 +290,36 @@ def _extract_ws_items(payload: Any) -> list[Any]:
     return []
 
 
+def _build_workspace_ui(app_ids: list[str], apps: list[dict[str, Any]] | None,
+                        owner: str) -> tuple[dict[str, Any], str]:
+    """构造 umodel `config.workspace_ui`（create/update 共用），返回 (ui, tenant)。
+
+    请求体镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后再抓，比 29.7 文档权威）：
+    - workspace_ui 的 tenantId=**真实租户 ID**（不再是 "default" 字面量）；**不带 projectId**
+      （服务端自己取首个 scope 回填，实抓响应可见）；
+    - scopes=object[]{projectId, projectCn, tenantId}——per-项目租户（不同应用可属不同租户，
+      apptree 的 tenant_id 一路带下来；缺失则省略该键）；
+    - status:"running" + owner（服务端按登录态改写 owner，带上以镜像 UI）。
+    workspace 级租户属于当前企业，不得由首个跨租应用决定；scope 仍保留各应用自己的 tenantId。
+    """
+    by_id = {str(a.get("app_id")): a for a in (apps or [])}
+    scopes: list[dict[str, str]] = []
+    for aid in app_ids:
+        item = by_id.get(aid) or {}
+        entry = {"projectId": aid, "projectCn": str(item.get("name") or "") or aid}
+        if item.get("tenant_id"):
+            entry["tenantId"] = str(item["tenant_id"])
+        scopes.append(entry)
+    from infra.external.apptree_client import current_enterprise_id
+
+    tenant = (os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
+              or current_enterprise_id())
+    ui: dict[str, Any] = {"tenantId": tenant, "scopes": scopes, "status": "running"}
+    if owner:
+        ui["owner"] = owner
+    return ui, tenant
+
+
 async def create_workspace(name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
     from infra.external.omodel_client import OModelError
@@ -299,32 +329,10 @@ async def create_workspace(name: str, app_ids: list[str], *,
         raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 未配置")
     import httpx
 
-    # 请求体镜像 umodel **新版** UI 实抓包（2026-07-11 对端部署"id 服务端生成"后再抓，比 29.7 文档权威）：
-    # - id 不传（服务端生成 {W3}-ws-{hex8}，拍板落地）；
-    # - labels/workspace_ui 的 tenantId=**真实租户 ID**（不再是 "default" 字面量）；**不带 projectId**
-    #   （服务端自己取首个 scope 回填，实抓响应可见）；
-    # - scopes=object[]{projectId, projectCn, tenantId}——per-项目租户（不同应用可属不同租户，
-    #   apptree 的 tenant_id 一路带下来；缺失则省略该键）；
-    # - status:"running" + owner（服务端按登录态改写 owner，带上以镜像 UI）。
-    by_id = {str(a.get("app_id")): a for a in (apps or [])}
-    scopes: list[dict[str, str]] = []
-    for aid in app_ids:
-        item = by_id.get(aid) or {}
-        entry = {"projectId": aid, "projectCn": str(item.get("name") or "") or aid}
-        if item.get("tenant_id"):
-            entry["tenantId"] = str(item["tenant_id"])
-        scopes.append(entry)
-    # workspace 级租户属于当前企业，不得由首个跨租应用决定；scope 仍保留各应用自己的 tenantId。
-    from infra.external.apptree_client import current_enterprise_id
-
-    tenant = (os.environ.get("OPENOPS_OMODEL_TENANT_ID", "").strip()
-              or current_enterprise_id())
-    ui: dict[str, Any] = {"tenantId": tenant, "scopes": scopes, "status": "running"}
-    if owner:
-        ui["owner"] = owner
+    ui, tenant = _build_workspace_ui(app_ids, apps, owner)
     body: dict[str, Any] = {
         "name": name, "description": "",
-        "labels": {"tenantId": tenant},
+        "labels": {"tenantId": tenant},  # id 不传：服务端生成 {W3}-ws-{hex8}
         "config": {"workspace_ui": ui},
     }
     try:
@@ -345,3 +353,75 @@ async def create_workspace(name: str, app_ids: list[str], *,
         raise OModelError("upstream", "oModel 创建响应格式无效",
                           status_code=r.status_code,
                           request_id=_response_request_id(r)) from e
+
+
+async def update_workspace(workspace_id: str, name: str, app_ids: list[str], *,
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any] | None:
+    """更新 workspace（umodel 接口 6，`PUT /{id}`）：改名 + 全量覆盖 scopes。404 → None（上层转 NOT_FOUND）。
+
+    接口 6 语义为部分更新，但 `_map_metadata` 有损（丢 owner/tenant/status），无法从 GET 复原，
+    故重发完整 `workspace_ui`（owner 按当前编辑用户重写，与 create「服务端按登录态改写 owner」一致）。
+    """
+    from infra.external.omodel_client import OModelError
+
+    base = _base()
+    if not base:
+        raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 未配置")
+    import httpx
+
+    ui, tenant = _build_workspace_ui(app_ids, apps, owner)
+    body: dict[str, Any] = {
+        "name": name,
+        "labels": {"tenantId": tenant},
+        "config": {"workspace_ui": ui},
+    }
+    try:
+        async with httpx.AsyncClient(**_client_kwargs(base)) as c:
+            r = await c.put(f"{_prefix()}/{workspace_id}", json=body)
+    except httpx.TimeoutException as e:
+        raise OModelError("timeout", f"oModel 请求超时（{type(e).__name__}）") from e
+    except httpx.RequestError as e:
+        raise OModelError("upstream", f"oModel 网络请求失败（{type(e).__name__}）") from e
+    if r.status_code == 404:
+        return None  # 29.5：不存在即 404
+    if r.status_code >= 400:
+        raise _response_error(r)
+    try:
+        payload = r.json()
+        if not isinstance(payload, dict):
+            raise TypeError("workspace response is not an object")
+        return _map_metadata(payload)
+    except Exception as e:  # noqa: BLE001
+        raise OModelError("upstream", "oModel 更新响应格式无效",
+                          status_code=r.status_code,
+                          request_id=_response_request_id(r)) from e
+
+
+async def delete_workspace(workspace_id: str) -> dict[str, Any] | None:
+    """删除 workspace（umodel 接口 7，`DELETE /{id}`，软删）。404 视为幂等成功 → 返回占位。"""
+    from infra.external.omodel_client import OModelError
+
+    base = _base()
+    if not base:
+        raise OModelError("config", "OPENOPS_OMODEL_BASE_URL 未配置")
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(**_client_kwargs(base)) as c:
+            r = await c.delete(f"{_prefix()}/{workspace_id}")
+    except httpx.TimeoutException as e:
+        raise OModelError("timeout", f"oModel 请求超时（{type(e).__name__}）") from e
+    except httpx.RequestError as e:
+        raise OModelError("upstream", f"oModel 网络请求失败（{type(e).__name__}）") from e
+    if r.status_code == 404:
+        return {"workspace_id": workspace_id, "status": "deleted"}  # 幂等：已删除/不存在
+    if r.status_code >= 400:
+        raise _response_error(r)
+    # 删除响应体（删除前元数据）可能为空或非对象——成功即视作删除，不强依赖响应体。
+    try:
+        payload = r.json()
+        if isinstance(payload, dict) and payload.get("id"):
+            return _map_metadata(payload)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"workspace_id": workspace_id, "status": "deleted"}

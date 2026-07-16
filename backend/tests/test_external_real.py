@@ -52,6 +52,14 @@ def _install(monkeypatch, route):
             captured.append(("POST", self._base + url, {**k, "_ctor": self._ctor}))
             return route("POST", self._base + url, k)
 
+        async def put(self, url, **k):
+            captured.append(("PUT", self._base + url, {**k, "_ctor": self._ctor}))
+            return route("PUT", self._base + url, k)
+
+        async def delete(self, url, **k):
+            captured.append(("DELETE", self._base + url, {**k, "_ctor": self._ctor}))
+            return route("DELETE", self._base + url, k)
+
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     return captured
 
@@ -235,6 +243,83 @@ async def test_ext_omodel_create_classifies_http_errors(monkeypatch, status, pay
     assert exc.value.kind == expected_kind
     assert exc.value.status_code == status
     assert exc.value.request_id == "up-123"
+
+
+async def test_ext_omodel_update_workspace_put_body_and_url(monkeypatch):
+    """update 走 umodel 接口 6（PUT /{id}）：改名 + 全量覆盖 scopes；重发完整 workspace_ui。"""
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    monkeypatch.setenv("OPENOPS_OMODEL_TENANT_ID", "T-ENV")
+    md = {"id": "ws-a1", "name": "新名", "status": "active",
+          "config": {"workspace_ui": {"scopes": [{"projectId": "APP-X", "projectCn": "应用X"}]}}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, md))
+
+    ws = await omodel_real.update_workspace(
+        "ws-a1", "新名", ["APP-X"],
+        apps=[{"app_id": "APP-X", "name": "应用X", "tenant_id": "T-1"}], owner="林一")
+    assert cap[0][0] == "PUT"
+    assert cap[0][1] == "http://umodel:8080/api/v1/workspaces/ws-a1"
+    body = cap[0][2]["json"]
+    assert body["name"] == "新名"
+    assert body["labels"] == {"tenantId": "T-ENV"}
+    assert body["config"]["workspace_ui"] == {
+        "tenantId": "T-ENV",
+        "scopes": [{"projectId": "APP-X", "projectCn": "应用X", "tenantId": "T-1"}],
+        "status": "running", "owner": "林一",
+    }
+    assert ws["workspace_id"] == "ws-a1" and ws["name"] == "新名" and ws["app_ids"] == ["APP-X"]
+
+
+async def test_ext_omodel_update_404_returns_none(monkeypatch):
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    _install(monkeypatch, lambda m, u, k: _Resp(404, None))
+    assert await omodel_real.update_workspace("ws-x", "n", ["APP-A"]) is None
+
+
+async def test_ext_omodel_update_classifies_http_errors(monkeypatch):
+    from infra.external import omodel_real
+    from infra.external.omodel_client import OModelError
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    _install(monkeypatch, lambda m, u, k: _Resp(422, {"code": "INVALID_ARGUMENT", "message": "bad"},
+                                                headers={"X-Request-Id": "up-9"}))
+    with pytest.raises(OModelError) as exc:
+        await omodel_real.update_workspace("ws-a1", "n", ["APP-A"])
+    assert exc.value.kind == "validation" and exc.value.status_code == 422
+
+
+async def test_ext_omodel_delete_workspace_url_and_idempotent_404(monkeypatch):
+    """delete 走 umodel 接口 7（DELETE /{id}，软删）；404 视为幂等成功。"""
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, {"id": "ws-a1", "status": "deleted"}))
+    out = await omodel_real.delete_workspace("ws-a1")
+    assert cap[0][0] == "DELETE"
+    assert cap[0][1] == "http://umodel:8080/api/v1/workspaces/ws-a1"
+    assert out is not None
+
+    _install(monkeypatch, lambda m, u, k: _Resp(404, None))
+    out404 = await omodel_real.delete_workspace("ws-gone")
+    assert out404 == {"workspace_id": "ws-gone", "status": "deleted"}  # 幂等
+
+
+async def test_ext_omodel_delete_classifies_http_errors(monkeypatch):
+    from infra.external import omodel_real
+    from infra.external.omodel_client import OModelError
+
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
+    _install(monkeypatch, lambda m, u, k: _Resp(503, {"code": "UNAVAILABLE"},
+                                                headers={"X-Request-Id": "up-5"}))
+    with pytest.raises(OModelError) as exc:
+        await omodel_real.delete_workspace("ws-a1")
+    assert exc.value.kind == "upstream" and exc.value.status_code == 503
 
 
 async def test_ext_omodel_sanitizes_upstream_request_id(monkeypatch):

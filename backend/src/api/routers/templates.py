@@ -5,7 +5,7 @@ from fastapi import APIRouter
 from api.deps import User
 from api.responses import ok
 from app import template_service, workspace_service
-from domain.schemas import CreateWorkspaceRequest
+from domain.schemas import CreateWorkspaceRequest, UpdateWorkspaceRequest
 
 router = APIRouter(prefix="/api/openops/v1", tags=["templates"])
 
@@ -45,3 +45,25 @@ async def omodel_console_page(_user: User):
 @router.get("/workspaces/{workspace_id}/status")
 async def workspace_status(workspace_id: str, _user: User):
     return ok(await workspace_service.status(workspace_id))
+
+
+@router.get("/workspaces/{workspace_id}")
+async def get_workspace(workspace_id: str, _user: User):
+    """系统范围详情（编辑向导预填）：含 name + app_ids。"""
+    return ok(await workspace_service.get(workspace_id))
+
+
+@router.put("/workspaces/{workspace_id}")
+async def update_workspace(workspace_id: str, req: UpdateWorkspaceRequest, _user: User):
+    """编辑系统范围（改名 + 重选应用）：apps/app_ids 全量覆盖 scopes。"""
+    apps = [{"app_id": a.app_id, "name": a.name or "", "tenant_id": a.tenant_id or ""} for a in (req.apps or [])]
+    return ok(await workspace_service.update_workspace(
+        req.name, req.app_ids, workspace_id=workspace_id, apps=apps,
+        owner=str(_user.get("display_name") or _user["user_id"]),
+    ))
+
+
+@router.delete("/workspaces/{workspace_id}")
+async def delete_workspace(workspace_id: str, _user: User):
+    """删除系统范围（软删，幂等）。"""
+    return ok(await workspace_service.delete_workspace(workspace_id))

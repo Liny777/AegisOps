@@ -39,7 +39,9 @@ export function InitWizard() {
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
   const [platformModels, setPlatformModels] = useState<ModelOption[]>([]); // 管理员注册且对本用户授权的平台模型全集（可选）
   const [selectedPlatformId, setSelectedPlatformId] = useState(""); // 选中的平台模型 model_id（裸 id；空=平台默认兜底）
-  const [wsDialog, setWsDialog] = useState(false);
+  const [wsDialog, setWsDialog] = useState<null | { id?: string }>(null);  // null=关；{}=新建；{id}=编辑
+  const [confirmDelWs, setConfirmDelWs] = useState<Workspace | null>(null);
+  const [delBusy, setDelBusy] = useState(false);
   const [omodelReady, setOmodelReady] = useState(false);  // step1 OModel 看护空间初始化 loading 是否转完
   const [activating, setActivating] = useState(false);
   const [err, setErr] = useState("");
@@ -150,7 +152,8 @@ export function InitWizard() {
           {step === 0 ? (
             <StepConfigure
               name={name} onName={setName}
-              workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog(true)}
+              workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog({})}
+              onEditWs={(id) => setWsDialog({ id })} onDeleteWs={(ws) => setConfirmDelWs(ws)}
               llm={llm} onLlm={setLlm}
               platformModels={platformModels} selectedPlatformId={selectedPlatformId}
               onPickPlatform={(id) => { setSelectedPlatformId(id); setLlm("platform"); }}
@@ -189,12 +192,40 @@ export function InitWizard() {
         </div>
       </div>
 
-      <WorkspaceDialog open={wsDialog} onClose={() => setWsDialog(false)}
-        onCreated={(id) => {
-          // 创建成功：选中新范围 + 重拉列表（否则配置页网格还是旧的，看不到刚建的 workspace）
-          setWsId(id); setWsDialog(false);
+      <WorkspaceDialog open={!!wsDialog} editWorkspaceId={wsDialog?.id ?? null} onClose={() => setWsDialog(null)}
+        onSaved={(id) => {
+          // 创建：选中新范围；编辑：保持原选中。都重拉列表（否则配置页网格还是旧的）
+          if (!wsDialog?.id) setWsId(id);
+          setWsDialog(null);
           api.getWorkspaces().then(setWorkspaces);
         }} />
+
+      {/* 删除系统范围二次确认 */}
+      {confirmDelWs ? (
+        <div onClick={() => !delBusy && setConfirmDelWs(null)}
+          style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center", animation: "omFade .16s ease" }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: 420, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px", animation: "omPop .2s ease" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>删除「{confirmDelWs.name}」？</div>
+            <div style={{ fontSize: 12.5, color: color.textMuted, lineHeight: 1.6, marginBottom: 18 }}>
+              软删除该系统范围。绑定此范围的 Agent 将在下次运行时无法解析看护范围（scope 解析失败），请先确认无 Agent 依赖它。
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <Button variant="secondary" disabled={delBusy} onClick={() => setConfirmDelWs(null)}>取消</Button>
+              <Button icon={delBusy ? "loader-2" : "trash"} disabled={delBusy} style={{ background: color.danger }} onClick={() => {
+                const id = confirmDelWs.workspace_id;
+                setDelBusy(true);
+                api.deleteWorkspace(id)
+                  .then(() => {
+                    if (wsId === id) setWsId("");  // 删的是当前选中范围 → 清空选中
+                    setConfirmDelWs(null); setDelBusy(false);
+                    return api.getWorkspaces().then(setWorkspaces);
+                  })
+                  .catch((e: unknown) => { setDelBusy(false); alert(e instanceof Error ? e.message : "删除失败，请重试"); });
+              }}>{delBusy ? "删除中…" : "确认删除"}</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -293,12 +324,13 @@ function RadioDot({ on }: { on: boolean }) {
 /** 合并配置页（原型 STEP1）：名称 → 身份确认 → 模型供应商 → 系统看护范围。 */
 function StepConfigure({
   name, onName,
-  workspaces, wsId, onPickWs, onCreateWs,
+  workspaces, wsId, onPickWs, onCreateWs, onEditWs, onDeleteWs,
   llm, onLlm, platformModels, selectedPlatformId, onPickPlatform,
   customLlmId, customLlmLabel, customLlmMeta, onCustomCreated, onCustomRemoved,
 }: {
   name: string; onName: (v: string) => void;
   workspaces: Workspace[]; wsId: string; onPickWs: (id: string) => void; onCreateWs: () => void;
+  onEditWs: (id: string) => void; onDeleteWs: (ws: Workspace) => void;
   llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void;
   platformModels: ModelOption[]; selectedPlatformId: string; onPickPlatform: (id: string) => void;
   customLlmId: string; customLlmLabel: string; customLlmMeta: CustomLlmMeta | null;
@@ -384,7 +416,8 @@ function StepConfigure({
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择 Agent 看护的系统范围（workspace = 命名的 APPID 集合）；运行时范围由 oModel 按你的授权解析。</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
                      {workspaces.map((ws) => (
-              <WorkspaceCard key={ws.workspace_id} ws={ws} on={ws.workspace_id === wsId} onPick={onPickWs} />
+              <WorkspaceCard key={ws.workspace_id} ws={ws} on={ws.workspace_id === wsId} onPick={onPickWs}
+                onEdit={() => onEditWs(ws.workspace_id)} onDelete={() => onDeleteWs(ws)} />
             ))}
             <NewWsButton onClick={onCreateWs} />
           </div>
@@ -420,7 +453,9 @@ export function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, bad
   );
 }
  
-export function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; onPick: (id: string) => void }) {
+export function WorkspaceCard({ ws, on, onPick, onEdit, onDelete }: {
+  ws: Workspace; on: boolean; onPick: (id: string) => void; onEdit: () => void; onDelete: () => void;
+}) {
   const { hovered, bind } = useHover();
   const borderColor = on ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
   return (
@@ -433,10 +468,48 @@ export function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; 
       ) : null}
       <div title={ws.name} style={{ fontSize: 14, fontWeight: 600, paddingRight: 24, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ws.name}</div>
       <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{ws.workspace_id}</div>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9, paddingRight: 34 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 7px", borderRadius: radius.pill }}>{ws.sync_status}</span>
-        <span style={{ fontSize: 11, color: color.textSubtle, background: color.neutralBg, padding: "2px 7px", borderRadius: 5 }}>{ws.scope_revision}</span>
+        <span style={{ fontSize: 11, color: color.textSubtle, background: color.neutralBg, padding: "2px 7px", borderRadius: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ws.scope_revision}</span>
       </div>
+      {/* 设置：点开菜单（编辑/删除）；stopPropagation 防触发卡片单选 */}
+      <WsCardMenu onEdit={onEdit} onDelete={onDelete} />
+    </div>
+  );
+}
+
+function WsCardMenu({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const { hovered, bind } = useHover();
+  return (
+    <>
+      <div {...bind} title="设置" onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        style={{ position: "absolute", bottom: 10, right: 10, width: 26, height: 26, borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", background: open || hovered ? color.neutralBg : "transparent", border: `1px solid ${open ? color.border : "transparent"}` }}>
+        <Icon name="settings" size={15} color={color.textSubtle} />
+      </div>
+      {open ? (
+        <>
+          <div onClick={(e) => { e.stopPropagation(); setOpen(false); }} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+          <div onClick={(e) => e.stopPropagation()}
+            style={{ position: "absolute", bottom: 42, right: 10, zIndex: 41, background: "#fff", border: `1px solid ${color.border}`, borderRadius: 8, boxShadow: "0 8px 24px rgba(20,24,31,.16)", minWidth: 112, overflow: "hidden", padding: "4px 0" }}>
+            <WsMenuItem icon="pencil" label="编辑" onClick={(e) => { e.stopPropagation(); setOpen(false); onEdit(); }} />
+            <WsMenuItem icon="trash" label="删除" danger onClick={(e) => { e.stopPropagation(); setOpen(false); onDelete(); }} />
+          </div>
+        </>
+      ) : null}
+    </>
+  );
+}
+
+function WsMenuItem({ icon, label, danger, onClick }: {
+  icon: string; label: string; danger?: boolean; onClick: (e: React.MouseEvent) => void;
+}) {
+  const { hovered, bind } = useHover();
+  const c = danger ? color.dangerText : color.textNav;
+  return (
+    <div {...bind} onClick={onClick}
+      style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", fontSize: 12.5, fontWeight: 500, color: c, background: hovered ? (danger ? "#fdf3f3" : "#f5f7fa") : "#fff", whiteSpace: "nowrap" }}>
+      <Icon name={icon} size={14} color={c} />{label}
     </div>
   );
 }

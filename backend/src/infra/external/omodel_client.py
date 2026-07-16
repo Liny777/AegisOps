@@ -45,3 +45,12 @@ async def list_workspaces() -> list[dict[str, Any]]:
 async def create_workspace(name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
     return await _impl().create_workspace(name, app_ids, apps=apps, owner=owner)
+
+
+async def update_workspace(workspace_id: str, name: str, app_ids: list[str], *,
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any] | None:
+    return await _impl().update_workspace(workspace_id, name, app_ids, apps=apps, owner=owner)
+
+
+async def delete_workspace(workspace_id: str) -> dict[str, Any] | None:
+    return await _impl().delete_workspace(workspace_id)

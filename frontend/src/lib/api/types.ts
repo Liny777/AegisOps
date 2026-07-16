@@ -402,6 +402,14 @@ export interface Workspace {
   sync_status: "creating" | "syncing" | "ready" | "failed";
   updated: string;
 }
+/** 系统范围详情（编辑向导预填用）：含 name + 已选应用 app_ids。 */
+export interface WorkspaceDetail {
+  workspace_id: string;
+  name: string;
+  app_ids: string[];
+  scope_revision: string;
+  sync_status: Workspace["sync_status"];
+}
 
 export interface ApiError {
   code: string;

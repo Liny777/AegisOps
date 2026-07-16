@@ -49,6 +49,22 @@ async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
     return _WORKSPACES.get(workspace_id)
 
 
+async def update_workspace(workspace_id: str, name: str, app_ids: list[str], *,
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any] | None:  # noqa: ARG001
+    _ = (apps, owner)
+    ws = _WORKSPACES.get(workspace_id)
+    if ws is None:
+        return None
+    ws["name"] = name
+    ws["app_ids"] = list(app_ids)
+    ws["scope_revision"] = "rev-" + uuid.uuid4().hex[:8]  # 范围/名称变即换版本
+    return ws
+
+
+async def delete_workspace(workspace_id: str) -> dict[str, Any] | None:
+    return _WORKSPACES.pop(workspace_id, None)  # 幂等：不存在返回 None
+
+
 async def list_workspaces() -> list[dict[str, Any]]:
     return list(_WORKSPACES.values())
 

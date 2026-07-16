@@ -54,6 +54,98 @@ def test_workspace_create_maps_omodel_errors(client, monkeypatch, kind, upstream
         assert error["upstream_status"] == upstream_status
 
 
+# ---- 系统范围 get-detail / update / delete（编辑向导后端面）----
+
+def _create_ws(client, crid, name="待编辑范围", app_ids=("APP-A", "APP-B")):
+    return unwrap(client.post("/api/openops/v1/workspaces", headers=USER_HEADERS,
+                              json={"client_request_id": crid, "name": name, "app_ids": list(app_ids)}))
+
+
+def test_workspace_get_detail_returns_name_and_appids(client):
+    detail = unwrap(client.get("/api/openops/v1/workspaces/ws_pay_abc", headers=USER_HEADERS))
+    assert detail["workspace_id"] == "ws_pay_abc"
+    assert detail["name"] == "支付核心域"
+    assert detail["app_ids"] == ["APP-A", "APP-B", "APP-C"]  # 供编辑预勾选
+    assert detail["sync_status"] == "ready"
+
+
+def test_workspace_get_detail_404(client):
+    r = client.get("/api/openops/v1/workspaces/ws_does_not_exist", headers=USER_HEADERS)
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_workspace_update_replaces_name_and_scopes(client):
+    ws = _create_ws(client, "ws_upd_create", name="旧名", app_ids=["APP-A"])
+    wid = ws["workspace_id"]
+    unwrap(client.put(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS,
+                      json={"client_request_id": "ws_upd_put", "name": "新名",
+                            "app_ids": ["APP-X", "APP-Y"]}))
+    detail = unwrap(client.get(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS))
+    assert detail["name"] == "新名"
+    assert detail["app_ids"] == ["APP-X", "APP-Y"]  # 全量覆盖
+
+
+def test_workspace_update_404(client):
+    r = client.put("/api/openops/v1/workspaces/ws_missing", headers=USER_HEADERS,
+                   json={"client_request_id": "ws_upd_404", "name": "x", "app_ids": ["APP-A"]})
+    assert r.status_code == 404
+    assert r.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_workspace_delete_then_get_404_and_absent_from_list(client):
+    ws = _create_ws(client, "ws_del_create", name="待删范围")
+    wid = ws["workspace_id"]
+    unwrap(client.delete(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS))
+    assert client.get(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS).status_code == 404
+    listed = unwrap(client.get("/api/openops/v1/workspaces", headers=USER_HEADERS))
+    assert all(w["workspace_id"] != wid for w in listed)
+
+
+def test_workspace_delete_is_idempotent(client):
+    ws = _create_ws(client, "ws_del_idem", name="幂等删")
+    wid = ws["workspace_id"]
+    assert client.delete(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS).status_code == 200
+    # 重复删除（已不存在）仍 200，不报错
+    assert client.delete(f"/api/openops/v1/workspaces/{wid}", headers=USER_HEADERS).status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("verb", "attr"),
+    [("put", "update_workspace"), ("delete", "delete_workspace")],
+)
+@pytest.mark.parametrize(
+    ("kind", "upstream_status", "http_status", "code", "retryable"),
+    [
+        ("auth", 401, 502, "OMODEL_AUTH_FAILED", False),
+        ("validation", 422, 400, "VALIDATION_FAILED", False),
+        ("timeout", None, 504, "OMODEL_UPSTREAM", True),
+        ("upstream", 503, 502, "OMODEL_UPSTREAM", True),
+    ],
+)
+def test_workspace_edit_maps_omodel_errors(client, monkeypatch, verb, attr, kind,
+                                           upstream_status, http_status, code, retryable):
+    from infra.external import omodel_client
+
+    async def _fail(*_args, **_kwargs):
+        raise omodel_client.OModelError(kind, "upstream detail", status_code=upstream_status,
+                                        request_id="up-req-1")
+
+    monkeypatch.setattr(omodel_client, attr, _fail)
+    url = "/api/openops/v1/workspaces/ws_pay_abc"
+    if verb == "put":
+        response = client.put(url, headers=USER_HEADERS,
+                              json={"client_request_id": f"err-{attr}-{kind}", "name": "错误映射",
+                                    "app_ids": ["APP-A"]})
+    else:
+        response = client.delete(url, headers=USER_HEADERS)
+    error = response.json()["error"]
+    assert response.status_code == http_status
+    assert error["code"] == code and error["retryable"] is retryable
+    assert error["upstream_request_id"] == "up-req-1"
+    assert "upstream detail" not in error["message"]
+
+
 def test_build_id_reads_release_metadata(tmp_path):
     from main import _build_id
 

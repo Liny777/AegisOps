@@ -390,3 +390,8 @@ export const mockScopeApps: ScopeApp[] = [
   { app_id: "00000000000000000000000000000601", name: "支付核心交易", type: "HIS-OP" },
   { app_id: "00000000000000000000000000000602", name: "订单履约中心", type: "HIS-OP" },
 ];
+
+// workspace → 已选 app_ids（编辑预填用；用真实存在于 mockScopeApps 的 id 使预勾选点亮）
+export const mockWorkspaceApps: Record<string, string[]> = {
+  ws_pay_abc: ["00000000000000000000000000000601", "00000000000000000000000000000602"],
+};
