@@ -158,7 +158,7 @@ export interface OpenOpsApi {
   /** 编辑向导预填：实例真实字段 + active overlay（区别于 listAgents 的卡片展示投影）。 */
   getAgentTeam(instanceId: string): Promise<AgentTeamDetail>;
   /** 编辑保存（POST :update）：改名 / 换 workspace / 换模型；user_llm_config_id=null 回平台默认。 */
-  updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null }): Promise<void>;
+  updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null; platform_model_id: string | null }): Promise<void>;
   // demo 身份
   switchRole(admin: boolean): void;
   demoState(): WorkbenchState; // mock 兜底静态（composer skills/models 等）
@@ -869,7 +869,7 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/agent-teams/${instanceId}:update`, {
       method: "POST",
       body: { client_request_id: crid(), name: input.name, workspace_id: input.workspace_id,
-              user_llm_config_id: input.user_llm_config_id },
+              user_llm_config_id: input.user_llm_config_id, platform_model_id: input.platform_model_id },
     });
   },
 
@@ -1018,9 +1018,12 @@ const mockApi: OpenOpsApi = {
       ag.name = input.name;
       ag.workspace_id = input.workspace_id;
       ag.workspace_label = M.mockWorkspaces.find((w) => w.workspace_id === input.workspace_id)?.name ?? input.workspace_id;
-      ag.model = input.user_llm_config_id ? "自定义模型" : "千问 (平台提供)";
+      ag.model = input.user_llm_config_id ? "自定义模型" : input.platform_model_id || "平台默认模型";
     }
-    mockOverlays.set(instanceId, input.user_llm_config_id ? { user_llm_config_id: input.user_llm_config_id } : {});
+    mockOverlays.set(instanceId,
+      input.user_llm_config_id ? { user_llm_config_id: input.user_llm_config_id }
+      : input.platform_model_id ? { platform_model_id: input.platform_model_id }
+      : {});
     return delay(undefined as unknown as void);
   },
   switchRole(admin: boolean) {

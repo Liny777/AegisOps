@@ -37,11 +37,13 @@ class SaveConfigRequest(BaseModel):
 
 class UpdateAgentTeamRequest(BaseModel):
     """编辑实例（编辑向导）：改名 / 换 workspace / 换模型。全量语义（向导预填后总有全部值）；
-    模板不可换不收；main_role_append 服务端保留（overlay 只动 user_llm_config_id）。"""
+    模板不可换不收；main_role_append 服务端保留（overlay 只动模型两键）。"""
     client_request_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
-    user_llm_config_id: str | None = None  # None = 平台默认（从 overlay 移除）
+    # 模型三态（互斥）：user_llm_config_id=自带 LLM；platform_model_id=平台模型；二者皆 None=平台默认（从 overlay 移除）
+    user_llm_config_id: str | None = None
+    platform_model_id: str | None = None
 
 
 class AssetBindingRequest(BaseModel):
