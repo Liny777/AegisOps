@@ -152,6 +152,8 @@ export interface OpenOpsApi {
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
+  /** 单个 workspace 实时状态（服务状态面板 oModel/范围 chip 用）：同步态 + 真实 APPID 列表。 */
+  getWorkspaceStatus(workspaceId: string): Promise<{ sync_status: string; scope_revision: string; app_ids: string[] }>;
   getScopeApps(): Promise<ScopeApp[]>;
   createWorkspace(name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
@@ -832,6 +834,14 @@ const realApi: OpenOpsApi = {
       updated: "",
     }));
   },
+  async getWorkspaceStatus(workspaceId) {
+    const d = await apiFetch<Record<string, unknown>>(`/openops/v1/workspaces/${workspaceId}/status`);
+    return {
+      sync_status: String(d.sync_status ?? "ready"),
+      scope_revision: String(d.scope_revision ?? ""),
+      app_ids: Array.isArray(d.app_ids) ? d.app_ids.map(String) : [],
+    };
+  },
   async getScopeApps() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/apps");
     return rows.map((a) => ({ app_id: String(a.app_id), name: String(a.name), type: String(a.type ?? ""), tenant_id: String(a.tenant_id ?? "") }));
@@ -993,6 +1003,10 @@ const mockApi: OpenOpsApi = {
   adminRegisterModel: () => delay(undefined as unknown as void),
   getTemplates: () => delay(M.mockTemplates),
   getWorkspaces: () => delay(M.mockWorkspaces),
+  getWorkspaceStatus: (workspaceId) => {
+    const w = M.mockWorkspaces.find((x) => x.workspace_id === workspaceId) ?? M.mockWorkspaces[0];
+    return delay({ sync_status: w?.sync_status ?? "ready", scope_revision: w?.scope_revision ?? "", app_ids: ["APP-A", "APP-B", "APP-C"] });
+  },
   getScopeApps: () => delay(M.mockScopeApps),
   createWorkspace: (_name, _apps) => delay({ workspace_id: "ws_mock_" + Math.random().toString(36).slice(2, 8) }),
   createAgentTeam: () => {

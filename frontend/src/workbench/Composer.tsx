@@ -10,9 +10,11 @@ import type { Skill } from "../lib/api/types";
 export function Composer({
   skills,
   onSend,
+  modelLabel,
 }: {
   skills: Skill[];
   onSend?: (text: string) => void;
+  modelLabel?: string;  // 当前实例模型名（只读展示，创建时绑定不可切换）
 }) {
   const [text, setText] = useState("");
   const [slashOpen, setSlashOpen] = useState(false);
@@ -68,6 +70,12 @@ export function Composer({
               hoverStyle={{ background: color.brandTintBg, borderColor: color.brandTintBorder }}>
               <Icon name="slash" size={14} />Skill
             </Interactive>
+            {modelLabel ? (
+              <span title="当前模型（创建时绑定，会话内不可切换）"
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, fontWeight: 600, color: color.textNav, background: color.brandTintBg, border: `1px solid ${color.brandTintBorder}`, padding: "4px 9px", borderRadius: radius.md }}>
+                <Icon name="cpu" size={13} color={color.brand} />{modelLabel}<Icon name="lock" size={11} color={color.textLabel} />
+              </span>
+            ) : null}
             <div style={{ flex: 1 }} />
             <Interactive as="button" onClick={send}
               baseStyle={{ border: "none", cursor: "pointer", background: color.brand, color: "#fff", width: 36, height: 36, borderRadius: radius.lg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
