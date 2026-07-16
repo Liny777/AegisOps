@@ -23,11 +23,10 @@ from sandbox.executor import executor as sandbox_executor
 _ASK_TIMEOUT_S = float(os.environ.get("OPENOPS_ASK_TIMEOUT_S", "300"))
 # B8·补3（Skill 内容截断修复）：run_container_command 回模型的字符上限——原硬编码 2000 太紧，读
 # Skill 手册/references 大文件被切成前 2000 字符，agent「没按 skill 内容执行」。放宽到 16000（> 手册
-# cap 12000，一次 cat 即可读完典型 SKILL.md）。read_container_file 是专用文件读取工具，另有更大的分页
-# 上限、不受本上限约束。均 env 可调，风格同其他 OPENOPS_SKILL_* 旋钮。
+# cap 12000，一次 cat 即可读完典型 SKILL.md）。读大文件另有官方 Read 工具（绑容器后端，带分页、不受
+# 本上限约束）。均 env 可调，风格同其他 OPENOPS_SKILL_* 旋钮。
 _BASH_OUTPUT_CHARS = int(os.environ.get("OPENOPS_BASH_OUTPUT_CHARS", "16000"))
 _READ_FILE_CHARS = int(os.environ.get("OPENOPS_READ_FILE_CHARS", "40000"))
-_READ_FILE_LINES = int(os.environ.get("OPENOPS_READ_FILE_LINES", "2000"))
 _LIST_MAXDEPTH = int(os.environ.get("OPENOPS_LIST_MAXDEPTH", "3"))
 _LIST_MAX_ENTRIES = int(os.environ.get("OPENOPS_LIST_MAX_ENTRIES", "500"))
 
@@ -114,54 +113,10 @@ async def run_container_command(st: TaskState, run: dict[str, Any], command: str
         return f"status={res.status}"
     if len(body) > _BASH_OUTPUT_CHARS:
         return (body[:_BASH_OUTPUT_CHARS]
-                + f"\n…（输出共 {len(body)} 字符，超 {_BASH_OUTPUT_CHARS} 已截断。读大文件请用 "
-                  f"read_container_file（带 offset/limit 分页、不受此上限约束），"
+                + f"\n…（输出共 {len(body)} 字符，超 {_BASH_OUTPUT_CHARS} 已截断。读大文件请用 Read 工具"
+                  f"（绑容器后端、带 offset/limit 分页、不受此上限约束），"
                   f"或 `tail -n +N '文件' | head -n M` 分段读）")
     return body
-
-
-async def read_container_file(st: TaskState, run: dict[str, Any], path: str, *,
-                              offset: int = 1, limit: int | None = None) -> str:
-    """按行读取容器内某个文件（带行号 + offset/limit 分页），Read 工具等价物（B8·补3）。
-
-    专治 Skill 手册/references 大文件被 run_container_command 的 _BASH_OUTPUT_CHARS 截断读不全：本工具
-    不受该上限约束、可分页续读。命令由 wc/cat -n/tail/head 机器拼装、path 经 shlex 引用，可证只读，
-    直接经 executor 执行（不过 command_guard，同 run_skill 的受控构造路径；也规避 agentscope 层 2 把
-    多段命令误判 ASK 触发 HITL），单独发 openops.sandbox.file.read 审计保留闭环。能力 ≤ 已放行的 cat。
-    """
-    if not st.run_id or st.sandbox_cfg is None:
-        return "容器不可用（缺少会话上下文），未读取"
-    offset = max(1, int(offset))
-    limit = _READ_FILE_LINES if limit is None else max(1, int(limit))
-    q = shlex.quote(path)
-    # \036(RS) 分隔「总行数」与「带行号窗口」；cat -n 行号相对整文件，tail/head 只截窗口。
-    # 首段显式判存在——否则末尾管道的 head 恒 exit 0，会把「文件不存在」吞成「空文件」。
-    cmd = (f"[ -f {q} ] || {{ echo '文件不存在或非普通文件' >&2; exit 66; }}; "
-           f"wc -l < {q}; printf '\\036'; cat -n {q} | tail -n +{offset} | head -n {limit}")
-    res = await sandbox_executor.run_command(st.user_id, cmd, run_id=st.run_id, cfg=st.sandbox_cfg)
-    await emit(st, run, "openops.sandbox.file.read", action="read_file",
-               message=f"读取容器文件 {path}", decision=res.status,
-               payload={"path": path, "offset": offset, "limit": limit,
-                        "exit_code": res.exit_code, "status": res.status})
-    if res.status != "success":
-        return f"读取失败（{res.status}，exit={res.exit_code}）：{(res.stderr or '')[:500] or path}"
-    total_str, _, content = res.stdout.partition("\x1e")
-    try:
-        total = int(total_str.strip())
-    except ValueError:
-        total = 0
-    content = content.lstrip("\n")
-    if not content:
-        return f"文件 {path}（共 {total} 行）从 offset={offset} 起无更多内容（已到末尾或文件为空）"
-    shown = content.count("\n") + (0 if content.endswith("\n") else 1)
-    end = offset - 1 + shown
-    total = max(total, end)  # wc -l 按换行计，末行无换行会少 1；用实际窗口末行兜正
-    header = f"文件 {path}（共 {total} 行），显示第 {offset}–{end} 行：\n"
-    more = f"\n\n（还有 {total - end} 行未显示，用 offset={end + 1} 继续读取）" if end < total else ""
-    out = header + content + more
-    if len(out) > _READ_FILE_CHARS:
-        out = out[:_READ_FILE_CHARS] + f"\n…（本页超 {_READ_FILE_CHARS} 字符已截断，请缩小 limit 或用 offset 续读）"
-    return out
 
 
 async def list_container_files(st: TaskState, run: dict[str, Any], path: str = ".", *,
