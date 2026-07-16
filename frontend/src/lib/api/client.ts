@@ -5,16 +5,26 @@
 export const API_BASE = import.meta.env.VITE_OPENOPS_API_BASE ?? "/api";
 const BASE = API_BASE;
 
-/** demo 身份（角色/白名单事实在后端 PG；头只声明“我是谁”）。侧栏切换驱动。 */
-export const demoIdentity: { user: string; name: string } = {
-  user: "0026demo01",
-  name: "林一",
-};
+/** demo 身份（角色/白名单事实在后端 PG；头只声明“我是谁”）。
+ *
+ * 生产真身份由后端 IAM 决定，前端不再有「切身份」按钮。dev/mock/e2e 用**身份种子**声明我是谁：
+ * `?as=admin|user`（会镜像进 localStorage 以跨整页刷新持久）或直接 `localStorage['openops.demo.user']`。
+ * 沿用既有 `openops.mock.*` 缝风格（index.ts）。默认普通用户，不带缝完全无感。 */
+const DEMO_DEFAULT = { user: "0026demo01", name: "林一" };
+const DEMO_ADMIN = { user: "admin", name: "李四（管理员）" };
 
-export function setDemoUser(user: string, name: string): void {
-  demoIdentity.user = user;
-  demoIdentity.name = name;
+function bootDemoIdentity(): { user: string; name: string } {
+  try {
+    if (typeof window !== "undefined" && typeof localStorage !== "undefined") {
+      const as = new URLSearchParams(window.location.search).get("as");
+      if (as) localStorage.setItem("openops.demo.user", as); // URL 一次性置入 → 持久到 localStorage
+      if (localStorage.getItem("openops.demo.user") === "admin") return { ...DEMO_ADMIN };
+    }
+  } catch { /* 隐私模式 / 无 storage：回落默认 */ }
+  return { ...DEMO_DEFAULT };
 }
+
+export const demoIdentity: { user: string; name: string } = bootDemoIdentity();
 
 export class ApiError extends Error {
   code: string;

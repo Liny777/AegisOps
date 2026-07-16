@@ -5,7 +5,9 @@ import { test, expect } from "@playwright/test";
  * 对话工作台 / mock 发送 / 初始化向导 / Agent 清单 / 管理台 forbidden→admin 切换→模板编辑器 / 审计页 /
  * InitGuard 弹回 / 新建 ?new=1 旁路 / 编辑向导预填保存 / 删光后新建 picker 兜底重拉 / 插件页两 tab /
  * 外链 ?q= 三态（已初始化自动发送·未初始化向导保留·无权限引导页保留） / 审批卡批准后自动淡出。
- * 约束：demoIdentity 是模块级（full reload 重置为普通用户）——管理员流程必须 SPA 内导航（历史坑）；
+ * 约束：demoIdentity 由 boot 期身份种子决定——默认普通用户，管理员流程用 `?as=admin` 或
+ * addInitScript 置 localStorage['openops.demo.user']='admin'（持久到 localStorage，跨整页刷新有效；
+ * 每 test 新 context 隔离，不泄漏到其他幕）；「进入管理台」入口仅平台管理员可见；
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
 
@@ -104,10 +106,12 @@ test("设置页往返：回复在后台继续且当前对话无损保留", async
   await expect(page.getByText(/Agent 正在调查/)).toHaveCount(0);
 });
 
-test("管理台身份切换不会卸载后台运行的对话", async ({ page }) => {
+test("管理台往返不会卸载后台运行的对话（管理员）", async ({ page }) => {
   const question = "管理台往返保留-4d91";
   const receipt = page.getByText("（mock 演示）任务已受理。", { exact: true });
 
+  // 管理员身份种子：入口仅平台管理员可见
+  await page.addInitScript(() => localStorage.setItem("openops.demo.user", "admin"));
   await page.goto("/");
   const input = page.getByPlaceholder(/描述你的排障任务/);
   await input.fill(question);
@@ -186,12 +190,17 @@ test("全部 Agents 清单（/agents）", async ({ page }) => {
   await expect(page.getByText("支付域感知快恢").first()).toBeVisible({ timeout: 15_000 });
 });
 
-test("管理台：普通用户 403 → SPA 内切管理员 → 模板编辑器（含 S1 新增角色入口）", async ({ page }) => {
-  // 直开 /admin：full reload 身份=普通用户 → 403
+test("管理台：普通用户 403 + 隐藏入口 → 管理员种子进入 → 模板编辑器（含 S1 新增角色入口）", async ({ page }) => {
+  // 普通用户（默认身份，无种子）：直开 /admin → 403
   await page.goto("/admin/templates");
   await expect(page.getByText("403 · 无权访问")).toBeVisible({ timeout: 15_000 });
-  // 回工作台 → 侧栏「进入管理台」（in-app 切换角色，勿 reload）
+  // Forbidden 页自带「返回工作台」（真 button）→ 回工作台；侧栏入口对普通用户不可见
   await page.getByRole("button", { name: "返回工作台" }).click();
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("进入管理台")).toHaveCount(0);
+  // 管理员身份种子（?as=admin 持久到 localStorage）→ 侧栏入口出现，点击进管理台
+  await page.goto("/?as=admin");
+  await expect(page.getByText("进入管理台")).toBeVisible({ timeout: 15_000 });
   await page.getByText("进入管理台").click();
   await expect(page.getByRole("main").getByText("模板管理")).toBeVisible({ timeout: 15_000 });
   // 打开编辑器：S1 增删角色/预算输入在位
@@ -206,11 +215,8 @@ test("管理台：普通用户 403 → SPA 内切管理员 → 模板编辑器�
   await expect(page.getByRole("button", { name: "保存草稿" })).toBeVisible();
 });
 
-test("审计页：Trace 过滤输入在位", async ({ page }) => {
-  await page.goto("/admin/templates"); // 先 403（普通用户）
-  await page.getByRole("button", { name: "返回工作台" }).click();
-  await page.getByText("进入管理台").click();
-  await page.getByText("审计回放").click();
+test("审计页：Trace 过滤输入在位（管理员）", async ({ page }) => {
+  await page.goto("/admin/audit?as=admin"); // 管理员种子 → RoleGuard 放行，直达审计页
   await expect(page.getByPlaceholder(/audit_trace_id/)).toBeVisible({ timeout: 15_000 });
 });
 
