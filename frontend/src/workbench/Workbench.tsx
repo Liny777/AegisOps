@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import { color, radius } from "../theme/tokens";
+import { color, radius, type Tone } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, IconButton, Button } from "../ui";
 import { api, API_MODE, forgetEnsuredRun, isAbortError } from "../lib/api";
@@ -13,11 +13,13 @@ import type {
   ChatMessage,
   HitlCardData,
   OpenOpsEvent,
+  StatusChip,
   WorkbenchState,
   Skill,
 } from "../lib/api/types";
 import { HitlCard } from "./HitlCard";
 import { Composer } from "./Composer";
+import { resolveModelLabel } from "./modelLabel";
 import { ActivityRail } from "./ActivityRail";
 import { CopilotChatPanel, CopilotWorkbenchProvider } from "./copilot/CopilotChatPanel";
 import { CopilotErrorBoundary } from "./copilot/CopilotErrorBoundary";
@@ -116,6 +118,9 @@ export function Workbench({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
+  const [modelLabel, setModelLabel] = useState("");  // 输入框只读展示的当前实例模型名（overlay→label，不可切换）
+  const [wsStatus, setWsStatus] = useState<{ sync_status: string; app_ids: string[] } | null>(null); // 服务状态：oModel 同步态 + 范围 APPID 真值
+  const [mcpStat, setMcpStat] = useState<{ active: number; total: number } | null>(null); // 服务状态：MCP 装配数 + 注册 active 数
   const [nodes, setNodes] = useState<ActivityNode[]>([]);
   const [activityState, dispatchActivity] = useReducer(activityReducer, undefined, createActivityState);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
@@ -194,6 +199,31 @@ export function Workbench({
       .catch((error) => {
         if (!isAbortError(error)) console.warn("[OpenOps][skills] 能力列表读取失败", error);
       });
+    return () => controller.abort();
+  }, [effectiveInstanceId]);
+
+  // 输入框模型徽标 + 服务状态真值（oModel 同步态 / 范围 APPID / MCP 装配数）：按当前实例并发拉取。
+  useEffect(() => {
+    if (API_MODE !== "real" || !effectiveInstanceId) return;
+    const controller = new AbortController();
+    setModelLabel(""); setWsStatus(null); setMcpStat(null);
+    Promise.all([api.getAgentTeam(effectiveInstanceId), api.getModelConfigs()])
+      .then(([team, models]) => {
+        if (controller.signal.aborted) return;
+        setModelLabel(resolveModelLabel(team.overlay, models));
+        if (team.workspace_id) {
+          api.getWorkspaceStatus(team.workspace_id)
+            .then((ws) => { if (!controller.signal.aborted) setWsStatus({ sync_status: ws.sync_status, app_ids: ws.app_ids }); })
+            .catch(() => undefined);
+        }
+      })
+      .catch(() => undefined);
+    api.getMcpLibrary()
+      .then((rows) => {
+        if (controller.signal.aborted) return;
+        setMcpStat({ active: rows.filter((r) => r.status === "active").length, total: rows.length });
+      })
+      .catch(() => undefined);
     return () => controller.abort();
   }, [effectiveInstanceId]);
 
@@ -690,7 +720,7 @@ export function Workbench({
           <Icon name="lock" size={14} /> 会话已关闭：只读查看历史与审计，不能再启动新任务。
         </div>
       ) : (
-        <Composer skills={skills} onSend={send} />
+        <Composer skills={skills} onSend={send} modelLabel={modelLabel} />
       )}
     </div>
   );
@@ -700,6 +730,7 @@ export function Workbench({
       <CopilotChatPanel
         runId={runId}
         instanceId={effectiveInstanceId}
+        modelLabel={modelLabel}
         readOnly={runStatus === "closed"}
         blocked={workbenchInputBlocked}
         blockedMessage={failedCurrentTarget ? "目标会话恢复失败，请使用上方“重试”后再继续" : undefined}
@@ -786,7 +817,7 @@ export function Workbench({
 
       {statusOpen ? (
         <div style={{ flex: "0 0 auto", borderBottom: `1px solid ${color.border}`, background: color.surfaceAlt, padding: "12px 20px", display: "flex", flexWrap: "wrap", gap: 10 }}>
-          {demo.statusChips.map((s) => (
+          {(API_MODE === "real" ? buildStatusChips(conn, wsStatus, mcpStat) : demo.statusChips).map((s) => (
             <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, color: color.textBody, background: "#fff", border: `1px solid ${color.border}`, padding: "6px 11px", borderRadius: radius.md }}>
               <span style={{ width: 7, height: 7, borderRadius: "50%", background: toneColor[s.tone].dot }} />{s.label}<span style={{ color: color.textSubtle, fontWeight: 500 }}>{s.value}</span>
             </span>
@@ -861,6 +892,39 @@ export function Workbench({
       ) : null}
     </div>
   );
+}
+
+/** 服务状态面板 4 chip 的真值组装（real 模式）：AG-UI 连接态 / MCP 装配数 / oModel 同步态 / 范围 APPID。 */
+function buildStatusChips(
+  conn: ConnState,
+  wsStatus: { sync_status: string; app_ids: string[] } | null,
+  mcpStat: { active: number; total: number } | null,
+): StatusChip[] {
+  const agui: Record<ConnState, { value: string; tone: Tone }> = {
+    open: { value: "已连接", tone: "good" },
+    connecting: { value: "连接中", tone: "neutral" },
+    reconnecting: { value: "重连中", tone: "warning" },
+    error: { value: "连接异常", tone: "danger" },
+  };
+  const syncMap: Record<string, { value: string; tone: Tone }> = {
+    ready: { value: "已同步", tone: "good" },
+    syncing: { value: "同步中", tone: "warning" },
+    failed: { value: "同步失败", tone: "danger" },
+  };
+  const sync = wsStatus
+    ? (syncMap[wsStatus.sync_status] ?? { value: wsStatus.sync_status, tone: "neutral" as Tone })
+    : { value: "…", tone: "neutral" as Tone };
+  const apps = wsStatus?.app_ids ?? [];
+  const scopeValue = apps.length
+    ? (apps.length <= 4 ? apps.join("/") : `${apps.slice(0, 3).join("/")} +${apps.length - 3}`)
+    : (wsStatus ? "无" : "…");
+  return [
+    { key: "agui", label: "AG-UI", value: agui[conn].value, tone: agui[conn].tone },
+    { key: "mcp", label: "MCP 服务", value: mcpStat ? `${mcpStat.active}/${mcpStat.total} · active` : "…",
+      tone: mcpStat ? (mcpStat.active > 0 ? "good" : "warning") : "neutral" },
+    { key: "omodel", label: "oModel", value: sync.value, tone: sync.tone },
+    { key: "scope", label: "范围", value: scopeValue, tone: apps.length ? "good" : "neutral" },
+  ];
 }
 
 function ConnBadge({ conn, closed }: { conn: ConnState; closed: boolean }) {

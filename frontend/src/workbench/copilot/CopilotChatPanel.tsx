@@ -6,11 +6,13 @@
 // 发送按钮两态/停止（原生）：运行中变停止 → abort 流 → 后端断流取消桥停任务。
 // RCA/HITL 卡与活动栏不在本组件渲染；本组件把同流 CUSTOM 事件桥接给 Workbench，
 // 再与备用 SSE、/state 和审计分页统一去重投影（30.4 三层模型不变）。
-import { useCallback, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState, type ReactNode } from "react";
 import { CopilotChat, CopilotKit, useAgent, useCopilotKit } from "@copilotkit/react-core/v2";
 import "@copilotkit/react-core/v2/styles.css";
 import "./CopilotChatPanel.css";
 
+import { Icon } from "../../ui";
+import { color, radius } from "../../theme/tokens";
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
@@ -36,6 +38,7 @@ function identityHeaders(): Record<string, string> {
 export function CopilotChatPanel({
   runId,
   instanceId,
+  modelLabel,
   readOnly = false,
   blocked = false,
   blockedMessage,
@@ -46,6 +49,8 @@ export function CopilotChatPanel({
 }: {
   runId: string;
   instanceId: string;
+  /** 当前实例模型名（只读展示于输入框免责行；创建时绑定，会话内不可切换）。 */
+  modelLabel?: string;
   /** closed run 仍使用同一 CopilotChat，只把官方 input slot 替换为只读提示。 */
   readOnly?: boolean;
   /** URL 已切换但新 Run 尚未完成状态恢复时，旧 composer 必须真正不可输入。 */
@@ -68,6 +73,23 @@ export function CopilotChatPanel({
     [],
   );
 
+  // 活动态输入槽：稳定类名 + 在免责行只读展示当前模型（modelLabel 变才重建，避免流式时反复解析）。
+  const activeInputSlot = useMemo(() => ({
+    className: "oa-chat-input",
+    textArea: { className: "oa-chat-textarea" },
+    disclaimer: () => (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 10, padding: "6px 12px 2px", fontSize: 11, color: color.textLabel }}>
+        {modelLabel ? (
+          <span title="当前模型（创建时绑定，会话内不可切换）"
+            style={{ display: "inline-flex", alignItems: "center", gap: 4, fontWeight: 600, color: color.textNav, background: color.brandTintBg, border: `1px solid ${color.brandTintBorder}`, padding: "3px 8px", borderRadius: radius.md }}>
+            <Icon name="cpu" size={12} color={color.brand} />{modelLabel}<Icon name="lock" size={10} color={color.textLabel} />
+          </span>
+        ) : null}
+        <span>AI 可能出错，请核对关键操作与生产风险。</span>
+      </div>
+    ),
+  }), [modelLabel]);
+
   return (
     <CopilotThreadGate
       runId={runId}
@@ -89,7 +111,7 @@ export function CopilotChatPanel({
           className="copilot-chat-panel"
           messageView={OpenOpsChatMessageView}
           welcomeScreen={false}
-          input={readOnly ? CLOSED_INPUT_SLOT : OPENOPS_INPUT_SLOT}
+          input={readOnly ? CLOSED_INPUT_SLOT : activeInputSlot}
           onError={() =>
             setConnectionStatus((current) => (current === "ready" ? current : "error"))
           }
@@ -167,12 +189,6 @@ function ClosedConversationInput() {
 
 const CLOSED_INPUT_SLOT = {
   children: () => <ClosedConversationInput />,
-};
-
-// 官方 input slot 注入稳定类名；不绑定 CopilotKit 内部 utility class。
-const OPENOPS_INPUT_SLOT = {
-  className: "oa-chat-input",
-  textArea: { className: "oa-chat-textarea" },
 };
 
 /**

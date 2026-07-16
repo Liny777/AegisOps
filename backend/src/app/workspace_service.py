@@ -70,6 +70,7 @@ async def status(workspace_id: str) -> dict[str, Any]:
         "workspace_id": workspace_id,
         "sync_status": ws["sync_status"],
         "scope_revision": ws["scope_revision"],
+        "app_ids": ws.get("app_ids") or [],  # 范围 chip 展示真实 APPID 列表（mock/real 键一致）
     }
 
 
