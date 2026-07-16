@@ -219,6 +219,27 @@ function SectionLabel({ text, required, right }: { text: string; required?: bool
   );
 }
 
+// 能力识别卡：标题 name 是模板 sub_agent 的 label——管理员可编辑的自由文本（后端无白名单/无 maxLength），
+// 可能很长。标题走「省略号截断 + title 补全」（与 SettingsPage 卡片标题+徽标同惯例），徽标恒定不收缩；
+// 抽成组件便于 e2e 以极长名回归横向不溢出。
+export function CapabilityCard({ name }: { name: string }) {
+  const meta = CAP_META[name] ?? { icon: "bolt", desc: "平台内置能力。" };
+  return (
+    <div style={{ border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
+      <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
+        <Icon name={meta.icon} size={21} color={color.brand} />
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3, minWidth: 0 }}>
+          <span data-testid="cap-title" title={name} style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}>{name}</span>
+          <span style={{ fontSize: 10, fontWeight: 600, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap", flexShrink: 0 }}>已识别</span>
+        </div>
+        <p style={{ fontSize: 12, color: color.textSubtle, margin: 0, lineHeight: 1.55 }}>{meta.desc}</p>
+      </div>
+    </div>
+  );
+}
+
 /** step1「确认能力清单」：能力识别卡片（上）+ Agent 看护空间 OModel 初始化 loading（下，2s 装饰过场）。
  * ready 一旦转完（onReady）即置位，回退再进本步直接显完成态不重转；下一步按钮由外层 canNext=ready 门控。 */
 function StepCapabilities({ capabilities, ready, onReady }: { capabilities: string[]; ready: boolean; onReady: () => void }) {
@@ -237,23 +258,7 @@ function StepCapabilities({ capabilities, ready, onReady }: { capabilities: stri
             <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>Agent 已具备的内置能力</span>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
-            {capabilities.map((c) => {
-              const meta = CAP_META[c] ?? { icon: "bolt", desc: "平台内置能力。" };
-              return (
-                <div key={c} style={{ border: `1px solid rgb(226, 229, 234)`, borderRadius: radius.xl, padding: 15, display: "flex", alignItems: "flex-start", gap: 11, background: "#fff" }}>
-                  <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, color: color.brand, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
-                    <Icon name={meta.icon} size={21} color={color.brand} />
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>{c}</span>
-                      <span style={{ fontSize: 10, fontWeight: 600, color: color.goodText, background: color.goodBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap" }}>已识别</span>
-                    </div>
-                    <p style={{ fontSize: 12, color: color.textSubtle, margin: 0, lineHeight: 1.55 }}>{meta.desc}</p>
-                  </div>
-                </div>
-              );
-            })}
+            {capabilities.map((c) => <CapabilityCard key={c} name={c} />)}
           </div>
         </div>
       ) : null}
@@ -325,9 +330,9 @@ function StepConfigure({
           <div style={{ width: 32, height: 32, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 32px" }}>
             <Icon name="user" size={17} color={color.brand} />
           </div>
-          <div>
+          <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 3 }}>身份确认</div>
-            <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.6 }}>
+            <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.6, overflowWrap: "anywhere", wordBreak: "break-word" }}>
               你将以 <span style={{ fontWeight: 600, color: color.textStrong }}>{me ? `${me.user_id}（${me.display_name}）` : "当前登录账号"}</span> 的身份创建此 Agent，所有操作将关联到该账号。
             </div>
           </div>
@@ -375,7 +380,7 @@ function StepConfigure({
         {/* ④ 系统看护范围 */}
         <div>
           <SectionLabel text="系统看护范围" required
-            right={<span style={{ fontSize: 12, color: color.textSubtle }}>已选：{selectedWs?.name ?? "—"}</span>} />
+            right={<span title={selectedWs?.name ?? undefined} style={{ fontSize: 12, color: color.textSubtle, minWidth: 0, maxWidth: "60%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>已选：{selectedWs?.name ?? "—"}</span>} />
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择 Agent 看护的系统范围（workspace = 命名的 APPID 集合）；运行时范围由 oModel 按你的授权解析。</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
                      {workspaces.map((ws) => (
@@ -390,7 +395,7 @@ function StepConfigure({
   );
 }
 
-function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, badge, badgeTone, extra, trailing }: {
+export function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, badge, badgeTone, extra, trailing }: {
   selected: boolean; onClick: () => void; icon: string; iconBg: string; iconColor: string;
   label: string; badge?: string; badgeTone?: "good"; extra?: React.ReactNode; trailing?: React.ReactNode;
 }) {
@@ -402,9 +407,11 @@ function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, badge, bad
       <div style={{ width: 34, height: 34, borderRadius: radius.md, background: iconBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
         <Icon name={icon} size={17} color={iconColor} />
       </div>
-      <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 13, fontWeight: 600 }}>{label}</span>
-        {badge ? <span style={{ fontSize: 10, color: badgeTone === "good" ? color.goodText : color.textSubtle, background: badgeTone === "good" ? color.goodBg : color.neutralBg, padding: "2px 6px", borderRadius: 5 }}>{badge}</span> : null}
+      {/* flex:"1 1 auto"（非 flex:1=1 1 0%）：让名字容器 flex-basis=内容宽而非 0，才会与右侧 extra
+          （自定义卡的 baseUrl）一同参与收缩竞争；否则 basis:0 → 收缩权重 0 → 被挤成 0 宽、名字连省略号都不显。 */}
+      <div style={{ flex: "1 1 auto", minWidth: 0, display: "flex", alignItems: "center", gap: 8 }}>
+        <span data-testid="llm-label" title={label} style={{ fontSize: 13, fontWeight: 600, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+        {badge ? <span style={{ fontSize: 10, color: badgeTone === "good" ? color.goodText : color.textSubtle, background: badgeTone === "good" ? color.goodBg : color.neutralBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap", flexShrink: 0 }}>{badge}</span> : null}
       </div>
       {extra}
       {trailing}
@@ -413,7 +420,7 @@ function LlmCard({ selected, onClick, icon, iconBg, iconColor, label, badge, bad
   );
 }
  
-function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; onPick: (id: string) => void }) {
+export function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; onPick: (id: string) => void }) {
   const { hovered, bind } = useHover();
   const borderColor = on ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
   return (
@@ -424,7 +431,7 @@ function WorkspaceCard({ ws, on, onPick }: { ws: Workspace; on: boolean; onPick:
           <Icon name="check" size={13} color="#fff" />
         </div>
       ) : null}
-      <div style={{ fontSize: 14, fontWeight: 600, paddingRight: 24 }}>{ws.name}</div>
+      <div title={ws.name} style={{ fontSize: 14, fontWeight: 600, paddingRight: 24, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{ws.name}</div>
       <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 5, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{ws.workspace_id}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 9 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: color.goodText, background: color.goodBg, border: `1px solid ${color.goodBorder}`, padding: "2px 7px", borderRadius: radius.pill }}>{ws.sync_status}</span>
@@ -573,7 +580,7 @@ function StepActivate({ name, activating, editing }: { name: string; activating:
         <div style={{ width: 64, height: 64, borderRadius: 18, background: color.brandGrad, display: "inline-flex", alignItems: "center", justifyContent: "center", boxShadow: shadow.brand, marginBottom: 18, animation: activating ? "omPulse 1.4s ease-in-out infinite" : undefined }}>
           <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
         </div>
-        <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>
+        <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px", overflowWrap: "anywhere", wordBreak: "break-word" }}>
           {editing ? (activating ? "正在保存…" : `保存对「${name || "Agent"}」的修改`) : (activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`)}
         </h2>
         <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>
