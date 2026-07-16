@@ -54,7 +54,9 @@ function GroupedToolCallsView({ message, messages = [] }: CopilotChatToolCallsVi
 
 const ASSISTANT_MESSAGE_SLOT = {
   className: "oa-chat-message oa-chat-assistant-message",
-  markdownRenderer: { className: "oa-chat-markdown" },
+  // controls.mermaid.panZoom=false：让 Streamdown 不渲染左下角缩放控件（Zoom in/out/Reset），
+  // 只保留右上角「全屏放大」（View fullscreen）与复制/下载；透传给 Streamdown 的 controls。
+  markdownRenderer: { className: "oa-chat-markdown", controls: { mermaid: { panZoom: false } } },
   toolbar: { className: "oa-chat-toolbar oa-chat-assistant-toolbar" },
   copyButton: { className: "oa-chat-copy-button" },
   toolCallsView: GroupedToolCallsView,

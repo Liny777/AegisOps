@@ -18,7 +18,8 @@ function Fixture() {
     <main style={{ boxSizing: "border-box", width: "100%", minHeight: "100vh", padding: 24 }}>
       <MermaidFullscreenBoundary>
         <div className="oa-chat-markdown" style={{ width: "min(760px, 100%)", margin: "0 auto", transform: "translateY(0)", overflow: "hidden" }}>
-          <Streamdown>{chart}</Streamdown>
+          {/* 与真实对话一致：关掉 Mermaid 左下缩放控件，只留右上全屏（见 OpenOpsChatMessageView） */}
+          <Streamdown controls={{ mermaid: { panZoom: false } }}>{chart}</Streamdown>
         </div>
       </MermaidFullscreenBoundary>
     </main>

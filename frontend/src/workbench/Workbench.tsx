@@ -125,7 +125,6 @@ export function Workbench({
   const [activityState, dispatchActivity] = useReducer(activityReducer, undefined, createActivityState);
   const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [conn, setConn] = useState<ConnState>("connecting");
-  const [summaryOpen, setSummaryOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(true);
   const targetKey = `${instanceId}\u0000${explicitRunId ?? ""}`;
@@ -790,7 +789,6 @@ export function Workbench({
         {runStatus === "active" && runId ? (
           <Button variant="ghost" icon="lock" onClick={closeCurrentRun}>关闭会话</Button>
         ) : null}
-        <IconButton icon="refresh" title="会话摘要" active={summaryOpen} onClick={() => setSummaryOpen((v) => !v)} />
         <IconButton icon="timeline-event" title="活动栏" active={activityOpen} onClick={() => setActivityOpen((v) => !v)} />
         <IconButton icon="list-check" title="服务状态" active={statusOpen} onClick={() => setStatusOpen((v) => !v)} />
       </header>
@@ -818,19 +816,13 @@ export function Workbench({
       {statusOpen ? (
         <div style={{ flex: "0 0 auto", borderBottom: `1px solid ${color.border}`, background: color.surfaceAlt, padding: "12px 20px", display: "flex", flexWrap: "wrap", gap: 10 }}>
           {(API_MODE === "real" ? buildStatusChips(conn, wsStatus, mcpStat) : demo.statusChips).map((s) => (
-            <span key={s.key} style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12, fontWeight: 600, color: color.textBody, background: "#fff", border: `1px solid ${color.border}`, padding: "6px 11px", borderRadius: radius.md }}>
-              <span style={{ width: 7, height: 7, borderRadius: "50%", background: toneColor[s.tone].dot }} />{s.label}<span style={{ color: color.textSubtle, fontWeight: 500 }}>{s.value}</span>
+            <span key={s.key} style={{ display: "inline-flex", flexWrap: "wrap", alignItems: "center", gap: 7, maxWidth: "100%", fontSize: 12, fontWeight: 600, color: color.textBody, background: "#fff", border: `1px solid ${color.border}`, padding: "6px 11px", borderRadius: radius.md }}>
+              <span style={{ width: 7, height: 7, borderRadius: "50%", background: toneColor[s.tone].dot }} />{s.label}<span style={{ color: color.textSubtle, fontWeight: 500, whiteSpace: "normal", wordBreak: "break-word" }}>{s.value}</span>
             </span>
           ))}
         </div>
       ) : null}
 
-      {summaryOpen ? (
-        <div style={{ flex: "0 0 auto", borderBottom: `1px solid ${color.border}`, background: color.brandTintBg, padding: "12px 20px" }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: color.brandStrong, marginBottom: 3 }}>会话摘要</div>
-          <div style={{ fontSize: 13, color: color.textBody, lineHeight: 1.6 }}>{demo.summaryText}</div>
-        </div>
-      ) : null}
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {chatSurface}
@@ -915,9 +907,8 @@ function buildStatusChips(
     ? (syncMap[wsStatus.sync_status] ?? { value: wsStatus.sync_status, tone: "neutral" as Tone })
     : { value: "…", tone: "neutral" as Tone };
   const apps = wsStatus?.app_ids ?? [];
-  const scopeValue = apps.length
-    ? (apps.length <= 4 ? apps.join("/") : `${apps.slice(0, 3).join("/")} +${apps.length - 3}`)
-    : (wsStatus ? "无" : "…");
+  // 不截断：APPID 过多时由 chip 内部换行展示全部（见渲染处 whiteSpace/wordBreak）；空格分隔便于自然折行。
+  const scopeValue = apps.length ? apps.join(" / ") : (wsStatus ? "无" : "…");
   return [
     { key: "agui", label: "AG-UI", value: agui[conn].value, tone: agui[conn].tone },
     { key: "mcp", label: "MCP 服务", value: mcpStat ? `${mcpStat.active}/${mcpStat.total} · active` : "…",
