@@ -302,9 +302,28 @@ def test_iam_b9_dot_path_fields_and_logout(client, monkeypatch):
     # logout 清缓存 → 再请求重新打 IAM
     before = _FakeIam.calls["token"]
     out = unwrap(client.post("/api/openops/v1/auth/logout", headers=hdr))
-    assert "signout_url" in out
+    # B9：signout 由前端后台 POST 调用，需 CSRF cookie/header 名 + 回跳地址（默认 IAM-Csrf-Token）
+    assert {"signout_url", "login_url", "csrf_cookie_name", "csrf_header_name", "redirect_url"} <= set(out)
+    assert out["csrf_cookie_name"] == "IAM-Csrf-Token"
+    assert out["csrf_header_name"] == "IAM-Csrf-Token"
+    assert out["redirect_url"] is None  # 未配 OPENOPS_IAM_LOGOUT_REDIRECT_URL → None（前端回落 login_url）
     unwrap(client.get("/api/openops/v1/me", headers=hdr))
     assert _FakeIam.calls["token"] == before + 1
+
+
+def test_iam_b9_logout_signout_host_substitution_and_csrf_env(client, monkeypatch):
+    """登出返回体：signout/redirect 的 {host} 按 X-Forwarded-Host 替换；CSRF 名可 env 覆写。"""
+    _iam_env(monkeypatch,
+             OPENOPS_IAM_SIGNOUT_URL="https://{host}/gw/iam/auth/logout",
+             OPENOPS_IAM_LOGOUT_REDIRECT_URL="/openops/",
+             OPENOPS_IAM_CSRF_COOKIE_NAME="X-CSRF",
+             OPENOPS_IAM_CSRF_HEADER_NAME="X-CSRF-H")
+    out = unwrap(client.post("/api/openops/v1/auth/logout",
+                             headers={"Cookie": "iam_sess=z", "X-Forwarded-Host": "console-kwe.his-beta.huawei.com"}))
+    assert out["signout_url"] == "https://console-kwe.his-beta.huawei.com/gw/iam/auth/logout"
+    assert out["redirect_url"] == "/openops/"  # 无 {host} 占位则原样返回
+    assert out["csrf_cookie_name"] == "X-CSRF"
+    assert out["csrf_header_name"] == "X-CSRF-H"
 
 
 def test_iam_browser_host_placeholder_substitution(monkeypatch):

@@ -103,8 +103,9 @@ export function Sidebar() {
     try {
       const runId = await api.createRun(currentAgentId);
       nav(`/agent-teams/${currentAgentId}/chat?run_id=${encodeURIComponent(runId)}`);
-    } catch {
-      nav(`/agent-teams/${currentAgentId}/chat`);
+    } catch (e) {
+      // 容量满（SANDBOX_CAPACITY_FULL/429）等错误直接提示用户——原静默 nav 会把繁忙提醒藏进 Workbench 二次尝试
+      alert((e as Error).message);
     }
   };
   // B7a IA（30.6 2026-07-09 拍板）：Tool 标注/资产治理并入模板管理 drill；新增模型资产
@@ -318,11 +319,7 @@ export function Sidebar() {
               <div style={{ fontSize: 11, color: color.textSubtle, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{me?.meta ?? ""}</div>
             </div>
             <Interactive as="button" title="退出登录"
-              onClick={() => { void api.logout().then((r) => {
-                const url = r.signout_url || r.login_url;
-                if (url) window.location.assign(url.replaceAll("{host}", window.location.host));
-                else window.location.reload(); // mock/未配 IAM：刷新回到登录判定
-              }).catch(() => window.location.reload()); }}
+              onClick={() => { void performLogout(); }}
               baseStyle={{ border: "none", background: "transparent", cursor: "pointer", padding: 2, display: "inline-flex", color: color.textFaint }}
               hoverStyle={{ color: color.danger }}>
               <Icon name="logout" size={15} />
@@ -332,4 +329,43 @@ export function Sidebar() {
       </div>
     </aside>
   );
+}
+
+// 读浏览器 cookie（给 IAM signout 取 CSRF token 用；老项目 App.tsx readCookie 口径）。
+function readCookie(name: string): string {
+  const escaped = name.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+  const match = document.cookie.match(new RegExp("(?:^|;\\s*)" + escaped + "=([^;]*)"));
+  return match ? decodeURIComponent(match[1]) : "";
+}
+
+// 退出登录（老项目 App.tsx handleLogout 口径）：后端登出 → **后台 POST** IAM signout（带 CSRF 头，
+// 同源、清 SSO cookie）→ 浏览器只 assign 到回跳/登录地址。**绝不导航到 signout_url**——它只收
+// POST + CSRF，GET 跳过去必 404 白页（就是本次修复的根因）。
+async function performLogout(): Promise<void> {
+  let cfg: Awaited<ReturnType<typeof api.logout>>;
+  try {
+    cfg = await api.logout();
+  } catch {
+    window.location.reload(); // mock/网络失败：刷新回到登录判定
+    return;
+  }
+  // ① 后台 POST 清 IAM SSO（带 cookie + CSRF 头）；失败不阻断本地清理 + 跳转
+  if (cfg.signout_url) {
+    const url = cfg.signout_url.replaceAll("{host}", window.location.host);
+    const headerName = cfg.csrf_header_name || "IAM-Csrf-Token";
+    const token = readCookie(cfg.csrf_cookie_name || "IAM-Csrf-Token");
+    try {
+      await fetch(url, {
+        method: "POST",
+        credentials: "include",
+        headers: token ? { [headerName]: token } : {},
+      });
+    } catch {
+      // 同源 signout 失败也照常跳转（IAM 那边可能已注销，本端 TokenCache 也清了）
+    }
+  }
+  // ② 只跳回跳地址（清 SSO 后再访问触发重新登录）；未配回跳 → login_url；都没有 → reload 兜底
+  const dest = cfg.redirect_url || cfg.login_url;
+  if (dest) window.location.assign(dest.replaceAll("{host}", window.location.host));
+  else window.location.reload();
 }

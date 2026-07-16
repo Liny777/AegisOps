@@ -209,6 +209,11 @@ IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版
 `{host}` 占位符。携带 Cookie/token 的 access-token 与 userinfo URL 必须是固定 HTTPS 地址，禁止
 请求域名替换。回跳示例：
 `OPENOPS_IAM_LOGIN_URL=https://{host}/epstenant/#/login?redirect=https%3A%2F%2F{host}%2Fopenops%2F%3F`。
+**登出链路**：`OPENOPS_IAM_SIGNOUT_URL`（如 `https://{host}/gw/iam/auth/logout`）是对称于 login 的
+SSO 登出 API，**只收 POST + CSRF 头**——前端从 `OPENOPS_IAM_CSRF_COOKIE_NAME`（默认 `IAM-Csrf-Token`）
+取 token，用 `fetch` **后台 POST**（同源）调它清 SSO cookie，**绝不用浏览器 GET 导航过去**（GET
+必 404 Whitelabel 白页）；随后浏览器只跳 `OPENOPS_IAM_LOGOUT_REDIRECT_URL`（设 `/openops/` 而非 `/`）
+或 `login_url`。
 
 **客户端 IP 透传**（IAM 会话绑 IP）：`/openback` 全链（公司网关→前端机→后端）每跳都要
 `proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`——后端取 XFF 首跳作为用户真实
