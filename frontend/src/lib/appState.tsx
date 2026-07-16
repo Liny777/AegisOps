@@ -16,8 +16,6 @@ interface AppCtx {
   currentAgentId: string;
   setCurrentAgentId: (id: string) => void;
   loading: boolean;
-  /** demo：切换 user / platform_admin 身份（驱动后端 mock 头 + 侧栏模式）。 */
-  toggleRole: () => void;
   refresh: () => void;
   /** 显式失效历史列表；新建/改名/关闭/删除成功时 API facade 会自动调用。 */
   refreshConversations: () => void;
@@ -38,12 +36,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(() => setTick((t) => t + 1), []);
   const refreshConversations = useCallback(() => invalidateConversationHistory(), []);
-  const toggleRole = useCallback(() => {
-    // demo：user ↔ admin 身份切换（角色事实在后端 DB）
-    // 不在 React state updater 内触发历史缓存订阅，避免渲染阶段连带 setState。
-    api.switchRole(!(me?.role === "platform_admin"));
-    setTick((t) => t + 1);
-  }, [me?.role]);
 
   useEffect(() => {
     let alive = true;
@@ -136,7 +128,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       currentAgentId,
       setCurrentAgentId,
       loading,
-      toggleRole,
       refresh,
       refreshConversations,
     }}>

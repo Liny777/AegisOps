@@ -63,12 +63,12 @@ export function Sidebar() {
     conversationsLoading,
     currentAgentId,
     setCurrentAgentId,
-    toggleRole,
   } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const isAdmin = loc.pathname.startsWith("/admin");
+  const isPlatformAdmin = me?.role === "platform_admin"; // 管理台入口仅平台管理员可见（真身份，非路由）
   const showText = !collapsed;
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId) ?? agents[0];
 
@@ -285,18 +285,17 @@ export function Sidebar() {
             onClick={() => nav("/settings")}
           />
         ) : null}
-        <Interactive
-          title={isAdmin ? "返回工作台" : "进入管理台"}
-          onClick={() => {
-            toggleRole();
-            nav(isAdmin ? `/agent-teams/${currentAgentId}/chat` : "/admin/templates");
-          }}
-          baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", fontSize: 13.5, color: color.textNav, fontWeight: 500 }}
-          hoverStyle={{ background: "#e9ecf1" }}
-        >
-          <Icon name={isAdmin ? "arrow-back-up" : "shield-lock"} size={18} />
-          {showText ? <span style={{ flex: 1 }}>{isAdmin ? "返回工作台" : "进入管理台"}</span> : null}
-        </Interactive>
+        {isPlatformAdmin ? (
+          <Interactive
+            title={isAdmin ? "返回工作台" : "进入管理台"}
+            onClick={() => nav(isAdmin ? `/agent-teams/${currentAgentId}/chat` : "/admin/templates")}
+            baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", fontSize: 13.5, color: color.textNav, fontWeight: 500 }}
+            hoverStyle={{ background: "#e9ecf1" }}
+          >
+            <Icon name={isAdmin ? "arrow-back-up" : "shield-lock"} size={18} />
+            {showText ? <span style={{ flex: 1 }}>{isAdmin ? "返回工作台" : "进入管理台"}</span> : null}
+          </Interactive>
+        ) : null}
         <Interactive
           onClick={() => setCollapsed((v) => !v)}
           baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", fontSize: 13.5, color: color.textNav }}

@@ -24,7 +24,7 @@ import type {
   ActivityEventsPage,
 } from "./types";
 import * as M from "./mockData";
-import { apiFetch, crid, demoIdentity, setDemoUser } from "./client";
+import { apiFetch, crid, demoIdentity } from "./client";
 import { auditToNode, projectInstance } from "./projection";
 import { normalizeActivityPage } from "../activity";
 import {
@@ -168,8 +168,6 @@ export interface OpenOpsApi {
   getAgentTeam(instanceId: string): Promise<AgentTeamDetail>;
   /** 编辑保存（POST :update）：改名 / 换 workspace / 换模型；user_llm_config_id=null 回平台默认。 */
   updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null; platform_model_id: string | null }): Promise<void>;
-  // demo 身份
-  switchRole(admin: boolean): void;
   demoState(): WorkbenchState; // mock 兜底静态（composer skills/models 等）
 }
 
@@ -910,12 +908,6 @@ const realApi: OpenOpsApi = {
     });
   },
 
-  switchRole(admin: boolean) {
-    setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
-    runByInstance.clear();
-    invalidateConversationHistory();
-    invalidateAvailableSkills();
-  },
   demoState: () => M.mockWorkbenchState(),
 };
 
@@ -1093,11 +1085,6 @@ const mockApi: OpenOpsApi = {
       : input.platform_model_id ? { platform_model_id: input.platform_model_id }
       : {});
     return delay(undefined as unknown as void);
-  },
-  switchRole(admin: boolean) {
-    setDemoUser(admin ? "admin" : "0026demo01", admin ? "李四（管理员）" : "林一");
-    invalidateConversationHistory();
-    invalidateAvailableSkills();
   },
   demoState: () => M.mockWorkbenchState(),
 };
