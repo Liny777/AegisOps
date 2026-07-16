@@ -421,6 +421,111 @@ def test_admin_008b_container_endpoints_forbidden_for_user(client):
     assert r1.status_code == 403 and r2.status_code == 403
 
 
+def test_sbx_004_reclaim_idle_runs_frees_slot(client):
+    """Fix#2「TTL 兜底 run 泄漏」：无活动超 run_idle_ttl 的活跃 run 被回收——关 run（idle_timeout/system）
+    + 容器名额释放（count 归零转 idle）；有 running 主任务的 run 存活否决不回收。合成用户隔离，避免跨用例污染。"""
+    import uuid as _uuid
+
+    from app import run_state_service
+    from infra.db import exec1
+    from infra.repositories import runs as runs_repo
+    from runtime import task_registry
+    from runtime.task_registry import TaskState
+
+    uid = "u_reclaim_" + _uuid.uuid4().hex[:6]
+    rid = str(_uuid.uuid4())
+    cfg = {**_CFG, "run_idle_ttl_minutes": 30}  # 容器 idle TTL 保持 15：sweep 不误伤其他用例的新 idle 容器
+
+    async def scenario():
+        # 合成 active run（sre_agent_run 无 FK，可直插）+ 容器；started_at 拨到 1 小时前 → 越阈值候选
+        await runs_repo.create_run(uid, str(_uuid.uuid4()), str(_uuid.uuid4()),
+                                   "fsid-" + _uuid.uuid4().hex[:8], str(_uuid.uuid4()), run_id=rid)
+        await exec1("update sre_agent_run set started_at = now() - interval '1 hour' where agent_run_id=%(r)s", {"r": rid})
+        await sandbox_executor.ensure_user_container(uid, rid, cfg)
+        assert sandbox_executor.get(uid).active_run_count == 1
+
+        # 负例：内存有 running 主任务 → 存活否决，run 不被回收
+        st = TaskState(task_id="tsk_" + _uuid.uuid4().hex[:10], run_id=rid, user_id=uid,
+                       instance_id=str(_uuid.uuid4()), input_text="x")
+        task_registry.put(st)
+        await run_state_service.reclaim_idle_runs(cfg)
+        assert (await runs_repo.get_run(rid))["run_status"] == "active"
+
+        # 任务结束后回收：run closed(idle_timeout) + 容器 active_run_count 归零转 idle
+        st.status = "completed"
+        n = await run_state_service.reclaim_idle_runs(cfg)
+        assert n == 1
+        row = await runs_repo.get_run(rid)
+        assert row["run_status"] == "closed" and row["status_reason_code"] == "idle_timeout"
+        c = sandbox_executor.get(uid)
+        assert c is not None and c.status == "idle" and c.active_run_count == 0
+
+        # 清理：容器 + registry + DB 行
+        await sandbox_executor.destroy(uid)
+        task_registry._by_run.pop(rid, None)
+        await exec1("delete from sre_agent_run where agent_run_id=%(r)s", {"r": rid})
+        await exec1("delete from sre_audit_event where agent_run_id=%(r)s", {"r": rid})
+
+    asyncio.run(scenario())
+
+
+def test_fix3a_emit_snapshot_skips_subagent_rows(client):
+    """Fix#3 主修：子 Agent（leader_task_id 非空）的 approval.required 不落 sre_task_state（否则泄漏永不
+    终态的 running 子行污染 count_running）；主任务照常落快照。"""
+    import uuid as _uuid
+
+    from infra.db import exec1
+    from infra.repositories import task_states
+    from runtime.emit import emit
+    from runtime.task_registry import TaskState
+
+    rid, trace, inst = str(_uuid.uuid4()), str(_uuid.uuid4()), str(_uuid.uuid4())
+    uid = "u_emit_" + _uuid.uuid4().hex[:6]
+    run = {"agent_run_id": rid, "audit_trace_id": trace, "agent_team_instance_id": inst}
+    main = TaskState(task_id="tsk_" + _uuid.uuid4().hex[:10], run_id=rid, user_id=uid, instance_id=inst, input_text="x")
+    child = TaskState(task_id=main.task_id + ".inspect-deadbeef", run_id=rid, user_id=uid, instance_id=inst, input_text="y")
+    child.leader_task_id, child.agent_key = main.task_id, "inspect"
+
+    async def scenario():
+        await emit(main, run, "openops.task.started", action="start")
+        await emit(child, run, "openops.approval.required", action="ask")
+        assert await task_states.get_by_task(main.task_id) is not None   # 主任务落快照
+        assert await task_states.get_by_task(child.task_id) is None      # 子行不落
+        await exec1("delete from sre_task_state where task_id=%(t)s", {"t": main.task_id})
+        await exec1("delete from sre_audit_event where agent_run_id=%(r)s", {"r": rid})
+
+    asyncio.run(scenario())
+
+
+def test_fix3b_count_running_and_latest_exclude_subagent_rows(client):
+    """Fix#3 纵深：count_running / get_latest_by_run 只认主任务（task_id 无 '.'）——即便进程内已存在
+    历史泄漏的 running 子行，也不计入并发限额、不顶替 get_state 投影（无需等重启 converge）。"""
+    import uuid as _uuid
+
+    from infra.db import exec1
+    from infra.repositories import task_states
+    from runtime.task_registry import TaskState
+
+    uid = "u_cnt_" + _uuid.uuid4().hex[:6]
+    rid = str(_uuid.uuid4())
+    main = TaskState(task_id="tsk_" + _uuid.uuid4().hex[:10], run_id=rid, user_id=uid,
+                     instance_id=str(_uuid.uuid4()), input_text="m")
+    child = TaskState(task_id=main.task_id + ".inspect-deadbeef", run_id=rid, user_id=uid,
+                      instance_id=main.instance_id, input_text="c")
+    child.leader_task_id = main.task_id
+
+    async def scenario():
+        await task_states.upsert_snapshot(main, "running", str(_uuid.uuid4()))
+        await task_states.upsert_snapshot(child, "running", str(_uuid.uuid4()))  # 模拟历史泄漏子行（晚于主行）
+        assert await task_states.count_running(uid) == 1                          # 只数主任务
+        latest = await task_states.get_latest_by_run(rid)
+        assert latest is not None and latest["task_id"] == main.task_id           # 投影不被子行顶替
+        await exec1("delete from sre_task_state where task_id in (%(m)s, %(c)s)",
+                    {"m": main.task_id, "c": child.task_id})
+
+    asyncio.run(scenario())
+
+
 def test_skill_012_failure_detail_surfaces(client, monkeypatch):
     """失败根因三通道可见（内网教训：下载类失败曾塌缩成无信息 SKILL_FAILED）：download 抛裸
     RuntimeError → 返回给模型的文本与审计 payload 都带异常类型+文本（raise_with_body 的 body 不再被吞）。"""

@@ -13,15 +13,24 @@ from typing import Any
 
 from infra.redact import redact_text, sanitize_activity_payload
 from infra.repositories import audit, runs, runtime_config
-from runtime import events
+from runtime import events, task_registry
 from sandbox.executor import executor
 
 log = logging.getLogger("openops.sandbox")
 
 
 async def list_containers() -> list[dict[str, Any]]:
-    """当前用户容器列表（含容量口径：并发活跃 run 用户数 + idle 未回收）。"""
+    """当前用户容器列表（活跃 run 数 + idle 未回收 + 运行主任务数）。
+
+    active_run_count=打开中的会话（open run）数，属 session 口径、非并发任务量；running_task_count=当前
+    运行的主任务数，与 per_user_running_task_limit 同源（task_registry.running_count），管理台据此区分
+    「会话」与「并发任务」，避免把「活跃 run」误读成越过 running task 限额。子 Agent 属任务内部，单列展示不计入限额。
+    """
     items = executor.list_containers()
+    for it in items:
+        uid = it["user_id"]
+        it["running_task_count"] = task_registry.running_count(uid)
+        it["running_subtask_count"] = task_registry.running_subtask_count(uid)
     return items
 
 
@@ -32,12 +41,23 @@ async def sweep_once() -> int:
     return await executor.sweep_idle(cfg)
 
 
+async def reclaim_once() -> int:
+    """按当前 run_idle_ttl 回收一次无活动 run（后台循环与手工触发共用）。局部 import 避免与 run_state_service 成环。"""
+    from app import run_state_service
+    cfg = {c["config_key"]: c["config_value_json"]
+           for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+    return await run_state_service.reclaim_idle_runs(cfg)
+
+
 async def background_sweep_loop(interval_s: float) -> None:
     """后台定时回收 idle 沙箱容器（现有懒回收只在关会话/容量满触发，静默期需定时器兜底）。"""
     while True:
         await asyncio.sleep(interval_s)  # 先睡后扫：启动风暴/测试进程友好
         try:
-            n = await sweep_once()
+            r = await reclaim_once()  # 先回收无活动 run（关 run → 容器 active_run_count 归零转 idle）
+            if r:
+                log.info("[sandbox] 后台回收无活动 run %d 个", r)
+            n = await sweep_once()    # 再按容器 idle TTL 回收空容器
             if n:
                 log.info("[sandbox] 后台回收 idle 容器 %d 个", n)
         except asyncio.CancelledError:

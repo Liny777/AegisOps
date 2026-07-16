@@ -9,6 +9,7 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "max_user_containers_per_host": (26, "单机最大用户容器数"),
     "per_user_running_task_limit": (2, "每用户最多 running task"),
     "user_container_idle_ttl_minutes": (15, "idle 容器保留时间"),
+    "run_idle_ttl_minutes": (30, "无活动 run 自动回收阈值（分钟）——兜底 run 泄漏，防废弃会话长期占容器名额"),
     "capacity_full_policy": ("strict_ttl", "容量满策略"),
     "container_cpu_limit": (0.5, "新建容器 CPU 限额"),
     "container_memory_limit_mib": (2048, "新建容器内存限额"),

@@ -75,6 +75,50 @@ async def set_run_status(run_id: str, status: str, reason_code: str | None = Non
     )
 
 
+async def list_idle_active_runs(ttl_minutes: int) -> list[dict[str, Any]]:
+    """无活动超阈值的活跃 run（idle-run 回收候选，doc 28.10/11「TTL 兜底 run 泄漏」）：
+    最后活动取该 run 审计事件的 max(occurred_at)，从未产生事件的落回 started_at 兜底；仅 active 且未软删。
+    走 ix_audit_event_run_time (agent_run_id, occurred_at DESC) 子查询取最新事件，代价低。"""
+    return await q_all(
+        """
+        select r.agent_run_id, r.user_id, r.agent_team_instance_id, r.audit_trace_id
+        from sre_agent_run r
+        where r.run_status='active' and r.deleted_at is null
+          and coalesce(
+                (select max(a.occurred_at) from sre_audit_event a where a.agent_run_id = r.agent_run_id),
+                r.started_at
+              ) < now() - make_interval(mins => %(ttl)s)
+        """,
+        {"ttl": ttl_minutes},
+    )
+
+
+async def close_idle(run_id: str, reason_code: str) -> int:
+    """条件关闭（idle 回收专用）：仅当仍 active 才翻 closed，返回受影响行数——
+    与用户并发 close/delete 幂等（已非 active 则 0 行、调用方跳过）。"""
+    return await exec1(
+        """
+        update sre_agent_run
+        set run_status='closed', status_reason_code=%(rc)s, ended_at=now(), last_update_date=now()
+        where agent_run_id=%(r)s and run_status='active' and deleted_at is null
+        """,
+        {"r": run_id, "rc": reason_code},
+    )
+
+
+async def reopen_run(run_id: str) -> int:
+    """撤销 idle 误关（并发起任务竞态）：closed→active 并清 ended_at/status_reason_code。
+    仅回滚本次 idle_timeout 关的行（守 status_reason_code），绝不动用户主动关的会话。"""
+    return await exec1(
+        """
+        update sre_agent_run
+        set run_status='active', ended_at=null, status_reason_code=null, last_update_date=now()
+        where agent_run_id=%(r)s and run_status='closed' and status_reason_code='idle_timeout'
+        """,
+        {"r": run_id},
+    )
+
+
 async def insert_scope_snapshot(
     user_id: str, instance_id: str, run_id: str, task_id: str, workspace_id: str,
     scope_revision: str, appids: list[str], omodel_request_id: str, compute_reason: str,

@@ -372,7 +372,9 @@ export interface SandboxContainer {
   user_id: string;
   runtime_status: string; // active / idle
   image_version: string;
-  active_run_count: number;
+  active_run_count: number;        // 打开中的会话/run 数（session 口径，非并发任务量，可能因 run 未正常关闭虚高）
+  running_task_count: number;      // 当前运行的主任务数（对齐 per_user_running_task_limit 限额）
+  running_subtask_count?: number;  // 子 Agent 在飞数（fan-out 观测，不计入限额）
   idle_seconds: number | null;
 }
 export interface AuditNode {

@@ -90,6 +90,11 @@ def running_count(user_id: str) -> int:
     return sum(1 for st in _by_run.values() if st.user_id == user_id and st.status == "running")
 
 
+def running_subtask_count(user_id: str) -> int:
+    """该用户在飞的子 Agent 数（fan-out 观测；子 Agent 属任务内部，不计入 per_user_running_task_limit）。"""
+    return sum(1 for st in _subtasks.values() if st.user_id == user_id and st.status == "running")
+
+
 def instance_has_running(instance_id: str) -> bool:
     return any(st.instance_id == instance_id and st.status == "running" for st in _by_run.values())
 
