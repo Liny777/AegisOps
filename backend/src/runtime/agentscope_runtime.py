@@ -353,6 +353,33 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         text = await _run_cmd(st, run, command)
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
+    async def read_container_file(path: str, offset: int = 1, limit: int = 2000) -> Any:
+        """读取你容器内某个文件的内容（带行号，支持 offset/limit 分页）。优先用它读 Skill 手册/参考文件
+        （references/）、配置、日志、源码等——不受 run_container_command 输出上限约束，大文件可分页读全。
+
+        Args:
+            path: 容器内文件路径，如 /openops/workspace/skills/<task>/<call>/references/foo.md。
+            offset: 起始行号（从 1 开始，默认 1）。
+            limit: 最多读取的行数（默认 2000）；文件更长时按提示用新的 offset 续读。
+        """
+        from runtime.sandbox_bash import read_container_file as _read  # 局部导入避免环
+
+        text = await _read(st, run, path, offset=offset, limit=limit)
+        return ToolResponse(content=[TextBlock(type="text", text=text)])
+
+    async def list_container_files(path: str = ".", pattern: str | None = None) -> Any:
+        """列出你容器内某个目录下的文件（可按文件名通配过滤）。用于发现 Skill 包 / references 下有哪些
+        文件，再用 read_container_file 逐个读取。
+
+        Args:
+            path: 目录路径，如 /openops/workspace/skills/<task>/<call>。默认当前目录。
+            pattern: 可选文件名通配，如 `*.md`。
+        """
+        from runtime.sandbox_bash import list_container_files as _ls  # 局部导入避免环
+
+        text = await _ls(st, run, path, pattern=pattern)
+        return ToolResponse(content=[TextBlock(type="text", text=text)])
+
     async def run_platform_skill(skill_name: str) -> Any:
         """执行一个已装配到当前实例的 Skill（平台默认或你绑定的用户 Skill）。Skill 在你的隔离容器内
         经受控执行，返回结构化结果。未装配的 Skill 会被拒绝。
@@ -449,6 +476,10 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 容器内受控 Bash 工具（B8·补2）：始终可用（会话容器就位），命令级四层裁决在 run_bash 内，
     # 工具级 agentscope 权限设为 allow（tool 本身受控，逐命令再裁决）。
     tools.append(FunctionTool(run_container_command, name="run_container_command", is_read_only=False))
+    # 容器内 Read/Glob 等价物（B8·补3）：专用文件读取/枚举，绕开 run_container_command 的字符上限，
+    # 解决 Skill 手册/references 大文件被截断读不全。机器构造、可证只读，tool 级 allow（同 bash）。
+    tools.append(FunctionTool(read_container_file, name="read_container_file", is_read_only=True))
+    tools.append(FunctionTool(list_container_files, name="list_container_files", is_read_only=True))
     # Skill 作 agent 工具（C1）：装配集校验 + 真 ZIP 投递 + 容器内执行在 run_bound_skill 内。
     # description 动态注入装配集（同 _make_dynamic_tool 的 description 覆盖模式）：LLM 必须"知道"有哪些
     # skill_key 合法，否则零感知（实测问「介绍 alarm-query」只答同名 MCP）且易传错名被 fail-closed。
@@ -547,6 +578,9 @@ def _permission_context(st: TaskState) -> Any:
             allow[name] = [_rule(name, PermissionBehavior.ALLOW)]
     # 容器内 Bash 工具（B8·补2）：tool 级 allow（受控工具），命令级四层裁决/审批在 run_bash 内做
     allow["run_container_command"] = [_rule("run_container_command", PermissionBehavior.ALLOW)]
+    # 容器内 Read/Glob 等价物（B8·补3）：只读、机器构造命令，tool 级 allow（防被裁剪）
+    allow["read_container_file"] = [_rule("read_container_file", PermissionBehavior.ALLOW)]
+    allow["list_container_files"] = [_rule("list_container_files", PermissionBehavior.ALLOW)]
     # Skill 工具（C1）：tool 级 allow，装配集校验/checksum 在 run_bound_skill 内做
     allow["run_platform_skill"] = [_rule("run_platform_skill", PermissionBehavior.ALLOW)]
     return PermissionContext(allow_rules=allow, ask_rules=ask)
