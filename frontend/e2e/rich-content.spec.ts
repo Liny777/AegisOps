@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("Mermaid：只保留右上全屏，左下缩放控件已移除，全屏始终只一张图", async ({ page }) => {
+test("Mermaid zoom/fullscreen always keeps exactly one visible diagram", async ({ page }) => {
   await page.goto("/e2e/fixtures/mermaid.html");
   const block = page.locator('[data-streamdown="mermaid-block"]');
   const diagrams = page.locator('[data-streamdown="mermaid-block"] [aria-label="Mermaid chart"] svg');
@@ -8,10 +8,9 @@ test("Mermaid：只保留右上全屏，左下缩放控件已移除，全屏始�
   await expect(diagrams).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('[data-streamdown="mermaid-block"] [aria-label="Mermaid chart"] svg:visible')).toHaveCount(1);
 
-  // panZoom 关闭：左下缩放控件（Zoom in/out/Reset）不再渲染，仅保留右上「全屏放大」。
-  await expect(block.getByRole("button", { name: "Zoom in" })).toHaveCount(0);
-  await expect(block.getByRole("button", { name: "Zoom out" })).toHaveCount(0);
-  await expect(block.getByRole("button", { name: "View fullscreen" })).toHaveCount(1);
+  await block.getByRole("button", { name: "Zoom in" }).click();
+  await expect(page.locator('[data-streamdown="mermaid-block"] [aria-label="Mermaid chart"] svg:visible')).toHaveCount(1);
+  await expect(block).toHaveCount(1);
 
   const fullscreenButton = block.getByRole("button", { name: "View fullscreen" });
   for (let attempt = 0; attempt < 3; attempt += 1) {
