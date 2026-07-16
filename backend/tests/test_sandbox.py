@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import time
 
 import pytest
@@ -971,7 +972,7 @@ def test_guard_read_only_allows_diagnostics_asks_mutations():
     asyncio.run(scenario())
 
 
-# ────────────────── B8·补3：容器内 Read/Glob 工具 + 放宽输出上限（Skill 截断修复）──────────────────
+# ─────── B8·补3：官方 Read/Grep（绑容器后端）+ list_container_files + 放宽输出上限（Skill 截断修复）───────
 
 def _bash_ctx(client, *, crid: str, task_id: str):
     """B8·补3 共用脚手架：建实例+run（创建边界已 ensure 容器）→ TaskState（带 sandbox_cfg）+ run dict。"""
@@ -986,51 +987,100 @@ def _bash_ctx(client, *, crid: str, task_id: str):
     return st, _run_dict(run_row), run_row
 
 
-def test_read_container_file_paginates_full_content(client):
-    """B8·补3：read_container_file 按行读全大文件（带行号 + offset/limit 分页），不受 2000 上限约束——
-    这是「Skill references 大文件被 run_container_command 截断读不全」的正解。"""
-    from runtime.sandbox_bash import read_container_file
+def _tool_text(res) -> str:
+    """从 agentscope ToolChunk/ToolResponse 取出文本（content 块可能是 TypedDict 或对象）。"""
+    parts = []
+    for b in getattr(res, "content", []) or []:
+        t = b.get("text") if isinstance(b, dict) else getattr(b, "text", None)
+        if t:
+            parts.append(t)
+    return "\n".join(parts)
 
-    st, run, _ = _bash_ctx(client, crid="rcf", task_id="tk_rcf")
+
+def test_sandbox_tool_backend_reads_execs_and_writes(client):
+    """B8·补3：容器后端适配器把 agentscope BackendBase 的 FS 调用路由进用户容器——
+    exec_shell/read_file/write_file/file_exists 都在容器内生效（fake 后端真 subprocess 验证）。"""
+    from runtime.sandbox_tool_backend import SandboxToolBackend
+
+    st, _, _ = _bash_ctx(client, crid="stb", task_id="tk_stb")
 
     async def scenario():
         c = sandbox_executor.get("0026demo01")
-        big = ("\n".join(f"line-{i}" for i in range(1, 251)) + "\n").encode()  # 250 行、每行有换行
-        await c.backend.write_file("big.txt", big)
-        p = f"{c.backend.workdir}/big.txt"
+        await c.backend.write_file("hello.txt", b"line1\nline2\n")
+        be = SandboxToolBackend("0026demo01", st.run_id, {})
+        p = f"{c.backend.workdir}/hello.txt"
 
-        page1 = await read_container_file(st, run, p, offset=1, limit=100)
-        assert "line-1" in page1 and "line-100" in page1 and "line-101" not in page1  # 只到窗口末行
-        assert "共 250 行" in page1 and "还有 150 行" in page1 and "offset=101" in page1  # 续读指引
-        assert "\tline-1" in page1  # cat -n 行号（右对齐数字 + tab）
-
-        page2 = await read_container_file(st, run, p, offset=101, limit=100)
-        assert "line-101" in page2 and "line-200" in page2 and "还有 50 行" in page2
-
-        tail = await read_container_file(st, run, p, offset=201, limit=100)
-        assert "line-250" in tail and "还有" not in tail  # 末页无续读提示
+        assert await be.file_exists(p) is True                                   # 派生自 exec_shell(test -e)
+        assert await be.file_exists(f"{c.backend.workdir}/nope.txt") is False
+        assert await be.read_file(p) == b"line1\nline2\n"                          # base64 读绝对路径
+        r = await be.exec_shell(["echo", "hi"])
+        assert r.exit_code == 0 and r.stdout == b"hi\n"                            # stdout 为 bytes（agentscope 约定）
+        await be.write_file(f"{c.backend.workdir}/w.txt", b"xyz")                  # 写回容器
+        assert await be.read_file(f"{c.backend.workdir}/w.txt") == b"xyz"
 
     asyncio.run(scenario())
 
 
-def test_read_container_file_missing_file_reports_failure(client):
-    """B8·补3：读不存在的文件明确报「读取失败」（首段判存在，避免末尾管道 head 把缺失吞成空文件）。"""
-    from runtime.sandbox_bash import read_container_file
+def test_official_read_tool_reads_container_file(client):
+    """B8·补3：官方 agentscope Read 绑容器后端 → 在**容器内**按行读文件（带行号），
+    解决 Skill 手册/references 大文件被截断读不全。"""
+    from agentscope.tool import Read
 
-    st, run, run_row = _bash_ctx(client, crid="rcf_miss", task_id="tk_rcf_miss")
+    from runtime.sandbox_tool_backend import SandboxToolBackend
+
+    st, _, _ = _bash_ctx(client, crid="ord", task_id="tk_ord")
 
     async def scenario():
         c = sandbox_executor.get("0026demo01")
-        miss = await read_container_file(st, run, f"{c.backend.workdir}/nope.txt")
-        assert "读取失败" in miss
-        # 空文件：不算失败，给「无更多内容」提示
-        await c.backend.write_file("empty.txt", b"")
-        empty = await read_container_file(st, run, f"{c.backend.workdir}/empty.txt")
-        assert "读取失败" not in empty and "无更多内容" in empty
+        body = ("\n".join(f"line-{i}" for i in range(1, 21)) + "\n").encode()
+        await c.backend.write_file("doc.md", body)
+        be = SandboxToolBackend("0026demo01", st.run_id, {})
+
+        res = await Read(backend=be).call(file_path=f"{c.backend.workdir}/doc.md")
+        text = _tool_text(res)
+        assert "line-1" in text and "line-20" in text  # 全文读到（官方 Read 自带行号）
+        # 绝对路径校验：相对路径被官方 Read 拒（证明 backend 已生效、走的是官方逻辑）
+        rel = await Read(backend=be).call(file_path="doc.md")
+        assert "absolute" in _tool_text(rel).lower()
 
     asyncio.run(scenario())
-    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
-    assert any(e["event_type"] == "openops.sandbox.file.read" for e in events)  # 读取入审计闭环
+
+
+@pytest.mark.skipif(shutil.which("rg") is None,
+                    reason="官方 Grep 依赖 ripgrep（沙箱镜像已加 ripgrep；本机跑此用例需装 rg）")
+def test_official_grep_tool_searches_container(client):
+    """B8·补3：官方 agentscope Grep 绑容器后端 → 在**容器内**用 ripgrep 搜内容（rg 在镜像里）。"""
+    from agentscope.tool import Grep
+
+    from runtime.sandbox_tool_backend import SandboxToolBackend
+
+    st, _, _ = _bash_ctx(client, crid="org", task_id="tk_org")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        await c.backend.write_file("refs/g.md", "alpha\nNEEDLE_here 命中行\nbeta\n".encode())
+        await c.backend.write_file("refs/other.md", b"no match here\n")
+        be = SandboxToolBackend("0026demo01", st.run_id, {})
+
+        res = await Grep(backend=be).call(pattern="NEEDLE_here",
+                                          path=f"{c.backend.workdir}/refs", output_mode="content")
+        text = _tool_text(res)
+        assert "NEEDLE_here" in text  # ripgrep 在容器内命中
+
+    asyncio.run(scenario())
+
+
+def test_permission_context_allows_official_read_grep(client):
+    """B8·补3：_permission_context 给官方 Read/Grep + list_container_files 授 tool 级 allow（防裁剪）；
+    旧的自定义 read_container_file 已移除。"""
+    from runtime.agentscope_runtime import _permission_context
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="tkp", run_id="r", user_id="0026demo01", instance_id="i", input_text="x")
+    ctx = _permission_context(st)
+    names = set(ctx.allow_rules)
+    assert {"Read", "Grep", "list_container_files", "run_container_command"} <= names
+    assert "read_container_file" not in names  # 已替换为官方 Read
 
 
 def test_list_container_files_lists_and_filters(client):
@@ -1058,7 +1108,7 @@ def test_list_container_files_lists_and_filters(client):
 
 def test_run_container_command_output_cap_relaxed_with_notice(client):
     """B8·补3：run_container_command 回模型上限从硬 2000 放宽到 _BASH_OUTPUT_CHARS(16000)；超限时截断并
-    追加可续读提示（指向 read_container_file）。用 cat 已暂存文件——只读自动放行，不触 HITL。"""
+    追加可续读提示（指向官方 Read 工具）。用 cat 已暂存文件——只读自动放行，不触 HITL。"""
     from runtime.sandbox_bash import _BASH_OUTPUT_CHARS, run_container_command
 
     st, run, _ = _bash_ctx(client, crid="cap", task_id="tk_cap")
@@ -1073,7 +1123,7 @@ def test_run_container_command_output_cap_relaxed_with_notice(client):
         # 20000 字符（> 16000）：截断 + 提示，长度回落到上限附近
         await c.backend.write_file("huge.txt", b"A" * 20000)
         huge = await run_container_command(st, run, f"cat {c.backend.workdir}/huge.txt")
-        assert "已截断" in huge and "read_container_file" in huge
+        assert "已截断" in huge and "Read 工具" in huge
         assert len(huge) <= _BASH_OUTPUT_CHARS + 400  # 正文 + 提示语尾巴
 
     asyncio.run(scenario())
@@ -1081,7 +1131,7 @@ def test_run_container_command_output_cap_relaxed_with_notice(client):
 
 def test_manual_skill_body_truncation_marked_and_points_to_read_tool(client, monkeypatch):
     """B8·补3：手册型 Skill 正文超 cap 时不再静默丢尾——追加截断标记并指向容器内 SKILL.md 全文；
-    staged_note 从 cat 改指向 read_container_file。"""
+    staged_note 指向官方 Read 工具。"""
     monkeypatch.setenv("OPENOPS_SKILL_MANUAL_CAP", "60")  # 压低 cap 强制截断（无需超大正文）
     from infra.external import skill_hub_client
     from runtime.sandbox_skill import run_bound_skill
@@ -1098,7 +1148,7 @@ def test_manual_skill_body_truncation_marked_and_points_to_read_tool(client, mon
 
     async def scenario():
         txt = await run_bound_skill(st, run, "alarm-query")
-        assert "read_container_file" in txt                       # 提示语改指新工具
+        assert "Read 工具" in txt and "file_path=" in txt          # 提示语改指官方 Read
         assert "已截断" in txt and "SKILL.md" in txt and "读取全文" in txt  # 截断标记 + 全文入口
         assert st.tool_blocked is False
 
