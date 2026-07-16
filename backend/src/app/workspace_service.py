@@ -124,6 +124,28 @@ async def status(workspace_id: str) -> dict[str, Any]:
     }
 
 
+async def statistics(workspace_id: str) -> dict[str, Any]:
+    """看护空间统计四数（Agent 初始化「确认能力清单」页展示）。
+
+    上游 wesee/statistics 失败（未配 OMODEL / 超时 / 非 2xx）→ 四个 0（读展示，不阻塞向导）。
+    只透出前端要的四键，node_types/relation_types 明细不外传。
+    """
+    stats = await omodel_client.get_statistics(workspace_id) or {}
+
+    def _n(key: str) -> int:
+        try:
+            return int(stats.get(key) or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    return {
+        "node_count": _n("node_count"),
+        "relation_count": _n("relation_count"),
+        "node_type_count": _n("node_type_count"),
+        "relation_type_count": _n("relation_type_count"),
+    }
+
+
 def console_page_base() -> str:
     """omodel 控制台页面前缀（设置页 iframe 用，前端追加 workspace_id）。
 

@@ -411,6 +411,14 @@ export interface WorkspaceDetail {
   sync_status: Workspace["sync_status"];
 }
 
+/** 看护空间统计（oModel wesee/statistics 四数；Agent 初始化「确认能力清单」页展示）。 */
+export interface OmodelStatistics {
+  node_count: number;
+  relation_count: number;
+  node_type_count: number;
+  relation_type_count: number;
+}
+
 export interface ApiError {
   code: string;
   message: string;

@@ -249,6 +249,31 @@ async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
         return None
 
 
+async def get_statistics(workspace_id: str) -> dict[str, Any] | None:
+    """看护空间统计（wesee 适配器 `POST /api/v1/wesee/statistics`，body `{workspace_id}`）。
+
+    该端点未收录于 29.7 文档（0.1.0-SNAPSHOT）——契约以实测为准：裸 JSON 返回
+    node_count/relation_count/node_type_count/relation_type_count 及类型明细。
+    路径固定写死（wesee 是独立于 workspaces 的适配器前缀家族，不复用 `_prefix()`）；
+    出站携用户 IAM Cookie/UA/CSRF（`_client_kwargs`）。失败一律 None（读操作，不阻塞向导）。
+    """
+    base = _base()
+    if not base:
+        return None
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(**_client_kwargs(base)) as c:
+            r = await c.post("/api/v1/wesee/statistics", json={"workspace_id": workspace_id})
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            payload = r.json()
+            return payload if isinstance(payload, dict) else None
+    except Exception:  # noqa: BLE001 - 读操作失败（超时/连接/解析/非 2xx）静默降级
+        return None
+
+
 async def list_workspaces() -> list[dict[str, Any]]:
     base = _base()
     if not base:

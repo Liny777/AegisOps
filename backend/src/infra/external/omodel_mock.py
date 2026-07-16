@@ -49,6 +49,11 @@ async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
     return _WORKSPACES.get(workspace_id)
 
 
+async def get_statistics(workspace_id: str) -> dict[str, Any]:  # noqa: ARG001 —— mock 固定样例
+    """看护空间统计 mock（demo/pytest）：固定样例四数，dev mock 模式即可见效果。"""
+    return {"node_count": 3116, "relation_count": 2246, "node_type_count": 37, "relation_type_count": 5}
+
+
 async def update_workspace(workspace_id: str, name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any] | None:  # noqa: ARG001
     _ = (apps, owner)

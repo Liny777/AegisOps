@@ -38,6 +38,10 @@ async def get_workspace(workspace_id: str) -> dict[str, Any] | None:
     return await _impl().get_workspace(workspace_id)
 
 
+async def get_statistics(workspace_id: str) -> dict[str, Any] | None:
+    return await _impl().get_statistics(workspace_id)
+
+
 async def list_workspaces() -> list[dict[str, Any]]:
     return await _impl().list_workspaces()
 

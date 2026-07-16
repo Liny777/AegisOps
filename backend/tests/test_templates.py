@@ -264,6 +264,16 @@ def test_omodel_console_page_env_matrix(client, monkeypatch):
     assert out["page_base"] == ""
 
 
+def test_workspace_statistics_endpoint(client):
+    """看护空间统计四数（Agent 初始化「确认能力清单」页）：mock 后端返回样例四键，恒有整数、不缺键。"""
+    from conftest import USER_HEADERS, unwrap
+
+    out = unwrap(client.get("/api/openops/v1/workspaces/ws_pay_abc/statistics", headers=USER_HEADERS))
+    assert set(out) == {"node_count", "relation_count", "node_type_count", "relation_type_count"}
+    assert all(isinstance(out[k], int) for k in out)
+    assert out == {"node_count": 3116, "relation_count": 2246, "node_type_count": 37, "relation_type_count": 5}
+
+
 # ---- 编排对称化：main.skills 白名单（模板编辑器主 Agent 技能面） ----
 
 def test_main_skills_validation(client):

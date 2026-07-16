@@ -47,6 +47,12 @@ async def workspace_status(workspace_id: str, _user: User):
     return ok(await workspace_service.status(workspace_id))
 
 
+@router.get("/workspaces/{workspace_id}/statistics")
+async def workspace_statistics(workspace_id: str, _user: User):
+    """看护空间统计四数（节点/关系/节点类型/关系类型数）；上游走 wesee/statistics，失败降级为 0。"""
+    return ok(await workspace_service.statistics(workspace_id))
+
+
 @router.get("/workspaces/{workspace_id}")
 async def get_workspace(workspace_id: str, _user: User):
     """系统范围详情（编辑向导预填）：含 name + app_ids。"""

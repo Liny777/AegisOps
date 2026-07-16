@@ -15,6 +15,7 @@ import type {
   Template,
   Workspace,
   WorkspaceDetail,
+  OmodelStatistics,
   ScopeApp,
   Skill,
   AssetRow,
@@ -70,6 +71,8 @@ export interface OpenOpsApi {
   listAgents(): Promise<AgentInstance[]>;
   /** omodel 控制台页面前缀（设置页 iframe；空串=未配置/mock，显示空态）。 */
   getOmodelPageBase(): Promise<string>;
+  /** 看护空间统计四数（Agent 初始化「确认能力清单」页；上游失败后端降级为 0）。 */
+  getWorkspaceStatistics(workspaceId: string): Promise<OmodelStatistics>;
   /** 登出（B9）：清后端 IAM 会话缓存，返回 IAM signout/login 地址（未配 IAM 时均为 null）。 */
   logout(): Promise<{ signout_url: string | null; login_url: string | null }>;
   listConversations(options?: RequestOptions): Promise<Conversation[]>;
@@ -285,6 +288,9 @@ const realApi: OpenOpsApi = {
   async getOmodelPageBase() {
     const d = await apiFetch<{ page_base?: string }>("/openops/v1/omodel/console-page");
     return String(d.page_base ?? "");
+  },
+  async getWorkspaceStatistics(workspaceId) {
+    return apiFetch<OmodelStatistics>(`/openops/v1/workspaces/${encodeURIComponent(workspaceId)}/statistics`);
   },
   async logout() {
     const d = await apiFetch<{ signout_url?: string | null; login_url?: string | null }>(
@@ -935,6 +941,7 @@ const mockApi: OpenOpsApi = {
     return delay(M.mockAgents);
   },
   getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
+  getWorkspaceStatistics: () => delay({ node_count: 3116, relation_count: 2246, node_type_count: 37, relation_type_count: 5 }),
   logout: () => delay({ signout_url: null, login_url: null }), // mock 无 IAM，登出为空操作
   listConversations: (options) => conversationCache.get(options),
   ensureRun: (_instanceId, options) => waitWithSignal(delay("run_demo"), options?.signal),

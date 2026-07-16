@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, useHover, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
-import type { ModelOption, Template, Workspace } from "../lib/api/types";
+import type { ModelOption, Template, Workspace, OmodelStatistics } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm, useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
@@ -165,7 +165,7 @@ export function InitWizard() {
             />
           ) : null}
           {step === 1 ? (
-            <StepCapabilities capabilities={tpl?.capabilities ?? []} ready={omodelReady} onReady={() => setOmodelReady(true)} />
+            <StepCapabilities capabilities={tpl?.capabilities ?? []} wsId={wsId} ready={omodelReady} onReady={() => setOmodelReady(true)} />
           ) : null}
           {step === 2 ? <StepActivate name={name} activating={activating} editing={editing} /> : null}
         </div>
@@ -271,14 +271,48 @@ export function CapabilityCard({ name }: { name: string }) {
   );
 }
 
-/** step1「确认能力清单」：能力识别卡片（上）+ Agent 看护空间 OModel 初始化 loading（下，2s 装饰过场）。
- * ready 一旦转完（onReady）即置位，回退再进本步直接显完成态不重转；下一步按钮由外层 canNext=ready 门控。 */
-function StepCapabilities({ capabilities, ready, onReady }: { capabilities: string[]; ready: boolean; onReady: () => void }) {
+/** step1「确认能力清单」：能力识别卡片 + Agent 看护空间 OModel 初始化 loading（2s 装饰过场）+
+ * 看护空间概览（统计四数，走后端代理 wesee/statistics）+ 看护空间图谱（iframe，域名从后端 page base 派生 origin）。
+ * ready 一旦转完（onReady）即置位，回退再进本步直接显完成态不重转；下一步按钮由外层 canNext=ready 门控
+ * （统计/图谱为信息展示，不参与门控）。 */
+function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities: string[]; wsId: string; ready: boolean; onReady: () => void }) {
   useEffect(() => {
     if (ready) return;
     const t = setTimeout(onReady, 2000);  // 纯前端仪式感过场：workspace 已在配置步选定，V1 无 OModel 预热接口
     return () => clearTimeout(t);
   }, [ready, onReady]);
+
+  // 看护空间统计四数（后端代理 wesee/statistics；上游失败后端已降级为 0，取不到则本地置 null 显占位）
+  const [stats, setStats] = useState<OmodelStatistics | null>(null);
+  useEffect(() => {
+    if (!wsId) { setStats(null); return; }
+    let alive = true;
+    setStats(null);
+    api.getWorkspaceStatistics(wsId).then(
+      (s) => { if (alive) setStats(s); },
+      () => { if (alive) setStats(null); },
+    );
+    return () => { alive = false; };
+  }, [wsId]);
+
+  // 图谱 iframe：域名从后端下发的 page base 派生 origin（不在前端硬编码）；mock/未配 → 空态
+  const [pageBase, setPageBase] = useState<string | null>(null); // null=加载中
+  useEffect(() => {
+    let alive = true;
+    api.getOmodelPageBase().then(
+      (b) => { if (alive) setPageBase(b); },
+      () => { if (alive) setPageBase(""); },
+    );
+    return () => { alive = false; };
+  }, []);
+  const graphOrigin = useMemo(() => {
+    if (!pageBase) return "";
+    try { return new URL(pageBase).origin; } catch { return ""; }
+  }, [pageBase]);
+  const iframeSrc = graphOrigin && wsId
+    ? `${graphOrigin}/wesee/omodel/#/?dataSource=api&workspace=${encodeURIComponent(wsId)}&entity=true&isShow=false`
+    : "";
+
   return (
     <>
       <Title t="确认能力清单" d="确认本 Agent 已具备的内置能力，并等待看护空间初始化完成后进入激活。" />
@@ -308,7 +342,72 @@ function StepCapabilities({ capabilities, ready, onReady }: { capabilities: stri
           </div>
         </div>
       </div>
+
+      {/* 看护空间概览：oModel 统计四数（节点/关系/节点类型/关系类型） */}
+      <div style={{ marginTop: 24 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="chart-dots-3" size={16} color={color.brand} />看护空间概览
+          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>当前看护范围在 oModel 中的规模</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
+          <StatCard icon="topology-star-3" label="节点数" value={stats?.node_count} />
+          <StatCard icon="affiliate" label="关系数" value={stats?.relation_count} />
+          <StatCard icon="category" label="节点类型" value={stats?.node_type_count} />
+          <StatCard icon="binary-tree-2" label="关系类型" value={stats?.relation_type_count} />
+        </div>
+      </div>
+
+      {/* 看护空间图谱：嵌入 oModel 实体图 iframe（域名后端下发；mock/未配显空态） */}
+      <div style={{ marginTop: 24 }}>
+        <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
+          <Icon name="chart-dots" size={16} color={color.brand} />看护空间图谱
+          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>oModel 实体关系拓扑</span>
+        </div>
+        <div style={{ height: 420, border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden", background: "#fff", display: "flex" }}>
+          {pageBase === null ? (
+            <GraphPlaceholder icon="loader-2" spin text="正在获取 oModel 图谱地址…" />
+          ) : iframeSrc ? (
+            <iframe
+              key={iframeSrc} /* workspace 切换时强制重载，避免对端 SPA 内部路由残留 */
+              src={iframeSrc}
+              title="oModel 看护空间图谱"
+              style={{ flex: 1, width: "100%", height: "100%", border: "none", background: "#fff" }}
+            />
+          ) : (
+            <GraphPlaceholder icon="topology-star-3" text="图谱在内网环境可用：需后端配置 OPENOPS_OMODEL_BASE_URL 后显示。" />
+          )}
+        </div>
+      </div>
     </>
+  );
+}
+
+/** 看护空间概览的单个数字卡：图标 + 大号数字（未取到显 —）+ 中文标签。 */
+function StatCard({ icon, label, value }: { icon: string; label: string; value?: number }) {
+  return (
+    <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "16px 18px", background: "#fff", display: "flex", alignItems: "center", gap: 13 }}>
+      <div style={{ width: 40, height: 40, borderRadius: radius.lg, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
+        <Icon name={icon} size={21} color={color.brand} />
+      </div>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1, color: color.textStrong }}>
+          {value == null ? "—" : value.toLocaleString()}
+        </div>
+        <div style={{ fontSize: 12, color: color.textSubtle, marginTop: 3 }}>{label}</div>
+      </div>
+    </div>
+  );
+}
+
+/** 图谱容器空态/加载态占位。 */
+function GraphPlaceholder({ icon, text, spin }: { icon: string; text: string; spin?: boolean }) {
+  return (
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: color.textSubtle }}>
+      <div style={{ width: 48, height: 48, borderRadius: 14, background: color.pageBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Icon name={icon} size={24} color={color.textFaint} spin={spin} />
+      </div>
+      <div style={{ fontSize: 12.5, maxWidth: 380, textAlign: "center", lineHeight: 1.7 }}>{text}</div>
+    </div>
   );
 }
 
