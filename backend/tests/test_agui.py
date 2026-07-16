@@ -74,6 +74,32 @@ def test_agui_full_flow_standard_and_custom_events(client):
     assert rca["value"]["sequence"] > 0
     assert rca["value"]["payload_redacted_json"]["revision"] >= 1
 
+def test_agui_agentscope_stub_streams_reasoning_card(client, monkeypatch):
+    """端到端（agentscope stub runtime）：stub 首步的 ThinkingBlock → 运行时事件桥
+    openops.assistant.thinking.delta → AG-UI REASONING_MESSAGE_*（role=reasoning），且思考在正式答案
+    文本之前。覆盖「运行时循环里 ThinkingBlockDeltaEvent→SSE」这段仅靠单测触不到的胶水。"""
+    monkeypatch.setenv("OPENOPS_RUNTIME", "agentscope")
+    _annotate_recover_no_ask(client)
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    evs = _collect_events(client, run["agent_run_id"], _run_input())
+
+    types = [e["type"] for e in evs]
+    assert "REASONING_MESSAGE_START" in types, types
+    r_start = next(e for e in evs if e["type"] == "REASONING_MESSAGE_START")
+    assert r_start["role"] == "reasoning"
+    r_content = "".join(e["delta"] for e in evs if e["type"] == "REASONING_MESSAGE_CONTENT")
+    assert "Redis" in r_content  # stub 首步思考文案（不校验全文，只认关键词，容忍文案微调）
+    assert "REASONING_MESSAGE_END" in types
+    # 思考卡在正式答案文本之前（reasoning 卡排在答案气泡上方）。
+    assert types.index("REASONING_MESSAGE_START") < types.index("TEXT_MESSAGE_START")
+    # 每个 REASONING_MESSAGE_START 都有配对的 END（不悬挂）。
+    r_starts = [e["messageId"] for e in evs if e["type"] == "REASONING_MESSAGE_START"]
+    r_ends = [e["messageId"] for e in evs if e["type"] == "REASONING_MESSAGE_END"]
+    assert sorted(r_starts) == sorted(r_ends)
+    assert types[-1] == "RUN_FINISHED"
+
+
 def test_agui_tool_call_pairing(client):
     """TOOL_CALL_START/END 按调用配对（toolCallId 一致）。"""
     _annotate_recover_no_ask(client)
@@ -127,6 +153,121 @@ def test_agui_streams_multiple_deltas_before_finish_without_terminal_duplicate()
     deltas = [frame["delta"] for frame in frames if frame["type"] == "TEXT_MESSAGE_CONTENT"]
     assert deltas == ["第一段", "，第二段", "，第三段"]
     assert len([frame for frame in frames if frame["type"] == "TEXT_MESSAGE_START"]) == 1
+    assert frames[-1]["type"] == "RUN_FINISHED"
+
+
+def test_agui_translates_thinking_delta_to_reasoning_message():
+    """模型思考增量 openops.assistant.thinking.delta → AG-UI REASONING_MESSAGE_*（role=reasoning，
+    CopilotKit v2 原生折叠卡）；与文本块互斥：正式答案开始前思考块先 END（卡片落定「已思考 Xs」），
+    思考 messageId 与文本 messageId 不同（前端是两条独立消息）。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import events
+
+    async def scenario() -> list[dict]:
+        rid = "run-thinking-test"
+        q, _replay, _ = events.subscribe(rid, None)
+        ctx = {"queue": q, "run_id": rid, "task_id": "task-think", "thread_id": "thread-think",
+               "agui_run_id": "agui-think", "user": {}}
+        for delta in ("先看指标：", "Redis 连接接近饱和，", "假设 H1=连接泄漏。"):
+            events.publish(rid, events.envelope(
+                rid, "openops.assistant.thinking.delta", task_id="task-think",
+                payload={"delta": delta, "message_id": "think-1"}))
+        for delta in ("已定位根因，", "重启 svc-a 后 P99 恢复。"):
+            events.publish(rid, events.envelope(
+                rid, "openops.assistant.delta", task_id="task-think",
+                payload={"delta": delta, "message_id": "assistant-1"}))
+        events.publish(rid, events.envelope(
+            rid, "openops.task.completed", task_id="task-think",
+            message="done", payload={"conclusion": "已定位根因，重启 svc-a 后 P99 恢复。"}))
+
+        frames: list[dict] = []
+        async for line in agui_service.stream(ctx):
+            if line.startswith("data:"):
+                frame = json.loads(line[5:].strip())
+                frames.append(frame)
+                if frame["type"] == "RUN_FINISHED":
+                    break
+        return frames
+
+    frames = asyncio.run(scenario())
+    types = [f["type"] for f in frames]
+    # reasoning 三件套齐全、role=reasoning、内容逐段透传
+    r_start = next(f for f in frames if f["type"] == "REASONING_MESSAGE_START")
+    assert r_start["role"] == "reasoning"
+    r_deltas = [f["delta"] for f in frames if f["type"] == "REASONING_MESSAGE_CONTENT"]
+    assert r_deltas == ["先看指标：", "Redis 连接接近饱和，", "假设 H1=连接泄漏。"]
+    assert "REASONING_MESSAGE_END" in types
+    # 单个 reasoning 块（消费顺序内未被打断成多段）
+    assert len([t for t in types if t == "REASONING_MESSAGE_START"]) == 1
+    # 思考 messageId 一致，且与文本消息 id 不同（两条独立消息）
+    r_id = r_start["messageId"]
+    assert all(f.get("messageId") == r_id for f in frames
+               if f["type"].startswith("REASONING_MESSAGE_"))
+    t_start = next(f for f in frames if f["type"] == "TEXT_MESSAGE_START")
+    assert t_start["messageId"] != r_id
+    # 互斥：思考块在正式答案（文本）开始前已闭合
+    assert types.index("REASONING_MESSAGE_END") < types.index("TEXT_MESSAGE_START")
+    # 文本仍完整、结论不被 task.completed 二次合成
+    t_deltas = [f["delta"] for f in frames if f["type"] == "TEXT_MESSAGE_CONTENT"]
+    assert t_deltas == ["已定位根因，", "重启 svc-a 后 P99 恢复。"]
+    assert frames[-1]["type"] == "RUN_FINISHED"
+
+
+def test_agui_reasoning_and_text_interleave_never_reuses_message_id():
+    """真模型把 reasoning_content 与 content 混在同一 delta（AgentScope 先出 text 再出 thinking）时，
+    文本/思考块会反复交错重开——每次重开必须换新 messageId，绝不复用已 END 的 id，守住 AG-UI
+    「一个 messageId 只有一个 START…END 生命周期」，否则前端 @ag-ui/client 报错/串块/丢内容。"""
+    import asyncio
+
+    from app import agui_service
+    from runtime import events
+
+    async def scenario() -> list[dict]:
+        rid = "run-interleave-test"
+        q, _replay, _ = events.subscribe(rid, None)
+        ctx = {"queue": q, "run_id": rid, "task_id": "task-il", "thread_id": "th-il",
+               "agui_run_id": "ar-il", "user": {}}
+        seq = [
+            ("openops.assistant.thinking.delta", {"delta": "C1", "message_id": "r"}),
+            ("openops.assistant.delta", {"delta": "X1", "message_id": "a"}),
+            ("openops.assistant.thinking.delta", {"delta": "C2", "message_id": "r"}),  # 同源 id 重开
+            ("openops.assistant.delta", {"delta": "X2", "message_id": "a"}),            # 同源 id 重开
+        ]
+        for et, payload in seq:
+            events.publish(rid, events.envelope(rid, et, task_id="task-il", payload=payload))
+        events.publish(rid, events.envelope(rid, "openops.task.completed", task_id="task-il",
+                                            message="done", payload={"conclusion": "done"}))
+        frames: list[dict] = []
+        async for line in agui_service.stream(ctx):
+            if line.startswith("data:"):
+                f = json.loads(line[5:].strip())
+                frames.append(f)
+                if f["type"] == "RUN_FINISHED":
+                    break
+        return frames
+
+    frames = asyncio.run(scenario())
+
+    def _pairs(kind: str) -> tuple[list[str], list[str]]:
+        starts = [f["messageId"] for f in frames if f["type"] == f"{kind}_MESSAGE_START"]
+        ends = [f["messageId"] for f in frames if f["type"] == f"{kind}_MESSAGE_END"]
+        return starts, ends
+
+    for kind in ("REASONING", "TEXT"):
+        starts, ends = _pairs(kind)
+        assert len(starts) == len(set(starts)), f"{kind} messageId 被复用于多个 START：{starts}"
+        assert sorted(starts) == sorted(ends), f"{kind} START/END 未一一配对：{starts} vs {ends}"
+    # 交错场景下每块都被拆成独立生命周期（各 2 段）：不串块、无悬挂 START。
+    r_starts, _ = _pairs("REASONING")
+    t_starts, _ = _pairs("TEXT")
+    assert len(r_starts) == 2 and len(t_starts) == 2
+    # 每个 CONTENT 的 messageId 必属于某个已 START 的块（内容不落到未开的 id 上）。
+    started = set(r_starts) | set(t_starts)
+    for f in frames:
+        if f["type"] in ("REASONING_MESSAGE_CONTENT", "TEXT_MESSAGE_CONTENT"):
+            assert f["messageId"] in started
     assert frames[-1]["type"] == "RUN_FINISHED"
 
 

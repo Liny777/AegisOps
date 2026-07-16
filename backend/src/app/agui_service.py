@@ -157,16 +157,39 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
     q: asyncio.Queue[dict[str, Any]] = ctx["queue"]
     loop = asyncio.get_running_loop()
     deadline = loop.time() + HARD_TIMEOUT_S
-    open_msg: str | None = None  # 当前打开的 TEXT_MESSAGE（messageId）
+    # (源块 id, 下发给前端的 messageId)；当前打开的文本 / 思考块，二者互斥（同一时刻至多一个开着）。
+    open_msg: tuple[str, str] | None = None
+    open_reasoning: tuple[str, str] | None = None
+    used_wire: set[str] = set()  # 已 START 过的 messageId——绝不复用（END 后再开必换新 id）
+    wire_seq = 0
     streamed = False  # 是否已流式输出过非空文本（决定 task.completed 是否需要合成结论消息）
     open_tool_calls: set[str] = set()
     legacy_tool_stack: list[str] = []  # 兼容没有 tool_call_id 的旧事件；新事件不再依赖到达顺序
+
+    def _wire(src: str) -> str:
+        # 同一源块首次打开直接用其 id；若该 id 之前已开过（真模型把 reasoning_content 与 content 混在
+        # 同一 delta 时，AgentScope 会先出 text 再出 thinking，导致文本/思考块反复交错重开）——换一个唯一
+        # 新 id，守住 @ag-ui/client「一个 messageId 只有一个 START…END 生命周期」的契约，避免碎裂/串块。
+        nonlocal wire_seq
+        if src not in used_wire:
+            used_wire.add(src)
+            return src
+        wire_seq += 1
+        w = f"{src}#{wire_seq}"
+        used_wire.add(w)
+        return w
 
     def text_start(mid: str) -> str:
         return _sse({"type": "TEXT_MESSAGE_START", "messageId": mid, "role": "assistant"})
 
     def text_end(mid: str) -> str:
         return _sse({"type": "TEXT_MESSAGE_END", "messageId": mid})
+
+    def reasoning_start(mid: str) -> str:  # 模型思考块 → AG-UI role=reasoning（CopilotKit v2 原生折叠卡）
+        return _sse({"type": "REASONING_MESSAGE_START", "messageId": mid, "role": "reasoning"})
+
+    def reasoning_end(mid: str) -> str:
+        return _sse({"type": "REASONING_MESSAGE_END", "messageId": mid})
 
     try:
         yield _sse({"type": "RUN_STARTED", "threadId": ctx["thread_id"], "runId": ctx["agui_run_id"]})
@@ -175,6 +198,12 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 e = await asyncio.wait_for(q.get(), timeout=KEEPALIVE_S)
             except asyncio.TimeoutError:
                 if loop.time() > deadline:
+                    if open_msg is not None:  # 超时收口前闭合在途块，避免留下未配对的 START
+                        yield text_end(open_msg[1])
+                        open_msg = None
+                    if open_reasoning is not None:
+                        yield reasoning_end(open_reasoning[1])
+                        open_reasoning = None
                     yield _sse({"type": "RUN_ERROR", "message": "运行超时"})
                     return
                 yield ": keepalive\n\n"
@@ -188,18 +217,40 @@ async def stream(ctx: dict[str, Any]) -> AsyncGenerator[str, None]:
                 delta = str(p.get("delta") or "")
                 if not delta:
                     continue
-                mid = str(p.get("message_id") or "assistant")
-                if open_msg != mid:
+                if open_reasoning is not None:  # 思考结束、正式答案开始：先落定思考块（卡片显「已思考 Xs」）
+                    yield reasoning_end(open_reasoning[1])
+                    open_reasoning = None
+                src = str(p.get("message_id") or "assistant")
+                if open_msg is None or open_msg[0] != src:
                     if open_msg is not None:
-                        yield text_end(open_msg)
-                    open_msg = mid
-                    yield text_start(mid)
+                        yield text_end(open_msg[1])
+                    open_msg = (src, _wire(src))
+                    yield text_start(open_msg[1])
                 streamed = True
-                yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": mid, "delta": delta})
+                yield _sse({"type": "TEXT_MESSAGE_CONTENT", "messageId": open_msg[1], "delta": delta})
+                continue
+            # 思考增量：openops.assistant.thinking.delta → REASONING_MESSAGE_*（role=reasoning，CopilotKit v2 折叠卡）
+            if et == "openops.assistant.thinking.delta":
+                delta = str(p.get("delta") or "")
+                if not delta:
+                    continue
+                if open_msg is not None:  # 互斥：同一时刻只开一个 message 块，先关文本
+                    yield text_end(open_msg[1])
+                    open_msg = None
+                src = str(p.get("message_id") or "reasoning")
+                if open_reasoning is None or open_reasoning[0] != src:
+                    if open_reasoning is not None:
+                        yield reasoning_end(open_reasoning[1])
+                    open_reasoning = (src, _wire(src))
+                    yield reasoning_start(open_reasoning[1])
+                yield _sse({"type": "REASONING_MESSAGE_CONTENT", "messageId": open_reasoning[1], "delta": delta})
                 continue
             if open_msg is not None:  # 其它事件到来即闭合文本块（AG-UI 消息内不插其它事件）
-                yield text_end(open_msg)
+                yield text_end(open_msg[1])
                 open_msg = None
+            if open_reasoning is not None:  # 同理闭合思考块
+                yield reasoning_end(open_reasoning[1])
+                open_reasoning = None
 
             # 终态先出文本再透传 CUSTOM：前端先以 messageId=event_id 建结论气泡，
             # 再收到 CUSTOM(task.*) 时按同 id 去重，避免文本双写

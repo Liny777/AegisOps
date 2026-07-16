@@ -80,7 +80,7 @@ def _require_agentscope() -> None:
 
 def _build_stub_model() -> Any:
     """stub ChatModelBase：脚本化 query→query→recover→结论（B2 换真 GLM）。"""
-    from agentscope.message import TextBlock, ToolCallBlock
+    from agentscope.message import TextBlock, ThinkingBlock, ToolCallBlock
     from agentscope.model import ChatModelBase, ChatResponse
 
     class StubRcaModel(ChatModelBase):  # type: ignore[misc]
@@ -127,9 +127,16 @@ def _build_stub_model() -> Any:
             # 默认关不改现有 demo 序列（recover 仍是第 3 步）；真 GLM 无论此开关都可自主调该工具。
             sbx_on = os.getenv("OPENOPS_DEMO_SANDBOX_STEP") == "1"
             if self._step in (1, 2):  # 巡检 + 定界
-                return self._stream_response([ToolCallBlock(
+                blocks: list[Any] = []
+                if self._step == 1:  # 首步附一段思考：演示 reasoning 折叠卡（真模型经 reasoning_content 天然产生）
+                    blocks.append(ThinkingBlock(thinking=(
+                        "先给 svc-payment-api 做巡检：拉指标与依赖拓扑，重点看 P99 与下游 Redis 连接数。"
+                        "初判 P99 升高疑似 Redis 连接饱和——先 query 指标定位，再验证假设 H1（连接泄漏）。"
+                    )))
+                blocks.append(ToolCallBlock(
                     type="tool_call", id=f"q{self._step}", name="query_resource",
-                    input=json.dumps({"appid": "APP-A"}))])
+                    input=json.dumps({"appid": "APP-A"})))
+                return self._stream_response(blocks)
             if sbx_on and self._step == 3:  # 容器内跑巡检 Skill（真 ZIP 投递 + 容器执行）
                 return self._stream_response([ToolCallBlock(
                     type="tool_call", id="sk", name="run_platform_skill",
@@ -672,6 +679,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         ModelCallStartEvent,
         RequireUserConfirmEvent,
         TextBlockDeltaEvent,
+        ThinkingBlockDeltaEvent,
         UserConfirmResultEvent,
     )
     from agentscope.message import Msg, TextBlock
@@ -739,6 +747,13 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                     # 助手文本增量（B5）：只发 SSE 供 AG-UI 流翻译成 TEXT_MESSAGE_*，不写审计（增量非事实）
                     events.publish(st.run_id, events.envelope(
                         st.run_id, "openops.assistant.delta", task_id=st.task_id,
+                        payload={"delta": ev.delta, "message_id": ev.block_id},
+                    ))
+                elif isinstance(ev, ThinkingBlockDeltaEvent):
+                    # 模型思考增量：只发 SSE 供 AG-UI 翻译成 REASONING_MESSAGE_*（前端 CopilotKit v2 折叠卡），
+                    # 与文本增量同处理——不写审计、不进 transcript（增量非事实，且思考只做实时展示不持久化）。
+                    events.publish(st.run_id, events.envelope(
+                        st.run_id, "openops.assistant.thinking.delta", task_id=st.task_id,
                         payload={"delta": ev.delta, "message_id": ev.block_id},
                     ))
                 elif isinstance(ev, RequireUserConfirmEvent):
