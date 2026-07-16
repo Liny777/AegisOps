@@ -67,17 +67,44 @@ const USER_MESSAGE_SLOT = {
   copyButton: { className: "oa-chat-copy-button" },
 };
 
-/** 官方消息视图的薄包装：仅改消息投影和 tool slot，仍由官方组件负责虚拟化、游标和 rich UI。 */
+// 官方 CopilotChatMessageView 在消息 > 50 条时启用 @tanstack/react-virtual 虚拟化。该虚拟化在长
+// 会话里不稳：滚动容器（use-stick-to-bottom 强制 overflow:auto 的那层）clientHeight 在挂载/重测量
+// 时会瞬时为 0（控制台可见 "clientHeight=0 — virtualization disabled"），叠加 estimateSize=100 与真实
+// 富文本行高的错配，getTotalSize()/scrollHeight 抖动、与粘底逻辑抢 scrollTop，导致原生滚动条滑块只能
+// 停顶/底、拖不到中间（内网教训：长对话滚动回弹）。
+// 修法：给官方组件传 children（render prop）。其内部判定 `shouldVirtualize = !!scrollElement &&
+// !children && messages.length > 50`，只要传了 children 就恒不虚拟化，而消息仍由官方 renderMessageBlock
+// 全量渲染（我们的 slot / 工具聚合 / markdown 全部照旧）。SRE 对话量级下全量渲染成本可接受。
+// —— 该 children 结构复刻官方非虚拟化分支（container + interruptElement + 运行中游标）；CopilotKit 固定
+// 1.61.2，随升级需回看该分支。
 function OpenOpsChatMessageViewImpl({ messages = [], className, ...props }: CopilotChatMessageViewProps) {
   const groupedMessages = useMemo(() => groupToolCallsByUserTurn(messages), [messages]);
+  const listClassName = ["copilotKitMessages", "cpk:flex", "cpk:flex-col", "oa-chat-message-list", className]
+    .filter(Boolean)
+    .join(" ");
   return (
     <CopilotChatMessageView
       {...props}
       messages={groupedMessages}
-      className={["oa-chat-message-list", className].filter(Boolean).join(" ")}
       assistantMessage={ASSISTANT_MESSAGE_SLOT}
       userMessage={USER_MESSAGE_SLOT}
-    />
+    >
+      {({ messageElements, messages: renderedMessages, isRunning, interruptElement }) => {
+        const lastMessage = renderedMessages[renderedMessages.length - 1];
+        const showCursor = isRunning && lastMessage?.role !== "reasoning";
+        return (
+          <div data-testid="copilot-message-list" className={listClassName}>
+            {messageElements}
+            {interruptElement}
+            {showCursor ? (
+              <div className="cpk:mt-2">
+                <CopilotChatMessageView.Cursor />
+              </div>
+            ) : null}
+          </div>
+        );
+      }}
+    </CopilotChatMessageView>
   );
 }
 
