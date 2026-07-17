@@ -6,7 +6,8 @@
 - `release_user_container`：末个活跃 run 关闭后 active_run_count 归零 → 置 idle（记 idle_since），
   由 `sweep_idle` 按 TTL 回收（不立即删——留复用窗口，TTL 同时兜底 run 泄漏）。
 - 容量准入：容器总数（active + idle 未回收）< max_user_containers_per_host；满则先回收已到 TTL
-  的 idle 腾位（strict_ttl），仍满抛 `SANDBOX_CAPACITY_FULL`。
+  的 idle 腾位（strict_ttl），再与 Docker 探活对账回收带外死亡的 failed 残留（`_reap_dead`），
+  仍满才抛 `SANDBOX_CAPACITY_FULL`。
 
 容器运行态以进程内注册表 + Docker 为真相源（V1 单机进程，部署要求会话粘滞），不落 PG 核心表。
 真容器执行原语在 `backends.py`（fake / docker 双后端）。Skill 执行见 executor.run_skill（B8-2），
@@ -33,6 +34,8 @@ _NETWORK_MODES = {"bridge", "none"}
 # 单次 Skill/命令执行限额（09/28.3 号；env 可调，同其他 B 块的 SRE_* 旋钮风格）
 _SKILL_TIMEOUT_S = float(os.getenv("OPENOPS_SKILL_TIMEOUT_S", "600"))
 _OUTPUT_MAX_BYTES = int(os.getenv("OPENOPS_SKILL_OUTPUT_MAX_BYTES", str(2 * 1024 * 1024)))
+# 容量对账单容器探活超时：探活只为腾位，宁可超时放过（视为存活）也不拖住准入
+_ALIVE_PROBE_TIMEOUT_S = float(os.getenv("OPENOPS_SANDBOX_ALIVE_PROBE_TIMEOUT_S", "3"))
 
 
 def _as_int(v: Any, default: int) -> int:
@@ -59,6 +62,7 @@ class ResolvedCfg:
     image: str
     network_mode: str
     pids_limit: int
+    capacity_full_policy: str  # 容量满策略：V1 仅 strict_ttl（先回收已到 TTL 的 idle 再判，不提前抢占）
 
 
 @dataclass
@@ -108,6 +112,11 @@ class SandboxExecutor:
             log.warning("[sandbox] 非法 container_network_mode=%r，回退 bridge", net)
             net = "bridge"
         pids = _as_int(cfg.get("container_pids_limit"), 256)
+        # 容量满策略：V1 仅实现 strict_ttl；写侧校验（runtime_config_service）已拦非法值，此处对脏值/历史值兜底回退
+        policy = str(cfg.get("capacity_full_policy") or "strict_ttl").strip().lower() or "strict_ttl"
+        if policy != "strict_ttl":
+            log.warning("[sandbox] 不支持的 capacity_full_policy=%r，回退 strict_ttl", policy)
+            policy = "strict_ttl"
         return ResolvedCfg(
             max_containers=_as_int(cfg.get("max_user_containers_per_host"), 26),
             ttl_minutes=_as_int(cfg.get("user_container_idle_ttl_minutes"), 15),
@@ -116,6 +125,7 @@ class SandboxExecutor:
             image=image,
             network_mode=net,
             pids_limit=pids if pids > 0 else 256,
+            capacity_full_policy=policy,
         )
 
     def _reap_expired_idle(self, ttl_minutes: int) -> list[Container]:
@@ -127,6 +137,38 @@ class SandboxExecutor:
             self._by_user.pop(c.user_id, None)
         return expired
 
+    async def _reap_dead(self) -> list[Container]:
+        """探活对账（Docker 为真相源）：带外死亡的容器标 failed 并摘出注册表，返回待关闭句柄。
+
+        09/11 号设计「回收 idle 和 **failed 残留**」+「重新统计 Docker/Runtime 中的活跃容器」：
+        容器若在会话中途带外死亡（docker kill / OOM / 守护进程重启），注册表仍记着它 → 一直占着
+        名额直到其 run 关闭且 idle TTL 到期。本对账把注册表拉回 Docker 真相，把死容器腾出来。
+
+        保守语义：探活超时/异常=**不确定** → 一律视为存活跳过，绝不因 daemon 抖动误杀他人名额。
+        """
+        containers = list(self._by_user.values())
+        # 并发探活：本方法在准入锁内跑，串行最坏 N×timeout（26 个容器 × 守护进程挂死）会长时间
+        # 堵死所有人的开会话；并发后锁占用被压到约 1×timeout，与容器数无关。
+        oks = await asyncio.gather(*(self._probe_alive(c) for c in containers))
+        dead: list[Container] = []
+        for c, ok in zip(containers, oks):
+            if not ok:
+                c.status = "failed"
+                self._by_user.pop(c.user_id, None)
+                dead.append(c)
+                log.warning("[sandbox] 容器带外死亡，回收 failed 残留腾位 user=%s", c.user_id)
+        return dead
+
+    async def _probe_alive(self, c: Container) -> bool:
+        """单容器探活；不确定（无探活能力/超时/异常）一律回 True（保守，绝不误杀）。"""
+        probe = getattr(c.backend, "alive", None)
+        if probe is None:  # 后端未实现探活（测试替身）→ 视为存活
+            return True
+        try:
+            return bool(await asyncio.wait_for(probe(), timeout=_ALIVE_PROBE_TIMEOUT_S))
+        except Exception:  # noqa: BLE001 — 超时/异常=不确定 → 保守视为存活
+            return True
+
     async def ensure_user_container(self, user_id: str, run_id: str, cfg: dict[str, Any]) -> Container:
         """run 开启边界：容量准入 + 确保该用户容器存在，登记活跃 run。"""
         rc = self._cfg(cfg)
@@ -134,16 +176,21 @@ class SandboxExecutor:
         async with self._lock:
             c = self._by_user.get(user_id)
             if c is None:
-                # 容量准入：先回收已到 TTL 的 idle 腾位（strict_ttl），再判总数
-                to_close = self._reap_expired_idle(rc.ttl_minutes)
+                # 容量准入：strict_ttl 策略先回收已到 TTL 的 idle 腾位（不提前抢占未到 TTL 的 idle），再判总数
+                if rc.capacity_full_policy == "strict_ttl":
+                    to_close = self._reap_expired_idle(rc.ttl_minutes)
                 if len(self._by_user) >= rc.max_containers:
                     for dead in to_close:  # 锁内先 close 掉腾位容器再判，避免误拒
                         await dead.backend.close()
                     to_close = []
+                    # 仍满 → 与 Docker 对账一次再判（设计：回收 failed 残留 + 按真实存活重新统计）。
+                    # 只在拒绝前做：探活有成本，而这正是计数准确性唯一要紧的时刻。
+                    for gone in await self._reap_dead():
+                        await gone.backend.close()
                     if len(self._by_user) >= rc.max_containers:
                         raise ApiError(
                             Err.SANDBOX_CAPACITY_FULL,
-                            f"当前沙箱资源已满（{len(self._by_user)}/{rc.max_containers} 个用户容器占用中），请稍后或低峰期再开启会话",
+                            f"当前沙箱资源已满，已有 {len(self._by_user)}/{rc.max_containers} 个用户容器占用中。请稍后或低峰期再试。",
                             retryable=True,
                         )
                 try:
@@ -174,13 +221,17 @@ class SandboxExecutor:
                 c.idle_since = time.monotonic()
 
     async def sweep_idle(self, cfg: dict[str, Any]) -> int:
-        """后台/边界回收：删除已到 idle TTL 的容器。返回回收数。"""
+        """后台/边界回收：删除已到 idle TTL 的容器 + 带外死亡的 failed 残留。返回回收数。
+
+        failed 残留在此主动回收（不必等到有人撞容量满），顺带让管理台容器列表不显示已死容器。
+        """
         rc = self._cfg(cfg)
         async with self._lock:
             expired = self._reap_expired_idle(rc.ttl_minutes)
-        for c in expired:
+            dead = await self._reap_dead()
+        for c in expired + dead:
             await c.backend.close()
-        return len(expired)
+        return len(expired) + len(dead)
 
     async def _get_or_revive(self, user_id: str, run_id: str | None, cfg: dict[str, Any] | None) -> Container:
         """执行边界取容器；缺失且带 run 上下文则按容量准入现场重建（自愈）。

@@ -355,7 +355,7 @@ export const sandboxCfg: SandboxCfg[] = [
   { key: "max_user_containers_per_host", desc: "单机最大用户容器数", val: "26" },
   { key: "per_user_running_task_limit", desc: "每用户最多 running task", val: "2" },
   { key: "user_container_idle_ttl_minutes", desc: "idle 容器保留时间", val: "15" },
-  { key: "capacity_full_policy", desc: "容量满策略", val: "strict_ttl" },
+  { key: "capacity_full_policy", desc: "容量满策略（V1 固定 strict_ttl）", val: "strict_ttl" },
   { key: "container_cpu_limit", desc: "新建容器 CPU 限额", val: "0.5" },
   { key: "container_memory_limit_mib", desc: "新建容器内存限额", val: "2048" },
 ];

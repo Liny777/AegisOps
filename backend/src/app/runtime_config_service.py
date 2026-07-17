@@ -41,6 +41,8 @@ _SANDBOX_CHECKS = {
     "per_user_running_task_limit": _pos_int,
     "user_container_idle_ttl_minutes": _nonneg_int,
     "run_idle_ttl_minutes": _pos_int,  # 用 _pos_int：0 会把刚建的静默 run 立刻回收
+    "capacity_full_policy": lambda v: str(v).strip().lower() == "strict_ttl",  # V1 仅支持 strict_ttl，拦非法值
+
     "container_cpu_limit": _pos_float,
     "container_image": lambda v: bool(str(v).strip()),
 }

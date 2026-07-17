@@ -112,6 +112,7 @@ class SandboxBackend(Protocol):
     async def exec_shell(self, command: list[str], *, timeout: float, max_output_bytes: int) -> ExecResult: ...
     async def write_file(self, rel_path: str, data: bytes) -> None: ...
     async def read_file(self, rel_path: str) -> bytes: ...
+    async def alive(self) -> bool: ...
     async def close(self) -> None: ...
 
 
@@ -151,6 +152,10 @@ class FakeBackend:
     async def read_file(self, rel_path: str) -> bytes:
         with open(os.path.join(self._root, rel_path), "rb") as f:
             return f.read()
+
+    async def alive(self) -> bool:
+        """探活：临时根目录还在即存活（close 后 rmtree → 死；测试可删目录模拟带外死亡）。"""
+        return os.path.isdir(self._root)
 
     async def close(self) -> None:
         shutil.rmtree(self._root, ignore_errors=True)
@@ -230,6 +235,24 @@ class DockerContainerBackend:
         r = await self._exec(["sh", "-lc", f"base64 '{path}'"], timeout=30)
         out = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()
         return base64.b64decode(out)
+
+    async def alive(self) -> bool:
+        """探活（容量对账用）：仅在容器**确定**已消失(404)或非 running 时回 False。
+
+        守护进程不可达/超时等**不确定**情形一律回 True——宁可少回收一个名额，也绝不因 daemon
+        抖动把在跑的容器误判为死而批量误杀（回收是不可逆的 kill）。
+        """
+        import aiodocker
+
+        if self._container is None:
+            return False
+        try:
+            info = await self._container.show()
+        except aiodocker.exceptions.DockerError as e:
+            return e.status != 404  # 404=确定已消失；其余=不确定 → 保守视为存活
+        except Exception:  # noqa: BLE001 — 守护进程不可达等不确定 → 保守视为存活
+            return True
+        return bool((info.get("State") or {}).get("Running"))
 
     async def close(self) -> None:
         try:

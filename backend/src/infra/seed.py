@@ -10,7 +10,7 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "per_user_running_task_limit": (2, "每用户最多 running task"),
     "user_container_idle_ttl_minutes": (15, "idle 容器保留时间"),
     "run_idle_ttl_minutes": (30, "无活动 run 自动回收阈值（分钟）——兜底 run 泄漏，防废弃会话长期占容器名额"),
-    "capacity_full_policy": ("strict_ttl", "容量满策略"),
+    "capacity_full_policy": ("strict_ttl", "容量满策略（V1 固定 strict_ttl：先回收已到 TTL 的 idle 腾位）"),
     "container_cpu_limit": (0.5, "新建容器 CPU 限额"),
     "container_memory_limit_mib": (2048, "新建容器内存限额"),
     # docker 档产品化（2026-07-15）：镜像/网络/进程数/Bash deny 前缀，新建容器生效

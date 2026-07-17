@@ -46,6 +46,9 @@ def test_sbx_002_capacity_full_rejects_new_session(client):
         with pytest.raises(ApiError) as ei:
             await sandbox_executor.ensure_user_container("u3", "r3", _CFG)
         assert ei.value.code == Err.SANDBOX_CAPACITY_FULL and ei.value.status == 429
+        # 繁忙文案对齐设计文档（11-单机容量与资源配额）：含 当前/上限 计数、可重试；断言防措辞漂移
+        assert ei.value.message == "当前沙箱资源已满，已有 2/2 个用户容器占用中。请稍后或低峰期再试。"
+        assert ei.value.retryable is True
         # u1 关闭 → idle 但未到 TTL：strict_ttl 下不提前回收，u3 仍被拒
         await sandbox_executor.release_user_container("u1", "r1")
         with pytest.raises(ApiError):
@@ -53,6 +56,48 @@ def test_sbx_002_capacity_full_rejects_new_session(client):
         # idle TTL=0 → 立即可回收腾位，u3 成功
         c = await sandbox_executor.ensure_user_container("u3", "r3", {**_CFG, "user_container_idle_ttl_minutes": 0})
         assert c.status == "active"
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_sbx_004_dead_container_reclaimed_on_capacity_full(client):
+    """设计 R3 步骤4/5：带外死亡的容器（failed 残留）不该一直占名额——容量满时与真相源对账回收腾位。
+
+    d1/d2 都持有**活跃 run**（非 idle，TTL 回收够不着）；d1 容器带外死亡后，d3 仍应能开会话。
+    """
+    async def scenario():
+        c1 = await sandbox_executor.ensure_user_container("d1", "r1", _CFG)
+        c2 = await sandbox_executor.ensure_user_container("d2", "r2", _CFG)  # 满（max=2）
+        # 模拟带外死亡：fake 后端的临时根目录被外部删除 == docker 容器被 kill/OOM 后消失
+        shutil.rmtree(c1.backend._root, ignore_errors=True)
+        assert await c1.backend.alive() is False and await c2.backend.alive() is True
+
+        c3 = await sandbox_executor.ensure_user_container("d3", "r3", _CFG)
+        assert c3.status == "active"                    # 死容器腾位后新用户开得了会话（修前这里被误拒）
+        assert sandbox_executor.get("d1") is None       # 死容器已摘出注册表
+        assert c1.status == "failed"                    # 标记为 failed 残留
+        assert sandbox_executor.get("d2") is not None   # 活容器不被误杀
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+
+
+def test_sbx_005_alive_probe_failure_never_evicts(client):
+    """探活不确定（超时/异常）= 保守视为存活：绝不因 daemon 抖动误杀在跑的容器名额。"""
+    from domain.errors import ApiError
+
+    async def scenario():
+        c1 = await sandbox_executor.ensure_user_container("p1", "r1", _CFG)
+        await sandbox_executor.ensure_user_container("p2", "r2", _CFG)  # 满（max=2）
+
+        async def _boom() -> bool:
+            raise RuntimeError("docker daemon 抖动")
+
+        c1.backend.alive = _boom  # type: ignore[method-assign]
+        with pytest.raises(ApiError):  # 探活异常 → 视为存活 → 照常拒绝，不误回收
+            await sandbox_executor.ensure_user_container("p3", "r3", _CFG)
+        assert sandbox_executor.get("p1") is not None  # 没被误杀
         await sandbox_executor.close_all()
 
     asyncio.run(scenario())
@@ -952,6 +997,45 @@ def test_admin_sandbox_put_rejects_bad_values(client):
     r2 = client.put(base, headers=ADMIN_HEADERS,
                     json={"client_request_id": "s3", "updates": {"container_pids_limit": "-1"}, "reason": "x"})
     assert r2.status_code == 400
+    # capacity_full_policy：V1 仅接受 strict_ttl，其他值写侧拒 400（防"看似可配实则不生效"）
+    r3 = client.put(base, headers=ADMIN_HEADERS,
+                    json={"client_request_id": "s4", "updates": {"capacity_full_policy": "aggressive"}, "reason": "x"})
+    assert r3.status_code == 400
+    unwrap(client.put(base, headers=ADMIN_HEADERS,
+                      json={"client_request_id": "s5", "updates": {"capacity_full_policy": "strict_ttl"}, "reason": "固定策略"}))
+
+
+def test_run_004_per_user_running_task_limit_rejects(client):
+    """RUN-004（设计 R5）：每用户 running task 达 per_user_running_task_limit → 新 task 拒 429。
+
+    与开 run 的 SANDBOX_CAPACITY_FULL 是两道独立闸门：这道只管该用户并发任务数，不碰容器名额。
+    """
+    from infra.repositories import runtime_config
+    from runtime import task_registry
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run1 = create_run(client, instance["instance_id"])
+    run2 = create_run(client, instance["instance_id"])  # 同用户复用同一容器，不涉容量
+
+    async def _limit_to_1():
+        await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, "per_user_running_task_limit", 1, reason="t")
+
+    asyncio.run(_limit_to_1())
+    # run1 上挂一个 running task 占满限额（limit=1）
+    task_registry.put(TaskState(task_id="tk_busy", run_id=str(run1["agent_run_id"]), user_id="0026demo01",
+                                instance_id=instance["instance_id"], input_text="占位"))
+
+    r = client.post(f"/api/openops/v1/agent-runs/{run2['agent_run_id']}/tasks", headers=USER_HEADERS,
+                    json={"client_request_id": f"cc{time.time_ns()}", "input_text": "第二个任务"})
+    assert r.status_code == 429
+    assert r.json()["error"]["code"] == "USER_TASK_CONCURRENCY_LIMIT"
+
+    # 占位 task 结束 → 名额释放，新 task 放行（证明拒绝来自限额而非其他 fail-closed）
+    task_registry.get_by_task("tk_busy").status = "completed"
+    r2 = client.post(f"/api/openops/v1/agent-runs/{run2['agent_run_id']}/tasks", headers=USER_HEADERS,
+                     json={"client_request_id": f"cc{time.time_ns()}", "input_text": "再来"})
+    assert r2.status_code < 400, r2.text
 
 
 def test_sweep_once_reclaims_by_db_ttl(client):
