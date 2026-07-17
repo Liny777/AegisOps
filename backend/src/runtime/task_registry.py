@@ -94,6 +94,14 @@ def running_count(user_id: str) -> int:
     return sum(1 for st in _by_run.values() if st.user_id == user_id and st.status == "running")
 
 
+def running_by_user(user_id: str) -> list[TaskState]:
+    """该用户在跑的主任务（管理员强制销毁容器时须连带取消，否则容器被自愈重建）。
+
+    只列主任务：子 Agent 活在主 orchestrator 内，主任务 cancel 会级联（同 reset 口径）。
+    """
+    return [st for st in _by_run.values() if st.user_id == user_id and st.status == "running"]
+
+
 def running_subtask_count(user_id: str) -> int:
     """该用户在飞的子 Agent 数（fan-out 观测；子 Agent 属任务内部，不计入 per_user_running_task_limit）。"""
     return sum(1 for st in _subtasks.values() if st.user_id == user_id and st.status == "running")

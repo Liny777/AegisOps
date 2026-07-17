@@ -424,16 +424,27 @@ async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
         return {"task_id": task_id, "status": snap["task_status"], "already_terminal": True}
     if st.user_id != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权取消该任务")
-    if st.status == "running":
-        st.status = "cancelled"
-        # pending ASK 收口为 cancelled（CANCEL-002）
-        if st.approval_id:
-            await runs.decide_approval(st.approval_id, "cancelled", user["user_id"])
-        st.approval_result = st.approval_result or "cancelled"
-        st.approval_ev.set()
-        if st.orchestrator and not st.orchestrator.done():
-            st.orchestrator.cancel()
+    await cancel_task_state(st, user["user_id"])
     return {"task_id": task_id, "status": "cancelled"}
+
+
+async def cancel_task_state(st: TaskState, by_user_id: str) -> bool:
+    """取消一个 running task（置终态 + 收口 pending ASK + cancel orchestrator）。返回是否真取消。
+
+    归属校验在调用方：cancel_task 校 owner；管理员强制销毁容器（sandbox_admin_service）走
+    platform_admin 权限，非 owner 也可取消，故 decider 取传入的 by_user_id。
+    """
+    if st.status != "running":
+        return False
+    st.status = "cancelled"
+    # pending ASK 收口为 cancelled（CANCEL-002）
+    if st.approval_id:
+        await runs.decide_approval(st.approval_id, "cancelled", by_user_id)
+    st.approval_result = st.approval_result or "cancelled"
+    st.approval_ev.set()
+    if st.orchestrator and not st.orchestrator.done():
+        st.orchestrator.cancel()
+    return True
 
 
 async def delete_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:

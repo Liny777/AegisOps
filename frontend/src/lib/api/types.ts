@@ -397,6 +397,11 @@ export interface SandboxContainer {
   running_subtask_count?: number;  // 子 Agent 在飞数（fan-out 观测，不计入限额）
   idle_seconds: number | null;
 }
+export interface SandboxDestroyResult {
+  destroyed: boolean;          // false=容器本就不在册（已被回收），非报错
+  target_user_id: string;
+  cancelled_task_ids: string[]; // 连带中断的运行中主任务（不掐任务容器会被自愈重建）
+}
 export interface AuditNode {
   event: string;
   detail: string;
