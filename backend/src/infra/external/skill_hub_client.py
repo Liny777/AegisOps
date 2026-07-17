@@ -13,6 +13,7 @@ import hashlib
 import io
 import logging
 import os
+import re
 import zipfile
 from typing import Any
 
@@ -181,6 +182,84 @@ def _unzip(data: bytes) -> dict[str, bytes]:
     return files
 
 
+# frontmatter 顶层 `key: value` 行（key 允许字母/数字/下划线/点/连字符）；缩进捕获用于块标量续行判定。
+_KEY_RE = re.compile(r"^(?P<indent>[ \t]*)(?P<key>[A-Za-z_][\w.-]*):(?P<rest>.*)$")
+# YAML 块标量头：`>` 折叠 / `|` 字面量，可带 chomping(-/+) 与缩进数字（>-, |2, >-2 …）；其后无其它字符。
+_BLOCK_SCALAR_RE = re.compile(r"^[>|][0-9+-]*$")
+
+
+def _looks_like_block_scalar_indicator(v: Any) -> bool:
+    """v 去空白后恰为裸块标量指示符（`>`, `|`, `>-`, `|2` …）——即被朴素 `split(':')` 截断的坏描述特征。
+    供对账自愈判断：存量行 description 是这种残值时强制重解析回填（见 asset_reconcile_service）。"""
+    return isinstance(v, str) and bool(_BLOCK_SCALAR_RE.match(v.strip()))
+
+
+def _strip_quotes(s: str) -> str:
+    """去成对的首尾引号（YAML 单/双引号标量）；非成对不动。"""
+    return s[1:-1] if len(s) >= 2 and s[0] == s[-1] and s[0] in ("'", '"') else s
+
+
+def _fold_block_scalar(style: str, body_lines: list[str]) -> str:
+    """块标量续行 → 最终串。style ∈ {'>','|'}（chomping/缩进指示符已剥离，仅取首字符）。
+    先去公共前导缩进、clip 掉尾部空行；`|` 字面量逐行以 \\n 连接，`>` 折叠时连续非空行以空格并作一行、
+    空行折为换行。仅供展示/发现链路用途，非严格 YAML（够读即可）。"""
+    indents = [len(ln) - len(ln.lstrip(" ")) for ln in body_lines if ln.strip()]
+    strip_n = min(indents) if indents else 0
+    dedented = [ln[strip_n:] for ln in body_lines]
+    while dedented and not dedented[-1].strip():  # clip 尾部空行
+        dedented.pop()
+    if style == "|":
+        return "\n".join(dedented)
+    out = ""
+    at_line_start = True  # 段起（含刚折行）不前置空格
+    for ln in dedented:
+        if ln.strip():
+            out += ("" if at_line_start else " ") + ln.strip()
+            at_line_start = False
+        else:
+            out += "\n"
+            at_line_start = True
+    return out.lstrip("\n")
+
+
+def _parse_frontmatter(md: str) -> dict[str, str]:
+    """解析 SKILL.md frontmatter 顶层 key→value，支持 YAML 块标量（`>` / `|` 及 chomping/缩进变体）。
+
+    - fenced（首行 `---`）：只解析首个 `---…---` 段，避免误取正文里的 `key:`；非 fenced 退回全篇扫描
+      （沿用旧 _entrypoint_from / _description_from 的 fallback 语义）。
+    - 块标量：value 头是 `>`/`|` 时吞掉后续更深缩进的续行，折叠(>)/字面量(|)拼回真值——修此前
+      `split(':',1)[1]` 把 `description: >` 截成 `">"`、续行整段丢失的 bug（插件页「说明」只显示 `>`）。
+    - 每个 key 取首次出现（first match wins）。缺失键不入表。"""
+    lines = md.splitlines()
+    fenced = bool(lines) and lines[0].strip() == "---"
+    out: dict[str, str] = {}
+    i = 1 if fenced else 0  # fenced 跳过起始 ---
+    while i < len(lines):
+        line = lines[i]
+        if fenced and line.strip() == "---":
+            break  # frontmatter 段结束，不再往正文找
+        m = _KEY_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        key, rest, key_indent = m.group("key"), m.group("rest").strip(), len(m.group("indent"))
+        if _BLOCK_SCALAR_RE.match(rest):  # 块标量：吞更深缩进的续行
+            style, body, i = rest[0], [], i + 1
+            while i < len(lines):
+                nxt = lines[i]
+                if fenced and nxt.strip() == "---":
+                    break
+                if nxt.strip() and (len(nxt) - len(nxt.lstrip(" "))) <= key_indent:
+                    break  # 回到同级/更浅的键 → 块结束
+                body.append(nxt)
+                i += 1
+            out.setdefault(key, _fold_block_scalar(style, body))
+            continue
+        out.setdefault(key, _strip_quotes(rest))
+        i += 1
+    return out
+
+
 def _entrypoint_from(files: dict[str, bytes]) -> str | None:
     """从 SKILL.md frontmatter 取 entrypoint（29.3 契约）。
 
@@ -188,30 +267,17 @@ def _entrypoint_from(files: dict[str, bytes]) -> str | None:
     否则返回 None = **手册型 Skill**（老形态：SKILL.md 是给 Agent 读的排查手册，无可执行脚本
     ——内网 SkillHub 的 alarm-query/change-query 即此形态，按脚本执行必 exit 2）。"""
     md = files.get("SKILL.md", b"").decode("utf-8", "replace")
-    for line in md.splitlines():
-        if line.strip().startswith("entrypoint:"):
-            return line.split(":", 1)[1].strip()
-    return "python3 run.py" if "run.py" in files else None
+    ep = (_parse_frontmatter(md).get("entrypoint") or "").strip()
+    return ep or ("python3 run.py" if "run.py" in files else None)
 
 
 def _description_from(files: dict[str, bytes]) -> str | None:
     """从 SKILL.md frontmatter 取 description（发现链路：注入 run_platform_skill 工具描述，让模型
     知道每个 skill 干什么、何时用）。优先限定在首个 `---…---` frontmatter 段内，避免误取正文里的
-    `description:` 行；无 frontmatter fence 时退回全篇首个匹配。缺该字段 → None（老包/手册型不报错）。"""
+    `description:` 行；无 frontmatter fence 时退回全篇首个匹配。支持 `>`/`|` 块标量（多行折叠/字面量），
+    缺该字段 → None（老包/手册型不报错）。"""
     md = files.get("SKILL.md", b"").decode("utf-8", "replace")
-    lines = md.splitlines()
-    fenced = bool(lines) and lines[0].strip() == "---"
-    in_fm = False
-    for line in lines:
-        s = line.strip()
-        if fenced and s == "---":
-            if not in_fm:
-                in_fm = True
-                continue
-            break  # frontmatter 段结束，不再往正文找
-        if (in_fm or not fenced) and s.startswith("description:"):
-            return s.split(":", 1)[1].strip() or None
-    return None
+    return (_parse_frontmatter(md).get("description") or "").strip() or None
 
 
 def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
@@ -221,12 +287,8 @@ def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
     files = _unzip(zip_bytes)
     if "SKILL.md" not in files:
         raise ValueError("ZIP 包内必须包含 SKILL.md（29.3 §2.1）")
-    name = ""
-    for line in files["SKILL.md"].decode("utf-8", "replace").splitlines():
-        s = line.strip()
-        if s.startswith("name:"):
-            name = s.split(":", 1)[1].strip()
-            break
+    md = files["SKILL.md"].decode("utf-8", "replace")
+    name = (_parse_frontmatter(md).get("name") or "").strip()
     if not name:
         raise ValueError("SKILL.md frontmatter 缺少 name 字段")
     return {"name": name, "skill_key": name, "entrypoint": _entrypoint_from(files),

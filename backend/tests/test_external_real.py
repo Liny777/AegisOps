@@ -482,6 +482,34 @@ def test_ext_skillhub_parse_meta_extracts_description():
 
     assert skill_hub_client.parse_skill_meta(_zip("---\nname: x\n---\n"))["description"] is None
 
+    # 块标量：折叠 `>` 续行以空格并作一行（回归「说明」只显示一个 `>` 的 bug）
+    folded = skill_hub_client.parse_skill_meta(_zip(
+        "---\nname: x\ndescription: >\n  行一\n  行二\n---\n"))
+    assert folded["description"] == "行一 行二"
+    # 字面量 `|`：续行保留换行
+    literal = skill_hub_client.parse_skill_meta(_zip(
+        "---\nname: x\ndescription: |\n  行一\n  行二\n---\n"))
+    assert literal["description"] == "行一\n行二"
+    # chomping 变体 `>-` / `|-` 同样正确折叠/字面量，且续行不误当描述
+    assert skill_hub_client.parse_skill_meta(_zip(
+        "---\nname: x\ndescription: >-\n  折叠 一\n  折叠 二\n---\n"))["description"] == "折叠 一 折叠 二"
+    assert skill_hub_client.parse_skill_meta(_zip(
+        "---\nname: x\ndescription: |-\n  字面 一\n  字面 二\n---\n"))["description"] == "字面 一\n字面 二"
+    # 块标量后仍有其它键：续行吞到下一个顶层键即止，name/entrypoint 不被吞
+    multi = skill_hub_client.parse_skill_meta(_zip(
+        "---\ndescription: >\n  用途一句话\n  第二行\nname: y\nentrypoint: python3 run.py\n---\n"))
+    assert multi["description"] == "用途一句话 第二行"
+    assert multi["skill_key"] == "y" and multi["entrypoint"] == "python3 run.py"
+
+
+def test_ext_skillhub_looks_like_block_scalar_indicator():
+    """自愈判断：裸块标量指示符（>, |, >-, |2 …）识别为坏描述残值；正常文本/空/非串为否。"""
+    from infra.external import skill_hub_client
+
+    f = skill_hub_client._looks_like_block_scalar_indicator
+    assert f(">") and f("|") and f(">-") and f("|+") and f(" > ") and f("|2")
+    assert not f("查询最近告警") and not f("> 真描述") and not f("") and not f(None)
+
 
 # ============================ MCP Registry（29.3） ============================
 

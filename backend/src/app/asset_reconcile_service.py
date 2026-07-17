@@ -99,7 +99,10 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 # latest_version/category）或从未抽过 description（键缺失）→ 原地合并回填（非新版本）。
                 # 用「键是否存在」而非真值判断 description，避免无 description 的 skill 每轮都重复回源。
                 cur = latest.get("manifest_json") or {}
-                need_desc = "description" not in cur
+                # 键缺失（从未抽过）或存量坏值（description 被旧解析器截成裸块标量指示符 `>`/`|`）→ 重解析回填。
+                # 后者是自愈：修 parser 前入库的 `>` 坏行，下轮对账即被正确 description 覆盖。
+                need_desc = ("description" not in cur
+                             or skill_hub_client._looks_like_block_scalar_indicator(cur.get("description")))
                 if (cur.get("latest_version") != s.get("latest_version")
                         or cur.get("category") != s.get("category") or need_desc):
                     desc = (await _skill_description(s) if need_desc else cur.get("description"))
