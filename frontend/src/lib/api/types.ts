@@ -351,17 +351,6 @@ export interface AssetRow {
   description?: string; // 真描述（SKILL.md frontmatter / registry 服务描述）——插件页「说明」用
   category?: string;
 }
-/** 资产详情（点开时拉）：上游 29.3 §2.4/§3.3；上游挂时后端降级本地描述（detailSource=local）。 */
-export interface AssetDetail {
-  name: string;
-  description?: string;
-  content?: string; // skill：SKILL.md 全文（mcp 无）
-  version?: string;
-  category?: string;
-  tags?: string[];
-  transport?: string; // mcp
-  detailSource: string; // skillhub | mcp_registry | local（降级）
-}
 export interface ConfigVersionRow {
   version_no: string;
   config_version_id: string;

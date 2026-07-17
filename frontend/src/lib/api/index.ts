@@ -20,7 +20,6 @@ import type {
   Skill,
   AssetRow,
   AssetQuery,
-  AssetDetail,
   Paged,
   ConfigVersionRow,
   ModelOption,
@@ -182,9 +181,6 @@ export interface OpenOpsApi {
    *  这些场景取单页会静默漏掉超出一页的资产。列表 UI 一律用上面的分页读。 */
   getAllSkills(): Promise<AssetRow[]>;
   getAllMcps(): Promise<AssetRow[]>;
-  /** 点开某个 Skill/MCP 时拉真详情（skill 含 SKILL.md 全文）；上游挂时后端降级本地描述。 */
-  getSkillDetail(skillKey: string): Promise<AssetDetail>;
-  getMcpDetail(mcpId: string): Promise<AssetDetail>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
@@ -539,32 +535,6 @@ const realApi: OpenOpsApi = {
   },
   async getAllMcps() {
     return (await fetchAllAssets("mcps")).map(toMcpRow);
-  },
-  async getSkillDetail(skillKey) {
-    const d = await apiFetch<Record<string, unknown>>(
-      `/openops/v1/assets/skills/${encodeURIComponent(skillKey)}/detail`);
-    return {
-      name: String(d.display_name ?? skillKey),
-      description: d.description ? String(d.description) : undefined,
-      content: d.content ? String(d.content) : undefined, // SKILL.md 全文
-      version: d.version ? String(d.version) : undefined,
-      category: d.category ? String(d.category) : undefined,
-      tags: Array.isArray(d.tags) ? (d.tags as unknown[]).map(String) : undefined,
-      detailSource: String(d.detail_source ?? "local"),
-    };
-  },
-  async getMcpDetail(mcpId) {
-    const d = await apiFetch<Record<string, unknown>>(
-      `/openops/v1/assets/mcps/${encodeURIComponent(mcpId)}/detail`);
-    return {
-      name: String(d.display_name ?? ""),
-      description: d.description ? String(d.description) : undefined,
-      version: d.version ? String(d.version) : undefined,
-      category: d.category ? String(d.category) : undefined,
-      tags: Array.isArray(d.tags) ? (d.tags as unknown[]).map(String) : undefined,
-      transport: d.transport ? String(d.transport) : undefined,
-      detailSource: String(d.detail_source ?? "local"),
-    };
   },
   async getMcpLibrary(params) {
     const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/mcps${assetQs(params)}`);
@@ -1098,12 +1068,6 @@ const mockApi: OpenOpsApi = {
   }),
   getAllSkills: () => delay(M.mockSkillLibrary),
   getAllMcps: () => delay(M.mockMcpLibrary),
-  getSkillDetail: (skillKey) => delay({
-    name: skillKey, description: `${skillKey} 的 mock 描述`,
-    content: `---\nname: ${skillKey}\ndescription: mock\n---\n# ${skillKey}\n（mock SKILL.md 全文）`,
-    detailSource: "local",
-  }),
-  getMcpDetail: (mcpId) => delay({ name: mcpId, description: "mock MCP 服务描述", detailSource: "local" }),
   uploadSkill: (file) => delay({ skill_key: file.name.replace(/\.zip$/i, "").toLowerCase(), action: "created" }),
   registerMcp: () => delay(undefined as unknown as void),
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),

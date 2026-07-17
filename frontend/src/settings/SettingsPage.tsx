@@ -4,7 +4,7 @@ import { color, radius } from "../theme/tokens";
 import { Icon, Interactive, Pill, Button, TextInput, Toggle, Pagination } from "../ui";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { api } from "../lib/api";
-import type { AgentInstance, AssetDetail, AssetRow, ConfigVersionRow, Paged } from "../lib/api/types";
+import type { AgentInstance, AssetRow, ConfigVersionRow, Paged } from "../lib/api/types";
 
 /** 插件页左树每组每页条数（服务端分页；两组各自独立翻页）。 */
 const PLUGIN_PAGE_SIZE = 10;
@@ -221,8 +221,6 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   const [minePage, setMinePage] = useState(1);
   const [versions, setVersions] = useState<ConfigVersionRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<AssetDetail | null>(null);   // 点开时拉的真详情
-  const [detailBusy, setDetailBusy] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");  // 页内成功横幅（上传/注册成功提示，几秒后自动消失）
@@ -268,20 +266,6 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
     if (!libItems.length) { setSelectedId(null); return; }
     if (!selectedId || !libItems.some((r) => r.id === selectedId)) setSelectedId(libItems[0].id);
   }, [libItems, selectedId]);
-
-  // 点开才拉真详情（上游 detail 会递增 access_count，不进列表路径）；上游挂时后端已降级本地描述
-  useEffect(() => {
-    if (!selected) { setDetail(null); return; }
-    let alive = true;
-    setDetail(null); setDetailBusy(true);
-    const p = isSkill && selected.skillKey
-      ? api.getSkillDetail(selected.skillKey)
-      : api.getMcpDetail(selected.id);
-    p.then((d) => { if (alive) setDetail(d); })
-      .catch(() => { if (alive) setDetail(null); })
-      .finally(() => { if (alive) setDetailBusy(false); });
-    return () => { alive = false; };
-  }, [selectedId, isSkill]);
 
   const treeRow = (r: AssetRow) => {
     const on = selectedId === r.id;
@@ -359,27 +343,15 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
               <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 18 }}>
                 版本 {selected.version} · {selected.meta}
               </div>
-              {/* 说明 = 该资产**自己**的描述（SKILL.md frontmatter / registry 服务描述）。
+              {/* 说明 = 该资产**自己**的描述（SKILL.md frontmatter / registry 服务描述），随列表一并返回。
                   此前这里是只看 isSkill 的写死品类介绍，每个 skill 显示同一段。
-                  优先用点开拉到的详情描述，回退列表带的描述；都没有才退回品类介绍作空态。 */}
+                  只展示说明、不展示 SKILL.md 全文（评审口径）——故不再点开拉详情，零额外请求。 */}
               <SectionLabel>说明</SectionLabel>
               <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18, whiteSpace: "pre-wrap" }}>
-                {detailBusy && !selected.description ? (
-                  <span style={{ color: color.textFaint }}>加载中…</span>
-                ) : (
-                  detail?.description || selected.description || (isSkill
-                    ? "该 Skill 未填写描述。（Skill 是在你的隔离沙箱容器内受控执行的技能包，对话里可用 /名称 直接触发；平台技能自动装配，个人技能默认装配、可解绑。）"
-                    : "该 MCP 未填写描述。（MCP 是经 Tool Gateway 受控调用的 HTTP 服务：审批门 / 审计留痕；平台 MCP 的工具由管理员在模板中勾选后自动装配，个人 MCP 默认自动装配、可解绑。）")
-                )}
+                {selected.description || (isSkill
+                  ? "该 Skill 未填写描述。（Skill 是在你的隔离沙箱容器内受控执行的技能包，对话里可用 /名称 直接触发；平台技能自动装配，个人技能默认装配、可解绑。）"
+                  : "该 MCP 未填写描述。（MCP 是经 Tool Gateway 受控调用的 HTTP 服务：审批门 / 审计留痕；平台 MCP 的工具由管理员在模板中勾选后自动装配，个人 MCP 默认自动装配、可解绑。）")}
               </div>
-              {detail?.content ? (
-                <>
-                  <SectionLabel>SKILL.md</SectionLabel>
-                  <pre style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12, color: color.textBody, lineHeight: 1.6, marginBottom: 18, maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {detail.content}
-                  </pre>
-                </>
-              ) : null}
               {/* skill/mcp 同一模型：平台资产只读自动装配（无「绑定」动作——MCP 由模板 default_tools 决定，
                   skill 运行时无条件纳入）；个人资产默认装配、可解绑/重新绑定（muted 绑定行 opt-out）。 */}
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

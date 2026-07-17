@@ -1,6 +1,8 @@
 """启动种子（幂等）：demo 用户/白名单、感知快恢模板、平台资产+tool 标注、沙箱配置、模型资产。"""
 from __future__ import annotations
 
+import os
+
 from infra.db import q_one
 from infra.external import mcp_registry_client
 from infra.repositories import assets, mcp_tools, model_assets, runtime_config, templates, users
@@ -106,10 +108,15 @@ async def seed() -> None:
         "面向 SRE 巡检 / 定界 / 恢复闭环的平台模板。", TEMPLATE_CONTENT, "system",
     )
 
-    # 平台 Skill（description 供发现链路：注入 run_platform_skill 工具描述；首轮 reconcile 会按真 checksum 补真版本）
-    await assets.create_skill(None, "platform", "巡检 inspection", "inspection",
-                              {"entrypoint": "run.py", "description": "巡检 Skill——检查资源健康度（如 redis 连接池、p99 时延），产出结构化巡检发现"},
-                              "c0ffee")
+    # demo 平台 Skill（巡检 inspection）：**真环境不种**——技能一律来自真 SkillHub 对账，
+    # 种一个假的会永远赖在插件页/Skill 基线里（reconcile 是「有则更新、无则不管」、无删除/无墓碑，
+    # 上游不列它就永不清除）。mock/默认模式才种：本地端到端与大量用例（test_assets / test_run_task /
+    # test_sandbox / test_templates …）都依赖它。门控复用既有的 OPENOPS_SKILLHUB 开关，不新造 flag。
+    # description 供发现链路：注入 run_platform_skill 工具描述；首轮 reconcile 会按真 checksum 补真版本。
+    if os.getenv("OPENOPS_SKILLHUB", "mock").lower() != "real":
+        await assets.create_skill(None, "platform", "巡检 inspection", "inspection",
+                                  {"entrypoint": "run.py", "description": "巡检 Skill——检查资源健康度（如 redis 连接池、p99 时延），产出结构化巡检发现"},
+                                  "c0ffee")
 
     # 平台 MCP + tool catalog + 标注（query_resource 免审批 / recover_execute 需审批，均 scope required）
     mcp = await assets.create_mcp(None, "platform", "oModel 查询与恢复", "http", {"endpoint": "http://mock"}, {})
