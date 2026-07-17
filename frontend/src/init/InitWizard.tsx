@@ -314,7 +314,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
     : "";
 
   return (
-    <>
+    <div style={{ background: "#fff", border: "1px solid rgb(226, 229, 234)", borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
       <Title t="确认能力清单" d="确认本 Agent 已具备的内置能力，并等待看护空间初始化完成后进入激活。" />
       {capabilities.length ? (
         <div style={{ marginBottom: 26 }}>
@@ -322,7 +322,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
             <Icon name="bolt" size={16} color={color.brand} />能力识别
             <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>Agent 已具备的内置能力</span>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
             {capabilities.map((c) => <CapabilityCard key={c} name={c} />)}
           </div>
         </div>
@@ -378,7 +378,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 
