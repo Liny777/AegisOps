@@ -13,7 +13,7 @@
     "test:workbench-lifecycle": "node --import tsx --test src/layout/workbenchSession.test.ts src/lib/runtime/sse.test.ts",
     "test:request-convergence": "node --import tsx --test src/lib/api/singleFlight.test.ts src/lib/api/requestConvergence.test.ts src/lib/runtime/sse.test.ts",
     "test:rich-ui": "node --import tsx --test src/workbench/copilot/rich-ui/*.test.ts",
-    "test:chat-ui": "node --import tsx --test src/workbench/copilot/toolGrouping.test.ts",
+    "test:chat-ui": "node --import tsx --test src/workbench/copilot/*.test.ts",
     "test:runtime-lifecycle": "node --import tsx --test server/*.test.ts",
     "e2e": "playwright test",
     "e2e:real": "OPENOPS_E2E_REAL=1 playwright test e2e/real-workbench-persistence.spec.ts e2e/history-switch-storm.spec.ts",

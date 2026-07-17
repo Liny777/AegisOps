@@ -7,12 +7,7 @@ import { useEffect, useRef, useState } from "react";
 import { color, radius, shadow } from "../../theme/tokens";
 import { api, isAbortError } from "../../lib/api";
 import type { Skill } from "../../lib/api/types";
-
-const NATIVE_SETTER = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
-
-function composerTextarea(): HTMLTextAreaElement | null {
-  return document.querySelector<HTMLTextAreaElement>(".copilot-chat-panel textarea");
-}
+import { composerTextarea, writeComposer } from "./composerBridge";
 
 export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -87,13 +82,9 @@ export function CopilotSkillSlash({ instanceId }: { instanceId: string }) {
   if (!filtered.length) return null;
 
   const pick = (s: Skill) => {
-    const ta = taRef.current;
-    if (!ta || !NATIVE_SETTER) return;
     // s.name 已含前导 "/"（getAvailableSkills/mock 约定，同 workbench Composer）——不得再加，
     // 否则写成 "//skill"，模型只认 "/<skill>" 开头 → 不会触发 run_platform_skill（skill 不执行）
-    NATIVE_SETTER.call(ta, `${s.name} `);
-    ta.dispatchEvent(new Event("input", { bubbles: true }));
-    ta.focus();
+    if (!writeComposer(`${s.name} `)) return;
     setOpen(false);
   };
 

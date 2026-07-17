@@ -6,6 +6,7 @@ import {
   type CopilotChatToolCallsViewProps,
 } from "@copilotkit/react-core/v2";
 
+import { CopilotPresetQuestions } from "./CopilotPresetQuestions";
 import { groupToolCallsByUserTurn } from "./toolGrouping";
 
 function GroupedToolCallsView({ message, messages = [] }: CopilotChatToolCallsViewProps) {
@@ -95,6 +96,8 @@ function OpenOpsChatMessageViewImpl({ messages = [], className, ...props }: Copi
         return (
           <div data-testid="copilot-message-list" className={listClassName}>
             {messageElements}
+            {/* 空会话冷启动引导；首条消息落地后此分支自然不再命中。 */}
+            {renderedMessages.length === 0 ? <CopilotPresetQuestions /> : null}
             {interruptElement}
             {showCursor ? (
               <div className="cpk:mt-2">

@@ -55,6 +55,51 @@
   overflow-x: clip;
 }
 
+/* 空会话冷启动引导：随消息列表居中列走正常文档流，首条消息落地即卸载。 */
+.oa-preset-questions {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.oa-preset-questions-hint {
+  margin-bottom: 9px;
+  color: #667085;
+  font-size: 12.5px;
+}
+
+.oa-preset-questions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.oa-preset-chip {
+  max-width: 100%;
+  padding: 7px 13px;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #dfe5ee;
+  border-radius: 999px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.oa-preset-chip:hover {
+  color: #155eef;
+  background: #f0f6ff;
+  border-color: #b9d4ff;
+}
+
+.oa-preset-chip:focus-visible {
+  outline: 2px solid #1683ff;
+  outline-offset: 2px;
+}
+
 .oa-chat-assistant-message,
 .oa-chat-user-message {
   position: relative;

@@ -16,6 +16,7 @@ import { color, radius } from "../../theme/tokens";
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend } from "./CopilotAutoSend";
+import { ChatPresetsProvider } from "./CopilotPresetQuestions";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
 import { MermaidFullscreenBoundary } from "./MermaidFullscreenBoundary";
@@ -103,19 +104,24 @@ export function CopilotChatPanel({
       <CopilotConnectMonitor onConnected={handleConnected} />
       <MermaidFullscreenBoundary>
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
-        <CopilotChat
-          key={`${runId}:${readOnly ? "readonly" : "active"}`}
-          agentId={AGENT_ID}
-          threadId={runId}
-          autoScroll="pin-to-bottom"
-          className="copilot-chat-panel"
-          messageView={OpenOpsChatMessageView}
-          welcomeScreen={false}
-          input={readOnly ? CLOSED_INPUT_SLOT : activeInputSlot}
-          onError={() =>
-            setConnectionStatus((current) => (current === "ready" ? current : "error"))
-          }
-        />
+        {/* 预设问题挂在 messageView 的空消息分支里，故 provider 需包住 CopilotChat。
+            必须等 connectionStatus==="ready"：历史恢复期间 messages 会短暂为 []，
+            否则 chips 会在 CopilotThreadGate 的半透明遮罩后闪一下再消失。 */}
+        <ChatPresetsProvider enabled={!readOnly && connectionStatus === "ready"}>
+          <CopilotChat
+            key={`${runId}:${readOnly ? "readonly" : "active"}`}
+            agentId={AGENT_ID}
+            threadId={runId}
+            autoScroll="pin-to-bottom"
+            className="copilot-chat-panel"
+            messageView={OpenOpsChatMessageView}
+            welcomeScreen={false}
+            input={readOnly ? CLOSED_INPUT_SLOT : activeInputSlot}
+            onError={() =>
+              setConnectionStatus((current) => (current === "ready" ? current : "error"))
+            }
+          />
+        </ChatPresetsProvider>
         {!readOnly ? <CopilotSkillSlash instanceId={instanceId} /> : null}
         {!readOnly && autoQuestion && onAutoSent && shouldMountCopilotAutoSend(
           blocked || connectionStatus !== "ready",
