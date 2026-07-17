@@ -701,7 +701,10 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP
     # 不可能出现在管理员维护的模板白名单里，若按白名单裁剪则本特性等于不存在。隔离靠「仅 main」
     # （_user_mcp_specs 守 agent_key + 子不继承 mcp_servers），平台环的白名单门一行未动（B7-SEC-001）。
-    _taken = set(st.tool_annotations) | {t.name for t in tools if getattr(t, "name", None)}
+    # 占名集必须含**未装配**的平台名（被裁剪的 demo/动态工具、模板外的注册表工具）：它们没进 toolkit，
+    # 名字却不能让用户 server 顶上——否则 Agent 以为在调那个平台工具、实际打到用户 URL。
+    _taken = (set(st.tool_annotations) | {t.name for t in tools if getattr(t, "name", None)}
+              | {s["name"] for s in dynamic_specs} | set(fns) | {n for n, _ in pruned})
     for spec in await _user_mcp_specs(st):
         # 同名冲突：**平台赢**，跳过用户工具。注意这与 skill 模型刻意相反（resolve_available_skills 的
         # Loop B 是 out[key]=... 即用户覆盖平台）——让用户 server 影子化一个平台工具名，等于 Agent 以为在

@@ -233,8 +233,8 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   };
 
   const boundByAsset = new Map(bound.map((b) => [b.assetId, b]));
-  // 个人 skill「解绑」= muted 绑定行（本模型下 skill 绑定行只会是 muted）：assetId→binding，供解绑/重新绑定
-  const mutedByAsset = new Map(bound.filter((b) => b.kind === "skill" && b.bindingStatus === "muted").map((b) => [b.assetId, b]));
+  // 个人 skill/MCP「解绑」= muted 绑定行（本模型下 skill/mcp 绑定行只会是 muted）：assetId→binding，供解绑/重新绑定
+  const mutedByAsset = new Map(bound.filter((b) => b.bindingStatus === "muted").map((b) => [b.assetId, b]));
   const q = search.trim().toLowerCase();
   const filtered = lib.filter((r) => !q || r.name.toLowerCase().includes(q));
   const mine = filtered.filter((r) => r.meta.includes("我的"));
@@ -242,14 +242,14 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   const selected = lib.find((r) => r.id === selectedId) ?? null;
   const selBinding = selected ? boundByAsset.get(selected.id) : undefined;
   const selIsSystem = selected ? (selected.sourceType ? selected.sourceType === "platform" : !selected.meta.includes("我的")) : false;
-  const selSkillMute = selected ? mutedByAsset.get(selected.id) : undefined;  // 个人 skill 的 muted 绑定行（已解绑）
+  const selMute = selected ? mutedByAsset.get(selected.id) : undefined;  // 个人 skill/MCP 的 muted 绑定行（已解绑）
   const noun = isSkill ? "Skill" : "MCP";
 
   const treeRow = (r: AssetRow) => {
     const on = selectedId === r.id;
     const isSystem = r.sourceType ? r.sourceType === "platform" : !r.meta.includes("我的");
-    // 平台 skill 恒自动装配；个人 skill 默认装配、被 mute（解绑）后不装配；mcp 看绑定
-    const attached = isSkill ? (isSystem || !mutedByAsset.has(r.id)) : boundByAsset.has(r.id);
+    // skill/mcp 同式：平台恒自动装配（MCP 由模板 default_tools 决定）；个人资产默认装配、被 mute（解绑）后不装配
+    const attached = isSystem || !mutedByAsset.has(r.id);
     const deletable = !isSystem;
     return (
       <Interactive key={r.id} onClick={() => setSelectedId(r.id)}
@@ -258,7 +258,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
         <Icon name={isSkill ? "file-code" : "plug"} size={14} color={on ? color.brand : color.textSubtle} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: on ? 650 : 500, color: on ? color.brand : color.textBody, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
         <span style={{ fontSize: 11, color: color.textFaint, flex: "0 0 auto", fontVariantNumeric: "tabular-nums" }}>{r.version}</span>
-        {attached ? <span title={isSkill ? (isSystem ? "已自动装配到本 Agent" : "已装配到本 Agent") : "已绑定当前 Agent"} style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
+        {attached ? <span title={isSystem ? (isSkill ? "已自动装配到本 Agent" : "由平台自动装配（按模板工具白名单）") : "已装配到本 Agent"} style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
         {deletable ? (
           <Icon name="trash" size={13} color={color.textFaint} title="删除"
             onClick={() => { if (confirm(`删除「${r.name}」？`)) run(api.deleteAsset(kind, r.id)); }} />
@@ -315,31 +315,23 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
               <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18 }}>
                 {isSkill
                   ? "在你的隔离沙箱容器内受控执行的技能包（对话里可用 / 名称直接触发）。平台技能自动装配；你的个人技能默认也自动装配，可按需「解绑 / 重新绑定」到本 Agent。"
-                  : "经 Tool Gateway 受控调用的 HTTP MCP 服务（scope 校验 / 审批门 / 审计留痕）。其工具在运行时动态装配给 Agent。"}
+                  : "经 Tool Gateway 受控调用的 HTTP MCP 服务（审批门 / 审计留痕）。平台 MCP 的工具由管理员在模板中勾选后自动装配，无需手动绑定；你注册的个人 MCP 默认自动装配到本 Agent 的主 Agent，可按需「解绑 / 重新绑定」。"}
               </div>
+              {/* skill/mcp 同一模型：平台资产只读自动装配（无「绑定」动作——MCP 由模板 default_tools 决定，
+                  skill 运行时无条件纳入）；个人资产默认装配、可解绑/重新绑定（muted 绑定行 opt-out）。 */}
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {isSkill ? (
-                  selIsSystem ? (
-                    // 平台 skill：运行时无条件自动装配，只读、无解绑
-                    <Pill tone="good">已自动装配到本 Agent</Pill>
-                  ) : selSkillMute ? (
-                    <>
-                      <Pill tone="neutral">已从本 Agent 解绑</Pill>
-                      <Button disabled={busy} onClick={() => run(api.unbindAsset(selSkillMute.id))}>重新绑定</Button>
-                    </>
-                  ) : (
-                    <>
-                      <Pill tone="good">已自动装配到本 Agent</Pill>
-                      <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindSkill(instanceId, selected))}>解绑</Button>
-                    </>
-                  )
-                ) : selBinding ? (
+                {selIsSystem ? (
+                  <Pill tone="good">{isSkill ? "已自动装配到本 Agent" : "由平台自动装配（按模板工具白名单）"}</Pill>
+                ) : selMute ? (
                   <>
-                    <Pill tone="good">已绑定当前 Agent</Pill>
-                    <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindAsset(selBinding.id))}>解绑</Button>
+                    <Pill tone="neutral">已从本 Agent 解绑</Pill>
+                    <Button disabled={busy} onClick={() => run(api.unbindAsset(selMute.id))}>重新绑定</Button>
                   </>
                 ) : (
-                  <Button disabled={busy} onClick={() => run(api.bindAsset(instanceId, selected))}>绑定到当前 Agent</Button>
+                  <>
+                    <Pill tone="good">已自动装配到本 Agent</Pill>
+                    <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindOwnAsset(kind, instanceId, selected))}>解绑</Button>
+                  </>
                 )}
               </div>
             </div>
