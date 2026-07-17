@@ -428,6 +428,37 @@ async def test_ext_skillhub_download_url_has_skill_id(monkeypatch):
     assert pkg["entrypoint"] == "python3 run.py"
 
 
+async def test_ext_skillhub_list_pages_through_all_and_maps_description(monkeypatch):
+    """§2.2 翻页取全 + page_size ≤ 100 + 映射 latest_description。
+
+    回归此前两个真 bug：写死 `page_size:200`（超 §2.2 上限 100）且只取第 1 页、从不读 total
+    → 平台 skill >100 时第 101+ 个静默漏配（reconcile 是收敛循环，不报错）；latest_description 被丢。"""
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "http://skillhub")
+    total = 150
+
+    def _route(_m, _u, k):
+        body = k.get("json") or {}
+        page, size = int(body["page"]), int(body["page_size"])
+        lo, hi = (page - 1) * size, min(page * size, total)
+        items = [{"skill_id": f"s{i}", "name": f"S{i}", "is_system": True, "source": "openops",
+                  "latest_version": "1.0.0", "latest_description": f"desc{i}", "checksum_sha256": "c"}
+                 for i in range(lo, hi)]
+        return _Resp(200, {"code": 200, "message": "ok",
+                           "data": {"total": total, "page": page, "page_size": size, "items": items}})
+
+    cap = _install(monkeypatch, _route)
+    out = await skill_hub_client.list_skills("u1")
+
+    assert len(out) == total                                        # 翻完所有页，不再静默截断
+    pages = [(c[2].get("json") or {}) for c in cap]
+    assert [p["page"] for p in pages] == [1, 2]                     # 读 total 后翻到第 2 页即停
+    assert all(p["page_size"] <= 100 for p in pages)                # 不再超 §2.2 上限（此前是 200）
+    assert out[0]["description"] == "desc0"                         # latest_description 已映射（此前被丢）
+
+
 def test_ext_skillhub_parse_meta_extracts_description():
     """发现链路数据源：parse_skill_meta 从 SKILL.md **frontmatter** 抽 description；正文里的 `description:`
     行不误取；缺该字段 → None（老包/手册型不报错）。"""

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Query, UploadFile
 
 from api.deps import User
 from api.responses import ok
@@ -36,8 +36,22 @@ async def reconcile(user: User):
 
 
 @router.get("/skills")
-async def list_skills(user: User):
-    return ok(await asset_registry_service.list_skills(user))
+async def list_skills(
+    user: User,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),  # 上限对齐 29.3 §2.2 的 page_size ≤ 100
+    source_type: str | None = Query(default=None, pattern="^(platform|user)$"),
+    q: str | None = Query(default=None, max_length=200),  # 按名称/skill_key 模糊搜（服务端过滤）
+):
+    """分页列 Skill → {items,total,page,page_size}（管理台按 source_type=platform 取基线；插件页按来源分组）。"""
+    return ok(await asset_registry_service.list_skills(
+        user, page=page, page_size=page_size, source_type=source_type, q=q))
+
+
+@router.get("/skills/{skill_key}/detail")
+async def skill_detail(skill_key: str, user: User):
+    """Skill 真详情（29.3 §2.4，含 SKILL.md 全文）；上游失败降级本地描述。插件页点开时调。"""
+    return ok(await asset_registry_service.skill_detail(user, skill_key))
 
 
 @router.post("/skills")
@@ -69,8 +83,22 @@ async def delete_skill(skill_id: str, user: User):
 
 
 @router.get("/mcps")
-async def list_mcps(user: User):
-    return ok(await asset_registry_service.list_mcps(user))
+async def list_mcps(
+    user: User,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),  # 上限对齐 29.3 §3.2
+    source_type: str | None = Query(default=None, pattern="^(platform|user)$"),
+    q: str | None = Query(default=None, max_length=200),
+):
+    """分页列 HTTP MCP → {items,total,page,page_size}。"""
+    return ok(await asset_registry_service.list_mcps(
+        user, page=page, page_size=page_size, source_type=source_type, q=q))
+
+
+@router.get("/mcps/{mcp_id}/detail")
+async def mcp_detail(mcp_id: str, user: User):
+    """MCP 真详情（29.3 §3.3）；上游失败降级本地描述。插件页点开时调。"""
+    return ok(await asset_registry_service.mcp_detail(user, mcp_id))
 
 
 @router.post("/mcps")

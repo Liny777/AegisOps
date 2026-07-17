@@ -278,6 +278,29 @@ async def list_servers() -> list[dict[str, Any]]:
     return [{"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "mock"}]
 
 
+async def get_mcp_detail(server_id: str) -> dict[str, Any]:
+    """MCP Server 详情（29.3 §3.3 `POST /mcps/detail/query`）→ {description, server_url, transport,
+    version, category, tags, status, …}。供插件页「说明」展示真详情；只在用户点开时调（会递增 access_count）。"""
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        from infra.request_context import expand_host
+
+        base = expand_host(os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "")
+        if not base:
+            raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
+        import httpx
+
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+            r = await cli.post(f"{base.rstrip('/')}{console_api_prefix()}/mcps/detail/query",
+                               json={"server_id": server_id})
+            raise_with_body(r)
+            body = r.json()
+            if int(body.get("code", -1)) not in (0, 200):  # 2026-07-13 对端统一 200；0 兼容旧版
+                raise RuntimeError(f"mcps/detail/query 业务错误：code={body.get('code')} {body.get('message', '')}")
+            return body.get("data") or {}
+    return {"server_id": server_id, "server_name": server_id, "server_url": "http://mock",
+            "description": "mock MCP 服务（离线合成详情）", "transport": "jsonrpc", "status": "active"}
+
+
 async def discover_tools(server_url: str) -> list[dict[str, Any]]:
     """平台 MCP `tools/list`（29.3 §4.1 Proxy）。real 经 `POST /obsv/agent/management/mcps/proxy` 转发到目标 MCP server。
 

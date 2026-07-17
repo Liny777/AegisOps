@@ -2,12 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
-import { Icon, Button, Dot, Pill } from "../ui";
+import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api } from "../lib/api";
 import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
+
+/** 管理台表格每页条数（服务端分页；后端上限 100，对齐 29.3 §2.2）。 */
+const ADMIN_PAGE_SIZE = 20;
 
 const TITLES: Record<string, string> = {
   templates: "模板管理",
@@ -22,6 +25,7 @@ const TITLES: Record<string, string> = {
 export function AdminConsole() {
   const { page = "templates" } = useParams();
   const [table, setTable] = useState<AdminTableData | null>(null);
+  const [tablePage, setTablePage] = useState(1);  // 服务端分页（目前 Skill 基线消费；其余表后端不返 total → 不渲染分页器）
   const [audit, setAudit] = useState<AuditNode[]>([]);
   // 模板 drill：模板管理 → 模板名·资产治理 → MCP名·Tool 标注
   const [tplDrill, setTplDrill] = useState<{ id: string; name: string } | null>(null);
@@ -74,13 +78,14 @@ export function AdminConsole() {
         setTable(await api.getAdminTable("templates"));
       }
     } else if (isTable) {
-      setTable(await api.getAdminTable(page));
+      setTable(await api.getAdminTable(page, { page: tablePage, pageSize: ADMIN_PAGE_SIZE }));
     } else if (page === "audit") {
       setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage]);
 
   useEffect(() => { setTplDrill(null); setMcpDrill(null); }, [page]);
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill]);  // 换页签/钻取回第 1 页，免停在越界页看空表
   useEffect(() => { void load(); }, [load]);
 
   const tabs = table?.tabs;
@@ -212,6 +217,11 @@ export function AdminConsole() {
                   </div>
                 ))}
               </div>
+              {/* 服务端分页（Skill 基线）：后端返 total 才渲染；platform 过滤已在服务端，不再客户端 filter */}
+              {table.total !== undefined ? (
+                <Pagination page={table.page ?? tablePage} pageSize={table.pageSize ?? ADMIN_PAGE_SIZE}
+                  total={table.total} onPage={setTablePage} />
+              ) : null}
             </>
           ) : null}
 

@@ -49,7 +49,8 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
     }
     setServerTools(grouped);
     // 技能目录（SkillHub 对账后的资产）：skills 白名单从这里勾选，键=skill_key（运行时同键）
-    const skills = await api.getSkillLibrary().catch(() => []);
+    // 用 getAllSkills（内部翻页取全）——白名单必须能勾到每一个 skill，取单页会静默漏掉超一页的
+    const skills = await api.getAllSkills().catch(() => []);
     setSkillKeys([...new Set(skills.filter((s) => s.status === "active" && s.skillKey).map((s) => String(s.skillKey)))]);
     setMsg("");
     setErr("");

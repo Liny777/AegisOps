@@ -217,7 +217,8 @@ export function Workbench({
         }
       })
       .catch(() => undefined);
-    api.getMcpLibrary()
+    // 统计要的是全量口径（active/总数）→ 用 getAllMcps 翻页取全；取分页首页会把统计算成「每页」数
+    api.getAllMcps()
       .then((rows) => {
         if (controller.signal.aborted) return;
         setMcpStat({ active: rows.filter((r) => r.status === "active").length, total: rows.length });

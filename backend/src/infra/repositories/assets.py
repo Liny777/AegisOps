@@ -6,11 +6,14 @@ from typing import Any
 
 from infra.db import exec1, jsonb, q_all, q_one
 
-
-async def list_skills(owner: str | None, include_platform: bool = True) -> list[dict[str, Any]]:
-    return await q_all(
-        """
-        select s.*, v.skill_version_id, v.version_no, v.checksum_sha256, v.manifest_json
+# 列表 SQL 片段：全量读（list_*，供 resolve_available_skills 等需要完整资产面的热路径）与分页读
+# （list_*_page，供 UI）共用同一 FROM/WHERE，避免两处漂移。
+# 分页读的两条硬约束：
+#  1) source_type/关键字过滤必须在服务端——分页后再做客户端过滤，每页数量必然错乱；
+#  2) 排序必须唯一——creation_date 不唯一（reconcile 紧循环批量插入同一时刻多行），只按它排会翻页重/漏，
+#     故一律追加主键做 tiebreaker。
+_SKILL_COLS = "s.*, v.skill_version_id, v.version_no, v.checksum_sha256, v.manifest_json"
+_SKILL_FROM = """
         from sre_skill_asset s
         left join lateral (
           select * from sre_skill_asset_version sv
@@ -20,10 +23,37 @@ async def list_skills(owner: str | None, include_platform: bool = True) -> list[
         where s.deleted_at is null
           and ( (s.source_type='platform' and %(p)s)
              or (s.source_type='user' and s.owner_user_id=%(o)s) )
-        order by s.creation_date
-        """,
+"""
+_SKILL_FILTERS = (
+    " and (%(st)s::text is null or s.source_type = %(st)s)"
+    " and (%(qlike)s::text is null or s.display_name ilike %(qlike)s or s.skill_key ilike %(qlike)s)"
+)
+
+
+async def list_skills(owner: str | None, include_platform: bool = True) -> list[dict[str, Any]]:
+    """全量读（不分页）：resolve_available_skills 等需要**完整**技能面的路径用——分页会掐掉 Agent 的技能。
+    UI 列表走 list_skills_page。"""
+    return await q_all(
+        f"select {_SKILL_COLS}{_SKILL_FROM} order by s.creation_date",
         {"o": owner, "p": include_platform},
     )
+
+
+async def list_skills_page(
+    owner: str | None, *, include_platform: bool = True, source_type: str | None = None,
+    q: str | None = None, limit: int = 20, offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """UI 分页读（29.3 §2.2 口径 page/page_size → limit/offset）→ (rows, total)。
+    total 单独 count：`count(*) over ()` 在越界空页会退化成 0（拿不到真实总数）。"""
+    p: dict[str, Any] = {"o": owner, "p": include_platform, "st": source_type,
+                         "qlike": f"%{q}%" if q else None}
+    total = int(((await q_one(f"select count(*) as n{_SKILL_FROM}{_SKILL_FILTERS}", p)) or {}).get("n") or 0)
+    rows = await q_all(
+        f"select {_SKILL_COLS}{_SKILL_FROM}{_SKILL_FILTERS}"
+        " order by s.creation_date, s.skill_id limit %(lim)s offset %(off)s",
+        {**p, "lim": limit, "off": offset},
+    )
+    return rows, total
 
 
 async def create_skill(
@@ -136,10 +166,10 @@ async def delete_skill(skill_id: str, by: str) -> int:
     )
 
 
-async def list_mcps(owner: str | None, include_platform: bool = True) -> list[dict[str, Any]]:
-    return await q_all(
-        """
-        select m.*, v.mcp_version_id, v.version_no
+# v.manifest_json 必须投影：MCP 的 description 由 reconcile 存在版本表 manifest 里（create_mcp），
+# 此前 select 没带它 → MCP 描述从 list 面根本取不到（skill 侧一直有，属两边不对称的缺口）
+_MCP_COLS = "m.*, v.mcp_version_id, v.version_no, v.manifest_json"
+_MCP_FROM = """
         from sre_mcp_asset m
         left join lateral (
           select * from sre_mcp_asset_version mv
@@ -149,10 +179,35 @@ async def list_mcps(owner: str | None, include_platform: bool = True) -> list[di
         where m.deleted_at is null
           and ( (m.source_type='platform' and %(p)s)
              or (m.source_type='user' and m.owner_user_id=%(o)s) )
-        order by m.creation_date
-        """,
+"""
+_MCP_FILTERS = (
+    " and (%(st)s::text is null or m.source_type = %(st)s)"
+    " and (%(qlike)s::text is null or m.display_name ilike %(qlike)s)"
+)
+
+
+async def list_mcps(owner: str | None, include_platform: bool = True) -> list[dict[str, Any]]:
+    """全量读（不分页）。UI 列表走 list_mcps_page。"""
+    return await q_all(
+        f"select {_MCP_COLS}{_MCP_FROM} order by m.creation_date",
         {"o": owner, "p": include_platform},
     )
+
+
+async def list_mcps_page(
+    owner: str | None, *, include_platform: bool = True, source_type: str | None = None,
+    q: str | None = None, limit: int = 20, offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """UI 分页读 → (rows, total)。口径同 list_skills_page。"""
+    p: dict[str, Any] = {"o": owner, "p": include_platform, "st": source_type,
+                         "qlike": f"%{q}%" if q else None}
+    total = int(((await q_one(f"select count(*) as n{_MCP_FROM}{_MCP_FILTERS}", p)) or {}).get("n") or 0)
+    rows = await q_all(
+        f"select {_MCP_COLS}{_MCP_FROM}{_MCP_FILTERS}"
+        " order by m.creation_date, m.mcp_id limit %(lim)s offset %(off)s",
+        {**p, "lim": limit, "off": offset},
+    )
+    return rows, total
 
 
 async def create_mcp(
@@ -180,6 +235,17 @@ async def create_mcp(
         {"v": vid, "m": mid, "mf": jsonb(manifest_json), "b": by},
     )
     return {"mcp_id": mid, "mcp_version_id": vid}
+
+
+async def latest_mcp_version(mcp_id: str) -> dict[str, Any] | None:
+    """最新 MCP 版本行（manifest_json 里存着 registry 的 server_id / description）。对齐 latest_skill_version。"""
+    return await q_one(
+        """
+        select * from sre_mcp_asset_version
+        where mcp_id=%(m)s and deleted_at is null order by version_no desc limit 1
+        """,
+        {"m": mcp_id},
+    )
 
 
 async def get_mcp(mcp_id: str) -> dict[str, Any] | None:

@@ -320,6 +320,20 @@ export interface OpenOpsEvent {
 }
 
 /* ---------------------------- 实例配置 ---------------------------- */
+/** 分页信封（对齐后端 /assets/* 与 29.3 §2.2 口径：页码式 + total）。 */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+/** 资产列表查询：过滤/搜索一律走服务端——分页后再在客户端过滤，每页数量必然错乱。 */
+export interface AssetQuery {
+  page?: number;
+  pageSize?: number;
+  sourceType?: "platform" | "user";
+  q?: string;
+}
 export interface AssetRow {
   id: string;
   name: string;
@@ -334,6 +348,19 @@ export interface AssetRow {
   assetId?: string; // 已绑行：底层资产 id（与库行对照「已绑定」态）
   skillKey?: string; // skill 行：运行时白名单键（模板编辑器勾选用；display_name 只是展示名）
   bindingStatus?: string; // 已绑行：绑定行状态（active/muted）——个人 skill 的 muted=已从本 Agent 解绑
+  description?: string; // 真描述（SKILL.md frontmatter / registry 服务描述）——插件页「说明」用
+  category?: string;
+}
+/** 资产详情（点开时拉）：上游 29.3 §2.4/§3.3；上游挂时后端降级本地描述（detailSource=local）。 */
+export interface AssetDetail {
+  name: string;
+  description?: string;
+  content?: string; // skill：SKILL.md 全文（mcp 无）
+  version?: string;
+  category?: string;
+  tags?: string[];
+  transport?: string; // mcp
+  detailSource: string; // skillhub | mcp_registry | local（降级）
 }
 export interface ConfigVersionRow {
   version_no: string;
@@ -362,6 +389,10 @@ export interface AdminTableData {
   tabs?: { key: string; label: string }[];
   cols: { label: string; width?: string }[];
   rows: AdminRow[];
+  // 服务端分页（目前只有 Skill 基线用；其余表不带 → 不渲染分页器）
+  total?: number;
+  page?: number;
+  pageSize?: number;
 }
 export interface SandboxCfg {
   key: string;

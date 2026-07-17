@@ -57,6 +57,9 @@ _MOCK_LIST = [
         "version_no": 2,
         "latest_version": "2.0.0",  # SkillHub §2.2 semver（展示用）；version_no 仅本地排序
         "category": "运维",
+        # 与 _MOCK_SKILL_MD 的 frontmatter description 保持一致：mock 下 reconcile 走「列表带描述」快路径，
+        # 与 real 一致；取不到时才回退下载解包（两条路结果同值，测试断言不因路径而变）
+        "description": "巡检 Skill",
         "checksum_sha256": MOCK_INSPECTION_CHECKSUM,
         "status": "active",
     }
@@ -100,13 +103,22 @@ def _map_skill(it: dict[str, Any]) -> dict[str, Any]:
         "version_no": _semver_to_int(it.get("latest_version")),
         "latest_version": it.get("latest_version"),  # §2.2 semver 原串（展示口径）
         "category": it.get("category"),
+        # §2.2 列表项本就带 latest_description → 直接拿描述，无需为此下载整包（见 reconcile 的按需回退）
+        "description": it.get("latest_description"),
         "checksum_sha256": it.get("checksum_sha256"),
         "status": it.get("status", "active"),
     }
 
 
+_LIST_PAGE_SIZE = 100  # 29.3 §2.2 page_size 上限=100（此前写死 200 已超限，服务端会截断）
+
+
 async def list_skills(user_id: str) -> list[dict[str, Any]]:
-    """对账用资产清单（source=openops）。real 经 29.3 `POST /skills/list/query` 拉取 + 信封解包 + 字段映射（未联环境 raise）。"""
+    """对账用资产清单（source=openops）。real 经 29.3 §2.2 `POST /skills/list/query` **翻页取全** + 信封解包 + 字段映射。
+
+    必须翻完所有页：reconcile 是「有则更新、无则不管」的收敛循环（无删除/墓碑），列表被截断只会**静默漏配**、
+    不报错不打日志。此前写死 `page_size:200`（超 §2.2 上限 100）且只取第 1 页、从不读 total → >100 的 skill
+    永远进不了库。翻页口径对齐 mcp_registry_client.list_servers。"""
     if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
         base = skillhub_base()
         if not base:
@@ -114,12 +126,42 @@ async def list_skills(user_id: str) -> list[dict[str, Any]]:
         import httpx
 
         url = f"{base}{console_api_prefix()}/skills/list/query"
+        out: list[dict[str, Any]] = []
         async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE")) as cli:
-            r = await cli.post(url, json={"page": 1, "page_size": 200, "source": "openops"})
-            raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
-            items = _unwrap_data(r.json()).get("items", [])  # 分页对象 data.items，非裸 list
-        return [_map_skill(it) for it in items]
+            page = 1
+            while True:
+                r = await cli.post(url, json={"page": page, "page_size": _LIST_PAGE_SIZE, "source": "openops"})
+                raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
+                data = _unwrap_data(r.json())  # 分页对象 data{total,page,page_size,items}，非裸 list
+                items = data.get("items") or []
+                out.extend(_map_skill(it) for it in items)
+                if not items or page * _LIST_PAGE_SIZE >= int(data.get("total") or 0):
+                    break
+                page += 1
+        return out
     return list(_MOCK_LIST)
+
+
+async def get_skill_detail(skill_key: str, version: str | None = None) -> dict[str, Any]:
+    """Skill 详情（29.3 §2.4 `POST /skills/detail/query`）→ {description, content(SKILL.md 全文),
+    category, tags, version, status, …}。供插件页「说明」展示**真详情**（列表只有一句 description）。
+    注：该接口会递增 access_count（§2.4），故只在用户点开时调，不进列表路径。"""
+    if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
+        base = skillhub_base()
+        if not base:
+            raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（或 OPENOPS_MCPREGISTRY_BASE_URL，同 console 网关）")
+        import httpx
+
+        body: dict[str, Any] = {"skill_id": skill_key}
+        if version:
+            body["version"] = version
+        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE")) as cli:
+            r = await cli.post(f"{base}{console_api_prefix()}/skills/detail/query", json=body)
+            raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
+            return _unwrap_data(r.json())
+    md = _MOCK_FILES["SKILL.md"].decode("utf-8", "replace")  # mock：用内置包合成，离线可端到端
+    return {"skill_id": skill_key, "name": skill_key, "version": "2.0.0", "category": "运维", "tags": [],
+            "description": _description_from(_MOCK_FILES), "content": md, "status": "active"}
 
 
 def _unzip(data: bytes) -> dict[str, bytes]:

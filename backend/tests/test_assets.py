@@ -97,7 +97,7 @@ def test_asset_reconcile_source_openops_and_versions(client):
     second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert second["skill_versions_added"] == 0  # 幂等
     # §2.2 semver 经 reconcile 落 manifest_json → list_skills 透出（展示口径，非本地整数 version_no）
-    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in skills if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # _MOCK_LIST 的 latest_version 原串
     assert "manifest_json" not in insp  # 内部 manifest 不透给前端
@@ -119,12 +119,12 @@ def test_asset_reconcile_backfills_missing_semver_without_new_version(client):
 
     unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 先建 v2（checksum 变）
     old_vno = asyncio.run(_seed_old_manifest())
-    before = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    before = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     assert next(s for s in before if s["skill_key"] == "inspection")["latest_version"] is None  # 回填前=null（复现）
 
     r = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # checksum 未变
     assert r["skill_versions_added"] == 0 and r["skill_manifests_refreshed"] >= 1  # 不新增版本、原地回填
-    after = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    after = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in after if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # semver 已回填
     assert str(insp["version_no"]) == old_vno  # 版本号不变（非新版本）
@@ -145,6 +145,59 @@ def test_asset_reconcile_captures_skill_description(client):
         return (latest.get("manifest_json") or {}).get("description")
 
     assert asyncio.run(_desc()) == "巡检 Skill"  # _MOCK_SKILL_MD frontmatter 的 description，端到端落库
+
+
+def test_assets_list_paginated_with_serverside_filters(client):
+    """分页读（29.3 §2.2 口径）：{items,total,page,page_size}；source_type/q 过滤走**服务端**——
+    分页后再客户端过滤每页数量必然错乱（管理台 platform 基线、插件页两组分页都吃这条）。"""
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    _upload_skill(client, "分页用户技能")
+
+    p = unwrap(client.get("/api/openops/v1/assets/skills?page=1&page_size=1", headers=USER_HEADERS))
+    assert {"items", "total", "page", "page_size"} <= set(p)
+    assert p["page_size"] == 1 and len(p["items"]) <= 1 and p["total"] >= 2
+
+    plat = unwrap(client.get("/api/openops/v1/assets/skills?source_type=platform", headers=USER_HEADERS))
+    mine = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))
+    assert plat["items"] and all(i["source_type"] == "platform" for i in plat["items"])
+    assert all(i["source_type"] == "user" for i in mine["items"])
+    assert plat["total"] + mine["total"] == p["total"]  # 两组之和=全量（插件页两组同源分页）
+
+    hit = unwrap(client.get("/api/openops/v1/assets/skills?q=分页用户", headers=USER_HEADERS))
+    assert hit["total"] == 1 and hit["items"][0]["display_name"] == "分页用户技能"
+
+    # page_size 上限 100（§2.2）——此前上游客户端写死 200 已超限
+    assert client.get("/api/openops/v1/assets/skills?page_size=101", headers=USER_HEADERS).status_code == 422
+    # MCP 同款信封
+    assert {"items", "total"} <= set(unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS)))
+
+
+def test_assets_list_carries_real_description(client):
+    """插件页「说明」的数据源：列表带该 skill **自己**的 description（此前被 service 的 manifest.pop 丢弃）。"""
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    items = unwrap(client.get("/api/openops/v1/assets/skills?source_type=platform", headers=USER_HEADERS))["items"]
+    assert next(i for i in items if i["skill_key"] == "inspection")["description"] == "巡检 Skill"
+
+
+def test_skill_detail_gives_description_and_skill_md(client):
+    """真说明：详情端点回 description + SKILL.md 全文（29.3 §2.4）；不存在的 skill → 404。"""
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    d = unwrap(client.get("/api/openops/v1/assets/skills/inspection/detail", headers=USER_HEADERS))
+    assert d["description"] and "name: inspection" in (d["content"] or "")
+    assert d["detail_source"] == "skillhub"
+    assert client.get("/api/openops/v1/assets/skills/nope/detail", headers=USER_HEADERS).status_code == 404
+
+
+def test_skill_detail_degrades_to_local_when_upstream_down(client, monkeypatch):
+    """上游挂不阻断 UI：详情降级本地 manifest 已存的 description。"""
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+
+    async def _boom(*_a, **_k):
+        raise RuntimeError("skillhub down")
+
+    monkeypatch.setattr(skill_hub_client, "get_skill_detail", _boom)
+    d = unwrap(client.get("/api/openops/v1/assets/skills/inspection/detail", headers=USER_HEADERS))
+    assert d["detail_source"] == "local" and d["description"] == "巡检 Skill"
 
 
 def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runtime_backend):
@@ -287,7 +340,7 @@ def test_asset_mcp_endpoint_redacted(client):
               "transport": "http", "endpoint": "https://internal.example.com/mcp?token=supersecret123",
               "manifest_json": {}},
     ))
-    rows = unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))
+    rows = unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))["items"]
     mine = next(r for r in rows if r["display_name"] == "内部 CMDB MCP")
     assert "endpoint_config_json" not in mine
     assert str(mine["endpoint_config_redacted"]["endpoint"]).endswith("…")
@@ -309,7 +362,7 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     monkeypatch.setattr(mcp_registry_client, "list_servers", fake_servers)
     first = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert first["mcps_created"] == 1
-    names = {m["display_name"] for m in unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))}
+    names = {m["display_name"] for m in unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))["items"]}
     assert "alarm-server" in names and "mock MCP" not in names  # 真 server 入库、占位防呆
 
     second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
@@ -348,7 +401,7 @@ def test_skill_zip_upload_writes_local_catalog(client):
     assert res["skill_key"] == "zip-upload-demo" and res["action"] == "created"
     # 本地目录立即出现（skill_key 命中），checksum 为 ZIP 字节真 sha256（非名称假造）
     import hashlib
-    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     row = next(s for s in skills if s["skill_key"] == "zip-upload-demo")
     assert row["checksum_sha256"] == hashlib.sha256(data).hexdigest()
     assert row["latest_version"] == "0.0.1"  # §2.1 上传响应 version → manifest → 透出（上传即可展示 semver）
@@ -380,7 +433,7 @@ def test_skill_zip_upload_without_category(client):
         files={"file": ("nocat.zip", _make_skill_zip("nocat-skill"), "application/zip")},
     ))
     assert res["skill_key"] == "nocat-skill" and res["action"] == "created"
-    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     row = next(s for s in skills if s["skill_key"] == "nocat-skill")
     assert row.get("category") is None
 
@@ -402,13 +455,13 @@ def test_user_skill_synced_to_viewer_and_not_leaked(client, monkeypatch):
         return [_personal_skill("my-runbook")] if uid == "0026demo01" else []
     monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
 
-    mine = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    mine = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     row = next((s for s in mine if s["skill_key"] == "my-runbook"), None)
     assert row is not None and row["source_type"] == "user"
     assert row["owner_user_id"] == "0026demo01"  # 归 viewer，而非上游 created_by "l00833445"
     assert row["latest_version"] == "1.0.0" and row["category"] == "trace"
 
-    other = unwrap(client.get("/api/openops/v1/assets/skills", headers=OTHER_HEADERS))
+    other = unwrap(client.get("/api/openops/v1/assets/skills", headers=OTHER_HEADERS))["items"]
     assert all(s["skill_key"] != "my-runbook" for s in other)  # 他人看不到本人的个人 skill
 
 
@@ -421,8 +474,8 @@ def test_user_skill_sync_throttled_per_user(client, monkeypatch):
         return [_personal_skill("throttle-x")]
     monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
 
-    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
-    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     assert calls["n"] == 1  # 第二次命中节流，不再打 SkillHub
 
 
@@ -432,7 +485,7 @@ def test_user_skill_sync_failure_not_fatal(client, monkeypatch):
         raise RuntimeError("skill hub down")
     monkeypatch.setattr(skill_hub_client, "list_skills", boom)
 
-    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     assert isinstance(skills, list)
 
 
@@ -498,7 +551,7 @@ def test_personal_skill_mute_survives_resync(client, monkeypatch):
         return [_personal_skill("resync-skill")] if uid == "0026demo01" else []
     monkeypatch.setattr(skill_hub_client, "list_skills", fake_list)
     asset_registry_service.invalidate_user_skill_sync("0026demo01")
-    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))  # 触发重新同步（upsert 同 skill_id）
+    unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]  # 触发重新同步（upsert 同 skill_id）
     assert "resync-skill" not in _available_skill_keys(client, inst["instance_id"])  # mute 仍在
 
 
@@ -532,7 +585,7 @@ def test_platform_skill_cannot_be_muted(client):
     inst = create_instance(client)
     unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 平台 inspection 入库
     assert "inspection" in _available_skill_keys(client, inst["instance_id"])
-    plat = next(s for s in unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))
+    plat = next(s for s in unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
                 if s["skill_key"] == "inspection")
     resp = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/skill-mutes", headers=USER_HEADERS,
                        json={"client_request_id": f"m_{time.time_ns()}", "asset_type": "skill",

@@ -19,6 +19,9 @@ import type {
   ScopeApp,
   Skill,
   AssetRow,
+  AssetQuery,
+  AssetDetail,
+  Paged,
   ConfigVersionRow,
   ModelOption,
   ActivityNode,
@@ -28,6 +31,65 @@ import * as M from "./mockData";
 import { apiFetch, crid, demoIdentity } from "./client";
 import { auditToNode, projectInstance } from "./projection";
 import { normalizeActivityPage } from "../activity";
+
+/** 后端 /assets/* 分页信封（snake_case 原样）→ 前端 Paged<T>（camelCase）。 */
+type AssetPageDto = { items: Record<string, unknown>[]; total: number; page: number; page_size: number };
+
+/** 资产列表查询串：过滤/搜索一律带给服务端——分页 + 客户端过滤 = 每页数量错乱。 */
+const assetQs = (p?: AssetQuery): string => {
+  const s = new URLSearchParams();
+  s.set("page", String(p?.page ?? 1));
+  s.set("page_size", String(p?.pageSize ?? 20)); // 后端上限 100（29.3 §2.2）
+  if (p?.sourceType) s.set("source_type", p.sourceType);
+  const q = p?.q?.trim();
+  if (q) s.set("q", q);
+  return `?${s.toString()}`;
+};
+
+const toSkillRow = (r: Record<string, unknown>): AssetRow => ({
+  id: String(r.skill_id),
+  name: String(r.display_name),
+  // 版本优先 SkillHub §2.2 semver（latest_version），缺失回退本地 v{version_no}（用户上传前/mock）
+  version: r.latest_version ? String(r.latest_version) : `v${r.version_no ?? 1}`,
+  status: String(r.status),
+  statusTone: r.status === "active" ? "good" : "warning",
+  meta: r.source_type === "platform" ? "平台 Skill" : "我的 Skill",
+  bound: false,
+  kind: "skill",
+  sourceType: r.source_type === "platform" ? "platform" : "user",
+  versionId: r.skill_version_id ? String(r.skill_version_id) : undefined,
+  skillKey: r.skill_key ? String(r.skill_key) : undefined, // 模板编辑器勾选用（运行时白名单键）
+  description: r.description ? String(r.description) : undefined, // 插件页「说明」真描述
+  category: r.category ? String(r.category) : undefined,
+});
+
+const toMcpRow = (r: Record<string, unknown>): AssetRow => ({
+  id: String(r.mcp_id),
+  name: String(r.display_name),
+  version: `v${r.version_no ?? 1}`,
+  status: String(r.status),
+  statusTone: r.status === "active" ? "good" : "warning",
+  meta: r.source_type === "platform" ? "平台 MCP" : "我的 MCP",
+  bound: false,
+  kind: "mcp",
+  sourceType: r.source_type === "platform" ? "platform" : "user",
+  versionId: r.mcp_version_id ? String(r.mcp_version_id) : undefined,
+  description: r.description ? String(r.description) : undefined, // registry 服务描述
+  category: r.category ? String(r.category) : undefined,
+});
+
+/** 翻完所有页取全量（pageSize 用上限 100 压页数）。
+ *  给**确实需要完整集合**的消费方用：模板编辑器的 skills 白名单勾选、工作台的资产统计。
+ *  这些地方绝不能只取默认首页——否则超出一页的资产会被静默漏掉（正是上游 page_size 截断踩过的坑）。 */
+const fetchAllAssets = async (kind: "skills" | "mcps"): Promise<Record<string, unknown>[]> => {
+  const out: Record<string, unknown>[] = [];
+  for (let page = 1; ; page++) {
+    const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/${kind}${assetQs({ page, pageSize: 100 })}`);
+    out.push(...d.items);
+    if (!d.items.length || page * d.page_size >= d.total) break;
+  }
+  return out;
+};
 import {
   KeyedSingleFlightCache,
   SingleFlightCache,
@@ -108,8 +170,16 @@ export interface OpenOpsApi {
   getBoundSkills(instanceId: string): Promise<AssetRow[]>;
   /** composer「/」列表：与后端执行门禁同源的可执行 Skill 装配集（skill_key 即调用名）。 */
   getAvailableSkills(instanceId: string, options?: RequestOptions): Promise<Skill[]>;
-  getSkillLibrary(): Promise<AssetRow[]>;
-  getMcpLibrary(): Promise<AssetRow[]>;
+  /** 资产库分页读（服务端过滤/搜索；对齐 29.3 §2.2 页码式 + total）。 */
+  getSkillLibrary(params?: AssetQuery): Promise<Paged<AssetRow>>;
+  getMcpLibrary(params?: AssetQuery): Promise<Paged<AssetRow>>;
+  /** 全量读（内部翻完所有页）：**确实需要完整集合**的地方用（模板编辑器白名单勾选、工作台统计）——
+   *  这些场景取单页会静默漏掉超出一页的资产。列表 UI 一律用上面的分页读。 */
+  getAllSkills(): Promise<AssetRow[]>;
+  getAllMcps(): Promise<AssetRow[]>;
+  /** 点开某个 Skill/MCP 时拉真详情（skill 含 SKILL.md 全文）；上游挂时后端降级本地描述。 */
+  getSkillDetail(skillKey: string): Promise<AssetDetail>;
+  getMcpDetail(mcpId: string): Promise<AssetDetail>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
@@ -130,7 +200,8 @@ export interface OpenOpsApi {
   saveMainAppend(instanceId: string, text: string): Promise<void>;
   reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
-  getAdminTable(key: string): Promise<AdminTableData>;
+  /** 管理台表格；分页参数目前只有 Skill 基线（key="skills"）消费（服务端 platform 过滤 + 分页）。 */
+  getAdminTable(key: string, params?: { page?: number; pageSize?: number }): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
@@ -454,36 +525,61 @@ const realApi: OpenOpsApi = {
     }));
   },
   getAvailableSkills: (instanceId, options) => getAvailableSkillsCached(instanceId, options),
-  async getSkillLibrary() {
-    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/skills");
-    return rows.map((r) => ({
-      id: String(r.skill_id),
-      name: String(r.display_name),
-      // 版本优先 SkillHub §2.2 semver（latest_version），缺失回退本地 v{version_no}（用户上传前/mock）
-      version: r.latest_version ? String(r.latest_version) : `v${r.version_no ?? 1}`,
-      status: String(r.status),
-      statusTone: r.status === "active" ? "good" as const : "warning" as const,
-      meta: r.source_type === "platform" ? "平台 Skill" : "我的 Skill",
-      bound: false,
-      kind: "skill" as const,
-      sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
-      versionId: r.skill_version_id ? String(r.skill_version_id) : undefined,
-      skillKey: r.skill_key ? String(r.skill_key) : undefined, // 模板编辑器勾选用（运行时白名单键）
-    }));
+  async getSkillLibrary(params) {
+    const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/skills${assetQs(params)}`);
+    return { items: d.items.map(toSkillRow), total: d.total, page: d.page, pageSize: d.page_size };
   },
-  async getMcpLibrary() {
-    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/mcps");
-    return rows.map((r) => ({
-      id: String(r.mcp_id),
-      name: String(r.display_name),
-      version: `v${r.version_no ?? 1}`,
-      status: String(r.status),
-      statusTone: r.status === "active" ? "good" as const : "warning" as const,
-      meta: r.source_type === "platform" ? "平台 MCP" : "我的 MCP",
-      bound: false,
-      kind: "mcp" as const,
-      versionId: r.mcp_version_id ? String(r.mcp_version_id) : undefined,
-    }));
+  async getAllSkills() {
+    return (await fetchAllAssets("skills")).map(toSkillRow);
+  },
+  async getAllMcps() {
+    return (await fetchAllAssets("mcps")).map(toMcpRow);
+  },
+  async getSkillDetail(skillKey) {
+    const d = await apiFetch<Record<string, unknown>>(
+      `/openops/v1/assets/skills/${encodeURIComponent(skillKey)}/detail`);
+    return {
+      name: String(d.display_name ?? skillKey),
+      description: d.description ? String(d.description) : undefined,
+      content: d.content ? String(d.content) : undefined, // SKILL.md 全文
+      version: d.version ? String(d.version) : undefined,
+      category: d.category ? String(d.category) : undefined,
+      tags: Array.isArray(d.tags) ? (d.tags as unknown[]).map(String) : undefined,
+      detailSource: String(d.detail_source ?? "local"),
+    };
+  },
+  async getMcpDetail(mcpId) {
+    const d = await apiFetch<Record<string, unknown>>(
+      `/openops/v1/assets/mcps/${encodeURIComponent(mcpId)}/detail`);
+    return {
+      name: String(d.display_name ?? ""),
+      description: d.description ? String(d.description) : undefined,
+      version: d.version ? String(d.version) : undefined,
+      category: d.category ? String(d.category) : undefined,
+      tags: Array.isArray(d.tags) ? (d.tags as unknown[]).map(String) : undefined,
+      transport: d.transport ? String(d.transport) : undefined,
+      detailSource: String(d.detail_source ?? "local"),
+    };
+  },
+  async getMcpLibrary(params) {
+    const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/mcps${assetQs(params)}`);
+    return {
+      items: d.items.map((r) => ({
+        id: String(r.mcp_id),
+        name: String(r.display_name),
+        version: `v${r.version_no ?? 1}`,
+        status: String(r.status),
+        statusTone: r.status === "active" ? "good" as const : "warning" as const,
+        meta: r.source_type === "platform" ? "平台 MCP" : "我的 MCP",
+        bound: false,
+        kind: "mcp" as const,
+        sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
+        versionId: r.mcp_version_id ? String(r.mcp_version_id) : undefined,
+        description: r.description ? String(r.description) : undefined, // registry 服务描述
+        category: r.category ? String(r.category) : undefined,
+      })),
+      total: d.total, page: d.page, pageSize: d.page_size,
+    };
   },
   // ---- settings 写闭环（B6） ----
   async uploadSkill(file) {
@@ -615,7 +711,7 @@ const realApi: OpenOpsApi = {
     return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null };
   },
 
-  async getAdminTable(key) {
+  async getAdminTable(key, params) {
     if (key === "templates") {
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/templates");
       return {
@@ -660,12 +756,13 @@ const realApi: OpenOpsApi = {
     }
     if (key === "skills") {
       // Skill 基线（只读）：系统自带（platform）skill 清单 + §2.2 semver 版本。复用 /assets/skills（含 latest_version）。
-      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/skills");
-      const platform = rows.filter((r) => r.source_type === "platform");
+      // platform 过滤走**服务端** source_type：分页后再客户端 filter 会让每页数量错乱、total 也不对。
+      const d = await apiFetch<AssetPageDto>(
+        `/openops/v1/assets/skills${assetQs({ ...params, sourceType: "platform" })}`);
       return {
         title: "Skill 基线",
         cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
-        rows: platform.map((r) => ({
+        rows: d.items.map((r) => ({
           id: String(r.skill_id),
           cells: [
             { text: String(r.display_name) },
@@ -675,6 +772,7 @@ const realApi: OpenOpsApi = {
             { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
           ],
         })),
+        total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
     if (key === "model-assets") {
@@ -1000,8 +1098,22 @@ const mockApi: OpenOpsApi = {
   deleteInstance: () => delay(undefined as unknown as void),
   getBoundSkills: () => delay(M.mockBoundSkills),
   getAvailableSkills: (instanceId, options) => getAvailableSkillsCached(instanceId, options),
-  getSkillLibrary: () => delay(M.mockSkillLibrary),
-  getMcpLibrary: () => delay(M.mockMcpLibrary),
+  getSkillLibrary: (p) => delay({
+    items: M.mockSkillLibrary, total: M.mockSkillLibrary.length,
+    page: p?.page ?? 1, pageSize: p?.pageSize ?? 20,
+  }),
+  getMcpLibrary: (p) => delay({
+    items: M.mockMcpLibrary, total: M.mockMcpLibrary.length,
+    page: p?.page ?? 1, pageSize: p?.pageSize ?? 20,
+  }),
+  getAllSkills: () => delay(M.mockSkillLibrary),
+  getAllMcps: () => delay(M.mockMcpLibrary),
+  getSkillDetail: (skillKey) => delay({
+    name: skillKey, description: `${skillKey} 的 mock 描述`,
+    content: `---\nname: ${skillKey}\ndescription: mock\n---\n# ${skillKey}\n（mock SKILL.md 全文）`,
+    detailSource: "local",
+  }),
+  getMcpDetail: (mcpId) => delay({ name: mcpId, description: "mock MCP 服务描述", detailSource: "local" }),
   uploadSkill: (file) => delay({ skill_key: file.name.replace(/\.zip$/i, "").toLowerCase(), action: "created" }),
   registerMcp: () => delay(undefined as unknown as void),
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),

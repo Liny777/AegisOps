@@ -35,15 +35,23 @@ def _due() -> bool:
 
 
 async def _fetch_skill_description(skill_key: str, version_no: Any) -> str | None:
-    """下载 Skill 包并抽取 SKILL.md 的 description（发现链路）。SkillHub 的 list API 不返回 description，
-    唯有解 SKILL.md frontmatter 才有——故只在 create/checksum 变化/存量缺失时按需下载一次，失败降级
-    None 不阻断对账（description 只影响 Agent 发现时的用途提示丰富度，不影响执行）。"""
+    """**兜底**：下载 Skill 包解 SKILL.md frontmatter 取 description。仅在列表项没带描述时才走
+    （见 _skill_description）。失败降级 None 不阻断对账。"""
     try:
         pkg = await skill_hub_client.download_skill_package(skill_key, int(version_no or 1))
         return pkg.get("description")
     except Exception as e:  # noqa: BLE001 —— 下载失败不炸整轮对账
         log.warning("skill description fetch failed (%s): %s", skill_key, str(e)[:200])
         return None
+
+
+async def _skill_description(s: dict[str, Any]) -> str | None:
+    """取 Skill 描述（发现链路）：**优先用列表项自带的 description**——29.3 §2.2 列表本就返回
+    `latest_description`（经 _map_skill 映射），零额外请求；列表没给（老包/对端未填）才回退下载整包解
+    SKILL.md。description 只影响 Agent 发现时的用途提示丰富度，取不到降级 None、不阻断对账。"""
+    if s.get("description"):
+        return str(s["description"])
+    return await _fetch_skill_description(s["skill_key"], s.get("version_no"))
 
 
 async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str, Any]:
@@ -63,13 +71,14 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         for s in await skill_hub_client.list_skills("system"):
             if s.get("source") != "openops" or s.get("source_type") != "platform":
                 continue
-            # §2.2 semver + category 落进 manifest_json（零迁移展示口径；latest_version=SkillHub 原串）
-            # description 仅存在于 SKILL.md frontmatter（list API 不带）→ create/版本变化/存量缺失时下载抽取
+            # §2.2 semver + category + description 落进 manifest_json（零迁移展示/发现口径；
+            # latest_version=SkillHub 原串）。description 优先取列表自带（§2.2 latest_description），
+            # 列表没给才回退下载解包——见 _skill_description
             manifest = {"synced_from": "skill_hub", "latest_version": s.get("latest_version"),
                         "category": s.get("category")}
             row = await assets.get_skill_by_key(s["source_type"], s["skill_key"])
             if row is None:
-                manifest["description"] = await _fetch_skill_description(s["skill_key"], s.get("version_no"))
+                manifest["description"] = await _skill_description(s)
                 await assets.create_skill(
                     None if s["source_type"] == "platform" else s.get("owner_user_id"),
                     s["source_type"], s["display_name"], s["skill_key"],
@@ -79,7 +88,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 continue
             latest = await assets.latest_skill_version(str(row["skill_id"]))
             if latest is None or latest["checksum_sha256"] != s["checksum_sha256"]:
-                manifest["description"] = await _fetch_skill_description(s["skill_key"], s.get("version_no"))
+                manifest["description"] = await _skill_description(s)
                 await assets.add_skill_version(
                     str(row["skill_id"]), (latest["version_no"] if latest else 0) + 1,
                     manifest, s["checksum_sha256"], "system",
@@ -88,13 +97,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             else:
                 # checksum 未变→不新增版本；但若现有 manifest 缺/旧 semver（改动前的旧行、或 SkillHub 侧改了
                 # latest_version/category）或从未抽过 description（键缺失）→ 原地合并回填（非新版本）。
-                # 用「键是否存在」而非真值判断 description，避免无 description 的 skill 每轮都重复下载。
+                # 用「键是否存在」而非真值判断 description，避免无 description 的 skill 每轮都重复回源。
                 cur = latest.get("manifest_json") or {}
                 need_desc = "description" not in cur
                 if (cur.get("latest_version") != s.get("latest_version")
                         or cur.get("category") != s.get("category") or need_desc):
-                    desc = (await _fetch_skill_description(s["skill_key"], s.get("version_no"))
-                            if need_desc else cur.get("description"))
+                    desc = (await _skill_description(s) if need_desc else cur.get("description"))
                     await assets.update_skill_version_manifest(
                         str(latest["skill_version_id"]),
                         {**cur, "latest_version": s.get("latest_version"),

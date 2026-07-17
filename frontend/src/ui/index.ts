@@ -11,3 +11,4 @@ export {
   TextInput,
 } from "./primitives";
 export { Modal, SlideIn, OverlayHeader } from "./Overlay";
+export { Pagination } from "./Pagination";

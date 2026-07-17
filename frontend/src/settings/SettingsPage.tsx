@@ -1,10 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
-import { Icon, Interactive, Pill, Button, TextInput, Toggle } from "../ui";
+import { Icon, Interactive, Pill, Button, TextInput, Toggle, Pagination } from "../ui";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { api } from "../lib/api";
-import type { AgentInstance, AssetRow, ConfigVersionRow } from "../lib/api/types";
+import type { AgentInstance, AssetDetail, AssetRow, ConfigVersionRow, Paged } from "../lib/api/types";
+
+/** 插件页左树每组每页条数（服务端分页；两组各自独立翻页）。 */
+const PLUGIN_PAGE_SIZE = 10;
+const emptyPage: Paged<AssetRow> = { items: [], total: 0, page: 1, pageSize: PLUGIN_PAGE_SIZE };
 
 type Tab = "skill" | "mcp";
 type Filter = "all" | "on" | "off";
@@ -208,24 +212,40 @@ function AgentDetail({ instance }: { instance: AgentInstance }) {
 function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: string }) {
   const isSkill = kind === "skill";
   const [search, setSearch] = useState("");
+  const [q, setQ] = useState("");            // 防抖后的**服务端**搜索词（分页 + 客户端过滤会让每页数量错乱）
   const [bound, setBound] = useState<AssetRow[]>([]);
-  const [lib, setLib] = useState<AssetRow[]>([]);
+  // 两组各自服务端分页：系统自带(platform) / 用户自定义(user)，各自 page + total
+  const [sys, setSys] = useState<Paged<AssetRow>>(emptyPage);
+  const [mine, setMine] = useState<Paged<AssetRow>>(emptyPage);
+  const [sysPage, setSysPage] = useState(1);
+  const [minePage, setMinePage] = useState(1);
   const [versions, setVersions] = useState<ConfigVersionRow[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<AssetDetail | null>(null);   // 点开时拉的真详情
+  const [detailBusy, setDetailBusy] = useState(false);
   const [dialog, setDialog] = useState(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("");  // 页内成功横幅（上传/注册成功提示，几秒后自动消失）
   const [groupOpen, setGroupOpen] = useState<{ sys: boolean; mine: boolean }>({ sys: true, mine: true });
 
+  const fetchPage = (sourceType: "platform" | "user", page: number) => {
+    const p = { page, pageSize: PLUGIN_PAGE_SIZE, sourceType, q };
+    return isSkill ? api.getSkillLibrary(p) : api.getMcpLibrary(p);
+  };
   const reload = () => {
     api.getBoundSkills(instanceId).then((rows) => setBound(rows.filter((r) => r.kind === kind)));
-    (isSkill ? api.getSkillLibrary() : api.getMcpLibrary()).then((rows) => {
-      setLib(rows);
-      setSelectedId((cur) => cur && rows.some((r) => r.id === cur) ? cur : rows[0]?.id ?? null);
-    });
+    fetchPage("platform", sysPage).then(setSys).catch(() => setSys(emptyPage));
+    fetchPage("user", minePage).then(setMine).catch(() => setMine(emptyPage));
     api.getConfigVersions(instanceId).then(setVersions);
   };
-  useEffect(reload, [instanceId, kind]);
+  useEffect(reload, [instanceId, kind, sysPage, minePage, q]);
+  // 搜索下沉服务端（防抖）：换词回到第 1 页，否则会停在越界页看到空列表
+  useEffect(() => {
+    const t = setTimeout(() => { setQ(search.trim()); setSysPage(1); setMinePage(1); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+  // tab 切换重置分页/搜索/选中（key={tab} 已重挂，这里守 kind 变化的兜底）
+  useEffect(() => { setSysPage(1); setMinePage(1); setSelectedId(null); }, [kind]);
 
   const run = (p: Promise<unknown>) => {
     setBusy(true); setMsg("");  // 新动作先清旧成功提示
@@ -235,19 +255,37 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   const boundByAsset = new Map(bound.map((b) => [b.assetId, b]));
   // 个人 skill「解绑」= muted 绑定行（本模型下 skill 绑定行只会是 muted）：assetId→binding，供解绑/重新绑定
   const mutedByAsset = new Map(bound.filter((b) => b.kind === "skill" && b.bindingStatus === "muted").map((b) => [b.assetId, b]));
-  const q = search.trim().toLowerCase();
-  const filtered = lib.filter((r) => !q || r.name.toLowerCase().includes(q));
-  const mine = filtered.filter((r) => r.meta.includes("我的"));
-  const sys = filtered.filter((r) => !r.meta.includes("我的"));
-  const selected = lib.find((r) => r.id === selectedId) ?? null;
+  // 当前两页的并集（选中项只可能在可见页内）；过滤/分组已在服务端按 source_type 完成
+  const libItems = useMemo(() => [...sys.items, ...mine.items], [sys, mine]);
+  const selected = libItems.find((r) => r.id === selectedId) ?? null;
   const selBinding = selected ? boundByAsset.get(selected.id) : undefined;
-  const selIsSystem = selected ? (selected.sourceType ? selected.sourceType === "platform" : !selected.meta.includes("我的")) : false;
+  const selIsSystem = selected?.sourceType === "platform";  // 用 sourceType 判定（meta 是展示串，不该当业务载荷）
   const selSkillMute = selected ? mutedByAsset.get(selected.id) : undefined;  // 个人 skill 的 muted 绑定行（已解绑）
   const noun = isSkill ? "Skill" : "MCP";
 
+  // 翻页/搜索后选中项可能已不在可见页 → 自动落到当前页第一条
+  useEffect(() => {
+    if (!libItems.length) { setSelectedId(null); return; }
+    if (!selectedId || !libItems.some((r) => r.id === selectedId)) setSelectedId(libItems[0].id);
+  }, [libItems, selectedId]);
+
+  // 点开才拉真详情（上游 detail 会递增 access_count，不进列表路径）；上游挂时后端已降级本地描述
+  useEffect(() => {
+    if (!selected) { setDetail(null); return; }
+    let alive = true;
+    setDetail(null); setDetailBusy(true);
+    const p = isSkill && selected.skillKey
+      ? api.getSkillDetail(selected.skillKey)
+      : api.getMcpDetail(selected.id);
+    p.then((d) => { if (alive) setDetail(d); })
+      .catch(() => { if (alive) setDetail(null); })
+      .finally(() => { if (alive) setDetailBusy(false); });
+    return () => { alive = false; };
+  }, [selectedId, isSkill]);
+
   const treeRow = (r: AssetRow) => {
     const on = selectedId === r.id;
-    const isSystem = r.sourceType ? r.sourceType === "platform" : !r.meta.includes("我的");
+    const isSystem = r.sourceType === "platform";
     // 平台 skill 恒自动装配；个人 skill 默认装配、被 mute（解绑）后不装配；mcp 看绑定
     const attached = isSkill ? (isSystem || !mutedByAsset.has(r.id)) : boundByAsset.has(r.id);
     const deletable = !isSystem;
@@ -267,17 +305,27 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
     );
   };
 
-  const group = (key: "sys" | "mine", label: string, rows: AssetRow[]) => (
+  // 每组独立服务端分页：计数用服务端 total（不是当前页条数），翻页只动本组
+  const group = (
+    key: "sys" | "mine", label: string, paged: Paged<AssetRow>,
+    page: number, setPage: (p: number) => void,
+  ) => (
     <div>
       <div onClick={() => setGroupOpen((g) => ({ ...g, [key]: !g[key] }))}
         style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 6px", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: color.textStrong }}>
         <Icon name={groupOpen[key] ? "chevron-down" : "chevron-right"} size={14} color={color.textSubtle} />
         <Icon name="folder-open" size={14} color={color.brand} />{label}
-        <span style={{ fontWeight: 500, color: color.textSubtle }}>（{rows.length}）</span>
+        <span style={{ fontWeight: 500, color: color.textSubtle }}>（{paged.total}）</span>
       </div>
-      {groupOpen[key] ? <div style={{ paddingLeft: 14 }}>{rows.map(treeRow)}
-        {rows.length === 0 ? <div style={{ padding: "6px 10px", fontSize: 12, color: color.textFaint }}>无</div> : null}
-      </div> : null}
+      {groupOpen[key] ? (
+        <div style={{ paddingLeft: 14 }}>
+          {paged.items.map(treeRow)}
+          {paged.items.length === 0 ? (
+            <div style={{ padding: "6px 10px", fontSize: 12, color: color.textFaint }}>{q ? "无匹配" : "无"}</div>
+          ) : null}
+          <Pagination page={page} pageSize={PLUGIN_PAGE_SIZE} total={paged.total} onPage={setPage} compact />
+        </div>
+      ) : null}
     </div>
   );
 
@@ -297,8 +345,8 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
       {/* 左树 + 右详情 */}
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <div style={{ width: 250, flex: "0 0 250px", background: "#fff", borderRight: `1px solid ${color.border}`, overflowY: "auto", padding: "10px 8px" }}>
-          {group("sys", "系统自带", sys)}
-          {group("mine", "用户自定义", mine)}
+          {group("sys", "系统自带", sys, sysPage, setSysPage)}
+          {group("mine", "用户自定义", mine, minePage, setMinePage)}
         </div>
         <div style={{ flex: 1, minWidth: 0, overflowY: "auto", padding: "24px 30px 40px" }}>
           {selected ? (
@@ -311,12 +359,27 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
               <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 18 }}>
                 版本 {selected.version} · {selected.meta}
               </div>
+              {/* 说明 = 该资产**自己**的描述（SKILL.md frontmatter / registry 服务描述）。
+                  此前这里是只看 isSkill 的写死品类介绍，每个 skill 显示同一段。
+                  优先用点开拉到的详情描述，回退列表带的描述；都没有才退回品类介绍作空态。 */}
               <SectionLabel>说明</SectionLabel>
-              <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18 }}>
-                {isSkill
-                  ? "在你的隔离沙箱容器内受控执行的技能包（对话里可用 / 名称直接触发）。平台技能自动装配；你的个人技能默认也自动装配，可按需「解绑 / 重新绑定」到本 Agent。"
-                  : "经 Tool Gateway 受控调用的 HTTP MCP 服务（scope 校验 / 审批门 / 审计留痕）。其工具在运行时动态装配给 Agent。"}
+              <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12.5, color: color.textBody, lineHeight: 1.7, marginBottom: 18, whiteSpace: "pre-wrap" }}>
+                {detailBusy && !selected.description ? (
+                  <span style={{ color: color.textFaint }}>加载中…</span>
+                ) : (
+                  detail?.description || selected.description || (isSkill
+                    ? "该 Skill 未填写描述。（Skill 是在你的隔离沙箱容器内受控执行的技能包，对话里可用 /名称 直接触发。）"
+                    : "该 MCP 未填写描述。（MCP 是经 Tool Gateway 受控调用的 HTTP 服务：scope 校验 / 审批门 / 审计留痕。）")
+                )}
               </div>
+              {detail?.content ? (
+                <>
+                  <SectionLabel>SKILL.md</SectionLabel>
+                  <pre style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "13px 15px", fontSize: 12, color: color.textBody, lineHeight: 1.6, marginBottom: 18, maxHeight: 320, overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    {detail.content}
+                  </pre>
+                </>
+              ) : null}
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 {isSkill ? (
                   selIsSystem ? (

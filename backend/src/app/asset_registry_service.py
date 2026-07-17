@@ -67,17 +67,83 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
         log.warning("user skill sync failed (%s): %s", uid, str(e)[:200])
 
 
-async def list_skills(user: dict[str, Any]) -> list[dict[str, Any]]:
+async def list_skills(user: dict[str, Any], *, page: int = 1, page_size: int = 20,
+                      source_type: str | None = None, q: str | None = None) -> dict[str, Any]:
+    """UI 分页读（对齐 29.3 §2.2 口径）→ {items,total,page,page_size}。
+
+    source_type/q 过滤走服务端：分页后再在客户端过滤，每页数量必然错乱（管理台按 platform 过滤、
+    插件页按来源分组+搜索都吃这条）。"""
     await sync_user_skills(user)  # 读本地前先按 viewer 同步个人 skill（节流内为 no-op）
-    out: list[dict[str, Any]] = []
-    for r in await assets.list_skills(user["user_id"]):
+    rows, total = await assets.list_skills_page(
+        user["user_id"], source_type=source_type, q=q,
+        limit=page_size, offset=(page - 1) * page_size,
+    )
+    items: list[dict[str, Any]] = []
+    for r in rows:
         d = row_json(r)
-        # §2.2 semver 与分类存在最新版本的 manifest_json 里（reconcile/upload 落库）；抽到行顶层供 UI 展示
+        # §2.2 semver / 分类 / 描述都存在最新版本的 manifest_json 里（reconcile/upload 落库）；抽到行顶层供 UI
         manifest = d.pop("manifest_json", None) or {}  # 抽完即弃，不把内部 manifest 透给前端
         if isinstance(manifest, dict):
             d["latest_version"] = manifest.get("latest_version")  # None → 前端回退 v{version_no}
             d["category"] = manifest.get("category")
-        out.append(d)
+            d["description"] = manifest.get("description")  # 插件页「说明」的真描述（此前被 pop 一并丢弃）
+        items.append(d)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+async def skill_detail(user: dict[str, Any], skill_key: str) -> dict[str, Any]:
+    """Skill 真详情（插件页「说明」用）：先按 owner 作用域定位本地行（个人 skill 只能看自己的；平台 skill 公有），
+    再取上游 29.3 §2.4 详情（含 SKILL.md 全文）。**上游失败降级本地 manifest 的 description**，不阻断 UI。"""
+    row = (await assets.get_user_skill_by_key(user["user_id"], skill_key)
+           or await assets.get_skill_by_key("platform", skill_key))
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, "Skill 不存在")
+    latest = await assets.latest_skill_version(str(row["skill_id"]))
+    local = (latest or {}).get("manifest_json") or {}
+    out: dict[str, Any] = {
+        "skill_key": skill_key, "display_name": row.get("display_name"), "source_type": row.get("source_type"),
+        "version": local.get("latest_version"), "category": local.get("category"),
+        "description": local.get("description"), "content": None, "detail_source": "local",
+    }
+    try:
+        from infra.external import skill_hub_client
+
+        d = await skill_hub_client.get_skill_detail(skill_key)
+        out.update({"description": d.get("description") or out["description"],
+                    "content": d.get("content"), "tags": d.get("tags"),
+                    "version": d.get("version") or out["version"],
+                    "category": d.get("category") or out["category"], "detail_source": "skillhub"})
+    except Exception as e:  # noqa: BLE001 —— 上游挂/cookie 失效不阻断：本地描述照常展示
+        log.warning("skill detail fetch failed (%s): %s", skill_key, str(e)[:200])
+    return out
+
+
+async def mcp_detail(user: dict[str, Any], mcp_id: str) -> dict[str, Any]:
+    """MCP 真详情（插件页「说明」用）：owner 校验后取上游 29.3 §3.3；上游失败降级本地 manifest 的 description。
+    server_id 取自本地版本 manifest（reconcile ingest 落的），缺失回退 display_name（=注册时的 server_name）。"""
+    row = await assets.get_mcp(mcp_id)
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, "MCP 不存在")
+    if row["source_type"] == "user" and row["owner_user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "无权查看该 MCP")
+    latest = await assets.latest_mcp_version(str(row["mcp_id"]))
+    local = (latest or {}).get("manifest_json") or {}
+    server_id = str(local.get("server_id") or row.get("display_name") or "")
+    out: dict[str, Any] = {
+        "mcp_id": mcp_id, "display_name": row.get("display_name"), "source_type": row.get("source_type"),
+        "server_id": server_id, "description": local.get("description"),
+        "category": local.get("category"), "detail_source": "local",
+    }
+    try:
+        from infra.external import mcp_registry_client
+
+        d = await mcp_registry_client.get_mcp_detail(server_id)
+        out.update({"description": d.get("description") or out["description"],
+                    "transport": d.get("transport"), "version": d.get("version"),
+                    "tags": d.get("tags"), "status": d.get("status"),
+                    "category": d.get("category") or out["category"], "detail_source": "mcp_registry"})
+    except Exception as e:  # noqa: BLE001 —— 注册表挂不阻断：本地描述照常展示
+        log.warning("mcp detail fetch failed (%s): %s", server_id, str(e)[:200])
     return out
 
 
@@ -135,9 +201,14 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
     await assets.delete_skill(skill_id, user["user_id"])
 
 
-async def list_mcps(user: dict[str, Any]) -> list[dict[str, Any]]:
-    rows = await assets.list_mcps(user["user_id"])
-    out = []
+async def list_mcps(user: dict[str, Any], *, page: int = 1, page_size: int = 20,
+                    source_type: str | None = None, q: str | None = None) -> dict[str, Any]:
+    """UI 分页读 → {items,total,page,page_size}。口径同 list_skills。"""
+    rows, total = await assets.list_mcps_page(
+        user["user_id"], source_type=source_type, q=q,
+        limit=page_size, offset=(page - 1) * page_size,
+    )
+    items: list[dict[str, Any]] = []
     for r in rows:
         d = row_json(r)
         # endpoint 脱敏（30.5：展示时必须脱敏）
@@ -146,8 +217,13 @@ async def list_mcps(user: dict[str, Any]) -> list[dict[str, Any]]:
             cfg = {**cfg, "endpoint": str(cfg["endpoint"])[:12] + "…"}
         d["endpoint_config_redacted"] = cfg
         d.pop("endpoint_config_json", None)
-        out.append(d)
-    return out
+        # registry 的服务描述存在版本 manifest 里（reconcile ingest 落库）；抽到行顶层供插件页「说明」
+        manifest = d.pop("manifest_json", None) or {}  # 内部 manifest 不透前端，只抽展示字段
+        if isinstance(manifest, dict):
+            d["description"] = manifest.get("description")
+            d["category"] = manifest.get("category")
+        items.append(d)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 async def register_mcp(user: dict[str, Any], req: Any) -> dict[str, Any]:
