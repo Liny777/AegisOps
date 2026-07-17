@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useLocation, useNavigate } from "react-router-dom";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { color, radius, shadow } from "../theme/tokens";
 import { Icon, Interactive } from "../ui";
 import { useApp } from "../lib/appState";
@@ -89,7 +89,7 @@ export function Sidebar() {
     }
   };
 
-  // 32 号导航项：新对话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
+  // 32 号导航项：会话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
   // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
   const userNav: NavItem[] = [
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
@@ -120,7 +120,7 @@ export function Sidebar() {
 
   const activeKey = (() => {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
-    if (loc.pathname === "/settings") return "settings";  // 新设置页（OModel 二级菜单）
+    if (loc.pathname.startsWith("/settings")) return "settings";  // 新设置页（OModel 二级菜单）
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";
   })();
@@ -155,7 +155,7 @@ export function Sidebar() {
                 background: "#fff",
                 cursor: "pointer",
               }}
-              hoverStyle={{ borderColor: color.brandTintBorder, background: "#f9fbff" }}
+              hoverStyle={{ borderColor: color.brandTintBorder, background: "#e9ecf1" }}
             >
               <Icon name="robot" size={17} color={color.brand} />
               {showText ? (
@@ -163,7 +163,13 @@ export function Sidebar() {
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: color.textStrong, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {currentAgent?.name ?? "选择 Agent"}
                   </span>
-                  <Icon name="selector" size={15} color={color.textSubtle} />
+                  {
+                    pickerOpen 
+                    ?
+                    <Icon name="chevron-up" size={15} color={color.textSubtle} />      
+                    :
+                    <Icon name="chevron-down" size={15} color={color.textSubtle} /> 
+                  }
                 </>
               ) : null}
             </Interactive>
@@ -189,10 +195,15 @@ export function Sidebar() {
                   return (
                     <Interactive
                       key={ag.instance_id}
-                      onClick={() => {
+                      onClick={async() => {
                         setCurrentAgentId(ag.instance_id);
                         setPickerOpen(false);
-                        nav(`/agent-teams/${ag.instance_id}/chat`);
+                        try {
+                          const runId = await api.ensureRun(ag.instance_id);
+                          nav(`/agent-teams/${ag.instance_id}/chat?run_id=${encodeURIComponent(runId)}`);
+                        } catch {
+                          nav(`/agent-teams/${ag.instance_id}/chat`);
+                        }
                       }}
                       baseStyle={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 13px", cursor: "pointer", fontSize: 13, fontWeight: 600, color: color.textStrong }}
                       hoverStyle={{ background: "#f5f8ff" }}
@@ -213,17 +224,17 @@ export function Sidebar() {
               </div>
             ) : null}
           </div>
-          {/* 新对话（32 号主操作：白底 + 轻阴影） */}
+          {/* 会话（32 号主操作：白底 + 轻阴影） */}
           <div style={{ padding: "6px 10px 2px" }}>
             <Interactive
-              title="新对话"
+              title="会话"
               data-testid="new-conversation"
               onClick={newChat}
-              baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "pointer", fontSize: 13.5, fontWeight: 700, color: color.textStrong }}
+              baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", cursor: "pointer", fontSize: 13.5, fontWeight: 700, color: color.textStrong, borderRadius: radius.lg}}
               hoverStyle={{ borderColor: color.brandTintBorder, background: "rgb(233,236,241)" }}
             >
-              <Icon name="message" size={18} color={color.textFainter} />
-              {showText ? <span style={{ flex: 1 }}>新对话</span> : null}
+              <Icon name="message" size={18} color={color.textNav} />
+              {showText ? <span style={{ flex: 1 }}>会话</span> : null}
             </Interactive>
           </div>
           <nav style={{ padding: "6px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
@@ -242,7 +253,7 @@ export function Sidebar() {
                 </div>
               ) : (
                 shownConvs.map((c) => {
-                  const cur = loc.pathname.includes(c.id);
+                  const cur = loc.pathname.includes(c.id) || activeRunId === c.id;
                   return (
                     <Interactive
                       key={c.id}
