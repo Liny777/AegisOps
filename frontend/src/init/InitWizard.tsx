@@ -186,7 +186,7 @@ export function InitWizard() {
             <Button icon="arrow-right" disabled={!canNext} onClick={() => setStep((s) => s + 1)}>下一步</Button>
           ) : (
             <Button icon={editing ? "device-floppy" : "rocket"} disabled={activating} onClick={activate}>
-              {editing ? (activating ? "保存中…" : "保存修改") : (activating ? "激活中…" : "激活 Agent")}
+              {editing ? (activating ? "保存中…" : "保存修改") : (activating ? "激活中…" : "开始对话")}
             </Button>
           )}
         </div>
@@ -315,7 +315,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
 
   return (
     <div style={{ background: "#fff", border: "1px solid rgb(226, 229, 234)", borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
-      <Title t="确认能力清单" d="确认本 Agent 已具备的内置能力，并等待看护空间初始化完成后进入激活。" />
+      <Title t="确认能力清单" d="确认本 Agent 已具备的内置能力，并等待看护空间初始化完成后进入激活流程" />
       {capabilities.length ? (
         <div style={{ marginBottom: 26 }}>
           <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
@@ -338,7 +338,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
             {ready ? "Agent 看护空间已就绪" : "Agent 看护空间 OModel 初始化中…"}
           </div>
           <div style={{ fontSize: 12, color: color.textSubtle, marginTop: 2 }}>
-            {ready ? "看护范围已对接 oModel，可进入下一步激活。" : "正在对接 oModel 看护范围，请稍候（约 2 秒）。"}
+            {ready ? "看护范围已对接OModel（ 建议您接入WeOps-APM、日志、指标数据，OModel数据越全面，Agent能力越强 ）" : "正在对接 OModel 看护范围，请稍候（约 2 秒）。"}
           </div>
         </div>
       </div>
@@ -347,7 +347,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
       <div style={{ marginTop: 24 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="chart-dots-3" size={16} color={color.brand} />看护空间概览
-          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>当前看护范围在 oModel 中的规模</span>
+          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>当前看护范围在 OModel 中的规模</span>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 12 }}>
           <StatCard icon="topology-star-3" label="节点数" value={stats?.node_count} />
@@ -361,11 +361,11 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
       <div style={{ marginTop: 24 }}>
         <div style={{ fontSize: 14, fontWeight: 700, color: color.textStrong, marginBottom: 12, display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="chart-dots" size={16} color={color.brand} />看护空间图谱
-          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>oModel 实体关系拓扑</span>
+          <span style={{ fontSize: 11, fontWeight: 400, color: color.textSubtle }}>OModel实体关系拓扑{iframeSrc ? <>（您也可以导航到<a href={iframeSrc} target="_blank" rel="noopener noreferrer" style={{ color: color.brand, textDecoration: "none" }}>OModel</a>查看详情）</> : null}</span>
         </div>
         <div style={{ height: 420, border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden", background: "#fff", display: "flex" }}>
           {pageBase === null ? (
-            <GraphPlaceholder icon="loader-2" spin text="正在获取 oModel 图谱地址…" />
+            <GraphPlaceholder icon="loader-2" spin text="正在获取 OModel 图谱地址…" />
           ) : iframeSrc ? (
             <iframe
               key={iframeSrc} /* workspace 切换时强制重载，避免对端 SPA 内部路由残留 */
@@ -374,7 +374,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
               style={{ flex: 1, width: "100%", height: "100%", border: "none", background: "#fff" }}
             />
           ) : (
-            <GraphPlaceholder icon="topology-star-3" text="图谱在内网环境可用：需后端配置 OPENOPS_OMODEL_BASE_URL 后显示。" />
+            <GraphPlaceholder icon="topology-star-3" text="图谱在内网环境可用：需后端配置 OPENOPS_OMODEL_BASE_URL 后显示" />
           )}
         </div>
       </div>
@@ -443,14 +443,14 @@ function StepConfigure({
     <>
       <div style={{ background: "#fff", border: "1px solid rgb(226, 229, 234)", borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
       <div style={{ marginBottom: 2 }}>
-          <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>配置 Agent</h2>
-          <div style={{ fontSize: 13, color: color.textSubtle }}>一页完成：名称、模型与看护范围；身份使用你当前的登录账号。</div>
+          <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px" }}>创建看护您系统的感知快恢Agent</h2>
+          <div style={{ fontSize: 13, color: color.textSubtle }}>一页完成：名称、模型与看护范围；身份使用你当前的登录账号</div>
         </div>
         {/* ① 名称 */}
         <div>
           <SectionLabel text="Agent 名称" required />
           <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 8px", lineHeight: 1.55 }}>
-            建议用「看护系统范围 + 感知快恢Agent」，如「运行观测-感知快恢Agent」，便于快速识别 Agent 看护的系统范围。
+            建议用「看护系统范围 + 感知快恢Agent」，如「运行观测-感知快恢Agent」，便于快速识别 Agent 看护的系统范围
           </div>
           <TextInput value={name} onChange={onName} placeholder="如：支付域-感知快恢Agent" />
           {!name.trim() ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 6 }}>名称必填</div> : null}
@@ -512,7 +512,7 @@ function StepConfigure({
         <div>
           <SectionLabel text="系统看护范围" required
             right={<span title={selectedWs?.name ?? undefined} style={{ fontSize: 12, color: color.textSubtle, minWidth: 0, maxWidth: "60%", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>已选：{selectedWs?.name ?? "—"}</span>} />
-          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择 Agent 看护的系统范围（workspace = 命名的 APPID 集合）；运行时范围由 oModel 按你的授权解析。</div>
+          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 12px" }}>选择您的感知快恢 Agent 看护的系统范围，可以选择一个或多个应用服务</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 12 }}>
                      {workspaces.map((ws) => (
               <WorkspaceCard key={ws.workspace_id} ws={ws} on={ws.workspace_id === wsId} onPick={onPickWs}
@@ -745,7 +745,7 @@ const CAP_META: Record<string, { icon: string; desc: string }> = {
 function StepActivate({ name, activating, editing }: { name: string; activating: boolean; editing?: boolean }) {
   const items = editing
     ? ["更新名称与系统看护范围", "模型有变更时生成新配置版本（历史版本保留）", "返回 Agent 清单"]
-    : ["创建 AgentTeam 实例", "同步系统范围（oModel 就绪）", "装配模板默认能力（巡检 / 定界 / 恢复）", "启动 Agent 服务"];
+    : ["创建 AgentTeam 实例", "同步系统范围（OModel 就绪）", "装配模板默认能力", "启动 Agent 服务"];
   return (
     <div style={{ padding: "8px 0" }}>
       <div style={{ textAlign: "center" }}>
@@ -753,7 +753,7 @@ function StepActivate({ name, activating, editing }: { name: string; activating:
           <Icon name={activating ? "loader-2" : "rocket"} size={30} color="#fff" spin={activating} />
         </div>
         <h2 style={{ fontSize: 20, fontWeight: 700, margin: "0 0 6px", overflowWrap: "anywhere", wordBreak: "break-word" }}>
-          {editing ? (activating ? "正在保存…" : `保存对「${name || "Agent"}」的修改`) : (activating ? "正在激活…" : `准备激活「${name || "新 Agent"}」`)}
+          {editing ? (activating ? "正在保存…" : `保存对「${name || "Agent"}」的修改`) : (activating ? "正在激活…" : `「${name || "新 Agent"}」激活成功`)}
         </h2>
         <div style={{ fontSize: 13, color: color.textSubtle, marginBottom: 22 }}>
           {editing ? "保存将更新实例信息，必要时生成新配置版本，然后返回 Agent 清单。" : "激活将创建实例与初始配置版本，然后进入对话工作台。"}
