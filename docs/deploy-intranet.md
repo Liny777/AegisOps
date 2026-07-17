@@ -1,18 +1,26 @@
-# 内网双主机部署手册（2026-07-13；对齐 26/27 号拓扑）
+# 内网单主机部署手册（2026-07-17；单文根 xxxx.com/openops 收敛版）
 
 ```
-用户浏览器 ──> 前端机（docker compose 两容器）
-                └── openops-frontend（nginx+dist 一体镜像，:80）
-                      ├── /              → 镜像内静态（SPA 回退）
-                      ├── /api/copilotkit → compose 网内 sidecar 容器 :4002（CopilotKit 流）
-                      └── /api           → 后端机 :18082（REST/SSE/agui，关缓冲长超时）
-                    openops-sidecar（不发布宿主机端口，仅 compose 网内可达）
-后端机：uvicorn（run.py，:18082）+（可选）Docker 沙箱 ── PG（存量库先迁移再跑 core.sql；新库只跑 core.sql）
+用户浏览器 ──> 公司网关（单文根：/openops/* → 本机:80，不 strip）
+                └── 单机（docker compose 两容器 + systemd 后端）
+                      openops-frontend（nginx+dist 一体镜像，:80）
+                        ├── rewrite 剥 /openops 后按 location 分流：
+                        ├── /              → 镜像内静态（SPA 回退）
+                        ├── /api/copilotkit → compose 网内 sidecar 容器 :4002（CopilotKit 流）
+                        └── /api           → 本机 :18082（REST/SSE/agui，关缓冲长超时）
+                      openops-sidecar（不发布宿主机端口，仅 compose 网内可达）
+                      uvicorn（run.py，:18082，systemd）+（可选）Docker 沙箱
+PG 仍在外部（存量库先迁移再跑 core.sql；新库只跑 core.sql）
 ```
 
-前端所有请求都是相对路径（`/api`、`/api/copilotkit`），**同两个镜像测试/生产共用**——
-后端机地址不烘焙进镜像，启动时经 env 注入 nginx 模板（envsubst）；环境差异只有三处（见 §四）。
-前端机无需安装 nginx/node，只要 docker。图上旧口径端口 18081 已作废，实况 18082。
+浏览器只有一个 origin（`xxxx.com`），API 与静态同域同文根 ⇒ **无 CORS、无 Cookie 域问题**。
+两个镜像**测试/生产共用**——后端地址不烘焙进镜像，启动时经 env 注入 nginx 模板（envsubst）；
+环境差异只有三处（见 §四）。本机需要 docker（前端两容器 + 沙箱）与 python3.11+（后端）。
+图上旧口径端口 18081 已作废，实况 18082。
+
+> **由双机迁到单机**：浏览器侧本来就同源（`/openops` 与 `/openback` 一直是同一个域上的两个
+> 路径前缀，只是网关把它们扇给了两台机器），所以这是纯拓扑变更，前端源码零改动。
+> 切换按 §四¾ 的四个阶段走——**不要**把「删网关 /openback」和「上新镜像」放进同一次变更。
 
 ## 一、Mac 侧打包（一条命令）
 
@@ -21,14 +29,16 @@ bash deploy/build-artifacts.sh                  # 全量：四件 + SHA256SUMS
 bash deploy/build-artifacts.sh --backend-only   # 仅后端：deploy/artifacts/<BUILD_ID>/ 下完整包 + .sha256
 ```
 
-| 工件 | 投递到 | 说明 |
-|---|---|---|
-| openops-frontend-image.tar.gz | 前端机 | nginx+dist 一体镜像（linux/amd64；构建时强制 real，脚本内有防 mock 烘焙断言） |
-| openops-sidecar-image.tar.gz | 前端机 | sidecar 镜像（linux/amd64）。均 gzip：内网单文件上传限 500MB，`docker load` 原生认 .tar.gz |
-| openops-backend-src-`<BUILD_ID>`.tar.gz | 后端机 | 两种模式均生成版本化完整包（不含 venv/真实 env；包内有 `BUILD_INFO`） |
-| openops-deploy-conf.tar.gz | 两机 | compose/env 模板/systemd |
+| 工件 | 说明 |
+|---|---|
+| openops-frontend-image.tar.gz | nginx+dist 一体镜像（linux/amd64；构建强制 real，且断言文根烘焙=`/openops/` + API_BASE=`/openops/api`） |
+| openops-sidecar-image.tar.gz | sidecar 镜像（linux/amd64）。均 gzip：内网单文件上传限 500MB，`docker load` 原生认 .tar.gz |
+| openops-backend-src-`<BUILD_ID>`.tar.gz | 两种模式均生成版本化完整包（不含 venv/真实 env；包内有 `BUILD_INFO`） |
+| openops-deploy-conf.tar.gz | compose/env 模板/systemd |
 
-## 二、后端机（Linux x64，python3.11+，版本目录原子发布）
+单机拓扑下四件工件都投到同一台机器。
+
+## 二、后端（Linux x64，python3.11+，版本目录原子发布）
 
 ```bash
 # 以下整段须在 bash 中执行；任一校验失败立即停止，禁止继续解压或切换。
@@ -127,29 +137,45 @@ journalctl -u openops-backend -n 50 | grep "build=$BUILD_ID"
 curl -s http://127.0.0.1:18082/health    # → {"status":"ok"}
 ```
 
-## 三、前端机（Linux x64，仅需 docker）
+## 三、前端两容器（同一台机器，仅需 docker）
 
 ```bash
-# 0. 若此前用过宿主机 nginx 方案：先 systemctl stop nginx（80 端口让给容器）
+# 0. 端口预检——80 被占是本步最常见的失败：容器起不来，docker compose 直接报 port is already allocated
+ss -lntp | grep ':80 ' && echo "先停掉占用 80 的服务（如宿主机残留 nginx）"
 
 # 1. 两个镜像
 docker load -i openops-frontend-image.tar.gz
 docker load -i openops-sidecar-image.tar.gz
 
-# 2. compose + 两个 env（唯一必改项都是后端机地址）
+# 2. compose + 两个 env（唯一必改项都是后端地址 = 本机内网 LAN IP）
 mkdir -p /opt/openops/frontend && cd /opt/openops/frontend
 tar xzf /path/to/openops-deploy-conf.tar.gz      # → deploy/（compose 与 env 模板在里面）
 cp deploy/frontend/docker-compose.yml .
 cp deploy/frontend/frontend.test.env.example frontend.env && vi frontend.env   # BACKEND_HOST
 cp deploy/sidecar/sidecar.test.env.example sidecar.env && vi sidecar.env       # OPENOPS_BACKEND_URL
 docker compose up -d
+```
 
+**⚠ 同机拓扑最大的坑：两个 env 里都必须填「本机内网 LAN IP」，不能填 `127.0.0.1`。**
+compose 是 bridge 网络，容器里的 `127.0.0.1` 指向容器自己。两处都**不会 fail-fast**：
+- `frontend.env` 填 `127.0.0.1` → `nginx -t` 过、容器起得来、healthcheck（探的是本机静态页）
+  **报 healthy**，但每个 `/api/*` 静默 502。镜像的 fail-fast 只覆盖「没设」，不覆盖「填错」。
+- `sidecar.env` 缺失或留空 → `copilot-runtime.ts` 的代码默认值就是 `http://127.0.0.1:18082`
+  ⇒ **静默只坏 Copilot 对话**，其余功能全正常。
+
+填 IP 字面量而非主机名：`${BACKEND_HOST}` 是字面量插进 `proxy_pass`，nginx 启动期就要解析、
+解析不到直接退出；IP 免解析 ⇒ 后端没起时 nginx 照常起（请求期 502，后端起来即自愈），
+宿主机重启无 docker/backend 启动顺序依赖。
+
+```bash
 # 3. 验证链（依次；sidecar 不发布宿主机端口，探活走 docker exec）
 docker exec openops-sidecar wget -qO- http://127.0.0.1:4002/healthz   # {"ok":true,...}
-curl -s http://localhost/api/health            # frontend 容器→后端机 → {"status":"ok"}
+curl -s http://localhost/api/health            # frontend 容器→本机后端 → {"status":"ok"}
+                                               # ⇐ 这条过了才说明 BACKEND_HOST 填对（别只看 healthcheck 颜色）
 curl -sI http://localhost/ | grep -iE "^HTTP|^location"   # 302 + Location: /openops/（文根跳转）
 curl -sI http://localhost/openops/ | head -1  # 静态 200（真正的页面入口）
-curl -s http://localhost/openback/health      # {"status":"ok"}（IP 直访兜底：剥前缀转后端）
+curl -s http://localhost/openops/api/health   # {"status":"ok"}（★新链路：rewrite 剥 /openops → location /api）
+curl -s http://localhost/openback/health      # {"status":"ok"}（灰度期回滚路径 / IP 直访兜底）
 # 浏览器全链：建 Agent → CopilotChat 流式回包 → 子 Agent 两轮派发/审批/汇报。
 # 活动栏需同时验 AG-UI CUSTOM + 备用 SSE 去重、业务/技术切换、刷新恢复、显示更早与窄屏覆盖层；
 # DevTools/DOM 抽查不得出现完整参数/响应、stdout/stderr、Authorization/Cookie/token。
@@ -163,48 +189,59 @@ TLS：内网证书就绪后挂载证书目录 + 以自有 conf 覆盖模板（co
 
 | 位置 | 测试 | 生产 |
 |---|---|---|
-| 后端机 `backend/config/openops.<env>.env` | openops.test.env（测试库/测试端点/测试 cookie） | openops.prod.env（生产库/生产凭证；上线核对清单在模板尾部） |
-| 前端机 `sidecar.env` 的 `OPENOPS_BACKEND_URL` | 测试后端机 IP | 生产后端机 IP |
-| 前端机 `frontend.env` 的 `BACKEND_HOST`（注入 nginx 模板） | 测试后端机 IP | 生产后端机 IP |
+| `backend/config/openops.<env>.env` | openops.test.env（测试库/测试端点/测试 cookie） | openops.prod.env（生产库/生产凭证；上线核对清单在模板尾部） |
+| `sidecar.env` 的 `OPENOPS_BACKEND_URL` | 测试机内网 LAN IP | 生产机内网 LAN IP |
+| `frontend.env` 的 `BACKEND_HOST`（注入 nginx 模板） | 测试机内网 LAN IP | 生产机内网 LAN IP |
 
 规则：`run-backend.sh test|prod` 选文件；systemd 用 `EnvironmentFile` 指同一份；实值 env 文件
 永不入 git（.gitignore 已拦）。frontend 与 sidecar 镜像**不要**按环境重打——地址全在 env 注入层。
 
-## 四½、域名与文根（xxxx.com/openops · xxxx.com/openback）
+⚠ 测试与生产**不要放同一台机器**：compose 的 `container_name`（`openops-frontend` /
+`openops-sidecar`）与宿主端口 80 都是固定值，两套会直接撞名撞端口；沙箱容器还需靠
+`OPENOPS_SANDBOX_LABEL_SCOPE` 区分才不会互删孤儿。要共存须先解决这三处。
 
-镜像 dist 已烘焙前端文根 `base=/openops/`、后端 API 前缀 `/openback/api`（build-artifacts.sh
-注入；换文根须同改 nginx.conf.template 文根段并重打前端镜像）。IP 直访与域名访问同时可用
-（`http://前端机IP/` 会 302 到 `/openops/`）。
+## 四½、域名与文根（单文根 xxxx.com/openops）
 
-**给运维的公司网关规则（两条，注意不对称）**：
+镜像 dist 已烘焙前端文根 `base=/openops/` 与后端 API 前缀 `/openops/api`（build-artifacts.sh
+注入并断言；换文根须同改 nginx.conf.template 文根段并重打前端镜像）。IP 直访与域名访问同时
+可用（`http://本机IP/` 会 302 到 `/openops/`）。
+
+**给运维的公司网关规则（只剩一条）**：
 
 ```nginx
-# ① 前端：不 strip（前端机 nginx 自己剥前缀）
+# 前端：不 strip（本机 nginx 自己剥前缀，剥完 API/静态/copilotkit 各归其位）
 location /openops {
-    proxy_pass http://<前端机IP>:80;
+    proxy_pass http://<本机内网IP>:80;
+    proxy_http_version 1.1;              # ⚠ 新增
+    proxy_set_header Connection "";      # ⚠ 新增
     proxy_set_header Host $host;
     proxy_set_header Cookie $http_cookie;
+    proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
-# ② 后端：剥不剥前缀均可（后端 RootPathShim 按 OPENOPS_ROOT_PATH 自剥）——
-#    域名系统只支持「ip+端口」直指后端机:18082 也能工作
-location /openback/ {
-    proxy_pass http://<后端机IP>:18082;
-    proxy_http_version 1.1;
-    proxy_set_header Connection "";
-    proxy_set_header Host $host;
-    proxy_set_header Cookie $http_cookie;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_buffering off;               # ⚠SSE/agui 流经此路：关缓冲 + 长超时缺一不可
-    proxy_read_timeout 3600s;
-    proxy_send_timeout 3600s;
+    proxy_buffering off;                 # ⚠ 新增——SSE/agui 现在全量走这条规则
+    proxy_cache off;                     # ⚠ 新增
+    proxy_read_timeout 3600s;            # ⚠ 新增
+    proxy_send_timeout 3600s;            # ⚠ 新增
 }
 ```
 
-**后端 env**：`OPENOPS_ROOT_PATH=/openback`（env 模板已带）。后端应用层 RootPathShim 按它
-自剥前缀（网关剥不剥都兼容），并回写 root_path 使重定向/docs URL 带前缀；sidecar 直连
-IP:18082 裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，
-遇不剥前缀的网关变双前缀 404（内网实测）。
+**⚠ 那五个「新增」是本次收敛的关键路径，不是可选项。** 收敛前 SSE/agui 走的是 `/openback`
+规则（它一直带着关缓冲+长超时）；收敛后这条 `/openops` 规则承载 100% 流式流量，而它**原本
+一条流式指令都没有**。且失效模式是**静默缓冲而非断流**：后端有 15s 心跳
+（`event_stream_service.py`、`agui_service.py`）会不断重置网关默认的 60s 读超时，所以连接不会断，
+只会把 token 攒成一坨吐出来——表现像「模型变慢了」，无报错、无日志、`/api/health` 全绿。
+`proxy_http_version 1.1` 更是应用侧完全无法补救。**先落地并验证这条规则，再上新镜像**（§四¾）。
+
+**后端 env**：`OPENOPS_ROOT_PATH` 见 §四¾ 分阶段取值。后端应用层 RootPathShim 幂等——带前缀
+就剥、不带就原样放行，所以新旧文根可同时服务（这是灰度回滚的支点）；sidecar 直连 IP:18082
+裸路径不受任何影响。⚠勿用 uvicorn --root-path——新版会把前缀拼回请求路径，遇不剥前缀的网关
+变双前缀 404（内网实测）。
+
+> **订正一处长期口径错误**：曾有注释称「网关对 `/openback` 带尾斜杠 ⇒ 由网关 strip」。实际
+> 给运维的规则 `proxy_pass http://<IP>:18082;` **无尾斜杠 ⇒ 不 strip**，真正剥 `/openback` 的
+> 一直是后端 RootPathShim。因为 shim 幂等，两种读法都能跑通，所以这个矛盾长期没被发现——
+> 但它会诱导出「同机了就把 ROOT_PATH 清空」的操作，而网关只要还挂着 `/openback`，一清空
+> 就是**全部 API 404**。`scripts/release_check.sh` 已加门禁锁死这对组合。
 **IAM 回跳**：仅浏览器导航用的 `OPENOPS_IAM_LOGIN_URL` / `OPENOPS_IAM_SIGNOUT_URL` 支持
 `{host}` 占位符。携带 Cookie/token 的 access-token 与 userinfo URL 必须是固定 HTTPS 地址，禁止
 请求域名替换。回跳示例：
@@ -215,19 +252,53 @@ SSO 登出 API，**只收 POST + CSRF 头**——前端从 `OPENOPS_IAM_CSRF_COO
 必 404 Whitelabel 白页）；随后浏览器只跳 `OPENOPS_IAM_LOGOUT_REDIRECT_URL`（设 `/openops/` 而非 `/`）
 或 `login_url`。
 
-**客户端 IP 透传**（IAM 会话绑 IP）：`/openback` 全链（公司网关→前端机→后端）每跳都要
-`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`——后端取 XFF 首跳作为用户真实
-浏览器 IP 发给 IAM。缺则后端拿到网关 IP、IAM 绑 IP 校验失败 → /me 持续 401 登录横跳。
+**客户端 IP 透传**（IAM 会话绑 IP）：**承载 `/api` 的每一跳**都要
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for`（必须是 `$proxy_add_x_forwarded_for`，
+不能用 `$remote_addr`——后者会丢掉首跳）。后端取 XFF 首跳作为用户真实浏览器 IP 发给 IAM；
+缺则后端拿到网关 IP、IAM 绑 IP 校验失败 → /me 持续 401 登录横跳。
+单文根收敛后这条链是「公司网关 → 本机 nginx → 本机后端」两跳，两跳都已带该头
+（网关规则见上；nginx 模板 `location /api` 自带）⇒ XFF = `浏览器IP, 网关IP`，后端取首跳。
 
-**域名侧验证**：`https://xxxx.com/openback/health` → `{"status":"ok"}`；
-`https://xxxx.com/openops/` → 页面；对话流式不断流（验证网关 buffering 关闭生效）。
+**域名侧验证**：
+```bash
+curl -s https://xxxx.com/openops/api/health      # {"status":"ok"}（新链路）
+curl -s https://xxxx.com/openops/ -o /dev/null -w '%{http_code}\n'   # 200 页面
+# XFF 断言（防门禁空转）：伪造首跳，确认后端解析出的是它而不是网关 IP
+curl -s -H "X-Forwarded-For: 203.0.113.7" https://xxxx.com/openops/api/openops/v1/me
+```
+对话流式**逐字**回包（不是攒一坨才出现）——这是网关 buffering 是否真的关掉的唯一可靠判据。
+
+## 四¾、双机 → 单机的分阶段切换
+
+**不要把「删网关 /openback」和「上新镜像」放进同一次变更**：那样一旦出问题就必须等运维改
+规则才能回滚，5 分钟的回滚会变成故障期的跨部门等待。靠 RootPathShim 的幂等把它拆开——
+后端可以零成本同时服务新旧两个文根（`backend/tests/test_init.py` 已钉住此行为）。
+
+| 阶段 | 动作 | 回滚方式 |
+|---|---|---|
+| **1** | 运维给 `/openops` 规则加上那五条流式指令。`/openback` 保留不动。 | 尚未发布任何东西 |
+| **2** | 同机化：`BACKEND_HOST` / `OPENOPS_BACKEND_URL` 改为本机 LAN IP；网关 `/openops` 指向本机。旧镜像仍打 `/openback/api`，链路不变。 | 改回 env + 网关一行 |
+| **3** | 上新前端镜像（`/openops/api`）。`OPENOPS_ROOT_PATH` **仍为** `/openback`。 | **重 load 旧镜像 tag ⇒ 完事，不需要运维** |
+| **4** | 泡稳后：运维删 `/openback`；`OPENOPS_ROOT_PATH` 留空；重启后端。 | 运维重加规则（慢——所以刻意放最后） |
+
+阶段 3 前先在机器上留一份上一版 `openops-frontend-image.tar.gz`：`build-artifacts.sh` 同时打
+`:<VER>` 与 `:latest`，而 compose 钉的是 `:latest` ⇒ 回滚 = 重 load 旧 tar 并重打 `latest`
+（或把 compose 改成 `:<旧VER>`）。
+
+⚠ **阶段 4 的回退不受版本回滚保护**：`EnvironmentFile` 指向 `/opt/openops/shared/config/`，是
+**跨 release 共享**的，而 `/opt/openops/releases/<BUILD_ID>` 不可变 ⇒ 把 `current` 软链指回旧版
+**不会**恢复 `OPENOPS_ROOT_PATH`，必须手工改回。
 
 ## 五、故障排查
 
 | 症状 | 查什么 |
 |---|---|
 | frontend 容器起不来/秒退 | `docker logs openops-frontend`——`frontend.env` 缺 `BACKEND_HOST` 时 nginx 启动即报错（fail-fast，模板变量未注入） |
+| **容器 healthy 但每个 `/api/*` 都 502** | **`frontend.env` 的 `BACKEND_HOST` 填成了 `127.0.0.1`**（容器里指向 nginx 容器自己）。healthcheck 探的是本机静态页，所以照样绿。改本机内网 LAN IP。`docker exec openops-frontend nginx -T \| grep proxy_pass` 看实效值 |
+| **只有 Copilot 对话坏、其余全正常** | `sidecar.env` 缺失/留空 ⇒ 回落代码默认 `http://127.0.0.1:18082`（= sidecar 容器自己）。`docker exec openops-sidecar wget -qO- http://127.0.0.1:4002/healthz` 看返回里的 `backend` 字段是不是本机 LAN IP |
 | 对话发送后 HTTP 500 | `docker exec openops-sidecar wget -qO- http://127.0.0.1:4002/healthz`；sidecar 日志 `docker logs openops-sidecar`；`sidecar.env` 的 `OPENOPS_BACKEND_URL` 是否可达（容器内 `wget -qO- <url>/health`） |
+| **对话不逐字出、攒一坨才吐（像「模型变慢」）** | 公司网关 `/openops` 规则缺 `proxy_buffering off`（§四½ 的五条）。**不会报错也不会断流**——后端 15s 心跳一直在重置读超时，只是被缓冲住。这是单文根收敛的头号风险 |
+| 全部 API 404（页面能开、接口全挂） | `OPENOPS_ROOT_PATH` 与前端烘焙的 API_BASE 不自洽：网关还挂着 `/openback` 却把 ROOT_PATH 清空了（真正剥前缀的是后端 shim，不是网关）。见 §四¾ 阶段表；`bash scripts/release_check.sh --production-env <env>` 会拦 |
 | 活动栏/流式卡住、几十秒断流 | 容器内实效配置 `docker exec openops-frontend nginx -T \| grep -A6 'location /api'`（`proxy_buffering off`+长超时应在） |
 | 80 端口被占 | 宿主机残留 nginx/其它服务占 80：`ss -lntp \| grep :80`，停掉或改 compose 端口映射 |
 | 401/身份错乱 | nginx 是否透传 `Cookie` 与 `X-Forwarded-For`（IAM Client-Ip 依赖 XFF 首跳）；后端 `OPENOPS_IAM_ENABLED` 与 mock 头口径 |

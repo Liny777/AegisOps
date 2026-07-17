@@ -15,12 +15,21 @@ server {
 
     absolute_redirect off;   # 302/301 发相对 Location——网关 https/非 80 端口下不丢 scheme 与端口
 
-    # ---- 文根（域名部署 xxxx.com/openops · xxxx.com/openback）----
-    # 网关规则不对称（实测本栈 uvicorn 会把 root_path 拼回 scope.path，后端只认裸路径）：
-    #   /openops/* → 前端机:80 **不 strip**（本文件 rewrite 自己剥）；
-    #   /openback/* → 后端机:18082 **strip**（网关 proxy_pass 带尾斜杠）。
-    # dist 打包时已烘焙 base=/openops/（换文根须重打前端镜像并同步改这里）。
-    # 下方 /openback/ 供 IP 直访兜底，同样剥前缀后转后端。
+    # ---- 文根（域名部署单文根 xxxx.com/openops；同机拓扑）----
+    # 网关只有一条规则：/openops/* → 本机:80 **不 strip**（本文件 rewrite 自己剥）。
+    # 剥完 `last` 重走 location 匹配，于是三类流量各归其位（API 与静态共用同一条 rewrite）：
+    #   /openops/api/copilotkit → 剥成 /api/copilotkit → sidecar（前缀更长，胜过 /api）
+    #   /openops/api/*          → 剥成 /api/*         → location /api → 本机 uvicorn:18082
+    #   其余                     → 剥成 /*             → 静态 dist（SPA 回退）
+    # dist 已烘焙 base=/openops/ 与 API_BASE=/openops/api（build-artifacts.sh 注入并断言；
+    # 换文根须重打前端镜像并同步改这里）。
+    #
+    # ⚠后端拿到的是**裸路径**（本文件已剥）。后端 RootPathShim 幂等：带 OPENOPS_ROOT_PATH
+    # 前缀就剥、不带就原样放行——所以新旧文根可同时服务，这是灰度/回滚的支点。
+    # 历史订正：本段曾写「网关对 /openback 带尾斜杠 ⇒ 由网关 strip」，与实际给运维的规则
+    # （docs/deploy-intranet.md，proxy_pass 无尾斜杠 ⇒ 不 strip）矛盾。真正剥 /openback 的
+    # 一直是后端 RootPathShim，不是网关 ⇒ 网关还挂着 /openback 时清空 OPENOPS_ROOT_PATH
+    # 会让全部 API 404。下方 /openback/ 仅供 IP 直访兜底与灰度回滚，自行剥前缀后转后端。
     rewrite ^/openops/$ /index.html last;
     rewrite ^/openops/(.+)$ /$1 last;
     rewrite ^/openops$ /openops/ permanent;
@@ -44,6 +53,9 @@ server {
     # CopilotKit 流（compose 网内 sidecar 容器）：流式响应，关缓冲 + 长超时
     location /api/copilotkit {
         proxy_pass $sidecar_upstream;
+        # sidecar 终结后端响应再自行重发，全链无人发 X-Accel-Buffering（copilotkit 也不发）。
+        # 由本层补发，供上游公司网关据此关缓冲（网关若不认此头，仍须其规则里 proxy_buffering off）。
+        add_header X-Accel-Buffering no always;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;
@@ -61,10 +73,14 @@ server {
         proxy_pass http://${BACKEND_HOST}:18082/health;
     }
 
-    # 后端 API（后端机 uvicorn:18082）。SSE/agui 长连接调优（34 号 §三·④ 前置项）；
+    # 后端 API（同机 uvicorn:18082，经宿主机内网 IP——容器内 127.0.0.1 是容器自己）。
+    # SSE/agui 长连接调优（34 号 §三·④ 前置项）；
     # X-Forwarded-For 首跳 = B9 IAM 的 IAM-Client-Ip 来源，必须透传。
     location /api {
         proxy_pass http://${BACKEND_HOST}:18082;
+        # 后端发了 X-Accel-Buffering: no，但 nginx 默认 proxy_hide_header 会吞掉 X-Accel-*，
+        # 上游公司网关根本看不到。显式放行，让网关也能据此关缓冲。
+        proxy_pass_header X-Accel-Buffering;
         proxy_http_version 1.1;
         proxy_set_header Connection "";
         proxy_set_header Host $host;

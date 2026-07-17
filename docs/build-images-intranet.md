@@ -41,12 +41,18 @@ VER=$(git rev-parse --short HEAD 2>/dev/null || date +%m%d%H%M)
 # 1. 构建 dist —— 必须进程 env 强制 real（.env.local 若有 mock 会被 vite 读到烘焙进包）；
 #    文根两 env 与 deploy/frontend/nginx.conf.template 文根段耦合，换文根两处同改
 ( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui \
-  VITE_OPENOPS_BASE=/openops/ VITE_OPENOPS_API_BASE=/openback/api npm run build )
+  VITE_OPENOPS_BASE=/openops/ VITE_OPENOPS_API_BASE=/openops/api npm run build )
 
 # 2. 构建产物断言（任一命中即作废重建）
 if grep -rq "mock 演示" frontend/dist/assets; then echo "✗ dist 含 mock 指纹"; exit 1; fi
 grep -q '/openops/assets' frontend/dist/index.html || { echo "✗ 文根未烘焙进 dist"; exit 1; }
 grep -q "Program Files" frontend/dist/index.html && { echo "✗ 文根被 Git Bash 路径翻译污染（见 §六）"; exit 1; }
+# API_BASE 落 assets/*.js（client.ts 的常量），index.html 看不见它，故单独断言。
+# ⚠必须带引号锚定：CopilotChatPanel 的 runtimeUrl=`${BASE_URL}api/copilotkit` 会被 vite 折叠成
+#   "/openops/api/copilotkit"，裸 grep '/openops/api' 在 API_BASE 完全没注入时照样命中（实测）。
+grep -rEq "[\"']/openops/api[\"']" frontend/dist/assets \
+  || { echo "✗ API_BASE 未烘焙成 /openops/api（回落默认 /api 会全量 404）"; exit 1; }
+if grep -rq '/openback' frontend/dist/assets; then echo "✗ dist 仍含已退役的 /openback 文根"; exit 1; fi
 
 # 3. dist staging 进构建上下文 → docker build →打完即清
 rm -rf deploy/frontend/dist && cp -R frontend/dist deploy/frontend/dist
@@ -103,7 +109,7 @@ DDL 有变时**先库后码**：重跑 `sql/openops_v1_core.sql`（幂等）或�
 | 症状 | 原因 |
 |---|---|
 | dist 断言命中「mock 指纹」 | 构建 shell 没带 `VITE_OPENOPS_API_MODE=real`（.env.local 的 mock 污染） |
-| 资源 URL 混入 `/Program Files/Git/`、页面白屏 | **Windows Git Bash 的 MSYS 路径翻译**把 `/openops/` 等路径型 env 改写成了 Windows 路径。修法任选：①（推荐，任何 shell 免疫）两个路径 env 改写进 `frontend/.env.production.local`（`VITE_OPENOPS_BASE=/openops/` 与 `VITE_OPENOPS_API_BASE=/openback/api`），命令行只留 real/agui；② 构建前 `export MSYS_NO_PATHCONV=1`（MSYS2 用 `MSYS2_ENV_CONV_EXCL`）。重建后跑上方 §二.2 断言再打镜像 |
+| 资源 URL 混入 `/Program Files/Git/`、页面白屏 | **Windows Git Bash 的 MSYS 路径翻译**把 `/openops/` 等路径型 env 改写成了 Windows 路径。修法任选：①（推荐，任何 shell 免疫）两个路径 env 改写进 `frontend/.env.production.local`（`VITE_OPENOPS_BASE=/openops/` 与 `VITE_OPENOPS_API_BASE=/openops/api`），命令行只留 real/agui；② 构建前 `export MSYS_NO_PATHCONV=1`（MSYS2 用 `MSYS2_ENV_CONV_EXCL`）。重建后跑上方 §二.2 断言再打镜像 |
 | sidecar 构建卡在 npm ci | 没传 `--build-arg NPM_REGISTRY=`，在打外网源 |
 | docker build 报找不到基础镜像 | 首次未做 §一.2 的基础镜像带入 |
 | up -d 后页面没变 | 浏览器缓存——强刷；或 build 用了旧 dist（确认 §二第 3 步 staging 是刚构建的） |

@@ -23,7 +23,8 @@
 ## 3. IAM（OPENOPS_IAM_ENABLED=true 时）
 
 - [ ] `OPENOPS_IAM_ACCESS_TOKEN_URL` / `OPENOPS_IAM_USERINFO_URL` 是固定 HTTPS 地址，不含 userinfo/query/fragment、`{host}` 或其他模板，并已连通
-- [ ] `/openback` 全链每跳透传 `X-Forwarded-For`（后端取首跳作用户真实 IP 供 IAM 绑 IP 校验；缺则 /me 持续 401 登录横跳）
+- [ ] **承载 `/api` 的每一跳**透传 `X-Forwarded-For`，且必须用 `$proxy_add_x_forwarded_for`（不能用 `$remote_addr`，会丢首跳）。单文根拓扑该链为「公司网关 → 本机 nginx → 本机后端」两跳。后端取首跳作用户真实 IP 供 IAM 绑 IP 校验；缺则 /me 持续 401 登录横跳
+- [ ] 上条须**实测**而非目视：`curl -s -H "X-Forwarded-For: 203.0.113.7" https://xxxx.com/openops/api/openops/v1/me`，确认后端解析出的是 203.0.113.7 而不是网关 IP（按路径打勾容易空转——`/openback` 收敛后已不承载鉴权流量）
 - [ ] `OPENOPS_IAM_LOGIN_KEY_FIELD` / `OPENOPS_IAM_DISPLAY_NAME_FIELD` 与 IAM userinfo 真实字段对齐（支持点分嵌套）
 - [ ] 可选：`OPENOPS_IAM_LOGIN_URL`（401 引导跳转）/ `OPENOPS_IAM_SIGNOUT_URL`（登出）
 - [ ] 白名单：管理员账号先入库（`sre_user_whitelist`），再由管理台开通其他用户

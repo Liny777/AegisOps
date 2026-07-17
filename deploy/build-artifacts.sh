@@ -164,15 +164,35 @@ fi
 start_output
 
 echo "== ① 前端一体镜像（nginx+dist；构建强制 real——.env.local 的 mock 会被 vite build 读到，进程 env 压制）=="
-# 文根（域名部署 xxxx.com/openops·/openback，与 nginx.conf.template 文根段耦合，换文根两处同改）
+# 单文根（域名部署 xxxx.com/openops 一条规则；API 走前端 nginx 内部转发到本机 uvicorn）。
+# BASE 决定静态/Router basename/CopilotKit runtimeUrl；API_BASE 决定 REST/SSE/agui 目标。
+# 两者都是 vite 构建期常量折叠进 bundle，env 事后补救不了——换文根须重打前端镜像。
 ( cd frontend && VITE_OPENOPS_API_MODE=real VITE_OPENOPS_TRANSPORT=agui \
-  VITE_OPENOPS_BASE=/openops/ VITE_OPENOPS_API_BASE=/openback/api npm run build )
+  VITE_OPENOPS_BASE=/openops/ VITE_OPENOPS_API_BASE=/openops/api npm run build )
 # 防 mock 烘焙断言：API_MODE=real 时 mock facade 会被常量折叠+树摇整体移除——
 # dist 里出现 mock 指纹字符串 = 烘焙错了（.env.local 的 mock 污染）
 if grep -rq "mock 演示" frontend/dist/assets 2>/dev/null; then
   echo "   ✗ dist 含 mock 指纹——API_MODE 烘焙成 mock！检查构建 env"; exit 1
 fi
 echo "   API_MODE 烘焙=real ✓（mock facade 已被树摇移除）"
+# 文根烘焙断言（与 docs/build-images-intranet.md 同源）。BASE 落 index.html 的资源路径；
+# API_BASE 落 assets/*.js（client.ts 的常量），index.html 看不见它，故两处分别断言。
+grep -q '/openops/assets' frontend/dist/index.html \
+  || { echo "   ✗ 前端文根未烘焙进 dist（VITE_OPENOPS_BASE）"; exit 1; }
+if grep -q "Program Files" frontend/dist/index.html; then
+  echo "   ✗ 文根被 Git Bash 路径翻译污染（见 docs/build-images-intranet.md §六）"; exit 1
+fi
+# API_BASE 未注入时会静默回落到 client.ts 的默认 "/api"——那是生产唯一不可路由的值
+# （网关只认 /openops），且上面几条断言全绿。故必须正向断言 + 反向查旧文根残留。
+# ⚠断言必须带引号锚定：CopilotChatPanel 的 runtimeUrl=`${BASE_URL}api/copilotkit` 会被
+# vite 常量折叠成 "/openops/api/copilotkit"，所以裸 grep '/openops/api' 在 API_BASE
+# 完全没注入时**照样命中**（实测），是个永不报警的假门禁。带引号只匹配 API_BASE 那个独立字面量。
+grep -rEq "[\"']/openops/api[\"']" frontend/dist/assets \
+  || { echo "   ✗ API_BASE 未烘焙成 /openops/api（回落默认 /api 会全量 404）"; exit 1; }
+if grep -rq '/openback' frontend/dist/assets; then
+  echo "   ✗ dist 仍含已退役的 /openback 文根——检查构建 env"; exit 1
+fi
+echo "   文根烘焙=/openops/ + API_BASE=/openops/api ✓"
 # dist staging 进构建上下文（deploy/frontend/dist 已 gitignore），打完即清
 rm -rf deploy/frontend/dist && cp -R frontend/dist deploy/frontend/dist
 docker build --platform linux/amd64 -f deploy/frontend/Dockerfile \

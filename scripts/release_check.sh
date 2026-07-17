@@ -193,6 +193,39 @@ else
     *) fail "OPENOPS_APPTREE 必须为 real" ;;
   esac
 
+  # 文根自洽：前端烘焙的 API_BASE 与后端 OPENOPS_ROOT_PATH 必须匹配，否则全部 API 404。
+  # 真正剥 /openback 的是后端 RootPathShim，不是网关（给运维的规则 proxy_pass 无尾斜杠
+  # ⇒ 不 strip）。所以「dist 打的是 /openback/api」+「ROOT_PATH 留空」= 每个 API 都 404，
+  # 而此前所有门禁照样全绿——这条就是补这个洞的。
+  BAKED_API_BASE=$(sed -n 's/.*VITE_OPENOPS_API_BASE=\([^[:space:]]*\).*/\1/p' \
+    deploy/build-artifacts.sh | head -1)
+  if [ -z "$BAKED_API_BASE" ]; then
+    fail "无法从 deploy/build-artifacts.sh 解析 VITE_OPENOPS_API_BASE（构建脚本改了？门禁须同步）"
+  else
+    case "$BAKED_API_BASE" in
+      /openback/*)
+        if [ "${OPENOPS_ROOT_PATH-}" = "/openback" ]; then
+          echo "   OK：dist 烘焙 ${BAKED_API_BASE} 与 OPENOPS_ROOT_PATH=/openback 自洽"
+        else
+          fail "dist 烘焙 ${BAKED_API_BASE}，但 OPENOPS_ROOT_PATH='${OPENOPS_ROOT_PATH-}' ≠ /openback ⇒ 全部 API 将 404"
+        fi
+        ;;
+      /openops/*)
+        # 单文根：后端经前端 nginx 只收裸 /api/*，shim 对裸路径是 no-op ⇒ 留空(阶段4)与
+        # /openback(阶段1-3 保留回滚能力)都合法；其它值说明配错了。
+        case "${OPENOPS_ROOT_PATH-}" in
+          ""|/openback)
+            echo "   OK：dist 烘焙 ${BAKED_API_BASE}（单文根）与 OPENOPS_ROOT_PATH='${OPENOPS_ROOT_PATH-}' 自洽" ;;
+          *)
+            fail "单文根烘焙 ${BAKED_API_BASE} 下 OPENOPS_ROOT_PATH='${OPENOPS_ROOT_PATH-}' 非法（应为 /openback 灰度期，或阶段4留空）" ;;
+        esac
+        ;;
+      *)
+        fail "dist 烘焙的 VITE_OPENOPS_API_BASE=${BAKED_API_BASE} 不是已知文根（/openops/api 或 /openback/api）"
+        ;;
+    esac
+  fi
+
   if [[ ! "${OPENOPS_ENCRYPTION_KEY-}" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
     fail "OPENOPS_ENCRYPTION_KEY 必须是合法 Fernet key（不输出值）"
   fi
