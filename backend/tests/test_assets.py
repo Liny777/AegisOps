@@ -4,8 +4,10 @@ import os
 import time
 
 import psycopg
+import pytest
 from app import asset_registry_service
 from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap, wait_until
+from infra import egress
 from infra.external import mcp_registry_client, skill_hub_client
 
 
@@ -332,8 +334,10 @@ def test_asset_reconcile_failure_audited_not_fatal(client, monkeypatch):
     assert client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS).status_code == 200  # 不停服
 
 
-def test_asset_mcp_endpoint_redacted(client):
+def test_asset_mcp_endpoint_redacted(client, monkeypatch):
     """用户 MCP endpoint 展示脱敏（B6-TEST-001/30.5）：只回截断值，完整 endpoint 与 token 不出现。"""
+    # 本例测脱敏、不测 egress；register 现在会解析 DNS（check_mcp_egress），打桩免得依赖解析器
+    monkeypatch.setattr(egress, "check_mcp_egress", lambda _url: None)
     unwrap(client.post(
         "/api/openops/v1/assets/mcps", headers=USER_HEADERS,
         json={"client_request_id": f"m_{time.time_ns()}", "display_name": "内部 CMDB MCP",
@@ -594,6 +598,19 @@ def test_platform_skill_cannot_be_muted(client):
     assert "inspection" in _available_skill_keys(client, inst["instance_id"])
 
 
+def test_legacy_active_skill_binding_can_be_muted(client):
+    """存量 active 绑定行（b14b35c 之前手动绑过）也必须能解绑——不得 500。
+
+    ux_iab_skill = (config_version_id, skill_id) 且**索引不含 status** ⇒ 同一配置版本上
+    active 与 muted 不能并存：mute 时必须把旧 active 行 drop 掉再写 muted，否则唯一索引冲突。
+    """
+    inst = create_instance(client)
+    s = _upload_skill(client, "legacy-bound-skill")
+    _bind_skill(client, inst["instance_id"], s)  # 造存量 active 绑定行（老模型遗留）
+    _mute_skill(client, inst["instance_id"], s)
+    assert "legacy-bound-skill" not in _available_skill_keys(client, inst["instance_id"])
+
+
 def test_personal_skill_mute_is_per_instance(client):
     """解绑按实例隔离：inst_a 解绑不影响 inst_b。"""
     inst_a = create_instance(client, "A")
@@ -602,3 +619,165 @@ def test_personal_skill_mute_is_per_instance(client):
     _mute_skill(client, inst_a["instance_id"], s)
     assert "iso-skill" not in _available_skill_keys(client, inst_a["instance_id"])
     assert "iso-skill" in _available_skill_keys(client, inst_b["instance_id"])
+
+
+# ==================== 个人 MCP 默认挂载 + 解绑/重新绑定（与 skill 同一 mute 模型） ====================
+# 说明：register_mcp 现在过 check_mcp_egress（endpoint 是用户任填的 URL、且自动装配后运行时真出站）。
+# egress 会 **解析 DNS**，故除专测 SSRF 的用例外一律打桩——否则用例依赖解析器（离线/CI 会红）。
+
+@pytest.fixture
+def no_egress(monkeypatch):
+    monkeypatch.setattr(egress, "check_mcp_egress", lambda _url: None)
+
+
+def _register_mcp(client, name: str, endpoint: str = "https://cmdb.internal/mcp") -> dict:
+    return unwrap(client.post(
+        "/api/openops/v1/assets/mcps", headers=USER_HEADERS,
+        json={"client_request_id": f"m_{time.time_ns()}", "display_name": name,
+              "transport": "http", "endpoint": endpoint, "manifest_json": {}}))
+
+
+def _mute_mcp(client, instance_id: str, mcp: dict):
+    return unwrap(client.post(
+        f"/api/openops/v1/agent-teams/{instance_id}/mcp-mutes", headers=USER_HEADERS,
+        json={"client_request_id": f"mm_{time.time_ns()}", "asset_type": "mcp",
+              "skill_id": None, "skill_version_id": None,
+              "mcp_id": mcp["mcp_id"], "mcp_version_id": mcp.get("mcp_version_id")}))
+
+
+def _available_mcp_names(instance_id: str, uid: str = "0026demo01") -> set:
+    """运行时口径：start_task 装配 st.mcp_servers 用的正是 resolve_available_mcps（同源）。"""
+    import asyncio
+
+    from app import run_state_service
+    from infra.repositories import agent_teams
+
+    async def _go():
+        inst = await agent_teams.get_instance(instance_id)
+        return await run_state_service.resolve_available_mcps(uid, str(inst["active_config_version_id"]))
+
+    return {m["display_name"] for m in asyncio.run(_go())}
+
+
+def test_personal_mcp_auto_mounted_by_default(client, no_egress):
+    """个人 MCP 默认自动挂载：注册后不做任何绑定即在运行时集合内；对之后新建的实例也含。"""
+    inst_a = create_instance(client, "实例A")
+    _register_mcp(client, "我的 CMDB MCP")
+    assert "我的 CMDB MCP" in _available_mcp_names(inst_a["instance_id"])
+    inst_b = create_instance(client, "实例B")  # 注册之后才建 → 默认仍挂载
+    assert "我的 CMDB MCP" in _available_mcp_names(inst_b["instance_id"])
+
+
+def test_personal_mcp_unbind_removes_and_records_mute(client, no_egress):
+    """解绑：运行时集合不再含；active 配置版本上记一条 muted 绑定行。"""
+    inst = create_instance(client)
+    m = _register_mcp(client, "待解绑 MCP")
+    assert "待解绑 MCP" in _available_mcp_names(inst["instance_id"])
+    _mute_mcp(client, inst["instance_id"], m)
+    assert "待解绑 MCP" not in _available_mcp_names(inst["instance_id"])
+    muted = _sql("select status from sre_instance_asset_binding "
+                 "where mcp_id=%(m)s and status='muted' and deleted_at is null", {"m": m["mcp_id"]})
+    assert muted and muted[0][0] == "muted"
+
+
+def test_personal_mcp_mute_survives_derivation(client, no_egress):
+    """解绑必须扛过配置版本派生（save_config 结转 muted）——承重回归。"""
+    inst = create_instance(client)
+    m = _register_mcp(client, "派生 MCP")
+    _mute_mcp(client, inst["instance_id"], m)
+    unwrap(client.post(
+        f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS,
+        json={"client_request_id": f"cfg_{time.time_ns()}", "overlay_json": {"main_role_append": "x"},
+              "change_reason": "append", "base_config_version_id": None}))
+    assert "派生 MCP" not in _available_mcp_names(inst["instance_id"])  # 结转带 muted
+
+
+def test_personal_mcp_rebind_restores(client, no_egress):
+    """重新绑定（drop mute 行）：运行时集合恢复含。"""
+    inst = create_instance(client)
+    m = _register_mcp(client, "重绑 MCP")
+    _mute_mcp(client, inst["instance_id"], m)
+    assert "重绑 MCP" not in _available_mcp_names(inst["instance_id"])
+    muted = [b for b in _bindings(client, inst["instance_id"]) if b.get("binding_status") == "muted"]
+    assert len(muted) == 1
+    unwrap(client.delete(f"/api/openops/v1/asset-bindings/{muted[0]['binding_id']}", headers=USER_HEADERS))
+    assert "重绑 MCP" in _available_mcp_names(inst["instance_id"])
+
+
+def test_personal_mcp_mute_is_idempotent_guarded(client, no_egress):
+    """重复解绑 → VALIDATION_FAILED（同 (cv, mcp_id) 唯一，ux_iab_mcp）。"""
+    inst = create_instance(client)
+    m = _register_mcp(client, "幂等 MCP")
+    _mute_mcp(client, inst["instance_id"], m)
+    resp = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/mcp-mutes", headers=USER_HEADERS,
+                       json={"client_request_id": f"mm_{time.time_ns()}", "asset_type": "mcp",
+                             "skill_id": None, "skill_version_id": None,
+                             "mcp_id": m["mcp_id"], "mcp_version_id": m.get("mcp_version_id")})
+    assert resp.status_code == 400
+
+
+def test_platform_mcp_cannot_be_muted(client, no_egress, monkeypatch):
+    """平台 MCP 由模板装配、不可解绑：调 mcp-mutes → 403。"""
+    async def fake_servers():
+        return [{"server_id": "alarm", "server_name": "alarm-server",
+                 "server_url": "https://alarm.example.com/mcp", "description": "d"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", fake_servers)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    inst = create_instance(client)
+    plat = next(r for r in unwrap(client.get("/api/openops/v1/assets/mcps", headers=USER_HEADERS))["items"]
+                if r["display_name"] == "alarm-server")
+    resp = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/mcp-mutes", headers=USER_HEADERS,
+                       json={"client_request_id": f"mm_{time.time_ns()}", "asset_type": "mcp",
+                             "skill_id": None, "skill_version_id": None,
+                             "mcp_id": plat["mcp_id"], "mcp_version_id": plat.get("mcp_version_id")})
+    assert resp.status_code == 403
+    # 平台 MCP 本就不经 resolve_available_mcps（走注册表发现 + 模板白名单）
+    assert "alarm-server" not in _available_mcp_names(inst["instance_id"])
+
+
+def test_personal_mcp_mute_is_per_instance(client, no_egress):
+    """解绑按实例隔离：inst_a 解绑不影响 inst_b。"""
+    inst_a = create_instance(client, "A")
+    inst_b = create_instance(client, "B")
+    m = _register_mcp(client, "隔离 MCP")
+    _mute_mcp(client, inst_a["instance_id"], m)
+    assert "隔离 MCP" not in _available_mcp_names(inst_a["instance_id"])
+    assert "隔离 MCP" in _available_mcp_names(inst_b["instance_id"])
+
+
+def test_other_user_mcp_not_mounted(client, no_egress):
+    """按 owner 纳入：别人的 MCP 不进我的实例（list_mcps 的 owner 过滤 + resolve 的 user 守卫）。"""
+    inst = create_instance(client)
+    _register_mcp(client, "我的 MCP")
+    assert _available_mcp_names(inst["instance_id"], uid="0099other") == set()
+
+
+def test_bind_mcp_rejected(client, no_egress):
+    """MCP 无「绑定」语义：POST /asset-bindings asset_type=mcp → 400（新模型下 active mcp 行无意义）。"""
+    inst = create_instance(client)
+    m = _register_mcp(client, "不可绑 MCP")
+    resp = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/asset-bindings", headers=USER_HEADERS,
+                       json={"client_request_id": f"b_{time.time_ns()}", "asset_type": "mcp",
+                             "skill_id": None, "skill_version_id": None,
+                             "mcp_id": m["mcp_id"], "mcp_version_id": m.get("mcp_version_id")})
+    assert resp.status_code == 400
+
+
+def test_register_mcp_ssrf_blocked(client):
+    """SSRF：endpoint 是用户任填的 URL，自动装配后运行时真出站 ⇒ 登记即拦云 metadata。
+    用**字面 IP**（不依赖 DNS）保证离线可跑。"""
+    resp = client.post("/api/openops/v1/assets/mcps", headers=USER_HEADERS,
+                       json={"client_request_id": f"m_{time.time_ns()}", "display_name": "坏 MCP",
+                             "transport": "http", "endpoint": "http://169.254.169.254/latest/meta-data/",
+                             "manifest_json": {}})
+    assert resp.status_code == 400
+    assert "169.254.169.254" in str(resp.json()) or "受限" in str(resp.json())
+
+
+def test_register_mcp_rejects_empty_endpoint(client):
+    """空 endpoint 运行时不可达（resolve 会过滤掉）→ 登记即拒，别留死资产。"""
+    resp = client.post("/api/openops/v1/assets/mcps", headers=USER_HEADERS,
+                       json={"client_request_id": f"m_{time.time_ns()}", "display_name": "空 MCP",
+                             "transport": "http", "endpoint": "", "manifest_json": {}})
+    assert resp.status_code == 400

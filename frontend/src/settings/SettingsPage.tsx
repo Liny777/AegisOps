@@ -253,14 +253,14 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
   };
 
   const boundByAsset = new Map(bound.map((b) => [b.assetId, b]));
-  // 个人 skill「解绑」= muted 绑定行（本模型下 skill 绑定行只会是 muted）：assetId→binding，供解绑/重新绑定
-  const mutedByAsset = new Map(bound.filter((b) => b.kind === "skill" && b.bindingStatus === "muted").map((b) => [b.assetId, b]));
-  // 当前两页的并集（选中项只可能在可见页内）；过滤/分组已在服务端按 source_type 完成
+  // 个人 skill/MCP「解绑」= muted 绑定行（本模型下 skill/mcp 绑定行只会是 muted）：assetId→binding，供解绑/重新绑定
+  const mutedByAsset = new Map(bound.filter((b) => b.bindingStatus === "muted").map((b) => [b.assetId, b]));
+  // 当前两页的并集（选中项只可能在可见页内）；过滤/分组已在服务端按 source_type 完成（分页 + 客户端过滤会数量错乱）
   const libItems = useMemo(() => [...sys.items, ...mine.items], [sys, mine]);
   const selected = libItems.find((r) => r.id === selectedId) ?? null;
   const selBinding = selected ? boundByAsset.get(selected.id) : undefined;
   const selIsSystem = selected?.sourceType === "platform";  // 用 sourceType 判定（meta 是展示串，不该当业务载荷）
-  const selSkillMute = selected ? mutedByAsset.get(selected.id) : undefined;  // 个人 skill 的 muted 绑定行（已解绑）
+  const selMute = selected ? mutedByAsset.get(selected.id) : undefined;  // 个人 skill/MCP 的 muted 绑定行（已解绑）
   const noun = isSkill ? "Skill" : "MCP";
 
   // 翻页/搜索后选中项可能已不在可见页 → 自动落到当前页第一条
@@ -285,9 +285,9 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
 
   const treeRow = (r: AssetRow) => {
     const on = selectedId === r.id;
-    const isSystem = r.sourceType === "platform";
-    // 平台 skill 恒自动装配；个人 skill 默认装配、被 mute（解绑）后不装配；mcp 看绑定
-    const attached = isSkill ? (isSystem || !mutedByAsset.has(r.id)) : boundByAsset.has(r.id);
+    const isSystem = r.sourceType === "platform";  // sourceType 判定（meta 是展示串，不该当业务载荷）
+    // skill/mcp 同式：平台恒自动装配（MCP 由模板 default_tools 决定）；个人资产默认装配、被 mute（解绑）后不装配
+    const attached = isSystem || !mutedByAsset.has(r.id);
     const deletable = !isSystem;
     return (
       <Interactive key={r.id} onClick={() => setSelectedId(r.id)}
@@ -296,7 +296,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
         <Icon name={isSkill ? "file-code" : "plug"} size={14} color={on ? color.brand : color.textSubtle} />
         <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: on ? 650 : 500, color: on ? color.brand : color.textBody, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{r.name}</span>
         <span style={{ fontSize: 11, color: color.textFaint, flex: "0 0 auto", fontVariantNumeric: "tabular-nums" }}>{r.version}</span>
-        {attached ? <span title={isSkill ? (isSystem ? "已自动装配到本 Agent" : "已装配到本 Agent") : "已绑定当前 Agent"} style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
+        {attached ? <span title={isSystem ? (isSkill ? "已自动装配到本 Agent" : "由平台自动装配（按模板工具白名单）") : "已装配到本 Agent"} style={{ width: 7, height: 7, borderRadius: "50%", background: "#22a06b", flex: "0 0 auto" }} /> : null}
         {deletable ? (
           <Icon name="trash" size={13} color={color.textFaint} title="删除"
             onClick={() => { if (confirm(`删除「${r.name}」？`)) run(api.deleteAsset(kind, r.id)); }} />
@@ -368,8 +368,8 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
                   <span style={{ color: color.textFaint }}>加载中…</span>
                 ) : (
                   detail?.description || selected.description || (isSkill
-                    ? "该 Skill 未填写描述。（Skill 是在你的隔离沙箱容器内受控执行的技能包，对话里可用 /名称 直接触发。）"
-                    : "该 MCP 未填写描述。（MCP 是经 Tool Gateway 受控调用的 HTTP 服务：scope 校验 / 审批门 / 审计留痕。）")
+                    ? "该 Skill 未填写描述。（Skill 是在你的隔离沙箱容器内受控执行的技能包，对话里可用 /名称 直接触发；平台技能自动装配，个人技能默认装配、可解绑。）"
+                    : "该 MCP 未填写描述。（MCP 是经 Tool Gateway 受控调用的 HTTP 服务：审批门 / 审计留痕；平台 MCP 的工具由管理员在模板中勾选后自动装配，个人 MCP 默认自动装配、可解绑。）")
                 )}
               </div>
               {detail?.content ? (
@@ -380,29 +380,21 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
                   </pre>
                 </>
               ) : null}
+              {/* skill/mcp 同一模型：平台资产只读自动装配（无「绑定」动作——MCP 由模板 default_tools 决定，
+                  skill 运行时无条件纳入）；个人资产默认装配、可解绑/重新绑定（muted 绑定行 opt-out）。 */}
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                {isSkill ? (
-                  selIsSystem ? (
-                    // 平台 skill：运行时无条件自动装配，只读、无解绑
-                    <Pill tone="good">已自动装配到本 Agent</Pill>
-                  ) : selSkillMute ? (
-                    <>
-                      <Pill tone="neutral">已从本 Agent 解绑</Pill>
-                      <Button disabled={busy} onClick={() => run(api.unbindAsset(selSkillMute.id))}>重新绑定</Button>
-                    </>
-                  ) : (
-                    <>
-                      <Pill tone="good">已自动装配到本 Agent</Pill>
-                      <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindSkill(instanceId, selected))}>解绑</Button>
-                    </>
-                  )
-                ) : selBinding ? (
+                {selIsSystem ? (
+                  <Pill tone="good">{isSkill ? "已自动装配到本 Agent" : "由平台自动装配（按模板工具白名单）"}</Pill>
+                ) : selMute ? (
                   <>
-                    <Pill tone="good">已绑定当前 Agent</Pill>
-                    <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindAsset(selBinding.id))}>解绑</Button>
+                    <Pill tone="neutral">已从本 Agent 解绑</Pill>
+                    <Button disabled={busy} onClick={() => run(api.unbindAsset(selMute.id))}>重新绑定</Button>
                   </>
                 ) : (
-                  <Button disabled={busy} onClick={() => run(api.bindAsset(instanceId, selected))}>绑定到当前 Agent</Button>
+                  <>
+                    <Pill tone="good">已自动装配到本 Agent</Pill>
+                    <Button variant="secondary" disabled={busy} onClick={() => run(api.unbindOwnAsset(kind, instanceId, selected))}>解绑</Button>
+                  </>
                 )}
               </div>
             </div>

@@ -275,8 +275,73 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
                 "input_schema": schema, "server_url": surl, "readonly": bool(t.get("readonly")),
                 "scope_mode": "required" if appid_prop else "none",
                 "appid_arg_path": f"$.{appid_prop}" if appid_prop else None,
+                "source_type": "platform",  # 自证：随 spec 下传给 tool_gateway.invoke（对照 _user_mcp_specs）
             })
     return specs
+
+
+# 用户 MCP 工具发现超时（每家独立）：direct 路由是 3 次串行 POST × httpx timeout=15 ⇒ 不封顶会把一家挂掉的
+# server 变成每轮 +45s。
+_USER_MCP_DISCOVER_S = float(os.getenv("OPENOPS_USER_MCP_DISCOVER_TIMEOUT_S", "5"))
+# 用户 MCP 工具是否一律需审批。默认 0 = 信任 server 自证的 readOnlyHint（28.2「用户自担责任，仅审计」：
+# 是用户自己的 server、不带任何平台凭证、每次调用都有审计）。置 1 可一键收紧为无条件 ASK。
+_USER_MCP_ASK_ALWAYS = os.getenv("OPENOPS_USER_MCP_ASK", "0") == "1"
+
+
+async def _user_mcp_specs(st: TaskState) -> list[dict[str, Any]]:
+    """用户自定义 MCP（st.mcp_servers）→ 动态工具 spec。与平台支路的四点差别，逐条承重：
+
+    1) **仅 main**：子 Agent 工具面恒按画像 mcp_tools 白名单裁剪（B7 per-agent 隔离）。子 st.mcp_servers
+       本就不继承（_child_state 不复制），此处 agent_key 守卫是第二道锁。
+    2) **不受 OPENOPS_MCPREGISTRY=mock 门**：registry 是**平台** server 的目录，与用户自己登记的 endpoint
+       无关。门在那个开关上会让本特性在所有 dev/CI（默认 mock）里静默不存在。
+    3) **source_type='user' 随 spec 下传** → Tool Gateway 走用户分支（28.2）：不透传 Cookie、不注入
+       X-OpenOps-*、不做 APPID 范围管控。**绝不能让用户填的 URL 收到本人 IAM Cookie**——invoke 的
+       source_type 默认值就是 "platform"，不显式传即泄（_platform_headers 会带上 Cookie + effective_appids）。
+    4) **scope_mode 恒 none / appid_arg_path 恒 None**：用户分支本就不校 scope；且 _make_dynamic_tool 的
+       「单 appid 自动补」会把**平台 APPID 塞进用户 server 的入参**（越权外泄），必须靠 appid_field=="" 关死。
+
+    审批口径：is_approval_required = not readonly（拍板：信任 readOnlyHint）。**该 hint 由用户自己的
+    server 自证**，且用户分支没有标注 fail-closed 兜底（_effective_annotation 只在 platform 分支内），
+    故这是唯一的门 —— OPENOPS_USER_MCP_ASK=1 可收紧为无条件 ASK。
+
+    mock 环境行为（**勿当 bug 修**）：mock 下 discover_tools 对任意 URL 返回内置 _TOOLS
+    {query_resource, recover_execute}，二者通常已被平台/内置占名 → 被 _build_toolkit 的同名冲突守卫跳过
+    ⇒ 零装配、零出站。real 环境才真正装配。
+    """
+    if st.agent_key != "main" or not st.mcp_servers:
+        return []
+    from infra import egress
+    from infra.external import mcp_registry_client
+
+    async def _one(srv: dict[str, Any]) -> list[dict[str, Any]]:
+        surl = str(srv.get("endpoint") or "")
+        if mcp_registry_client.is_placeholder_endpoint(surl):
+            return []  # 占位 endpoint 不出网、不出 spec
+        try:
+            # 调用边界复校（登记时校过，但 DNS 会翻转；先例 model_gateway.py:57）。getaddrinfo 是**同步阻塞**，
+            # 必须 to_thread——否则 gather 的同步前缀串行执行，并发是假的。
+            await asyncio.to_thread(egress.check_mcp_egress, surl)
+            tools = await asyncio.wait_for(mcp_registry_client.discover_tools(surl), _USER_MCP_DISCOVER_S)
+        except Exception as e:  # noqa: BLE001 —— 一家用户 server 坏/被 egress 拦，不拖垮整轮（同 reconcile 口径）
+            log.warning("用户 MCP 工具发现失败 mcp=%s：%s", srv.get("display_name"), _redact(str(e)))
+            return []
+        out: list[dict[str, Any]] = []
+        for t in tools:
+            if not t.get("tool_name"):
+                continue
+            out.append({
+                "name": t["tool_name"], "description": t.get("description", ""),
+                "input_schema": t.get("input_schema") or {}, "server_url": surl,
+                "readonly": bool(t.get("readonly")),
+                "scope_mode": "none", "appid_arg_path": None,  # 见 docstring 4)：关死平台 APPID 自动补
+                "source_type": "user",
+                "display_name": srv.get("display_name"),
+            })
+        return out
+
+    got = await asyncio.gather(*(_one(s) for s in st.mcp_servers), return_exceptions=True)
+    return [s for r in got if isinstance(r, list) for s in r]
 
 
 def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any]) -> Any:
@@ -293,17 +358,26 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
     required = set(schema.get("required") or [])
 
     appid_field = (spec.get("appid_arg_path") or "").removeprefix("$.")
+    source_type = str(spec.get("source_type") or "platform")
 
     async def _handler(**kwargs: Any) -> Any:
         args = {k: v for k, v in kwargs.items() if k in props and v not in (None, "", [], {})}
         # 联调便利：appid（如 project_id）受 scope 约束（拍板 i），但 GLM 常忘传/传空；当 scope 恰好 1 个 appid
         # 时自动补上（填的就是被允许的那个，不削弱 scope）。多 appid（真 oModel）时不补，交给模型自己选。
+        # 用户 MCP：appid_arg_path 恒 None ⇒ 此处不触发（不得把平台 APPID 塞进用户 server 入参）。
         if appid_field and not args.get(appid_field):
             allowed = (st.scope_ctx or {}).get("effective_appids", [])
             if len(allowed) == 1:
                 args[appid_field] = allowed[0]
+        if source_type == "user":
+            # 调用边界复校（发现→调用之间 DNS 可能翻转）；被拦即不发包
+            from infra import egress
+            try:
+                await asyncio.to_thread(egress.check_mcp_egress, server_url)
+            except Exception as e:  # noqa: BLE001
+                return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：EGRESS_BLOCKED {e}")])
         try:
-            r = await tool_gateway.invoke(st, run, name, args, server_url=server_url,
+            r = await tool_gateway.invoke(st, run, name, args, server_url=server_url, source_type=source_type,
                                           started_msg=f"调用 {name}", succeeded_msg=f"{name} 返回")
         except ToolBlocked as e:
             # 只读查询被拦（如查询出 scope 的 APPID_OUT_OF_SCOPE）不算「恢复被拦」：没有恢复动作可抑制，
@@ -621,6 +695,32 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             "is_approval_required": not spec["readonly"], "is_secret_required": False,
             "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",
             "origin": "dynamic",  # gateway：catalog 未标注行不推翻此注入（管理员显式标注才接管）
+        }
+        tools.append(_make_dynamic_tool(st, run, spec))
+    # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见
+    # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP
+    # 不可能出现在管理员维护的模板白名单里，若按白名单裁剪则本特性等于不存在。隔离靠「仅 main」
+    # （_user_mcp_specs 守 agent_key + 子不继承 mcp_servers），平台环的白名单门一行未动（B7-SEC-001）。
+    # 占名集必须含**未装配**的平台名（被裁剪的 demo/动态工具、模板外的注册表工具）：它们没进 toolkit，
+    # 名字却不能让用户 server 顶上——否则 Agent 以为在调那个平台工具、实际打到用户 URL。
+    _taken = (set(st.tool_annotations) | {t.name for t in tools if getattr(t, "name", None)}
+              | {s["name"] for s in dynamic_specs} | set(fns) | {n for n, _ in pruned})
+    for spec in await _user_mcp_specs(st):
+        # 同名冲突：**平台赢**，跳过用户工具。注意这与 skill 模型刻意相反（resolve_available_skills 的
+        # Loop B 是 out[key]=... 即用户覆盖平台）——让用户 server 影子化一个平台工具名，等于 Agent 以为在
+        # 调平台工具、实际打到用户 URL。安全优先于对称。
+        if spec["name"] in _taken:
+            log.warning("用户 MCP 工具重名，已跳过（平台优先）：tool=%s mcp=%s",
+                        spec["name"], spec.get("display_name"))
+            continue
+        _taken.add(spec["name"])
+        st.tool_annotations[spec["name"]] = {
+            # readOnlyHint 由用户自己的 server 自证；用户分支无标注 fail-closed 兜底 ⇒ 这是唯一的门。
+            # OPENOPS_USER_MCP_ASK=1 → 无条件 ASK（28.2「用户自担责任，仅审计」下默认信任）。
+            "is_approval_required": True if _USER_MCP_ASK_ALWAYS else not spec["readonly"],
+            "is_secret_required": False,  # 平台 Secret 绝不注入用户 endpoint
+            "scope_mode": "none", "appid_arg_path": None, "status": "allowed",
+            "origin": "user",
         }
         tools.append(_make_dynamic_tool(st, run, spec))
     return Toolkit(tools=tools), pruned

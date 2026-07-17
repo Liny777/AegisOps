@@ -27,6 +27,10 @@ class TaskState:
     # 模板 default_tools（B7·二：RuntimePlan 只装配模板内工具）。
     # None=未经 start_task 装配（无模板信息）；set()（含空集）=模板集合上界——空模板即零平台工具（B7-SEC-001）。
     template_tools: set[str] | None = None
+    # 用户自定义 MCP server（本实例已挂载、未被解绑）：[{mcp_id, display_name, endpoint}]，start_task 解析。
+    # **仅 main 装配**：子 Agent 不继承（_child_state 不复制 → 恒 None），用户 MCP 只豁免 main 的模板白名单，
+    # 子角色工具面仍按画像 mcp_tools 裁剪（B7 per-agent 隔离）。None/[]=无（旧快照/单测手搓）→ 按空处理。
+    mcp_servers: list[dict[str, Any]] | None = None
     sandbox_cfg: dict[str, Any] | None = None  # 沙箱运行配置（容量/deny 前缀）；容器内 Bash 工具用（B8·补2）
     # Agent 可调 Skill：{skill_key: {version_no, checksum}}（平台 active + 用户绑定；C1 run_skill 作 agent 工具）
     # main task 上=已过 main.skills 模板白名单的集合（main 自身可执行面）

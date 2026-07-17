@@ -194,8 +194,8 @@ export interface OpenOpsApi {
   deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
   bindAsset(instanceId: string, row: AssetRow): Promise<void>;
   unbindAsset(bindingId: string): Promise<void>;
-  /** 个人 skill 解绑（默认自动挂载的 opt-out）：记一条 muted 绑定行；重新绑定用 unbindAsset(该 mute 行 id)。 */
-  unbindSkill(instanceId: string, row: AssetRow): Promise<void>;
+  /** 个人 skill/MCP 解绑（默认自动挂载的 opt-out）：记一条 muted 绑定行；重新绑定用 unbindAsset(该 mute 行 id)。 */
+  unbindOwnAsset(kind: "skill" | "mcp", instanceId: string, row: AssetRow): Promise<void>;
   getMainAppend(instanceId: string): Promise<string>;
   saveMainAppend(instanceId: string, text: string): Promise<void>;
   reconcileAssets(): Promise<Record<string, unknown>>;
@@ -563,23 +563,7 @@ const realApi: OpenOpsApi = {
   },
   async getMcpLibrary(params) {
     const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/mcps${assetQs(params)}`);
-    return {
-      items: d.items.map((r) => ({
-        id: String(r.mcp_id),
-        name: String(r.display_name),
-        version: `v${r.version_no ?? 1}`,
-        status: String(r.status),
-        statusTone: r.status === "active" ? "good" as const : "warning" as const,
-        meta: r.source_type === "platform" ? "平台 MCP" : "我的 MCP",
-        bound: false,
-        kind: "mcp" as const,
-        sourceType: r.source_type === "platform" ? "platform" as const : "user" as const,
-        versionId: r.mcp_version_id ? String(r.mcp_version_id) : undefined,
-        description: r.description ? String(r.description) : undefined, // registry 服务描述
-        category: r.category ? String(r.category) : undefined,
-      })),
-      total: d.total, page: d.page, pageSize: d.page_size,
-    };
+    return { items: d.items.map(toMcpRow), total: d.total, page: d.page, pageSize: d.page_size };
   },
   // ---- settings 写闭环（B6） ----
   async uploadSkill(file) {
@@ -617,16 +601,17 @@ const realApi: OpenOpsApi = {
     // 删除接口只有 bindingId，无法可靠还原 instanceId，保守失效全部 Agent。
     invalidateAvailableSkills();
   },
-  async unbindSkill(instanceId, row) {
-    await apiFetch(`/openops/v1/agent-teams/${instanceId}/skill-mutes`, {
+  async unbindOwnAsset(kind, instanceId, row) {
+    const isSkill = kind === "skill";
+    await apiFetch(`/openops/v1/agent-teams/${instanceId}/${kind}-mutes`, {
       method: "POST",
       body: {
         client_request_id: crid(),
-        asset_type: "skill",
-        skill_id: row.id,
-        skill_version_id: row.versionId ?? null,
-        mcp_id: null,
-        mcp_version_id: null,
+        asset_type: kind,
+        skill_id: isSkill ? row.id : null,
+        skill_version_id: isSkill ? row.versionId ?? null : null,
+        mcp_id: isSkill ? null : row.id,
+        mcp_version_id: isSkill ? null : row.versionId ?? null,
       },
     });
     invalidateAvailableSkills(instanceId);
@@ -1119,7 +1104,7 @@ const mockApi: OpenOpsApi = {
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
   bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   unbindAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
-  unbindSkill: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
+  unbindOwnAsset: (_kind, instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   getMainAppend: () => delay("优先关注支付链路核心接口的 P99 与错误率。"),
   saveMainAppend: () => delay(undefined as unknown as void),
   reconcileAssets: () => delay({ skipped: true }),

@@ -1,4 +1,9 @@
-"""用户自定义 LLM egress policy（13 / 28.4 号 SSRF 防护）。
+"""用户自定义出站 egress policy（13 / 28.4 号 SSRF 防护）：用户 LLM base_url + 用户自定义 MCP endpoint。
+
+两条出站共用同一条梯子（`_check`）：`check_llm_egress` / `check_mcp_egress` 只是薄包装。
+**环境变量沿用 `OPENOPS_LLM_EGRESS_*` 命名（历史包袱，不改名），但它们同时管辖 MCP。**
+已知残留：`_PIN` 是模块级全局、按裸 hostname 键控且 LLM/MCP 共用——用户 MCP 若在 ALB/蓝绿后面
+整组轮换 IP，会被判 rebinding 拦截（发现边界吞成 warning ⇒ 工具静默消失），逃生门 OPENOPS_LLM_EGRESS_PIN=0。
 
 创建/更新 LLM 配置时（以及后续每次调用边界）校验 base_url，阻断指向：
 - 环回（127.0.0.0/8、::1）、未指定（0.0.0.0）—— 打自身
@@ -79,26 +84,41 @@ def _blocked_ip(ip) -> str | None:  # noqa: ANN001 — ip: IPv4Address|IPv6Addre
 
 def check_llm_egress(base_url: str) -> None:
     """校验用户 LLM base_url；不合规抛 MODEL_PROBE_FAILED（含原因）。"""
-    parsed = urlparse(base_url)
+    _check(base_url, code=Err.MODEL_PROBE_FAILED, label="base_url")
+
+
+def check_mcp_egress(endpoint: str) -> None:
+    """校验用户自定义 MCP endpoint（登记时 + 发现边界 + 调用边界三处）；不合规抛 VALIDATION_FAILED。
+
+    与 LLM 同一条梯子（单一来源）：用户 MCP 的 endpoint 是用户任填的 URL，若不校，注册一个
+    `http://169.254.169.254/…` 就能让后端代其读云 metadata。环境变量沿用 `OPENOPS_LLM_EGRESS_*`
+    （不改名，历史包袱）——它们现在同时管辖 LLM 与 MCP 两条出站。
+    """
+    _check(endpoint, code=Err.VALIDATION_FAILED, label="MCP endpoint")
+
+
+def _check(url: str, *, code: str, label: str) -> None:
+    """SSRF 梯子（scheme / deny-host / 逐 IP / rebinding 钉扎）——LLM 与 MCP 共用，勿分叉。"""
+    parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 协议不允许：{parsed.scheme or '(空)'}（仅 http/https）")
+        raise ApiError(code, f"{label} 协议不允许：{parsed.scheme or '(空)'}（仅 http/https）")
     host = parsed.hostname
     if not host:
-        raise ApiError(Err.MODEL_PROBE_FAILED, "base_url 缺少主机名")
+        raise ApiError(code, f"{label} 缺少主机名")
     if host.lower() in _deny_hosts():
-        raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 主机被 egress 策略阻断：{host}")
+        raise ApiError(code, f"{label} 主机被 egress 策略阻断：{host}")
     # 解析所有 IP（DNS rebinding 防护）；解析失败也拦（无法确认目标安全）
     try:
         infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80),
                                    proto=socket.IPPROTO_TCP)
     except socket.gaierror as e:
-        raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 主机无法解析：{host}") from e
+        raise ApiError(code, f"{label} 主机无法解析：{host}") from e
     ips = frozenset(str(ipaddress.ip_address(info[4][0])) for info in infos)
     for raw in ips:
         ip = ipaddress.ip_address(raw)
         reason = _blocked_ip(ip)
         if reason is not None:
-            raise ApiError(Err.MODEL_PROBE_FAILED, f"base_url 指向受限地址（{reason}）：{host}→{ip}")
+            raise ApiError(code, f"{label} 指向受限地址（{reason}）：{host}→{ip}")
     # S3 解析钉扎：与首见解析集完全不相交 → 疑似 DNS rebinding（合法 CDN 轮换通常有交集/走 deny 白名单面）
     if _pin_enabled():
         import time as _time
@@ -106,7 +126,7 @@ def check_llm_egress(base_url: str) -> None:
         now = _time.monotonic()
         pinned = _PIN.get(host.lower())
         if pinned and pinned[0] > now and ips.isdisjoint(pinned[1]):
-            raise ApiError(Err.MODEL_PROBE_FAILED,
-                           f"base_url 解析漂移（疑似 DNS rebinding，已拦截）：{host}；如为合法迁移请重启后端或置 OPENOPS_LLM_EGRESS_PIN=0")
+            raise ApiError(code,
+                           f"{label} 解析漂移（疑似 DNS rebinding，已拦截）：{host}；如为合法迁移请重启后端或置 OPENOPS_LLM_EGRESS_PIN=0")
         if pinned is None or pinned[0] <= now:
             _PIN[host.lower()] = (now + _pin_ttl(), ips)

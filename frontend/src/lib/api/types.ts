@@ -347,7 +347,7 @@ export interface AssetRow {
   versionId?: string; // 库行：最新版本 id（绑定用）
   assetId?: string; // 已绑行：底层资产 id（与库行对照「已绑定」态）
   skillKey?: string; // skill 行：运行时白名单键（模板编辑器勾选用；display_name 只是展示名）
-  bindingStatus?: string; // 已绑行：绑定行状态（active/muted）——个人 skill 的 muted=已从本 Agent 解绑
+  bindingStatus?: string; // 已绑行：绑定行状态（active/muted）——个人 skill/MCP 的 muted=已从本 Agent 解绑
   description?: string; // 真描述（SKILL.md frontmatter / registry 服务描述）——插件页「说明」用
   category?: string;
 }

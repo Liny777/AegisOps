@@ -436,3 +436,216 @@ def test_reconcile_isolates_bad_server(client, monkeypatch):
     assert summary.get("failed") is not True  # 整轮不因一家坏而 failed
     assert "坏掉的同事server" in (summary.get("tool_sync_errors") or {})  # 坏家记错
     assert summary.get("tools_created", 0) >= 1  # 好家（seed mcp）照常同步
+
+
+# ==================== 用户自定义 MCP 运行时装配（打通「注册了却永远加载不到」的缺口） ====================
+
+def _user_st_run(endpoint: str = "https://cmdb.internal/mcp"):
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.scope_ctx = {"effective_appids": ["APP-1"]}
+    st.tool_annotations = {}
+    st.template_tools = set()  # 模板零工具（B7-SEC-001 的最严姿态）——用户 MCP 工具仍应装配
+    st.mcp_servers = [{"mcp_id": "m1", "display_name": "我的 CMDB", "endpoint": endpoint}]
+    return st, {"agent_team_instance_id": "i", "framework_session_id": "s", "audit_trace_id": "tr"}
+
+
+def _patch_user_discovery(monkeypatch, tool_name: str = "cmdb_query", readonly: bool = True):
+    from infra import egress
+
+    monkeypatch.setattr(egress, "check_mcp_egress", lambda _u: None)  # 本组测装配，不测 egress
+
+    async def fake_discover(url):
+        return [{"tool_name": tool_name, "description": "查 CMDB", "readonly": readonly,
+                 "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}}}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+
+
+def test_user_mcp_tool_bypasses_template_whitelist(monkeypatch):
+    """用户自定义 MCP 工具豁免模板 default_tools 白名单（先例 filter_main_skills：白名单只收窄平台资产）。
+    模板零工具时平台面为空，用户工具仍装配——否则本特性等于不存在（管理员模板里不可能有用户的 MCP）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch)
+
+    async def scenario():
+        st, run = _user_st_run()
+        tk, _ = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("cmdb_query")) is not None
+        ann = st.tool_annotations["cmdb_query"]
+        assert ann["origin"] == "user" and ann["status"] == "allowed"
+        assert ann["scope_mode"] == "none" and ann["appid_arg_path"] is None  # 关死平台 APPID 自动补
+        assert ann["is_secret_required"] is False  # 平台 Secret 绝不注入用户 endpoint
+        assert ann["is_approval_required"] is False  # readOnlyHint=true → 免审批（拍板：信任自证）
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_tool_not_attached_to_subagent(monkeypatch):
+    """B7 per-agent 隔离：用户 MCP 只豁免 main；子 Agent 恒按画像 mcp_tools 裁剪。
+    子 TaskState 本就不继承 mcp_servers（_child_state 不复制），_user_mcp_specs 的 agent_key 守卫是第二道锁。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch)
+
+    async def scenario():
+        st, run = _user_st_run()
+        st.agent_key = "diagnose"  # 子 Agent
+        tk, _ = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("cmdb_query")) is None
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_write_tool_requires_approval(monkeypatch):
+    """未声明 readOnlyHint（写类）→ ASK（is_approval_required=True）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch, tool_name="cmdb_write", readonly=False)
+
+    async def scenario():
+        st, run = _user_st_run()
+        await ar._build_toolkit(st, run)
+        assert st.tool_annotations["cmdb_write"]["is_approval_required"] is True
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_ask_always_env_tightens(monkeypatch):
+    """OPENOPS_USER_MCP_ASK=1 → 无条件 ASK（readOnlyHint 是用户 server 自证，需要时可一键收紧）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch, readonly=True)
+    monkeypatch.setattr(ar, "_USER_MCP_ASK_ALWAYS", True)
+
+    async def scenario():
+        st, run = _user_st_run()
+        await ar._build_toolkit(st, run)
+        assert st.tool_annotations["cmdb_query"]["is_approval_required"] is True
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_name_collision_platform_wins(monkeypatch):
+    """同名冲突平台赢（与 skill 的「用户覆盖平台」刻意相反）：让用户 server 影子化平台工具名 =
+    Agent 以为在调平台工具、实际打到用户 URL。**含未装配的平台名**（被裁剪的 demo 工具也占名）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch, tool_name="query_resource")  # 撞 demo 平台工具名
+
+    async def scenario():
+        st, run = _user_st_run()
+        await ar._build_toolkit(st, run)
+        # query_resource 是平台 demo 工具名（本例未标注 → 被裁剪、未装配），用户工具**不得**顶上
+        assert st.tool_annotations.get("query_resource", {}).get("origin") != "user"
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_invoke_uses_user_source_type(monkeypatch):
+    """**承重**：用户 MCP 工具必须以 source_type='user' 穿 Gateway。invoke 的默认值是 'platform'，
+    _make_dynamic_tool 此前从不传它 ⇒ 用户填的 URL 会收到本人 IAM Cookie + X-OpenOps-Effective-Appids
+    （_platform_headers）。此测钉死该缺口：真实出站 header 里不得有 Cookie / X-OpenOps-*。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    _patch_user_discovery(monkeypatch)
+
+    from infra import request_context as rc
+    from infra.external import http_mcp_client
+    from runtime import tool_gateway
+
+    seen: dict = {}
+
+    async def fake_call(tool_name, arguments, headers=None, server_url=None):
+        seen["headers"] = dict(headers or {})
+        seen["server_url"] = server_url
+        return {"result_summary": "ok"}
+
+    async def quiet(*a, **k):
+        return None
+
+    monkeypatch.setattr(http_mcp_client, "call_tool", fake_call)
+    monkeypatch.setattr(tool_gateway, "emit", quiet)
+
+    async def scenario():
+        rc.set_request_user("u", "JSESSIONID=secret-session")  # 有登录态：平台分支会注 Cookie
+        try:
+            st, run = _user_st_run()
+            tk, _ = await ar._build_toolkit(st, run)
+            ft = await tk.get_tool("cmdb_query")
+            await ft(q="x")
+        finally:
+            rc.clear()
+        # 不传 source_type 时 invoke 默认走 platform 分支 → 本例模板零工具即 TOOL_BLOCKED，
+        # 根本不出站（seen 空）；模板白名单为 None/撞名时则会出站并带上 Cookie。两者都是缺陷。
+        assert seen, "用户 MCP 工具没有真正出站——说明 _make_dynamic_tool 没把 source_type='user' 传给 Gateway"
+        assert seen["server_url"] == "https://cmdb.internal/mcp"
+        assert "Cookie" not in seen["headers"], "用户 MCP 出站带上了用户 IAM Cookie（凭证外泄）"
+        assert not any(k.startswith("X-OpenOps-") for k in seen["headers"])
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_discovery_failure_isolated(monkeypatch):
+    """一家用户 server 坏/被 egress 拦 → 只 log.warning，不拖垮整轮装配（同 reconcile 的按 server 隔离口径）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    from infra import egress
+
+    monkeypatch.setattr(egress, "check_mcp_egress", lambda _u: None)
+
+    async def boom(url):
+        raise RuntimeError("server down")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", boom)
+
+    async def scenario():
+        st, run = _user_st_run()
+        tk, _ = await ar._build_toolkit(st, run)  # 不抛
+        assert (await tk.get_tool("list_scope_apps")) is not None  # 其余工具照常
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_egress_blocked_endpoint_not_discovered(monkeypatch):
+    """endpoint 被 egress 拦（SSRF/rebinding）→ 不出 spec、不装配（发现边界复校，登记时校过也要再校）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    from domain.errors import ApiError, Err
+    from infra import egress
+
+    def blocked(_u):
+        raise ApiError(Err.VALIDATION_FAILED, "MCP endpoint 指向受限地址")
+
+    monkeypatch.setattr(egress, "check_mcp_egress", blocked)
+
+    async def scenario():
+        st, run = _user_st_run(endpoint="http://169.254.169.254/mcp")
+        tk, _ = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("cmdb_query")) is None
+
+    asyncio.run(scenario())
+
+
+def test_user_mcp_placeholder_endpoint_no_egress(monkeypatch):
+    """占位 endpoint（http://mock）不出网、不出 spec——mock/seed 环境零副作用。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+
+    async def scenario():
+        st, run = _user_st_run(endpoint="http://mock")
+        tk, _ = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("cmdb_query")) is None
+
+    asyncio.run(scenario())
