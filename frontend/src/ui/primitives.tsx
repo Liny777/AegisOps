@@ -52,7 +52,7 @@ export function Button({
     },
     ghost: {
       base: { border: `1px solid ${color.border}`, background: "#fff", color: color.textNav, fontWeight: 600, fontSize: 12, padding: "5px 10px" },
-      hover: { background: color.brandTintBg, borderColor: color.brandTintBorder },
+      hover: { background: color.brandTintBg},
     },
   };
   return (
