@@ -105,12 +105,10 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
         try:
-            from urllib.parse import urlparse
-
             existing = {str(m.get("display_name")) for m in await assets.list_platform_mcps()}
             for srv in await mcp_registry_client.list_servers():
                 url = str(srv.get("server_url") or "")
-                if not url or urlparse(url).hostname == "mock":  # 占位防呆（同 discover_tools 口径）
+                if mcp_registry_client.is_placeholder_endpoint(url):  # 占位防呆（同 discover_tools 口径）
                     continue
                 name = str(srv.get("server_name") or srv.get("server_id") or "")
                 if not name or name in existing:

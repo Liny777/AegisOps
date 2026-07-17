@@ -68,6 +68,10 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
     _pool = st.skills_pool if st.skills_pool is not None else (st.available_skills or {})
     child.available_skills = {k: v for k, v in _pool.items() if k in allowed_sk}
     anns = st.tool_annotations or {}
+    # mcp_servers **刻意不继承**（子恒 None）：用户自定义 MCP 只豁免 main 的模板白名单，子 Agent 工具面
+    # 仍严格按画像 mcp_tools 裁剪（B7 角色隔离——否则每个子角色都能看到用户全部 MCP 工具）。
+    # 与 skill 一致：filter_main_skills 的用户豁免也只对 main，此处按 allowed_sk 切片时无用户豁免。
+    # 附带收益：子 Agent 不对用户 endpoint 发起工具发现（_build_toolkit 每次都会全量 sweep）。
     child.template_tools = set(sub.get("mcp_tools") or [])
     child.tool_annotations = {k: v for k, v in anns.items() if k in child.template_tools}
     return child

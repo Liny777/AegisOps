@@ -541,6 +541,19 @@ def test_platform_skill_cannot_be_muted(client):
     assert "inspection" in _available_skill_keys(client, inst["instance_id"])
 
 
+def test_legacy_active_skill_binding_can_be_muted(client):
+    """存量 active 绑定行（b14b35c 之前手动绑过）也必须能解绑——不得 500。
+
+    ux_iab_skill = (config_version_id, skill_id) 且**索引不含 status** ⇒ 同一配置版本上
+    active 与 muted 不能并存：mute 时必须把旧 active 行 drop 掉再写 muted，否则唯一索引冲突。
+    """
+    inst = create_instance(client)
+    s = _upload_skill(client, "legacy-bound-skill")
+    _bind_skill(client, inst["instance_id"], s)  # 造存量 active 绑定行（老模型遗留）
+    _mute_skill(client, inst["instance_id"], s)
+    assert "legacy-bound-skill" not in _available_skill_keys(client, inst["instance_id"])
+
+
 def test_personal_skill_mute_is_per_instance(client):
     """解绑按实例隔离：inst_a 解绑不影响 inst_b。"""
     inst_a = create_instance(client, "A")

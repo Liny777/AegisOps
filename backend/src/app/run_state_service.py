@@ -267,6 +267,8 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     # （只收窄 main 自己；available-skills 端点吃同一过滤，展示=可执行）
     st.skills_pool = await resolve_available_skills(uid, str(inst["active_config_version_id"]))
     st.available_skills = filter_main_skills(st.skills_pool, _content)
+    # 用户自定义 MCP（按 owner 默认自动挂载 − 本实例 muted）：平台 MCP 仍走注册表发现，不经此字段
+    st.mcp_servers = await resolve_available_mcps(uid, str(inst["active_config_version_id"]))
     # skill_hint（/<skill> 显式触发）：显式字段优先；否则从 input_text 前导 /<token> 推导（前端 / 菜单只把
     # skill 名塞进文本、不发结构化 hint，故服务端兜底解析）。仅当命中本轮可执行集才生效（未命中/未传→忽略，防脏注入）。
     _hint = getattr(req, "skill_hint", None)
@@ -337,6 +339,31 @@ async def resolve_available_skills(uid: str, config_version_id: str) -> dict[str
             if key and out.get(str(key), {}).get("source_type") == "user":
                 out.pop(str(key), None)
     return out
+
+
+async def resolve_available_mcps(uid: str, config_version_id: str) -> list[dict[str, Any]]:
+    """本实例可用的**用户自定义** MCP server：[{mcp_id, display_name, endpoint}]。
+
+    与 resolve_available_skills 同形（Loop A 按 owner 默认纳入 + Loop C mute 剔除；无 Loop B——MCP 没有
+    「绑定新增」语义，绑定行只用来记 mute）。补的是「用户注册的 MCP 运行时永远加载不到」这个缺口。
+
+    **平台 MCP 不从这里出**：平台工具仍由注册表发现（_dynamic_mcp_specs）+ 模板 main.default_tools
+    白名单装配（B7·二 原样不动）。本函数只管用户自己登记的 endpoint。
+    """
+    from infra.repositories import assets
+
+    out: dict[str, dict[str, Any]] = {}
+    for m in await assets.list_mcps(uid, include_platform=False):  # include_platform=False → 只本人 user MCP
+        ep = str(((m.get("endpoint_config_json") or {}).get("endpoint")) or "")
+        if m.get("status") != "active" or m.get("source_type") != "user" or not ep:
+            continue  # 空 endpoint（存量数据，register 现已拒）运行时不可达，直接不出
+        out[str(m["mcp_id"])] = {"mcp_id": str(m["mcp_id"]),
+                                 "display_name": m.get("display_name") or "HTTP MCP", "endpoint": ep}
+    # 「解绑」= muted 绑定行（守卫 mcp_source_type=='user'——平台 MCP 永不可被 mute，见 mute_asset 的 403）
+    for b in await agent_teams.list_binding_details(config_version_id):
+        if b.get("asset_type") == "mcp" and b.get("status") == "muted" and b.get("mcp_source_type") == "user":
+            out.pop(str(b.get("mcp_id")), None)
+    return list(out.values())
 
 
 async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any], inst: dict[str, Any]) -> dict[str, Any]:

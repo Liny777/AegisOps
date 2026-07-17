@@ -10,6 +10,7 @@ from typing import Any
 
 from app import agent_team_service
 from domain.errors import ApiError, Err
+from infra import egress
 from infra.db import row_json
 from infra.repositories import agent_teams, assets, audit, templates
 
@@ -153,6 +154,10 @@ async def list_mcps(user: dict[str, Any]) -> list[dict[str, Any]]:
 async def register_mcp(user: dict[str, Any], req: Any) -> dict[str, Any]:
     if req.transport != "http":
         raise ApiError(Err.VALIDATION_FAILED, "V1 仅支持 HTTP MCP")  # MCP-007
+    if not (req.endpoint or "").strip():
+        raise ApiError(Err.VALIDATION_FAILED, "endpoint 不能为空")  # 空 endpoint 运行时不可达（resolve 会过滤）
+    # SSRF：endpoint 是用户任填的 URL，且自定义 MCP 现已默认自动装配到 main、运行时真出站
+    egress.check_mcp_egress(req.endpoint)
     return await assets.create_mcp(
         user["user_id"], "user", req.display_name, "http", {"endpoint": req.endpoint}, req.manifest_json
     )
@@ -177,6 +182,10 @@ async def delete_mcp(user: dict[str, Any], mcp_id: str) -> None:
 
 
 async def bind(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
+    # MCP 无「绑定」语义：自定义 MCP 按 owner 默认自动装配（解绑走 /mcp-mutes），平台 MCP 由模板
+    # main.default_tools 装配。留着 active 的 mcp 绑定行=第二扇门（运行时不读、却会撞 ux_iab_mcp）。
+    if req.asset_type == "mcp":
+        raise ApiError(Err.VALIDATION_FAILED, "MCP 无需绑定：自定义 MCP 默认自动装配到本 Agent，平台 MCP 由模板装配")
     inst = await agent_teams.get_instance(instance_id)
     if inst is None or inst["owner_user_id"] != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权操作该 AgentTeam")
@@ -230,25 +239,44 @@ async def unbind(user: dict[str, Any], binding_id: str) -> dict[str, Any]:
 
 
 async def mute_skill(user: dict[str, Any], instance_id: str, req: Any) -> dict[str, Any]:
-    """个人 skill「解绑」：个人 skill 默认自动挂载（按 owner 纳入可执行集），解绑=在当前配置版本记一条
-    muted 绑定行（opt-out），派生结转保留；resolve_available_skills 据此剔除。重新绑定=对该 mute 行走
-    unbind（drop 掉）。仅限本人 source_type='user' 的 skill；平台 skill 自动装配、不可解绑。"""
+    """个人 skill「解绑」——mute_asset 的薄包装（b14b35c 契约不变）。"""
+    return await mute_asset(user, instance_id, req, kind="skill")
+
+
+async def mute_asset(user: dict[str, Any], instance_id: str, req: Any, *, kind: str) -> dict[str, Any]:
+    """个人资产「解绑」（skill / mcp 同一模型）：个人资产默认自动挂载（按 owner 纳入可执行集），
+    解绑=在当前配置版本记一条 muted 绑定行（opt-out），派生结转保留（list_bindings_incl_muted）；
+    resolve_available_skills / resolve_available_mcps 据此剔除。重新绑定=对该 mute 行走 unbind（drop 掉）。
+    仅限本人 source_type='user' 的资产；平台资产自动装配、不可解绑（403）。
+    """
+    noun = "Skill" if kind == "skill" else "MCP"
+    asset_id = req.skill_id if kind == "skill" else req.mcp_id
     inst = await agent_teams.get_instance(instance_id)
     if inst is None or inst["owner_user_id"] != user["user_id"]:
         raise ApiError(Err.FORBIDDEN, "无权操作该 AgentTeam")
-    skill = await assets.get_skill(req.skill_id) if req.skill_id else None
-    if skill is None:
-        raise ApiError(Err.NOT_FOUND, "Skill 不存在")
-    if skill["source_type"] != "user" or skill["owner_user_id"] != user["user_id"]:
-        raise ApiError(Err.FORBIDDEN, "仅可解绑本人的自定义 Skill（平台 Skill 自动装配、不可解绑）")
-    # 幂等守卫：同 (config_version, skill_id) 唯一（ux_iab_skill），已 muted 则拒绝重复解绑
+    asset = None
+    if asset_id:
+        asset = await (assets.get_skill(asset_id) if kind == "skill" else assets.get_mcp(asset_id))
+    if asset is None:
+        raise ApiError(Err.NOT_FOUND, f"{noun} 不存在")
+    if asset["source_type"] != "user" or asset["owner_user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, f"仅可解绑本人的自定义 {noun}（平台 {noun} 自动装配、不可解绑）")
+    # 同 (config_version, asset_id) 唯一（ux_iab_skill / ux_iab_mcp，**索引不含 status**）⇒ active 与 muted
+    # 不能并存：已 muted → 幂等拒绝；存量 active（老模型手动绑的）→ 结转时 drop 掉，否则插 muted 撞唯一索引 500。
+    drop_binding_id = None
     for b in await agent_teams.list_binding_details(str(inst["active_config_version_id"])):
-        if b.get("asset_type") == "skill" and str(b.get("skill_id")) == str(req.skill_id) and b.get("status") == "muted":
-            raise ApiError(Err.VALIDATION_FAILED, "该 Skill 已从本 Agent 解绑")
+        if b.get("asset_type") != kind or str(b.get(f"{kind}_id")) != str(asset_id):
+            continue
+        if b.get("status") == "muted":
+            raise ApiError(Err.VALIDATION_FAILED, f"该 {noun} 已从本 Agent 解绑")
+        drop_binding_id = str(b["binding_id"])
+    add_binding: dict[str, Any] = {"asset_type": kind, "status": "muted"}
+    if kind == "skill":
+        add_binding |= {"skill_id": asset_id, "skill_version_id": req.skill_version_id}
+    else:
+        add_binding |= {"mcp_id": asset_id, "mcp_version_id": req.mcp_version_id}
     out = await agent_team_service.derive_config_version(
-        inst, user["user_id"], "mute skill",
-        add_binding={"asset_type": "skill", "skill_id": req.skill_id,
-                     "skill_version_id": req.skill_version_id, "status": "muted"},
+        inst, user["user_id"], f"mute {kind}", drop_binding_id=drop_binding_id, add_binding=add_binding,
     )
     return {"binding_id": out["binding"]["binding_id"],
             "config_version_id": str(out["config_version"]["config_version_id"])}
