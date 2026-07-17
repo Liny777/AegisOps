@@ -145,7 +145,7 @@ export const mockWorkbenchState = (): WorkbenchState => ({
   statusChips: [
     { key: "agui", label: "AG-UI", value: "已连接", tone: "good" },
     { key: "mcp", label: "MCP 服务", value: "2/2 在线", tone: "good" },
-    { key: "omodel", label: "oModel", value: "已同步", tone: "good" },
+    { key: "omodel", label: "OModel", value: "已同步", tone: "good" },
     { key: "scope", label: "范围", value: "APP-A/B/C", tone: "neutral" },
   ],
   messages: [
