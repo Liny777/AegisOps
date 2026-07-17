@@ -81,10 +81,13 @@ const toMcpRow = (r: Record<string, unknown>): AssetRow => ({
 /** 翻完所有页取全量（pageSize 用上限 100 压页数）。
  *  给**确实需要完整集合**的消费方用：模板编辑器的 skills 白名单勾选、工作台的资产统计。
  *  这些地方绝不能只取默认首页——否则超出一页的资产会被静默漏掉（正是上游 page_size 截断踩过的坑）。 */
-const fetchAllAssets = async (kind: "skills" | "mcps"): Promise<Record<string, unknown>[]> => {
+const fetchAllAssets = async (
+  kind: "skills" | "mcps",
+  sourceType?: AssetQuery["sourceType"],
+): Promise<Record<string, unknown>[]> => {
   const out: Record<string, unknown>[] = [];
   for (let page = 1; ; page++) {
-    const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/${kind}${assetQs({ page, pageSize: 100 })}`);
+    const d = await apiFetch<AssetPageDto>(`/openops/v1/assets/${kind}${assetQs({ page, pageSize: 100, sourceType })}`);
     out.push(...d.items);
     if (!d.items.length || page * d.page_size >= d.total) break;
   }
@@ -808,8 +811,8 @@ const realApi: OpenOpsApi = {
   },
   // ---- admin B7a：模板 drill + 标注保存 + 模型授权 ----
   async getAdminTemplateAssets() {
-    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/assets/mcps");
-    const platform = rows.filter((r) => r.source_type === "platform");
+    // 全量取（本表无分页器，且下游「绑定/解绑」按全集算）+ platform 过滤走服务端 source_type。
+    const platform = await fetchAllAssets("mcps", "platform");
     return {
       title: "资产治理",
       cols: [{ label: "名称" }, { label: "类型" }, { label: "最新版本" }, { label: "状态" }, { label: "操作", width: "96px" }],

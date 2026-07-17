@@ -86,7 +86,17 @@ export function AdminConsole() {
 
   useEffect(() => { setTplDrill(null); setMcpDrill(null); }, [page]);
   useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill]);  // 换页签/钻取回第 1 页，免停在越界页看空表
-  useEffect(() => { void load(); }, [load]);
+  // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
+  // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
+  useEffect(() => {
+    setActionErr("");
+    void load().catch((e) => {
+      const err = e as { code?: string; message?: string };
+      if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，别闪错误横幅
+      setTable(null);
+      setActionErr(err.message || "加载失败");
+    });
+  }, [load]);
 
   const tabs = table?.tabs;
   const gridCols = useMemo(() => (table ? table.cols.map((c) => c.width ?? "1fr").join(" ") : ""), [table]);
@@ -172,17 +182,18 @@ export function AdminConsole() {
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 24 }}>
         <div style={{ maxWidth: 1080, margin: "0 auto" }}>
+          {/* 错误横幅在 table 判空**之外**：加载失败时 table 为 null，放里面就永远显示不出来。 */}
+          {actionErr ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fdecec", border: "1px solid #f5c2c0", borderRadius: radius.lg, padding: "9px 13px", marginBottom: 12, fontSize: 12, color: color.dangerText }}>
+              <Icon name="alert-triangle" size={14} color={color.dangerText} />{actionErr}
+            </div>
+          ) : null}
           {isTable && table ? (
             <>
               {page === "templates" && tplDrill && !mcpDrill ? (
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10, background: color.brandTintBg, border: "1px solid rgba(22,131,255,.18)", borderRadius: radius.lg, padding: "11px 14px", marginBottom: 14, fontSize: 12, color: color.brandStrong, lineHeight: 1.6 }}>
                   <Icon name="info-circle" size={15} color={color.brand} />
                   <span>模板「{tplDrill.name}」的资产治理——此处治理该模板引用的平台资产；<b>Tool 标注为全局配置</b>，修改将影响引用同一 tool 的所有模板（30.6 拍板②）。</span>
-                </div>
-              ) : null}
-              {actionErr ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fdecec", border: "1px solid #f5c2c0", borderRadius: radius.lg, padding: "9px 13px", marginBottom: 12, fontSize: 12, color: color.dangerText }}>
-                  <Icon name="alert-triangle" size={14} color={color.dangerText} />{actionErr}
                 </div>
               ) : null}
               {tabs ? (
