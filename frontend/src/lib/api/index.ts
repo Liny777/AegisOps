@@ -73,8 +73,15 @@ export interface OpenOpsApi {
   getOmodelPageBase(): Promise<string>;
   /** 看护空间统计四数（Agent 初始化「确认能力清单」页；上游失败后端降级为 0）。 */
   getWorkspaceStatistics(workspaceId: string): Promise<OmodelStatistics>;
-  /** 登出（B9）：清后端 IAM 会话缓存，返回 IAM signout/login 地址（未配 IAM 时均为 null）。 */
-  logout(): Promise<{ signout_url: string | null; login_url: string | null }>;
+  /** 登出（B9）：清后端 IAM 会话缓存，返回 IAM signout（**须后台 POST + CSRF 头**调用，非浏览器
+   * GET 导航）/ login 地址、CSRF cookie/header 名、回跳地址（未配 IAM 时相关字段为 null）。 */
+  logout(): Promise<{
+    signout_url: string | null;
+    login_url: string | null;
+    csrf_cookie_name: string | null;
+    csrf_header_name: string | null;
+    redirect_url: string | null;
+  }>;
   listConversations(options?: RequestOptions): Promise<Conversation[]>;
   // 运行态（real：ensureRun → state/task/approval/SSE）
   ensureRun(instanceId: string, options?: RequestOptions): Promise<string>; // → run_id
@@ -293,9 +300,17 @@ const realApi: OpenOpsApi = {
     return apiFetch<OmodelStatistics>(`/openops/v1/workspaces/${encodeURIComponent(workspaceId)}/statistics`);
   },
   async logout() {
-    const d = await apiFetch<{ signout_url?: string | null; login_url?: string | null }>(
-      "/openops/v1/auth/logout", { method: "POST" });
-    return { signout_url: d.signout_url ?? null, login_url: d.login_url ?? null };
+    const d = await apiFetch<{
+      signout_url?: string | null; login_url?: string | null;
+      csrf_cookie_name?: string | null; csrf_header_name?: string | null; redirect_url?: string | null;
+    }>("/openops/v1/auth/logout", { method: "POST" });
+    return {
+      signout_url: d.signout_url ?? null,
+      login_url: d.login_url ?? null,
+      csrf_cookie_name: d.csrf_cookie_name ?? null,
+      csrf_header_name: d.csrf_header_name ?? null,
+      redirect_url: d.redirect_url ?? null,
+    };
   },
   listConversations: (options) => conversationCache.get(options),
 
@@ -942,7 +957,8 @@ const mockApi: OpenOpsApi = {
   },
   getOmodelPageBase: () => delay(""), // mock 无内网 omodel，前端空态
   getWorkspaceStatistics: () => delay({ node_count: 3116, relation_count: 2246, node_type_count: 37, relation_type_count: 5 }),
-  logout: () => delay({ signout_url: null, login_url: null }), // mock 无 IAM，登出为空操作
+  // mock 无 IAM，登出为空操作（signout/redirect 均 null → 前端走 reload 分支）
+  logout: () => delay({ signout_url: null, login_url: null, csrf_cookie_name: null, csrf_header_name: null, redirect_url: null }),
   listConversations: (options) => conversationCache.get(options),
   ensureRun: (_instanceId, options) => waitWithSignal(delay("run_demo"), options?.signal),
   createRun: async () => {

@@ -47,7 +47,11 @@ async def profile(user: AnyUser):
 @router.post("/auth/logout")
 async def logout(request: Request):
     """登出（B9，老项目 d4.1 口径）：清本 cookie 的 IAM TokenCache；IAM signout 由前端按返回配置
-    自行调用（可选 env）。不要求登录态——过期会话也能登出。"""
+    自行调用（可选 env）。不要求登录态——过期会话也能登出。
+
+    IAM signout 端点（`/gw/iam/auth/logout`）是**只收 POST + CSRF 头**的 SSO 登出 API——
+    对称于 login。前端据 `csrf_*_name` 从 cookie 取 token，用 `fetch` **后台 POST** 调它（非浏览器
+    GET 导航，否则 404 白页），再 `assign` 到 `redirect_url`/`login_url`。CSRF 名默认 `IAM-Csrf-Token`。"""
     cookie = request.headers.get("cookie")
     if cookie:
         iam_client.clear_cache(cookie)
@@ -55,7 +59,13 @@ async def logout(request: Request):
     signout = os.getenv("OPENOPS_IAM_SIGNOUT_URL", "").strip()
     if host:
         signout = signout.replace("{host}", host)
+    redirect = os.getenv("OPENOPS_IAM_LOGOUT_REDIRECT_URL", "").strip()
+    if host and redirect:
+        redirect = redirect.replace("{host}", host)  # 与 signout/login 同口径 {host} 替换
     return ok({
         "signout_url": signout or None,
         "login_url": iam_client.login_url(host),
+        "csrf_cookie_name": os.getenv("OPENOPS_IAM_CSRF_COOKIE_NAME", "").strip() or "IAM-Csrf-Token",
+        "csrf_header_name": os.getenv("OPENOPS_IAM_CSRF_HEADER_NAME", "").strip() or "IAM-Csrf-Token",
+        "redirect_url": redirect or None,  # 未配 → 前端回落 login_url
     })

@@ -191,7 +191,9 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
 | `OPENOPS_IAM_DISPLAY_NAME_FIELD` | name | 展示名字段路径；缺失回退 login_key |
 | `OPENOPS_IAM_CACHE_TTL_S` | 300 | 进程内 TokenCache（SHA-256(cookie)→身份，上限 1024 条），TTL 内不重打 IAM |
 | `OPENOPS_IAM_LOGIN_URL` | — | 配了则 401 响应体带 `login_url`，前端自动跳登录 |
-| `OPENOPS_IAM_SIGNOUT_URL` | — | `POST /auth/logout` 返回给前端（登出清 TokenCache） |
+| `OPENOPS_IAM_SIGNOUT_URL` | — | IAM SSO 登出端点（对称于 login，**只收 POST+CSRF 头**）。`POST /auth/logout` 返回给前端；前端**后台 fetch POST**（带 CSRF 头）调它清 SSO，**不是**浏览器 GET 导航（GET 过去 404 白页） |
+| `OPENOPS_IAM_CSRF_COOKIE_NAME` / `..._HEADER_NAME` | IAM-Csrf-Token | 前端从该 cookie 取 CSRF token，放进 signout POST 的该 header |
+| `OPENOPS_IAM_LOGOUT_REDIRECT_URL` | — | 登出清 SSO 后浏览器回跳地址（支持 `{host}`；未配回落 `login_url`）。设 `/openops/` 而非 `/` 免进 console 登录流 |
 
 TLS 与代理沿用三档口径（OPENOPS_TLS_CA_FILE ＞ OPENOPS_TLS_INSECURE=1 ＞ certifi；truststore 自动注入见 run.py）。
 失败语义：401（会话无效/无用户标识，带 login_url）/ 502 `IAM_UPSTREAM`（IAM 不可达）；白名单 403 与 mock 模式同一条链。
