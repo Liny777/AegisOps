@@ -4,6 +4,10 @@
 - MODEL-002：model_name 含 "no-tool" → MODEL_PROBE_FAILED，不落库。
 - 实例默认绑定：initial_overlay_json.user_llm_config_id → 起任务后 /state.selected_model = 该配置（overlay 被真消费，非死字段）。
 - probe real 门控：OPENOPS_LLM_PROBE=real 走真 HTTP 分支，可达=200→ok；连接错→优雅 ok=False（不崩、reason 脱敏）。
+- probe 默认 real（005）：不设/拼错环境变量都走真探测，只有显式 mock 才假探测且自曝 probe_mode=mock。
+
+注：conftest 用 setdefault 把整套测试钉在 OPENOPS_LLM_PROBE=mock（离线），故本文件里
+「mock 探测」的用例无需自己 setenv；要验真分支的用例自行 monkeypatch。
 """
 from __future__ import annotations
 
@@ -109,12 +113,61 @@ async def test_user_llm_004_probe_real_gate_graceful(monkeypatch):
     assert "sk-secret" not in bad["reason"] and "api.example.com" not in bad["reason"]
 
 
+async def test_user_llm_005_probe_defaults_to_real(monkeypatch):
+    """探测默认必须是 real（fail-closed 回归）：不设 OPENOPS_LLM_PROBE 时应真发 HTTP，而非
+    静默走 mock 假通过——默认曾是 mock，导致线上「测试连接」对任何 Key 都绿勾。
+    连拼错的值（"ral"）也须往 real 倒；只有显式 "mock" 才假探测。"""
+    import httpx
+
+    from infra.external import llm_provider_client
+
+    posted: list[str] = []
+
+    class _SpyClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, *a, **k):
+            posted.append(url)
+
+            class _R:
+                status_code = 200
+                text = ""
+
+            return _R()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SpyClient)
+
+    for env in (None, "ral", "REAL"):  # 未设 / 拼错 / 大小写：一律 real
+        monkeypatch.delenv("OPENOPS_LLM_PROBE", raising=False)
+        if env is not None:
+            monkeypatch.setenv("OPENOPS_LLM_PROBE", env)
+        posted.clear()
+        r = await llm_provider_client.probe("https://api.example.com/v1", "gpt-4o", "sk-x")
+        assert r["ok"] and r["probe_mode"] == "real", f"env={env!r} 应走真探测"
+        assert posted == ["https://api.example.com/v1/chat/completions"], f"env={env!r} 应真发 HTTP"
+
+    # 只有显式 mock 才假探测，且自曝 probe_mode=mock（供前端显示「未真实探测」而非绿勾）
+    monkeypatch.setenv("OPENOPS_LLM_PROBE", "mock")
+    posted.clear()
+    m = await llm_provider_client.probe("https://api.example.com/v1", "gpt-4o", "sk-x")
+    assert m["ok"] and m["probe_mode"] == "mock"
+    assert posted == []  # mock 不打网
+
+
 def test_test_connection_gate_mock(client):
     """用户自带模型「测试连接」端点（存前探测、不落库）：mock 探测下正常模型 ok=true，
     含 no-tool 的模型 ok=false 且带 reason；SSRF 地址 ok=false（egress 拦截）。"""
     good = unwrap(client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
                               json={"base_url": _BASE, "model_name": "gpt-4o", "api_key": "sk-x"}))
     assert good["ok"] is True and good["supports_tool_calling"] is True
+    assert good["probe_mode"] == "mock"  # 透传到端点：前端据此显示「未真实探测」而非绿勾
 
     bad = unwrap(client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
                              json={"base_url": _BASE, "model_name": "foo-no-tool", "api_key": "sk-x"}))

@@ -111,6 +111,8 @@ export interface TestConnResult {
   ok: boolean;
   supports_tool_calling: boolean;
   reason: string | null;
+  /** 后端探测模式：mock=未真实打网（UI 须显示「未真实探测」而非绿勾，别再让假探测冒充真的）。 */
+  probe_mode?: "mock" | "real";
 }
 
 const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
@@ -689,14 +691,14 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { base_url: input.base_url, model_name: input.model_name, api_key: input.api_key },
     });
-    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null };
+    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null, probe_mode: d.probe_mode === "mock" ? "mock" : "real" };
   },
   async testModelAssetConnection(input) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/model-assets:test-connection", {
       method: "POST",
       body: { base_url: input.base_url, model_id: input.model_id, secret_env_var: input.secret_env_var },
     });
-    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null };
+    return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null, probe_mode: d.probe_mode === "mock" ? "mock" : "real" };
   },
 
   async getAdminTable(key, params) {
@@ -1115,13 +1117,14 @@ const mockApi: OpenOpsApi = {
   getModelConfigs: () => delay(M.mockModels),
   createSecret: () => delay({ secret_ref_id: "sec_mock", fingerprint: "sk-…mock" }),
   createLlmConfig: () => delay({ llm_config_id: "llm_mock_" + Math.random().toString(36).slice(2, 8) }),
-  // mock「测试连接」：镜像后端 mock 探测（model 含 no-tool → 失败），供离线 UI 验证保存门
+  // mock「测试连接」：镜像后端 mock 探测（model 含 no-tool → 失败），供离线 UI 验证保存门。
+  // probe_mode: "mock" 让 UI 如实显示「未真实探测」——离线态同样不许冒充真探测。
   testLlmConnection: (input) => delay(
     input.model_name.toLowerCase().includes("no-tool")
-      ? { ok: false, supports_tool_calling: false, reason: "模型不支持 tool calling" }
-      : { ok: true, supports_tool_calling: true, reason: null },
+      ? { ok: false, supports_tool_calling: false, reason: "模型不支持 tool calling", probe_mode: "mock" as const }
+      : { ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const },
   ),
-  testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null }),
+  testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const }),
   getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),

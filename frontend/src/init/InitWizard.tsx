@@ -713,7 +713,7 @@ function InlineAddModel({ onCancel, onCreated }: {
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
             disabled={!fieldsOk || test.state === "testing"} onClick={runTest}>测试连接</Button>
-          <ConnTestResult state={test.state} reason={test.reason} />
+          <ConnTestResult state={test.state} reason={test.reason} mock={test.mock} />
           <div style={{ flex: 1 }} />
           <Button variant="secondary" onClick={onCancel} disabled={busy}>取消</Button>
           <Button icon={busy ? "loader-2" : "plus"} disabled={!canSave || busy} onClick={submit}

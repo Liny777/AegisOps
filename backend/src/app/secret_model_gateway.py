@@ -41,7 +41,8 @@ async def list_llm_configs(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def test_connection(req: Any) -> dict[str, Any]:
     """用户自带模型「测试连接」（存前探测，不落库）：egress SSRF 校验 + tool-calling 探测。
-    raw API Key 仅本次请求瞬时用于探测，绝不落库/日志（SEC-001）。返回 {ok, supports_tool_calling, reason}。"""
+    raw API Key 仅本次请求瞬时用于探测，绝不落库/日志（SEC-001）。
+    返回 {ok, supports_tool_calling, reason, probe_mode}——probe_mode=mock 时前端须显示「未真实探测」。"""
     try:
         egress.check_llm_egress(req.base_url)  # 拦 localhost/metadata/内网基础设施
     except ApiError as e:
@@ -49,4 +50,5 @@ async def test_connection(req: Any) -> dict[str, Any]:
     probe = await llm_provider_client.probe(req.base_url, req.model_name, req.api_key or None)
     return {"ok": bool(probe["ok"] and probe["supports_tool_calling"]),
             "supports_tool_calling": bool(probe["supports_tool_calling"]),
-            "reason": probe.get("reason")}
+            "reason": probe.get("reason"),
+            "probe_mode": probe.get("probe_mode")}

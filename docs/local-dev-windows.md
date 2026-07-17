@@ -123,7 +123,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 | `OPENOPS_OMODEL_BASE_URL` | 空 | `OPENOPS_OMODEL=real` | oModel 测试环境地址；空则 fail-closed |
 | `OPENOPS_OMODEL_TIMEOUT_S` | `8` | 可选 | oModel 超时秒数 |
 | `OPENOPS_PLATFORM_GLM_API_KEY` | 空 | 接真 GLM 模型（B2） | 只从环境读，禁入 PG/日志 |
-| `OPENOPS_LLM_PROBE` | `mock` | 联调用户自定义 LLM | `mock`（启发式，不打网）\| `real`（建 llm-config 时发真 `chat/completions` 验 tool-calling） |
+| `OPENOPS_LLM_PROBE` | `real` | 本机无出网/纯离线联调时设 `mock` | `real`（默认，发真 `chat/completions` 验 Key + tool-calling）\| `mock`（启发式，不打网，UI 显示「未真实探测」） |
 | `OPENOPS_SANDBOX` | `fake` | 接真 Docker 沙箱（B8） | `fake`（tempdir+subprocess，默认）\| `docker`（需 `.[sandbox]`+Docker Desktop）；本地调试 fake 够用 |
 | `OPENOPS_MCP` / `OPENOPS_MCPREGISTRY` / `OPENOPS_SKILLHUB` | `mock` | 联调对应外部服务（C3） | `=real` 时须配同名 `*_BASE_URL`，否则 fail-loud（不静默降级） |
 | `OPENOPS_ENCRYPTION_KEY` | 空→dev 派生 | 用户 Secret 加密（C2，`infra/crypto.py`） | **生产 Secret 主 key**（Fernet，`Fernet.generate_key()` 生成）；`_OLD` 逗号分隔旧 key 供轮换；**丢了密文解不开** |
@@ -145,7 +145,7 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 | **Skill Hub** | mock 默认；**已备 real 变体**（`OPENOPS_SKILLHUB=real`，C3） | 配 `OPENOPS_SKILLHUB_BASE_URL`（未配 fail-loud）；真下载按 **ZIP 原始字节** sha256 校验 `X-Checksum-SHA256`（29.3 §2.5，C1-CHK-001 已对齐） | B6/C1 |
 | **MCP Registry** | mock 默认；**已备 real 变体**（`OPENOPS_MCPREGISTRY=real`，C3） | 配 `OPENOPS_MCPREGISTRY_BASE_URL`（`POST /mcps/proxy`，未配 fail-loud） | B6/C3 |
 | **平台 HTTP MCP** | mock 默认；**已备 real 变体**（`OPENOPS_MCP=real`，C3） | 配 `OPENOPS_MCP_BASE_URL`（Tool Gateway header 透传，28.2） | B4/C3 |
-| **用户自定义 LLM 探测** | mock 启发式；**已备 real**（`OPENOPS_LLM_PROBE=real`，C2/C3） | real 建 llm-config 时发真 `chat/completions` 验 tool-calling | — |
+| **用户自定义 LLM 探测** | **real 已默认启用**（离线联调设 `OPENOPS_LLM_PROBE=mock`，C2/C3） | real 建 llm-config / 测试连接时发真 `chat/completions` 验 tool-calling | — |
 | **IAM** | `X-OpenOps-Mock-User` 头 | 真 W3/IAM introspect | B9 |
 | **Runtime** | `OPENOPS_RUNTIME=mock`（脚本化编排 `orchestrator.py`） | `=agentscope`（真 Agent，须 `pip install -e ".[test,agentscope]"`；仍**不需 Redis**） | B1 |
 | **平台模型** | mock，不调真 LLM | 配 `OPENOPS_PLATFORM_GLM_API_KEY` + Model Gateway | B2 |

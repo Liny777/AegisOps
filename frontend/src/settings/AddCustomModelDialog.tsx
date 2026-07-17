@@ -12,28 +12,35 @@ import type { TestConnResult } from "../lib/api";
 export const PROTOCOL_LABEL = "OpenAI Compatible";
 export const DEFAULT_CONTEXT_WINDOW = 128000;
 
-/** 「测试连接」状态机（自带/平台模型的保存门共用）：测通(ok)才允许保存；相关字段一改即失效。 */
+/** 「测试连接」状态机（自带/平台模型的保存门共用）：测通(ok)才允许保存；相关字段一改即失效。
+ *  mock=后端未真实打网（OPENOPS_LLM_PROBE=mock）：仍放行保存（否则离线开发全断），但 UI 须如实说明。 */
 export function useConnTest() {
   const [state, setState] = useState<"idle" | "testing" | "ok" | "fail">("idle");
   const [reason, setReason] = useState<string | null>(null);
-  const reset = () => { setState("idle"); setReason(null); };
+  const [mock, setMock] = useState(false);
+  const reset = () => { setState("idle"); setReason(null); setMock(false); };
   const run = async (fn: () => Promise<TestConnResult>) => {
-    setState("testing"); setReason(null);
+    setState("testing"); setReason(null); setMock(false);
     try {
       const r = await fn();
       setState(r.ok ? "ok" : "fail");
       setReason(r.ok ? null : (r.reason ?? "连接失败"));
+      setMock(r.probe_mode === "mock");
     } catch (e) {
       setState("fail"); setReason((e as Error).message || "测试失败");
     }
   };
-  return { state, reason, reset, run };
+  return { state, reason, mock, reset, run };
 }
 
-/** 测试结果行（通过=绿、失败=红原因、测试中=转圈）。 */
-export function ConnTestResult({ state, reason }: { state: "idle" | "testing" | "ok" | "fail"; reason: string | null }) {
+/** 测试结果行（通过=绿、mock 通过=黄「未真实探测」、失败=红原因、测试中=转圈）。 */
+export function ConnTestResult({ state, reason, mock }: { state: "idle" | "testing" | "ok" | "fail"; reason: string | null; mock?: boolean }) {
   if (state === "idle") return null;
   if (state === "testing") return <div style={{ fontSize: 12, color: color.textSubtle, display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="loader-2" size={13} spin />测试中…</div>;
+  // mock 通过≠验过：地址与网络策略真校验了，但 Key 与模型能力没验——别给绿勾，否则又是一次「以为测过了」
+  if (state === "ok" && mock) {
+    return <div style={{ fontSize: 12, color: color.warningText, display: "inline-flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}><Icon name="alert-triangle" size={13} color={color.warningText} style={{ marginTop: 1, flex: "0 0 13px" }} /><span>未真实探测（服务端 mock 模式）：地址与网络策略已校验，但未验证 API Key 与模型能力</span></div>;
+  }
   if (state === "ok") return <div style={{ fontSize: 12, color: color.goodText ?? "#0a7d3f", display: "inline-flex", alignItems: "center", gap: 6 }}><Icon name="circle-check" size={13} color={color.goodText ?? "#0a7d3f"} />连接正常，可保存</div>;
   return <div style={{ fontSize: 12, color: color.dangerText, display: "inline-flex", alignItems: "flex-start", gap: 6, lineHeight: 1.5 }}><Icon name="circle-x" size={13} color={color.dangerText} style={{ marginTop: 1, flex: "0 0 13px" }} /><span>{reason ?? "连接失败"}</span></div>;
 }
@@ -158,7 +165,7 @@ export function AddCustomModelDialog({
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
             disabled={!fieldsOk || test.state === "testing"} onClick={runTest}>测试连接</Button>
-          <ConnTestResult state={test.state} reason={test.reason} />
+          <ConnTestResult state={test.state} reason={test.reason} mock={test.mock} />
         </div>
 
         {error ? (

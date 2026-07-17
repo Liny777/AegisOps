@@ -16,11 +16,11 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
 | Skill Hub（list + 下载 ZIP） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL`（未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`，同 console 网关）+ cookie（专属/共享） | mock | **已按 29.3 对齐**，接真护栏齐（cookie/带体报错/HTML 检测/check-net ⑤） |
-| 用户自定义 LLM 探测 | `OPENOPS_LLM_PROBE=real` | 用户配置的 base_url/Key（建配置时提交） | mock | **代码就绪**，real 发真 `chat/completions` 验能力 |
+| 用户自定义 LLM 探测 | `OPENOPS_LLM_PROBE=mock`（反向：关真探测） | 用户配置的 base_url/Key（建配置时提交） | **real** | **已启用**，发真 `chat/completions` 验能力；仅无出网环境退回 mock |
 | Secret 加密 key | —（生产必配） | `OPENOPS_ENCRYPTION_KEY`（+`_OLD` 轮换） | 派生 dev key | **代码就绪**（Fernet），生产须配 |
 | 真 W3/IAM introspect | 未做（B9） | — | `X-OpenOps-Mock-User` 头 | **未做**（B9 整块） |
 
-其它旋钮：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_SANDBOX=fake|docker`、`OPENOPS_LLM_PROBE=mock|real`、
+其它旋钮：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_SANDBOX=fake|docker`、`OPENOPS_LLM_PROBE=real(默认)|mock`、
 `OPENOPS_LLM_EGRESS_BLOCK_PRIVATE=1`、`OPENOPS_LLM_EGRESS_DENY`、联调缝 `OPENOPS_SCOPE_OVERRIDE_APPIDS`（跳过 oModel 用指定 appid 当 scope，切真 oModel 后应删）。
 **出站硬化（内网教训，全部 real client 生效）**：`OPENOPS_HTTP_TRUST_ENV=0(默认)|1`（默认不信任环境/Windows 注册表代理——公司 SWG 会劫内网出站）；
 TLS 三档 `OPENOPS_TLS_CA_FILE` > `OPENOPS_TLS_INSECURE=1` > certifi（正解：`pip install truststore`，run.py 自动用系统证书库）。
@@ -54,7 +54,11 @@ seed 已含平台模型资产 `glm-5.1`（`base_url=https://open.bigmodel.cn/api
 
 用户自定义 LLM 同理：Key 存 PG（Fernet 加密），`_build_model` 在构建边界瞬时解密（`_decrypt_user_secret`）；base_url 过 egress SSRF 校验。
 
-**用户 LLM 探测**（`OPENOPS_LLM_PROBE=mock|real`）：建 llm-config 时 `llm_provider_client.probe` 校验能力。mock（默认）按 model_name 启发式（含 `no-tool` 判失败），测试/demo 不打网；real 向 `{base_url}/chat/completions` 发一次最小请求（带 dummy `tools`+`tool_choice`）验**可达+接受 tools 参数**=支持 tool calling，连接错/超时/4xx → `ok=False`（reason 脱敏，不含 Key/url），探测失败不落 active。probe 前已过 `egress.check_llm_egress`（SSRF 安全）。实例默认模型经 `initial_overlay_json.user_llm_config_id`（InitWizard custom 分支）在起任务时装配（`selected_model` 种子）。
+**用户 LLM 探测**（`OPENOPS_LLM_PROBE=real(默认)|mock`）：建 llm-config 与「测试连接」时 `llm_provider_client.probe` 校验能力。real（**默认**，且「非 mock 即 real」——拼错的值往安全方向倒）向 `{base_url}/chat/completions` 发一次最小请求（带 dummy `tools`+`tool_choice`）验**可达+接受 tools 参数**=支持 tool calling，连接错/超时/4xx → `ok=False`（reason 脱敏，不含 Key/url），探测失败不落 active；mock 按 model_name 启发式（含 `no-tool` 判失败）不打网，仅供离线测试/demo（`tests/conftest.py` 用 `setdefault` 钉住）与确无出网的部署。probe 前已过 `egress.check_llm_egress`（SSRF 安全）。
+
+> 默认曾是 mock，而 mock 分支**无视 base_url/api_key**（只匹配模型名），导致「测试连接」对任何 Key 都返回绿勾、被当成真验过。现默认 fail-closed，且 probe 返回 `probe_mode`（"real"|"mock"）一路透传前端：mock 时 UI 显示「未真实探测」警告而非「连接正常」。**改默认值时务必同步 UI 提示，别再让假探测冒充真的。**
+
+实例默认模型经 `initial_overlay_json.user_llm_config_id`（InitWizard custom 分支）在起任务时装配（`selected_model` 种子）。
 
 ### oModel(umodel)（真 scope resolve + workspace CRUD）—— 已按 29.7 最终文档对齐
 `OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`（固定 host root，禁止 `{host}`）。`omodel_real`（`/api/v1/workspaces...`）：

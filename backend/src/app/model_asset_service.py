@@ -107,7 +107,8 @@ async def list_available(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 async def test_connection(req: Any) -> dict[str, Any]:
     """平台模型「测试连接」：Key 从服务器环境变量取（secret_env_var 是变量名，客户端不持 Key）。
-    egress SSRF 校验 + tool-calling 探测。返回 {ok, supports_tool_calling, reason}。"""
+    egress SSRF 校验 + tool-calling 探测。
+    返回 {ok, supports_tool_calling, reason, probe_mode}——probe_mode=mock 时前端须显示「未真实探测」。"""
     import os
 
     from infra import egress
@@ -132,7 +133,8 @@ async def test_connection(req: Any) -> dict[str, Any]:
     probe = await llm_provider_client.probe(base_url, req.model_id, api_key)
     return {"ok": bool(probe["ok"] and probe["supports_tool_calling"]),
             "supports_tool_calling": bool(probe["supports_tool_calling"]),
-            "reason": probe.get("reason")}
+            "reason": probe.get("reason"),
+            "probe_mode": probe.get("probe_mode")}
 
 
 async def is_authorized(user_id: str, model_id: str) -> bool:

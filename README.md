@@ -70,7 +70,7 @@ VITE_OPENOPS_API_BASE=http://localhost:18082
 | `OPENOPS_RUNTIME` | `mock` \| `agentscope` | mock 编排器 / 真 AgentScope runtime（需 `.[agentscope]`） |
 | `OPENOPS_OMODEL` | `mock` \| `real` | Scope resolve / workspace CRUD 接 oModel（BASE_URL 必须固定域名，禁止 `{host}`；部署显式配当前企业 tenant） |
 | `OPENOPS_SANDBOX` | `fake` \| `docker` | 进程内 tempdir / 真 Docker 容器（需 `.[sandbox]` + 本机 Docker） |
-| `OPENOPS_LLM_PROBE` | `mock` \| `real` | 用户自定义 LLM 能力探测（real 发真 `chat/completions`） |
+| `OPENOPS_LLM_PROBE` | **`real`**（默认） \| `mock` | 用户自定义 LLM 能力探测。默认 real：发真 `chat/completions` 验 Key + tool calling，后端须能出网到模型端点。仅无出网环境设 `mock`（不打网、只按模型名启发式，UI 会显示「未真实探测」） |
 | `OPENOPS_PLATFORM_GLM_API_KEY` | 无 → stub | 配置后真 GLM 驱动 RCA（需 `OPENOPS_RUNTIME=agentscope`） |
 | `OPENOPS_MCP` / `OPENOPS_MCPREGISTRY` / `OPENOPS_SKILLHUB` | `mock` \| `real` | 外部依赖接真 + 对应 `*_BASE_URL` |
 | `OPENOPS_ENCRYPTION_KEY`（+`_OLD`） | 缺省派生 dev key | Secret Fernet 加密 key（生产必配；`_OLD` 逗号分隔用于轮换） |

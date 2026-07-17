@@ -397,7 +397,7 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
           <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
             disabled={!hasBaseUrl || !f.model_id.trim() || test.state === "testing"} onClick={runTest}>测试连接</Button>
-          <ConnTestResult state={test.state} reason={test.reason} />
+          <ConnTestResult state={test.state} reason={test.reason} mock={test.mock} />
         </div>
         {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>

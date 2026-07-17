@@ -11,6 +11,8 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("OPENOPS_ORCH_DELAY_MS", "10")
 os.environ.setdefault("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
+# 探测默认已是 real（生产 fail-closed）；测试须显式退回 mock，否则建 llm-config / 测试连接会真打网
+os.environ.setdefault("OPENOPS_LLM_PROBE", "mock")
 
 import asyncio  # noqa: E402
 import sys  # noqa: E402

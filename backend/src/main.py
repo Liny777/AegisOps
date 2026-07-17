@@ -74,10 +74,15 @@ async def lifespan(_app: FastAPI):
     _tls = ("ca-file" if os.environ.get("OPENOPS_TLS_CA_FILE") else
             "INSECURE" if os.environ.get("OPENOPS_TLS_INSECURE") == "1" else
             "truststore" if "truststore" in __import__("sys").modules else "certifi")
+    # 与 llm_provider_client.probe 同口径（非 mock 即 real）——曾因假探测无声无息，谁都没发现
+    # 「测试连接」是假的；上了 banner 才能一眼看出这台机在不在真验用户的 Key。
+    _llm_probe = "mock（⚠ 测试连接不验 Key）" if os.environ.get(
+        "OPENOPS_LLM_PROBE", "real").lower() == "mock" else "real"
     _banner = (
         f"build={_build_id()}  runtime={_rt}{_agentscope}  "
         f"model={os.environ.get('OPENOPS_RUNTIME_MODEL', 'glm-5.1')}  "
         f"glm_key={'SET' if os.environ.get('OPENOPS_PLATFORM_GLM_API_KEY') else 'unset'}  "
+        f"llm_probe={_llm_probe}  "
         f"omodel={os.environ.get('OPENOPS_OMODEL', 'mock')}  "
         f"omodel_cookie={_cookie_disp('OPENOPS_OMODEL_COOKIE')}  "
         f"scope_override={os.environ.get('OPENOPS_SCOPE_OVERRIDE_APPIDS') or 'off'}  "

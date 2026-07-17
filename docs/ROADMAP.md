@@ -38,7 +38,7 @@
 - ~~Skill Hub 真包投递~~ **✅ C1 已接**（真 ZIP 下载装配+checksum 门，内网 check-net ⑥ 实测通过）。残留：对端未实现 `X-Checksum-SHA256` 头时跳过传输校验（C1-CHK-001 P2，等对端补头）。
 - 平台 deny 前缀规则 UI（管理台下发 `bash_deny_prefixes`）、artifact 回传落地、chunk 拆包沿用 ROADMAP 附注。
 
-> 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）、`OPENOPS_LLM_PROBE=mock|real`（用户自定义 LLM 探测：real 发真 `chat/completions` 验 tool-calling 能力，默认 mock 启发式）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。外部依赖接真开关（`OPENOPS_MCP`/`OPENOPS_MCPREGISTRY`/`OPENOPS_SKILLHUB`=mock\|real）见 `backend/docs/EXTERNAL-INTEGRATION.md`。
+> 运行开关：`OPENOPS_RUNTIME=mock|agentscope`、`OPENOPS_OMODEL=mock|real`、`OPENOPS_SANDBOX=fake|docker`（默认 fake，pytest 不依赖 Docker）、`OPENOPS_LLM_PROBE=real|mock`（用户自定义 LLM 探测：**默认 real**，发真 `chat/completions` 验 Key + tool-calling 能力；无出网环境设 mock 退回启发式，此时 UI 显示「未真实探测」）；`OPENOPS_SKILL_TIMEOUT_S`/`OPENOPS_SKILL_OUTPUT_MAX_BYTES` 调 Skill/命令执行限额。外部依赖接真开关（`OPENOPS_MCP`/`OPENOPS_MCPREGISTRY`/`OPENOPS_SKILLHUB`=mock\|real）见 `backend/docs/EXTERNAL-INTEGRATION.md`。
 
 ## B9 真实 W3/IAM + E2E + 发布准备（可自主部分 ✅ 2026-07-13；真 IAM 联调待内网字段对齐）
 
