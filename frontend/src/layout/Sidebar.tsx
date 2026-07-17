@@ -99,7 +99,7 @@ export function Sidebar() {
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
-    { key: "ontology", label: "本体", icon: "sitemap", locked: true },
+    { key: "ontology",  label: "OModel", icon: "sitemap", to: "/settings" },
   ];
 
   const newChat = async () => {
@@ -124,7 +124,7 @@ export function Sidebar() {
 
   const activeKey = (() => {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
-    if (loc.pathname.startsWith("/settings")) return "settings";  // 新设置页（OModel 二级菜单）
+    if (loc.pathname.startsWith("/settings")) return "ontology";
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";
   })();
@@ -293,14 +293,6 @@ export function Sidebar() {
 
       {/* footer */}
       <div style={{ borderTop: `1px solid ${color.border}`, padding: "8px 10px" }}>
-        {!isAdmin ? (
-          <NavRow
-            item={{ key: "settings", label: "设置", icon: "settings" }}
-            active={activeKey === "settings"}
-            showText={showText}
-            onClick={() => nav("/settings")}
-          />
-        ) : null}
         {isPlatformAdmin ? (
           <Interactive
             title={isAdmin ? "返回工作台" : "进入管理台"}
