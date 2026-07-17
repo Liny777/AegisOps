@@ -40,6 +40,7 @@ _SANDBOX_CHECKS = {
     "max_user_containers_per_host": _pos_int,
     "per_user_running_task_limit": _pos_int,
     "user_container_idle_ttl_minutes": _nonneg_int,
+    "run_idle_ttl_minutes": _pos_int,  # 用 _pos_int：0 会把刚建的静默 run 立刻回收
     "container_cpu_limit": _pos_float,
     "container_image": lambda v: bool(str(v).strip()),
 }

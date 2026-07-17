@@ -115,6 +115,12 @@ async def destroy_sandbox_container(target_user_id: str, req: SandboxDestroyRequ
     return ok(await sandbox_admin_service.destroy_container(target_user_id, req.reason, admin["user_id"]))
 
 
+@router.post("/sandbox:reclaim")
+async def reclaim_idle_runs(_admin: Admin):
+    """手动触发一次无活动 run 回收（运维/验证用；后台 sweep 循环也会定期执行）。"""
+    return ok({"reclaimed": await sandbox_admin_service.reclaim_once()})
+
+
 # ---- 模型资产与白名单授权（B7，30.6 五；替代旧 /models 端点） ----
 @router.get("/model-assets")
 async def model_assets_list(_admin: Admin):

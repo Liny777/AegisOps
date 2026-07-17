@@ -473,6 +473,54 @@ async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     return {"run_id": run_id, "run_status": "closed"}
 
 
+async def reclaim_idle_runs(cfg: dict[str, Any]) -> int:
+    """idle-run 回收（doc 28.10:25 / 11:150「TTL 兜底 run 泄漏」）：无活动超 run_idle_ttl_minutes 的
+    活跃 run 自动关闭、释放容器名额。关网页不关 run（28.8），故废弃 run 只能靠此兜底，否则容器
+    active_run_count 永不归零、永不 idle、长期占名额。
+
+    存活否决优先（内存有 running 主任务 / pending ASK 不回收），翻转后再验一次防「起任务与回收」竞态；
+    复用 close_run 收尾（release_user_container + sweep_idle + run.closed 审计 + openops.run.closed SSE），
+    靠 reason_code=idle_timeout + actor_type=system 与用户主动关区分。后台 sweep 循环每 tick 调用。"""
+    ttl = int(cfg.get("run_idle_ttl_minutes", 30))
+    reclaimed = 0
+    for row in await runs.list_idle_active_runs(ttl):
+        run_id, uid = str(row["agent_run_id"]), str(row["user_id"])
+        try:
+            # (a) 存活否决：本进程内该 run 仍有 running/取消中主任务（覆盖「长单次工具调用、审计看着 stale」）
+            live = task_registry.get_by_run(run_id)
+            if live is not None and live.status in ("running", "cancel_requested"):
+                continue
+            # (b) pending ASK 否决：先把过期审批翻 timeout，再看是否仍有真 pending
+            await expire_stale_approvals_and_audit(run_id)
+            if await runs.pending_approvals(run_id):
+                continue
+            # (c) 条件翻转：并发被用户 close/delete 时 0 行 → 跳过
+            if await runs.close_idle(run_id, "idle_timeout") == 0:
+                continue
+            # (d) await 窗口后复验：期间有任务起来了就撤销（submit_task 末尾同步 put，能被这里看到）
+            live2 = task_registry.get_by_run(run_id)
+            if live2 is not None and live2.status in ("running", "cancel_requested"):
+                await runs.reopen_run(run_id)
+                continue
+            # (e) 复用关闭收尾：释放名额 + 回收空容器 + 审计 + 用户可见 SSE
+            await sandbox_executor.release_user_container(uid, run_id)
+            await sandbox_executor.sweep_idle(cfg)
+            msg = f"会话超过 {ttl} 分钟无活动，已自动关闭并释放沙箱资源；发送新消息将自动开启新会话。"
+            eid = await audit.insert_event(
+                audit_trace_id=str(row["audit_trace_id"]), event_type="run.closed", user_id=uid,
+                run_id=run_id, instance_id=str(row["agent_team_instance_id"]),
+                action="close", reason_code="idle_timeout", actor_type="system",
+                payload_redacted={"summary": msg, "reason": "idle_timeout"},
+            )
+            events.publish(run_id, events.envelope(
+                run_id, "openops.run.closed", message=msg, reason_code="idle_timeout",
+                audit_trace_id=str(row["audit_trace_id"]), event_id=eid))
+            reclaimed += 1
+        except Exception:  # noqa: BLE001 —— 单个 run 回收失败不影响其他 run（后台循环持续）
+            log.warning("[OpenOps][run] idle-run 回收失败 run=%s", run_id, exc_info=True)
+    return reclaimed
+
+
 async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> dict[str, Any]:
     appr = await runs.get_approval(approval_id)
     if appr is None:

@@ -108,7 +108,10 @@ async def emit(st: TaskState, run: dict[str, Any], event_type: str, **kw: Any) -
         payload=payload, audit_trace_id=trace, event_id=eid,
         external_request_id=kw.get("external_request_id"),
     ))
-    if event_type in _SNAPSHOT_STATUS or event_type in _SNAPSHOT_REFRESH:
+    # 只给主任务落 sre_task_state：子 Agent（leader_task_id 非空）的 approval.required 一旦落快照，
+    # 会插入一条永不置终态的 running 子行——污染 count_running（并发限额误判）并顶替 get_state 投影。
+    # 子 Agent 生命周期由 delegations 账本记录，不进主任务快照表。
+    if (event_type in _SNAPSHOT_STATUS or event_type in _SNAPSHOT_REFRESH) and st.leader_task_id is None:
         try:
             await task_states.upsert_snapshot(st, _SNAPSHOT_STATUS.get(event_type, st.status), trace)
         except Exception:  # noqa: BLE001 —— 旧库未跑 persistence 迁移等，快照降级不阻断

@@ -49,8 +49,10 @@ async def upsert_snapshot(st: Any, status: str, audit_trace_id: str) -> None:
 
 
 async def get_latest_by_run(run_id: str) -> dict[str, Any] | None:
+    # get_state 重启回退只投影主任务：子行（task_id 含 '.'）晚于主行创建，否则会顶替成"活跃任务"。
     return await q_one(
         "select * from sre_task_state where run_id=%(r)s and deleted_at is null "
+        "and strpos(task_id, '.') = 0 "
         "order by creation_date desc limit 1",
         {"r": run_id},
     )
@@ -63,9 +65,11 @@ async def get_by_task(task_id: str) -> dict[str, Any] | None:
 
 
 async def count_running(user_id: str) -> int:
+    # 并发限额只数主任务：子 Agent task_id 形如 {leader}.{key}-{hash8}（含 '.'），主任务 tsk_<hex> 无 '.'。
+    # 这条谓词也让进程内此前已泄漏的子行下次 start_task 立即不再计入（无需等重启 converge）。
     row = await q_one(
         "select count(*) as n from sre_task_state where user_id=%(u)s and task_status='running' "
-        "and deleted_at is null",
+        "and deleted_at is null and strpos(task_id, '.') = 0",
         {"u": user_id},
     )
     return int(row["n"]) if row else 0

@@ -518,14 +518,22 @@ function SandboxPanel() {
           <div style={{ fontSize: 12, color: color.textSubtle, padding: "10px 0" }}>当前无活跃用户容器（用户开启会话时按需创建）。</div>
         ) : (
           <div style={{ border: `1px solid ${color.borderFaint}`, borderRadius: radius.md, overflow: "hidden" }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.7fr 1fr 0.7fr", gap: 8, padding: "7px 12px", background: color.neutralBg, fontSize: 11, fontWeight: 700, color: color.textSubtle }}>
-              <span>user_id</span><span>状态</span><span>活跃 run</span><span>镜像</span><span>操作</span>
+            <div style={{ display: "grid", gridTemplateColumns: "1.4fr 0.7fr 0.7fr 0.75fr 0.95fr 0.6fr", gap: 8, padding: "7px 12px", background: color.neutralBg, fontSize: 11, fontWeight: 700, color: color.textSubtle }}>
+              <span>user_id</span><span>状态</span>
+              <span title="打开中的会话数（open runs）；可能因 run 未正常关闭而虚高，不代表并发任务量或容量占用">活跃 run</span>
+              <span title="当前运行的主任务数，对齐 per_user_running_task_limit 限额（子 Agent 属任务内部，不单独计数）">运行任务</span>
+              <span>镜像</span><span>操作</span>
             </div>
             {containers.map((c) => (
-              <div key={c.user_id} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.8fr 0.7fr 1fr 0.7fr", gap: 8, padding: "8px 12px", borderTop: `1px solid ${color.borderFaint}`, fontSize: 12, alignItems: "center" }}>
+              <div key={c.user_id} style={{ display: "grid", gridTemplateColumns: "1.4fr 0.7fr 0.7fr 0.75fr 0.95fr 0.6fr", gap: 8, padding: "8px 12px", borderTop: `1px solid ${color.borderFaint}`, fontSize: 12, alignItems: "center" }}>
                 <span style={{ fontFamily: "ui-monospace, monospace" }}>{c.user_id}</span>
                 <Pill tone={c.runtime_status === "active" ? "good" : "neutral"}>{c.runtime_status}</Pill>
                 <span>{c.active_run_count}</span>
+                <span style={{ fontWeight: 600 }}>
+                  {c.running_task_count}
+                  {typeof c.running_subtask_count === "number" && c.running_subtask_count > 0
+                    ? ` (+${c.running_subtask_count} 子)` : ""}
+                </span>
                 <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: color.textSubtle }}>{c.image_version}</span>
                 <button onClick={() => destroy(c.user_id)} style={{ height: 26, padding: "0 9px", border: "1px solid #f3d9d7", background: "#fff", borderRadius: radius.sm, fontSize: 11, cursor: "pointer", color: color.dangerText }}>销毁</button>
               </div>
