@@ -914,7 +914,7 @@ function buildStatusChips(
     { key: "agui", label: "AG-UI", value: agui[conn].value, tone: agui[conn].tone },
     { key: "mcp", label: "MCP 服务", value: mcpStat ? `${mcpStat.active}/${mcpStat.total} · active` : "…",
       tone: mcpStat ? (mcpStat.active > 0 ? "good" : "warning") : "neutral" },
-    { key: "omodel", label: "oModel", value: sync.value, tone: sync.tone },
+    { key: "omodel", label: "OModel", value: sync.value, tone: sync.tone },
     { key: "scope", label: "范围", value: scopeValue, tone: apps.length ? "good" : "neutral" },
   ];
 }
