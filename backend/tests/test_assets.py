@@ -149,6 +149,29 @@ def test_asset_reconcile_captures_skill_description(client):
     assert asyncio.run(_desc()) == "巡检 Skill"  # _MOCK_SKILL_MD frontmatter 的 description，端到端落库
 
 
+def test_asset_reconcile_heals_block_scalar_description(client):
+    """存量自愈：修 parser 前入库的坏描述（被旧解析器截成裸块标量指示符 `>`）在下轮对账被重解析回填，
+    无需重新上传——复现并修复插件页「说明」只显示一个 `>` 的存量行。"""
+    import asyncio
+
+    from infra.repositories import assets
+
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # 建 v2
+
+    async def _latest():
+        row = await assets.get_skill_by_key("platform", "inspection")
+        return await assets.latest_skill_version(str(row["skill_id"]))
+
+    latest = asyncio.run(_latest())
+    cur = latest.get("manifest_json") or {}
+    # 人为写入坏描述：latest_version/category 保持不变，确保仅 need_desc（坏描述）触发原地回填
+    asyncio.run(assets.update_skill_version_manifest(str(latest["skill_version_id"]), {**cur, "description": ">"}))
+
+    r = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))  # checksum 未变
+    assert r["skill_versions_added"] == 0 and r["skill_manifests_refreshed"] >= 1  # 不新增版本、原地回填
+    assert (asyncio.run(_latest()).get("manifest_json") or {}).get("description") == "巡检 Skill"  # `>` 被真描述覆盖
+
+
 def test_assets_list_paginated_with_serverside_filters(client):
     """分页读（29.3 §2.2 口径）：{items,total,page,page_size}；source_type/q 过滤走**服务端**——
     分页后再客户端过滤每页数量必然错乱（管理台 platform 基线、插件页两组分页都吃这条）。"""
@@ -417,6 +440,28 @@ def test_skill_zip_upload_writes_local_catalog(client):
         data={"category": "运维"},
     ))
     assert again["action"] == "version_updated"
+
+
+def test_skill_zip_upload_folds_block_scalar_description(client):
+    """回归插件页「说明」只显示一个 `>`：上传 SKILL.md 用 `description: >` 折叠块标量的 Skill，
+    列表（=「说明」数据源）应回折叠后的真描述，而非被截断的 `>`。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("SKILL.md",
+                   "---\nname: folded-desc-skill\nversion: 0.0.1\nentrypoint: python3 run.py\n"
+                   "description: >\n  这是一段较长的技能说明第一行，\n  接着第二行。\n---\n# doc\n")
+        z.writestr("run.py", "print('hello')\n")
+    res = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("folded.zip", buf.getvalue(), "application/zip")},
+    ))
+    assert res["skill_key"] == "folded-desc-skill"
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    row = next(s for s in skills if s["skill_key"] == "folded-desc-skill")
+    assert row["description"] == "这是一段较长的技能说明第一行， 接着第二行。"  # 折叠成一行，不再是 `>`
 
 
 def test_skill_zip_upload_rejects_bad_package(client):
