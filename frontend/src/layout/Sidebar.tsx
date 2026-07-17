@@ -56,6 +56,10 @@ function NavRow({
 export function Sidebar() {
   const nav = useNavigate();
   const loc = useLocation();
+  // 当前会话 id 取自 query（导航时带的 ?run_id=）：路径上不一定含 run_id（如 /chat?run_id=xxx），
+  // 故会话列表高亮 = 路径命中 ∪ query 命中（见下方 shownConvs 的 cur）。
+  const [searchParams] = useSearchParams();
+  const activeRunId = searchParams.get("run_id");
   const {
     me,
     agents,
