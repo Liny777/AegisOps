@@ -458,6 +458,45 @@ def test_admin_008_container_list_and_destroy(client):
     assert any(e["event_type"] == "sandbox.container.destroyed" for e in recent)
 
 
+def test_admin_008c_destroy_cancels_running_task(client):
+    """B8-4 修：强制销毁**先取消**该用户 running 主任务，再销毁容器。
+
+    不取消的话，任务下一次 run_container_command 会经 executor._get_or_revive 把容器现场重建
+    （DEF-7 自愈，对重启/idle 回收是对的）——管理台刷新一下这行就又回来了，销毁形同虚设；
+    且 TaskState 仍记 running，继续占 per_user_running_task_limit 限额。旧用例只断言注册表移除 +
+    审计，正因如此没抓到。合成用户隔离，避免跨用例污染。
+    """
+    import uuid as _uuid
+
+    from app import sandbox_admin_service
+    from runtime import task_registry
+    from runtime.task_registry import TaskState
+
+    uid = "u_destroy_" + _uuid.uuid4().hex[:6]
+    rid = str(_uuid.uuid4())
+
+    async def scenario():
+        await sandbox_executor.ensure_user_container(uid, rid, _CFG)
+        st = TaskState(task_id="tsk_" + _uuid.uuid4().hex[:10], run_id=rid, user_id=uid,
+                       instance_id=str(_uuid.uuid4()), input_text="x")
+        st.orchestrator = asyncio.create_task(asyncio.sleep(60))  # 真在飞的编排任务
+        task_registry.put(st)
+        assert task_registry.running_count(uid) == 1
+
+        r = await sandbox_admin_service.destroy_container(uid, "变更冻结演练", "admin")
+
+        assert r["destroyed"] is True
+        assert r["cancelled_task_ids"] == [st.task_id]
+        assert st.status == "cancelled"
+        assert st.orchestrator.cancelled()          # cancel 已落地（销毁前 await 等过）
+        assert task_registry.running_count(uid) == 0  # 不再占 running 限额
+        assert sandbox_executor.get(uid) is None      # 容器已销毁，且无在跑任务能把它建回来
+
+        task_registry._by_run.pop(rid, None)
+
+    asyncio.run(scenario())
+
+
 def test_admin_008b_container_endpoints_forbidden_for_user(client):
     """B8-4：沙箱容器端点普通用户 403。"""
     r1 = client.get("/api/openops/v1/admin/sandbox/containers", headers=USER_HEADERS)

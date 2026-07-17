@@ -11,6 +11,7 @@ import type {
   AdminTableData,
   SandboxCfg,
   SandboxContainer,
+  SandboxDestroyResult,
   AuditNode,
   Template,
   Workspace,
@@ -206,7 +207,8 @@ export interface OpenOpsApi {
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
-  destroySandboxContainer(userId: string, reason: string): Promise<void>;
+  /** destroyed=false 表示容器本就不在（已被回收），非报错；cancelled_task_ids=连带中断的运行中任务。 */
+  destroySandboxContainer(userId: string, reason: string): Promise<SandboxDestroyResult>;
   getAuditTimeline(): Promise<AuditNode[]>;
   // admin B7b：模板版本写闭环（草稿/发布）
   getAdminTemplateDetail(templateId: string): Promise<{
@@ -884,7 +886,7 @@ const realApi: OpenOpsApi = {
     return apiFetch<SandboxContainer[]>("/openops/v1/admin/sandbox/containers");
   },
   async destroySandboxContainer(userId, reason) {
-    await apiFetch(`/openops/v1/admin/sandbox/containers/${encodeURIComponent(userId)}:destroy`, {
+    return apiFetch<SandboxDestroyResult>(`/openops/v1/admin/sandbox/containers/${encodeURIComponent(userId)}:destroy`, {
       method: "POST",
       body: { client_request_id: crid(), reason },
     });
@@ -1093,7 +1095,8 @@ const mockApi: OpenOpsApi = {
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getSandboxContainers: () => delay([] as SandboxContainer[]),
-  destroySandboxContainer: () => delay(undefined as unknown as void),
+  destroySandboxContainer: (userId) =>
+    delay({ destroyed: true, target_user_id: userId, cancelled_task_ids: [] }),
   getAuditTimeline: () => delay(M.auditTimeline),
   getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
   saveTemplateDraft: () => delay({}),

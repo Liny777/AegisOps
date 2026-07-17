@@ -471,6 +471,8 @@ function SandboxPanel() {
   const [reason, setReason] = useState("");
   const [err, setErr] = useState("");
   const [saved, setSaved] = useState(false);
+  // 销毁反馈独立于配置表单的 err/saved：那两个只在「编辑中」分支渲染，销毁复用它们等于没有反馈
+  const [destroyMsg, setDestroyMsg] = useState<{ tone: "good" | "danger"; text: string } | null>(null);
 
   const load = useCallback(() => {
     api.getSandboxCfg().then(setCfg);
@@ -481,12 +483,17 @@ function SandboxPanel() {
   const destroy = async (userId: string) => {
     const why = window.prompt(`强制销毁用户 ${userId} 的沙箱容器会中断其当前任务。请填写原因：`);
     if (!why || !why.trim()) return;
+    setDestroyMsg(null);
     try {
-      await api.destroySandboxContainer(userId, why.trim());
-      load();
+      const r = await api.destroySandboxContainer(userId, why.trim());
+      const n = r.cancelled_task_ids.length;
+      setDestroyMsg(r.destroyed
+        ? { tone: "good", text: `已销毁 ${userId} 的容器${n ? `，并中断 ${n} 个运行中任务` : ""}。` }
+        : { tone: "danger", text: `${userId} 的容器已不存在（可能已被回收），无需销毁。` });
     } catch (e) {
-      setErr((e as Error).message);
+      setDestroyMsg({ tone: "danger", text: `销毁失败：${(e as Error).message}` });
     }
+    load();  // 失败也刷新：让管理员看到真实现状，而不是停在一行过期数据上
   };
 
   const startEdit = () => {
@@ -535,6 +542,11 @@ function SandboxPanel() {
           </div>
           <button onClick={load} style={{ height: 28, padding: "0 11px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.sm, fontSize: 11.5, cursor: "pointer", color: color.textNav }}>刷新</button>
         </div>
+        {destroyMsg ? (
+          <div style={{ fontSize: 12, marginBottom: 8, color: destroyMsg.tone === "good" ? color.goodText : color.dangerText }}>
+            {destroyMsg.text}
+          </div>
+        ) : null}
         {containers.length === 0 ? (
           <div style={{ fontSize: 12, color: color.textSubtle, padding: "10px 0" }}>当前无活跃用户容器（用户开启会话时按需创建）。</div>
         ) : (
