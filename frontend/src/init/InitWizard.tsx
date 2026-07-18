@@ -310,7 +310,7 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
     try { return new URL(pageBase).origin; } catch { return ""; }
   }, [pageBase]);
   const iframeSrc = graphOrigin && wsId
-    ? `${graphOrigin}/wesee/omodel/#/?dataSource=api&workspace=${encodeURIComponent(wsId)}&entity=true&isShow=false`
+    ? `${graphOrigin}/wesee/omodel/#/?dataSource=api&workspace=${encodeURIComponent(wsId)}&entity=true`
     : "";
 
   return (
@@ -368,8 +368,8 @@ function StepCapabilities({ capabilities, wsId, ready, onReady }: { capabilities
             <GraphPlaceholder icon="loader-2" spin text="正在获取 OModel 图谱地址…" />
           ) : iframeSrc ? (
             <iframe
-              key={iframeSrc} /* workspace 切换时强制重载，避免对端 SPA 内部路由残留 */
-              src={iframeSrc}
+              key={`${iframeSrc}&isShow=false`} /* workspace 切换时强制重载，避免对端 SPA 内部路由残留 */
+              src={`${iframeSrc}&isShow=false`}
               title="oModel 看护空间图谱"
               style={{ flex: 1, width: "100%", height: "100%", border: "none", background: "#fff" }}
             />
@@ -745,7 +745,7 @@ const CAP_META: Record<string, { icon: string; desc: string }> = {
 function StepActivate({ name, activating, editing }: { name: string; activating: boolean; editing?: boolean }) {
   const items = editing
     ? ["更新名称与系统看护范围", "模型有变更时生成新配置版本（历史版本保留）", "返回 Agent 清单"]
-    : ["创建 AgentTeam 实例", "同步系统范围（OModel 就绪）", "装配模板默认能力", "启动 Agent 服务"];
+    : ["创建 AgentTeam 实例", "同步系统范围（OModel 就绪）", "装配默认能力", "启动 Agent 服务"];
   return (
     <div style={{ padding: "8px 0" }}>
       <div style={{ textAlign: "center" }}>
