@@ -205,9 +205,12 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
 async def list_mcps(user: dict[str, Any], *, page: int = 1, page_size: int = 20,
                     source_type: str | None = None, q: str | None = None) -> dict[str, Any]:
     """UI 分页读 → {items,total,page,page_size}。口径同 list_skills。"""
+    # 真机（OPENOPS_MCPREGISTRY=real）：从插件页列表滤掉占位平台 MCP（endpoint host=mock 的 demo 种子，
+    # 如「oModel 查询与恢复」）；mock/默认模式照常展示。与 seed 门控互补（seed 挡新库、这条隐藏老库既有行）。
+    hide_placeholder = os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"
     rows, total = await assets.list_mcps_page(
         user["user_id"], source_type=source_type, q=q,
-        limit=page_size, offset=(page - 1) * page_size,
+        limit=page_size, offset=(page - 1) * page_size, hide_placeholder=hide_placeholder,
     )
     items: list[dict[str, Any]] = []
     for r in rows:

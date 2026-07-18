@@ -404,6 +404,37 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     assert "skills_created" in third and "failed" not in third  # 注册表不可达不炸整轮
 
 
+def test_real_mode_hides_placeholder_platform_mcp(client, monkeypatch):
+    """真机（OPENOPS_MCPREGISTRY=real）从插件页列表滤掉 endpoint host=mock 的占位平台 MCP
+    （seed 的「oModel 查询与恢复」）；mock/默认模式照常展示，真 endpoint 平台 MCP 不受影响，
+    且 count 与 rows 同步收敛（total 恰 -1，分页不错乱）。与 seed 门控互补：门控挡新库、这条隐藏老库既有行。"""
+    import asyncio
+
+    from infra.repositories import assets
+
+    def names_and_total():
+        d = unwrap(client.get("/api/openops/v1/assets/mcps?source_type=platform", headers=USER_HEADERS))
+        return {m["display_name"] for m in d["items"]}, d["total"]
+
+    # 默认 mock：seed 占位 MCP 可见
+    names0, total0 = names_and_total()
+    assert "oModel 查询与恢复" in names0
+
+    # 再种一个真 endpoint 的平台 MCP（host != mock）
+    asyncio.run(assets.create_mcp(None, "platform", "alarm-server", "http",
+                                  {"endpoint": "https://mcpgateway.local/alarm"}, {}))
+    names1, total1 = names_and_total()
+    assert total1 == total0 + 1
+    assert {"oModel 查询与恢复", "alarm-server"} <= names1
+
+    # 切真机：仅占位被滤，真 server 保留，total 同步 -1（count 也排除占位）
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    names2, total2 = names_and_total()
+    assert "oModel 查询与恢复" not in names2
+    assert "alarm-server" in names2
+    assert total2 == total1 - 1
+
+
 def _make_skill_zip(name: str = "uploaded-skill", with_skill_md: bool = True) -> bytes:
     """内存造一个 Skill ZIP：含 SKILL.md（frontmatter name=<name>）+ run.py。"""
     import io

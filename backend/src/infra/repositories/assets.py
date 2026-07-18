@@ -183,6 +183,13 @@ _MCP_FROM = """
 _MCP_FILTERS = (
     " and (%(st)s::text is null or m.source_type = %(st)s)"
     " and (%(qlike)s::text is null or m.display_name ilike %(qlike)s)"
+    # 真机（OPENOPS_MCPREGISTRY=real）隐藏占位平台 MCP：endpoint host=mock 的 demo 种子资产
+    # （如「oModel 查询与恢复」）。seed 门控只挡新库，老库已种的靠这条从插件页列表滤掉——
+    # 数据不删、工具装配不变，仅不展示。占位判定对齐 mcp_registry_client.is_placeholder_endpoint（空 / host=mock）。
+    " and not (%(hide_ph)s and m.source_type='platform' and ("
+    "     coalesce(m.endpoint_config_json->>'endpoint','') = ''"
+    "     or m.endpoint_config_json->>'endpoint' ~ '^[a-zA-Z][a-zA-Z0-9+.-]*://mock([:/]|$)'"
+    " ))"
 )
 
 
@@ -196,11 +203,12 @@ async def list_mcps(owner: str | None, include_platform: bool = True) -> list[di
 
 async def list_mcps_page(
     owner: str | None, *, include_platform: bool = True, source_type: str | None = None,
-    q: str | None = None, limit: int = 20, offset: int = 0,
+    q: str | None = None, limit: int = 20, offset: int = 0, hide_placeholder: bool = False,
 ) -> tuple[list[dict[str, Any]], int]:
-    """UI 分页读 → (rows, total)。口径同 list_skills_page。"""
+    """UI 分页读 → (rows, total)。口径同 list_skills_page。
+    hide_placeholder=True（真机）时滤掉 endpoint host=mock 的占位平台 MCP（见 _MCP_FILTERS）；count 同步生效。"""
     p: dict[str, Any] = {"o": owner, "p": include_platform, "st": source_type,
-                         "qlike": f"%{q}%" if q else None}
+                         "qlike": f"%{q}%" if q else None, "hide_ph": hide_placeholder}
     total = int(((await q_one(f"select count(*) as n{_MCP_FROM}{_MCP_FILTERS}", p)) or {}).get("n") or 0)
     rows = await q_all(
         f"select {_MCP_COLS}{_MCP_FROM}{_MCP_FILTERS}"
