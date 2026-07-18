@@ -118,22 +118,28 @@ async def seed() -> None:
                                   {"entrypoint": "run.py", "description": "巡检 Skill——检查资源健康度（如 redis 连接池、p99 时延），产出结构化巡检发现"},
                                   "c0ffee")
 
-    # 平台 MCP + tool catalog + 标注（query_resource 免审批 / recover_execute 需审批，均 scope required）
-    mcp = await assets.create_mcp(None, "platform", "oModel 查询与恢复", "http", {"endpoint": "http://mock"}, {})
-    for tool in await mcp_registry_client.discover_tools("platform"):
-        tcid = await mcp_tools.upsert_catalog_tool(
-            mcp["mcp_version_id"], tool["tool_name"], tool["description"], tool["input_schema"], tool["schema_hash"]
-        )
-        await mcp_tools.save_annotation(
-            tcid,
-            is_approval_required=(tool["tool_name"] == "recover_execute"),
-            is_secret_required=False,
-            scope_mode="required",
-            appid_arg_path="$.appid",
-            status="allowed",
-            blocked_reason=None,
-            by="system",
-        )
+    # 平台 MCP + tool catalog + 标注（query_resource 免审批 / recover_execute 需审批，均 scope required）：
+    # **真环境不种**——同上方 demo Skill 口径：真实部署的平台 MCP 一律由 MCP Registry 对账入库
+    # （asset_reconcile_service），种一个 endpoint=http://mock 的假资产会永远赖在插件页/管理台
+    # （reconcile 只增不删、无墓碑，上游不列它就永不清除）。mock/默认模式才种：本地端到端与
+    # test_templates / test_mcp_dynamic 等用例依赖它提供 query_resource/recover_execute 目录与标注。
+    # 门控复用既有 OPENOPS_MCPREGISTRY 开关，不新造 flag。
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real":
+        mcp = await assets.create_mcp(None, "platform", "oModel 查询与恢复", "http", {"endpoint": "http://mock"}, {})
+        for tool in await mcp_registry_client.discover_tools("platform"):
+            tcid = await mcp_tools.upsert_catalog_tool(
+                mcp["mcp_version_id"], tool["tool_name"], tool["description"], tool["input_schema"], tool["schema_hash"]
+            )
+            await mcp_tools.save_annotation(
+                tcid,
+                is_approval_required=(tool["tool_name"] == "recover_execute"),
+                is_secret_required=False,
+                scope_mode="required",
+                appid_arg_path="$.appid",
+                status="allowed",
+                blocked_reason=None,
+                by="system",
+            )
 
     # 沙箱运行配置已由 ensure_sandbox_defaults()（守卫前）补齐，此处不再重复种
 
