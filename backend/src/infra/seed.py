@@ -39,7 +39,7 @@ async def ensure_sandbox_defaults() -> None:
 # 模型资产（B7：sre_model_asset 表；替代旧 sre_platform_runtime_config platform_model 域）
 # (display_name, model_id, base_url, secret_env_var, access_scope, status)
 MODEL_ASSETS = [
-    ("Qwen3.5-千问", "qwen3.5-instruct", None, None, "all", "active"),
+    ("Qwen3.5", "qwen3.5-instruct", None, None, "all", "active"),
     ("GLM-5.1", "glm-5.1", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
      "OPENOPS_PLATFORM_GLM_API_KEY", "all", "active"),
     ("GPT-4.1", "gpt-4.1", None, None, "all", "active"),

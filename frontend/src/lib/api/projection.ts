@@ -198,6 +198,6 @@ export function projectInstance(r: Record<string, unknown>, wsNames?: Map<string
     active_config_version: String(r.active_config_version_id ?? "").slice(0, 8),
     counts: "",
     desc: "自动接管告警，执行诊断与恢复",
-    model: "千问 (平台提供)",
+    model: "平台提供",
   };
 }

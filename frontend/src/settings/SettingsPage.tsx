@@ -108,7 +108,7 @@ function AgentListPage({ agents, onOpen, onChanged }: {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <InfoRow icon="stack-2" label="系统范围" value={ag.workspace_label || ag.workspace_id} />
-                    <InfoRow icon="cpu" label="模型提供商" value={ag.model ?? "千问 (平台提供)"} />
+                    <InfoRow icon="cpu" label="模型提供商" value={ag.model ?? "平台提供"} />
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "stretch", borderTop: `1px solid #f0f1f4` }}>

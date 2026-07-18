@@ -85,7 +85,7 @@ async def save_grants(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
 def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
     """与 [[model_gateway.resolve_runtime_model]] 完全同口径的平台默认解析：
     优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个带 `secret_env_var` 的模型。
-    默认**必须带 Key** 才成立——否则运行时回退 stub。避免把无 Key 的种子资产（如 Qwen3.5-千问）
+    默认**必须带 Key** 才成立——否则运行时回退 stub。避免把无 Key 的种子资产（如 Qwen3.5）
     当默认却根本跑不起来（前端初始化向导据此展示真实默认名，而非写死）。"""
     from app.model_gateway import DEFAULT_RUNTIME_MODEL
 
