@@ -244,6 +244,9 @@
 
 .oa-chat-markdown p {
   margin: 0;
+  /* 未用代码块包裹的多行文本（树状/ASCII 图）保留软换行与行内对齐空格；
+     容器已有 overflow-wrap:anywhere / word-break:break-word 兜底超长行，不会横向溢出。 */
+  white-space: pre-wrap;
 }
 
 .oa-chat-markdown p + p,
@@ -261,6 +264,8 @@
 
 .oa-chat-markdown [data-streamdown="list-item"] {
   padding-block: 1px;
+  /* 紧凑列表项里的多行文本同样保留软换行（松散列表的段落已由 .oa-chat-markdown p 覆盖）。 */
+  white-space: pre-wrap;
 }
 
 .oa-chat-markdown [data-streamdown="heading-1"],
