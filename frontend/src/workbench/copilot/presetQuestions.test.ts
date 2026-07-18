@@ -12,7 +12,7 @@ test("selects the variable so the next keystroke overwrites it", () => {
 });
 
 test("puts an empty caret at the end when there is no variable", () => {
-  for (const text of ["我有哪些告警？", "我看护的范围有哪些应用？"]) {
+  for (const text of ["我有哪些告警？", "我看护的范围有哪些应用？", "我应用下有哪些对象和关系？"]) {
     assert.deepEqual(presetSelection(text), [text.length, text.length]);
   }
 });
@@ -25,8 +25,8 @@ test("indexOf offsets agree with setSelectionRange's UTF-16 units", () => {
   assert.deepEqual(presetSelection(text), [5, 5 + PRESET_VARIABLE.length]);
 });
 
-test("ships three questions with unique ids and exactly one variable", () => {
-  assert.equal(PRESET_QUESTIONS.length, 3);
+test("ships four questions with unique ids and exactly one variable", () => {
+  assert.equal(PRESET_QUESTIONS.length, 4);
   assert.equal(new Set(PRESET_QUESTIONS.map((q) => q.id)).size, PRESET_QUESTIONS.length);
   assert.equal(PRESET_QUESTIONS.filter((q) => q.text.includes(PRESET_VARIABLE)).length, 1);
 });
