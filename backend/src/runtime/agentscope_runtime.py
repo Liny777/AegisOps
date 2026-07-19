@@ -691,11 +691,25 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         # main 需要直连的动态工具须在模板编辑器勾进 default_tools（先 allowed 标注）。
         if st.template_tools is None or spec["name"] not in st.template_tools:
             continue
-        st.tool_annotations[spec["name"]] = {
-            "is_approval_required": not spec["readonly"], "is_secret_required": False,
-            "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"], "status": "allowed",
-            "origin": "dynamic",  # gateway：catalog 未标注行不推翻此注入（管理员显式标注才接管）
-        }
+        # 管理员在管理台显式标注即事实来源（runtime_annotations 已按 annotation_id 非空装进快照）：
+        # is_approval_required（勿审批/需审批）/scope/secret/status 全以标注为准；server 的 readOnlyHint
+        # 仅作**未标注**时的审批默认。修「管理员『勿审批』被 readOnlyHint 静默覆盖、非只读动态工具永远弹
+        # 审批」——旧代码在此无条件用 not readonly 顶掉了快照里的管理员标注。origin=dynamic 恒补写：供
+        # tool_gateway._effective_annotation 在标注被抹除（schema 变更软删）后仍能回退续用（tool_gateway.py:121）。
+        admin_ann = st.tool_annotations.get(spec["name"])
+        if admin_ann is not None:
+            st.tool_annotations[spec["name"]] = {**admin_ann, "origin": "dynamic"}
+        else:
+            st.tool_annotations[spec["name"]] = {
+                "is_approval_required": not spec["readonly"], "is_secret_required": False,
+                "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"],
+                "status": "allowed", "origin": "dynamic",
+            }
+        # 管理员禁用（status!=allowed）→ 不装配（对齐平台工具：blocked 不进 toolkit、_permission_context
+        # 不给规则），记 pruned 供审计（B6-RT-001③）；标注保留占名 + gateway 兜底。
+        if st.tool_annotations[spec["name"]].get("status") != "allowed":
+            pruned.append((spec["name"], "TOOL_BLOCKED"))
+            continue
         tools.append(_make_dynamic_tool(st, run, spec))
     # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见
     # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP

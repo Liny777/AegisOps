@@ -354,6 +354,90 @@ def test_toolkit_demo_retirement_and_scope_tool(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_dynamic_tool_admin_no_approval_overrides_readonly_hint(monkeypatch):
+    """真机动态工具：管理员『勿审批』标注胜过 server 的 readOnlyHint（修 readOnlyHint 静默覆盖标注、
+    非只读动态工具永远弹审批）；未标注的非只读动态工具仍按 readOnlyHint 弹审批。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+
+    specs = [
+        {"name": "alarm_ack", "description": "ack", "server_url": "http://s", "readonly": False,
+         "scope_mode": "none", "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}}},
+        {"name": "alarm_close", "description": "close", "server_url": "http://s", "readonly": False,
+         "scope_mode": "none", "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}}},
+    ]
+
+    async def _specs():
+        return specs
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    async def scenario():
+        st, run = _toolkit_st_run()
+        # 模拟 run_state_service 装入的管理员标注（annotation_id 非空）：仅 alarm_ack 标了『勿审批』
+        st.tool_annotations = {
+            "alarm_ack": {"is_approval_required": False, "is_secret_required": False,
+                          "scope_mode": "none", "appid_arg_path": None, "status": "allowed",
+                          "blocked_reason": None},
+        }
+        st.template_tools = {"alarm_ack", "alarm_close"}
+        tk, _pruned = await ar._build_toolkit(st, run)
+
+        # 标注胜出：alarm_ack 免审批；alarm_close 未标注 → 按 readOnlyHint（非只读）需审批。origin 恒补写。
+        assert st.tool_annotations["alarm_ack"]["is_approval_required"] is False
+        assert st.tool_annotations["alarm_ack"]["origin"] == "dynamic"
+        assert st.tool_annotations["alarm_close"]["is_approval_required"] is True
+        assert st.tool_annotations["alarm_close"]["origin"] == "dynamic"
+
+        pctx = ar._permission_context(st)
+        assert "alarm_ack" in pctx.allow_rules and "alarm_ack" not in pctx.ask_rules
+        assert "alarm_close" in pctx.ask_rules and "alarm_close" not in pctx.allow_rules
+
+        assert (await tk.get_tool("alarm_ack")) is not None
+        assert (await tk.get_tool("alarm_close")) is not None
+
+    asyncio.run(scenario())
+
+
+def test_dynamic_tool_admin_blocked_not_assembled(monkeypatch):
+    """真机动态工具：管理员标 status=blocked → 不装配（对齐平台工具：blocked 不进 toolkit、
+    _permission_context 不给规则），记 pruned 供审计；标注保留占名 + gateway 兜底。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+
+    specs = [
+        {"name": "alarm_purge", "description": "purge", "server_url": "http://s", "readonly": False,
+         "scope_mode": "none", "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}}},
+    ]
+
+    async def _specs():
+        return specs
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    async def scenario():
+        st, run = _toolkit_st_run()
+        st.tool_annotations = {
+            "alarm_purge": {"is_approval_required": False, "is_secret_required": False,
+                            "scope_mode": "none", "appid_arg_path": None, "status": "blocked",
+                            "blocked_reason": "管理员禁用"},
+        }
+        st.template_tools = {"alarm_purge"}
+        tk, pruned = await ar._build_toolkit(st, run)
+
+        assert (await tk.get_tool("alarm_purge")) is None
+        assert ("alarm_purge", "TOOL_BLOCKED") in pruned
+        pctx = ar._permission_context(st)
+        assert "alarm_purge" not in pctx.allow_rules and "alarm_purge" not in pctx.ask_rules
+        assert "alarm_purge" in st.tool_annotations  # 占名 + gateway 兜底保留
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     import pytest
 
