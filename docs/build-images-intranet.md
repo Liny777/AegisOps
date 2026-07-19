@@ -75,7 +75,32 @@ docker build -f deploy/sidecar/Dockerfile \
 `NPM_REGISTRY` 必传（镜像内 `npm ci` 默认打 registry.npmjs.org，内网不通）；
 `frontend/package*.json` 没动时该层走缓存、秒级完成。
 
-## 四、更换镜像（前端机）
+## 四、沙箱镜像（预装 pip 依赖）
+
+skill 脚本在沙箱容器里跑，容器运行态只读 rootfs 装不了包，故一组常用 Python 库列在
+`deploy/sandbox/requirements.txt`、构建期烘焙进 `openops-sandbox` 镜像。内网无公网直连、
+`pip` 默认打 pypi.org 不通，须走公司源（与上面 `NPM_REGISTRY` 同理，用 pip 的 build-arg）。
+
+```bash
+cd <仓库根>
+export PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple
+export PIP_TRUSTED_HOST=mirrors.tools.huawei.com
+bash deploy/sandbox/build-sandbox-image.sh v1
+# → deploy/artifacts/openops-sandbox-image.tar.gz（可 docker load 的离线工件）
+```
+
+传了 `PIP_INDEX_URL` 的构建，还会把源**持久化进镜像**（`/etc/pip.conf` + `UV_INDEX_URL`
+环境变量），所以 skill 运行期在容器里自己 `pip install` / `uv pip install` 额外包时**也自动
+走公司源、无需带 `-i`**。运行期装包受沙箱约束：只读 rootfs 只能 `pip install --target
+<可写目录>`（`/openops/workspace` 或 `/tmp`）、经 HITL 审批、且需 `container_network_mode=bridge`
+能出网——能预装的还是优先进 `requirements.txt` 重建镜像。
+
+改 `requirements.txt` 包清单或 `Dockerfile` 后重跑即可。后端机侧 `docker load` + 管理台把
+`container_image` 指向 `openops-sandbox:<版本>` 才吃到预装依赖（默认镜像 `python:3.11-slim`
+无这些库），详见 `docs/sandbox-docker-runbook.md`。内网 Linux x64 原生构建可去掉
+build 脚本里的 `--platform linux/amd64`（那是 Mac 交叉构建才要）。
+
+## 五、更换镜像（前端机）
 
 ```bash
 # 构建机 = 前端机：latest 标签已就地翻新，直接
@@ -93,7 +118,7 @@ curl -sI http://localhost/openops/ | head -1 && curl -s http://localhost/api/hea
 openops-frontend:latest && docker compose up -d` 即回。可 `docker images openops-frontend`
 查在库版本。
 
-## 五、后端更新（无镜像，勿容器化——拓扑定稿是代码包 + uvicorn）
+## 六、后端更新（无镜像，勿容器化——拓扑定稿是代码包 + uvicorn）
 
 ```bash
 # 构建机生成版本化完整包（不含真实 env/venv），目标机按 docs/deploy-intranet.md：
@@ -104,11 +129,12 @@ bash deploy/build-artifacts.sh --backend-only
 
 DDL 有变时**先库后码**：重跑 `sql/openops_v1_core.sql`（幂等）或该次变更的独立迁移脚本。
 
-## 六、常见坑
+## 七、常见坑
 
 | 症状 | 原因 |
 |---|---|
 | dist 断言命中「mock 指纹」 | 构建 shell 没带 `VITE_OPENOPS_API_MODE=real`（.env.local 的 mock 污染） |
+| 沙箱镜像构建卡在 pip | 没 `export PIP_INDEX_URL`/`PIP_TRUSTED_HOST`，在打外网源 pypi.org（内网不通） |
 | 资源 URL 混入 `/Program Files/Git/`、页面白屏 | **Windows Git Bash 的 MSYS 路径翻译**把 `/openops/` 等路径型 env 改写成了 Windows 路径。修法任选：①（推荐，任何 shell 免疫）两个路径 env 改写进 `frontend/.env.production.local`（`VITE_OPENOPS_BASE=/openops/` 与 `VITE_OPENOPS_API_BASE=/openops/api`），命令行只留 real/agui；② 构建前 `export MSYS_NO_PATHCONV=1`（MSYS2 用 `MSYS2_ENV_CONV_EXCL`）。重建后跑上方 §二.2 断言再打镜像 |
 | sidecar 构建卡在 npm ci | 没传 `--build-arg NPM_REGISTRY=`，在打外网源 |
 | docker build 报找不到基础镜像 | 首次未做 §一.2 的基础镜像带入 |

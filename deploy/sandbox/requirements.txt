@@ -1,0 +1,12 @@
+# 沙箱镜像预装的一组常用 Python 依赖（构建期烘焙，见 deploy/sandbox/Dockerfile）。
+# 运行态只读 rootfs 装不了包，故常用库在这里预置，让 skill 脚本免运行期安装。
+# 内网构建走公司 PyPI 源：build-arg PIP_INDEX_URL / PIP_TRUSTED_HOST（见 build-sandbox-image.sh）。
+# 克制：只收 SRE 脚本高频项，不含 pandas/numpy 等重型数据栈。
+# 暂不锁版本保持轻量；若要可复现构建，后续可给各行加 == 固定。
+requests
+httpx
+pyyaml
+python-dateutil
+tabulate
+rich
+uv
