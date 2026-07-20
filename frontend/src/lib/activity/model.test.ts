@@ -298,6 +298,19 @@ test("业务时间线只展示派发、工具或 Skill、审批与汇报里程�
   ]);
 });
 
+test("装配缺口诊断事件不进业务时间线（只进技术轨）", () => {
+  // BUSINESS_MILESTONE 里 `tool(?:\.call)?\.` 的 `.call` 可选、`skill\.` 更是直接匹配 ⇒ 两条
+  // skipped 天然命中，曾把「74 个 MCP 工具未装配」这类运维信号糊进用户对话栏。
+  // TECHNICAL_ONLY 显式排除，同时不得误伤真正的里程碑（tool.call.started / skill.completed 仍须展示）。
+  const events = mergeActivityEvents([], [
+    auditEvent("toolSkipped", "openops.tool.skipped", "2026-07-14T04:00:00Z"),
+    auditEvent("skillSkipped", "openops.skill.skipped", "2026-07-14T04:00:01Z"),
+    auditEvent("tool", "openops.tool.call.started", "2026-07-14T04:00:02Z"),
+    auditEvent("skill", "openops.skill.completed", "2026-07-14T04:00:03Z"),
+  ], "state");
+  assert.deepEqual(events.filter(showInBusinessTimeline).map((event) => event.eventId), ["tool", "skill"]);
+});
+
 test("等待审批只是 running 子态，cancelled 会清除；安全投影不读取 raw 文本", () => {
   const delegation = normalizeDelegation({
     delegation_id: "d1",

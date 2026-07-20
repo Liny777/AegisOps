@@ -506,12 +506,15 @@ def test_toolkit_emits_skipped_for_non_whitelisted_dynamic(monkeypatch):
     pytest.importorskip("agentscope")
     monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
 
-    spec = {"name": "query_alarm_list", "description": "d", "server_url": "http://s", "readonly": True,
-            "scope_mode": "none", "appid_arg_path": None,
-            "input_schema": {"type": "object", "properties": {}}}
+    def _spec(name: str) -> dict:
+        return {"name": name, "description": "d", "server_url": "http://s", "readonly": True,
+                "scope_mode": "none", "appid_arg_path": None,
+                "input_schema": {"type": "object", "properties": {}}}
+
+    names = ["query_alarm_list", "get_logs_list", "get_logs_agg", "query_metrics", "service_api_trace"]
 
     async def _specs():
-        return [spec]
+        return [_spec(n) for n in names]
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
 
@@ -529,7 +532,13 @@ def test_toolkit_emits_skipped_for_non_whitelisted_dynamic(monkeypatch):
         assert (await tk.get_tool("query_alarm_list")) is None  # 未装配
         skipped = [kw for et, kw in seen if et == "openops.tool.skipped"]
         assert len(skipped) == 1 and skipped[0]["reason_code"] == "TOOL_NOT_WHITELISTED"
-        assert "query_alarm_list" in skipped[0]["payload"]["tools"]
+        # 完整清单走 payload（诊断数据的唯一权威来源；redact 侧显式保留见 test_chart_contract）
+        assert skipped[0]["payload"]["tools"] == names
+        # message 只报数量+前 3 个、**不随工具数膨胀**：曾把全部名字拼进 message，内网 74 个顶爆
+        # emit 的 redact_text(max_length=500)，在活动栏里断在半截。
+        msg = skipped[0]["message"]
+        assert "5 个" in msg and len(msg) < 300
+        assert "service_api_trace" not in msg  # 第 4 个起不进 message
         assert st.tool_blocked is not True  # 未启用不压制「已闭环」
 
         # 子 Agent：白名单收窄是刻意角色隔离，只落日志、不发观测事件

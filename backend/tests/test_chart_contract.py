@@ -77,6 +77,28 @@ def test_pie_contract_requires_one_non_negative_non_zero_series() -> None:
         normalize_chart_arguments(chart)
 
 
+def test_tool_skipped_keeps_tool_name_list() -> None:
+    """openops.tool.skipped 的 payload.tools 必须留下——本事件的**全部诊断价值**都在这份清单里。
+
+    sanitize 默认只拷标量（列表除 `keys` 外一律丢弃），此前 tools 被静默丢掉 ⇒ message 只留数量+前 3 个、
+    审计里也查不到究竟哪些工具没装配，等于「噪音拉满、数据为零」。同时钉住 50 条上限与真实总数上报。
+    """
+    out = sanitize_activity_payload(
+        "openops.tool.skipped",
+        {"tools": ["get_logs_list", "query_alarm_list"], "phase": "toolkit_build"},
+    )
+    assert out["tools"] == ["get_logs_list", "query_alarm_list"]
+    assert out["tools_total"] == 2
+
+    # 超长列表按 50 截断，但 total 仍报真实数量（内网实测一次 74 个）
+    many = sanitize_activity_payload("openops.tool.skipped", {"tools": [f"t{i}" for i in range(74)]})
+    assert len(many["tools"]) == 50 and many["tools_total"] == 74
+
+    # 仅本事件放行该键：其它 tool.* 事件不得平白多出 tools（避免成为通用列表透传口子）
+    other = sanitize_activity_payload("openops.tool.blocked", {"tool": "x", "tools": ["a"]})
+    assert "tools" not in other
+
+
 def test_only_render_chart_gets_structured_arguments_after_redaction() -> None:
     chart = json.loads(json.dumps(VALID_CHART))
     chart["description"] = "token=super-secret-token"

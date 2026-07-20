@@ -807,10 +807,15 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 观测事件（子 Agent 的白名单收窄是刻意角色隔离，噪声大，只落日志）。**不置 st.tool_blocked**：
     # 「未启用」不是「被拦截」，不该压制本轮「已闭环」结论；故用独立事件类型（非 tool.blocked 的红色阻断）。
     if st.agent_key == "main" and _skipped_dynamic:
+        # message 只报数量 + 前 3 个：曾把全部工具名拼进去，内网一次 74 个直接顶爆 emit 的
+        # redact_text(max_length=500)，在活动栏里断在半截（`query_service_call_serv`）且毫无可读性。
+        # 完整清单走 payload["tools"]（redact.sanitize_activity_payload 显式保留），数据不靠 message 承载。
+        _head = "、".join(_skipped_dynamic[:3])
+        _more = f" 等 {len(_skipped_dynamic)} 个" if len(_skipped_dynamic) > 3 else ""
         await emit(st, run, "openops.tool.skipped", severity="info", action="mcp_not_whitelisted",
-                   message=(f"注册表发现的 {len(_skipped_dynamic)} 个 MCP 工具未装配到本实例"
-                            f"（不在模板 default_tools 白名单）：{'、'.join(_skipped_dynamic)}。"
-                            f"如需启用：模板编辑器勾入 default_tools + 插件页标注为 allowed。"),
+                   message=(f"注册表发现 {len(_skipped_dynamic)} 个 MCP 工具未装配到本实例"
+                            f"（不在模板 default_tools 白名单）：{_head}{_more}。"
+                            f"完整清单见管理台 MCP 工具页；启用需在模板编辑器勾入 default_tools 并标注 allowed。"),
                    reason_code="TOOL_NOT_WHITELISTED",
                    payload={"tools": _skipped_dynamic, "phase": "toolkit_build"})
     # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见

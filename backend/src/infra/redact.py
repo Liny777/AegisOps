@@ -220,6 +220,13 @@ def sanitize_activity_payload(
     if event.startswith("tool.") or event == "tool.blocked" or event == "runtime_plan.updated":
         for key in ("tool", "source_type", "status", "execution_id"):
             _copy_scalar(source, out, key, limit=200)
+        if event == "tool.skipped" and isinstance(source.get("tools"), list):
+            # 「注册表已发现、但未进模板白名单」的工具名清单：本事件的**全部诊断价值**都在这儿。
+            # 上面只拷标量，列表除 `keys` 外一律丢弃 ⇒ 不显式保留就等于「噪音拉满、数据为零」：
+            # message 只剩数量+前 3 个，管理员在审计里查不到究竟哪些工具没装配。
+            # 工具名是管理台明文可见的标识符，不涉敏；上限口径同 workspace.admin_created 的 APPID 清单。
+            out["tools"] = [redact_text(v, max_length=100) for v in source["tools"][:50]]
+            out["tools_total"] = len(source["tools"])
         request_id = external_request_id or source.get("request_id") or source.get("external_request_id")
         if request_id is not None:
             out["request_id"] = redact_text(request_id, max_length=200)
