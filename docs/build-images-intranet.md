@@ -81,8 +81,18 @@ skill 脚本在沙箱容器里跑，容器运行态只读 rootfs 装不了包，
 `deploy/sandbox/requirements.txt`、构建期烘焙进 `openops-sandbox` 镜像。内网无公网直连、
 `pip` 默认打 pypi.org 不通，须走公司源（与上面 `NPM_REGISTRY` 同理，用 pip 的 build-arg）。
 
-前置：基础镜像 `python:3.11-slim` 须已在本机（内网拉 docker.io 会 407 Proxy Authentication
-Required）——按 §一.2 从内网 registry 拉、或外网 `docker save | gzip` 带入后 `docker load`。
+前置两件事：
+
+1. **基础镜像** `python:3.11-slim` 须已在本机（内网拉 docker.io 会 407 Proxy Authentication
+   Required）——按 §一.2 从内网 registry 拉、或外网 `docker save | gzip` 带入后 `docker load`。
+2. **内网 CA 证书**（强烈建议）：把公司根 CA 的 `.crt`（PEM 格式）放进 `deploy/sandbox/ca/`，
+   构建时会烘焙进镜像。不放也能构建，但 skill 用 requests/httpx 打**内网 https API**
+   （监控/CMDB/告警）会 `SSLCertVerificationError`——那是 SRE Agent 的主用途。取证书：
+   ```bash
+   openssl s_client -showcerts -connect mirrors.tools.huawei.com:443 </dev/null 2>/dev/null \
+     | awk '/BEGIN CERT/,/END CERT/' > deploy/sandbox/ca/corp-ca.crt
+   ```
+   详见 `deploy/sandbox/ca/README.md`。
 
 ```bash
 cd <仓库根>
@@ -92,6 +102,16 @@ export PIP_TRUSTED_HOST=mirrors.tools.huawei.com
 bash deploy/sandbox/build-sandbox-image.sh v1
 # → deploy/artifacts/openops-sandbox-image.tar.gz（可 docker load 的离线工件）
 ```
+
+脚本检测到内网源时会**自动清空构建期代理变量**（`http_proxy`/`https_proxy`/`all_proxy` 及大写版）。
+公司代理常不可达（实测 `proxyuk.huawei.com:8080` 超时），而 docker 会把 `~/.docker/config.json`
+的 proxies **逐层注入** RUN，导致明明配了内网源仍走代理而失败。手工 `docker build` 时须自己带上
+这 6 个空 build-arg（Dockerfile 内另有一道 `unset` 兜底）。
+
+**关于 CA——「装一次就好」是错的**：容器里有 3 套互不相通的 TLS 信任源，Dockerfile 已分别处理：
+系统 `/etc/ssl/certs`（apt/curl/Python `ssl`）走 `update-ca-certificates`；certifi bundle
+（pip/requests/httpx）靠追加 `cacert.pem`；uv 用编进二进制的 webpki，须 `UV_SYSTEM_CERTS=1`。
+三者均已实测验证。
 
 **`APT_MIRROR` 必须用 `http://`**：公司镜像站证书由内网 CA 签发，基础镜像只带公共 CA，
 `https` 会 `certificate verify failed`（内网实测）。apt 完整性由 GPG 签名保证（`debian.sources`
@@ -147,6 +167,8 @@ DDL 有变时**先库后码**：重跑 `sql/openops_v1_core.sql`（幂等）或�
 | 沙箱镜像 Step 1 `FROM` 报 407 Proxy Authentication Required | 基础镜像 `python:3.11-slim` 未预先带入，docker 在拉 docker.io。按 §一.2 `docker load` 后重试 |
 | 沙箱镜像 apt 报 `Unable to connect to proxy...:8080` / `Unable to locate package` | 没 `export APT_MIRROR`，apt 在打 deb.debian.org 且被不可达的公司代理拦截 |
 | 沙箱镜像 apt 报 `SSL routines::certificate verify failed` | `APT_MIRROR` 写成了 `https://`。改 `http://`（内网 CA 证书基础镜像验不过，apt 靠 GPG 保完整性） |
+| 沙箱镜像 pip 报 `ConnectTimeoutError ... proxyuk.huawei.com timed out` | 构建期代理是**逐层注入**的，某一层的 `unset` 不会带到下一层。用脚本构建（自动清代理），或手工带 6 个空代理 build-arg。注意 pip 的 vendored requests 会读 `all_proxy`/`ALL_PROXY` 而 apt 不读——只清 4 个变量时 apt 过了 pip 仍会挂 |
+| skill 跑 requests/httpx 打内网 https 报 `SSLCertVerificationError` | 没往 `deploy/sandbox/ca/` 放内网 CA 就构建了镜像。补 CA 后重建（见 §四前置 2） |
 | 资源 URL 混入 `/Program Files/Git/`、页面白屏 | **Windows Git Bash 的 MSYS 路径翻译**把 `/openops/` 等路径型 env 改写成了 Windows 路径。修法任选：①（推荐，任何 shell 免疫）两个路径 env 改写进 `frontend/.env.production.local`（`VITE_OPENOPS_BASE=/openops/` 与 `VITE_OPENOPS_API_BASE=/openops/api`），命令行只留 real/agui；② 构建前 `export MSYS_NO_PATHCONV=1`（MSYS2 用 `MSYS2_ENV_CONV_EXCL`）。重建后跑上方 §二.2 断言再打镜像 |
 | sidecar 构建卡在 npm ci | 没传 `--build-arg NPM_REGISTRY=`，在打外网源 |
 | docker build 报找不到基础镜像 | 首次未做 §一.2 的基础镜像带入 |

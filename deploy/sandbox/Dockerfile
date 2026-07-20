@@ -6,6 +6,8 @@
 # ripgrep 供 agentscope 官方 Grep 工具（绑容器后端）在容器内搜文件内容，见 runtime/sandbox_tool_backend.py。
 # pip 依赖预装 requirements.txt 中一组常用库（运行态只读 rootfs 装不了包，故构建期烘焙）；
 # 内网源同时持久化进镜像（/etc/pip.conf + UV_INDEX_URL），运行期 skill 自取额外包也自动走公司源。
+# 内网 CA：把 .crt 放进 deploy/sandbox/ca/ 即打通三套互不相通的 TLS 信任源（系统 / certifi / uv），
+# 否则 skill 用 requests/httpx 打内网 https API 会 SSLCertVerificationError。见 ca/README.md。
 #
 # 构建/预置见 deploy/sandbox/build-sandbox-image.sh；管理台「沙箱与容量」把
 # container_image 指向本镜像 tag（如 openops-sandbox:v1），默认仍是 python:3.11-slim。
@@ -24,7 +26,7 @@ ARG APT_MIRROR=
 RUN set -eux; \
     if [ -n "$APT_MIRROR" ]; then \
       sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
-      unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; \
+      unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; \
     fi; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
@@ -37,6 +39,13 @@ RUN set -eux; \
       less \
       ripgrep; \
     rm -rf /var/lib/apt/lists/*
+
+# ── 内网 CA（信任源 1/3：系统 /etc/ssl/certs —— 供 apt、curl、Python 标准库 ssl）──────────
+# 把 .crt 放进 deploy/sandbox/ca/ 即被烘焙。用【目录 COPY】而非条件 COPY：Dockerfile 无法
+# 条件化 COPY，但目录常在——空目录（只有 README）时 update-ca-certificates 自然 no-op，
+# 外网构建行为不变。详见 deploy/sandbox/ca/README.md。
+COPY ca/ /usr/local/share/ca-certificates/
+RUN set -eux; update-ca-certificates
 
 # 内网构建走公司 PyPI 源（无公网直连）：由 build-sandbox-image.sh 透传，或直接
 #   --build-arg PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple \
@@ -57,4 +66,40 @@ RUN set -eux; \
     fi
 ENV UV_INDEX_URL=${PIP_INDEX_URL}
 COPY requirements.txt /tmp/requirements.txt
-RUN pip install --no-cache-dir -r /tmp/requirements.txt && rm -f /tmp/requirements.txt
+# Docker 的代理是【逐层注入】的——apt 层里的 unset 不会带到这一层，故此处必须再来一次，
+# 否则 pip 会走公司代理（内网实测 proxyuk.huawei.com:8080 不可达，ConnectTimeout 后装包失败）。
+# 名单比 apt 层更关键：pip 的 vendored requests 会读 all_proxy/ALL_PROXY，而 apt 不读——
+# 早期 apt 层漏掉 all_proxy 却侥幸通过，pip 这里漏了就直接炸。
+# ⚠ gate 必须保留：它保护的不是外网构建，而是【在公司网内、走公司代理打公网 PyPI】这第三种
+#   模式（既不传 PIP_INDEX_URL 也没内网源）——无条件 unset 会掐掉它唯一的出网通道。
+RUN set -eux; \
+    if [ -n "$PIP_INDEX_URL" ]; then \
+      unset http_proxy https_proxy all_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY; \
+    fi; \
+    pip install --no-cache-dir -r /tmp/requirements.txt; \
+    rm -f /tmp/requirements.txt
+
+# ── 内网 CA（信任源 2/3：certifi bundle —— 供 pip 的 vendored requests、requests、httpx）──
+# 【顺序要求】必须排在 pip install 之后：certifi 是随 requests/httpx 才装进来的，早于它就没得改。
+# 系统 update-ca-certificates 修不到这一套——certifi 自带独立 bundle，httpx 更是显式加载它。
+# 空 ca/ 目录时 ls 无匹配 → 整层 no-op。
+RUN set -eux; \
+    if ls /usr/local/share/ca-certificates/*.crt >/dev/null 2>&1; then \
+      cat /usr/local/share/ca-certificates/*.crt \
+        >> "$(python3 -c 'import certifi; print(certifi.where())')"; \
+    fi
+
+# ── 内网 CA（信任源 3/3：uv 的 webpki）+ 运行期缓存目录 ────────────────────────────────
+# uv 用 rustls + 编进二进制的 webpki-roots，既不读系统 CA 也不读 certifi/pip.conf，
+# 须显式让它改用系统信任源（无 CA 时等价于用公共 CA，外网构建无害）。
+# ⚠ 用 UV_SYSTEM_CERTS 而非 UV_NATIVE_TLS：后者在 uv 0.11.x 已废弃，实测每次调用都会往 stderr
+#   打 deprecation 告警（会污染 skill 输出），且未来版本移除。二选一，别为"兼容老版"同时设。
+#   （若某天需要跳过校验而非信任 CA，uv 的对应物是 --allow-insecure-host / UV_INSECURE_HOST，
+#    相当于 pip 的 trusted-host；本镜像走装 CA 的正路，不用它。）
+# 缓存目录：运行期 uid 1000 + 只读 rootfs，HOME 不可写会让 break-glass 装包失败，指到 tmpfs。
+# 注意这些都是【字面常量】——不能写成 ENV X=${ARG} 形式，外网构建会展开成空串。
+ENV UV_SYSTEM_CERTS=1 \
+    PIP_CACHE_DIR=/tmp/pip-cache \
+    UV_CACHE_DIR=/tmp/uv-cache \
+    UV_LINK_MODE=copy \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
