@@ -5,7 +5,7 @@
   env/注册表代理）+ 可选 `OPENOPS_OMODEL_COOKIE`（umodel 开 IAM `omodel.iam.validation.enable=true` 时带
   session cookie；29.7 显示 workspace 端点匿名可用「未登录=system」，默认不带）。
 - `resolve_scope` 走 29.7 端点「列出工作空间关联项目」（`GET /{ws}/projects`）：`effective_appids` = `project_id` 列表，
-  同响应的 `name_cn` 带出为 `scope_apps`（`[{appid, name}]`，纯显示装饰，见 `_decorate`）。
+  同响应的 `name_cn` / `enterprise_id` 带出为 `scope_apps`（`[{appid, name, enterprise_id}]`，纯显示装饰，见 `_decorate`）。
   ⚠**安全简化（29.6 §二 P0-1）**：端点 4 返回 workspace **全量关联项目、不按 user_id 过滤、不含 appid 粒度、不鉴权**
   ——「发现 ≠ 授权」。V1 先用它接真（真正的 per-user `:resolve` umodel 侧尚未建）；即 `effective_appids` =
   **workspace 级发现集，非 per-user 授权集**，per-user 过滤待 umodel P0-1（见 EXTERNAL-INTEGRATION.md）。
@@ -190,18 +190,19 @@ def _failed(scope_revision: str, reason: str = "") -> dict[str, Any]:
             "omodel_request_id": "", "reason": reason}
 
 
-def _decorate(appids: list[str], names: dict[str, str]) -> list[dict[str, str]]:
-    """effective_appids → scope_apps（`[{appid, name}]`，同元素同序）：纯装饰，不参与范围判定。
+def _decorate(appids: list[str], names: dict[str, str], ents: dict[str, str]) -> list[dict[str, str]]:
+    """effective_appids → scope_apps（`[{appid, name, enterprise_id}]`，同元素同序）：纯装饰，不参与范围判定。
 
-    ⚠**只按 appids 迭代、向 names 里查**，绝不反过来迭代名字表——否则 `/projects` 多出的项目会
+    ⚠**只按 appids 迭代、向 names/ents 里查**，绝不反过来迭代名字表——否则 `/projects` 多出的项目会
     被带进范围（装饰逻辑扩大 scope 是本函数唯一的安全风险）。
     名字缺失或等于 appid（`projectCn` 在 apptree 无名时回填 appid，见 `_build_workspace_ui`）一律置 ""，
-    否则渲染出「APP-A｜APP-A」这种废话。
+    否则渲染出「APP-A｜APP-A」这种废话。企业 id 缺失置 ""，渲染时整段省略。
     """
     out: list[dict[str, str]] = []
     for a in appids:
         name = str(names.get(a) or "").strip()
-        out.append({"appid": a, "name": "" if name == a else name})
+        out.append({"appid": a, "name": "" if name == a else name,
+                    "enterprise_id": str(ents.get(a) or "").strip()})
     return out
 
 
@@ -228,8 +229,8 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
     ⚠安全简化：端点 4 **不按 user_id 过滤、不鉴权**（29.6 P0-1，「发现 ≠ 授权」）；per-user 过滤待 umodel 真 `:resolve`。
     当前 `effective_appids` = workspace 级发现集。空范围/404/错误一律 fail-closed（Scope Service 兜底）。
 
-    同一次响应里的 `name_cn`（建 workspace 时写进 `scopes[].projectCn` 的 apptree 中文名）顺手带出为
-    `scope_apps`——纯装饰，给 `list_scope_apps` 显示用，不额外发请求、不影响范围判定。
+    同一次响应里的 `name_cn`（建 workspace 时写进 `scopes[].projectCn` 的 apptree 中文名）与 `enterprise_id`
+    顺手带出为 `scope_apps`——纯装饰，给 `list_scope_apps` 显示用，不额外发请求、不影响范围判定。
     """
     base = _base()
     if not base:
@@ -246,8 +247,10 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
             rows = [p for p in projects if isinstance(p, dict) and p.get("project_id")]
             appids = sorted(p["project_id"] for p in rows)
             names = {p["project_id"]: str(p.get("name_cn") or "") for p in rows}
+            # enterprise_id 是 umodel 后加的字段；留 camelCase 兜底（同 _map_metadata 的 updated_at/updatedAt 写法）
+            ents = {p["project_id"]: str(p.get("enterprise_id") or p.get("enterpriseId") or "") for p in rows}
             rid = r.headers.get("X-Request-Id") or "req_" + uuid.uuid4().hex[:10]
-            return {"status": "ok", "effective_appids": appids, "scope_apps": _decorate(appids, names),
+            return {"status": "ok", "effective_appids": appids, "scope_apps": _decorate(appids, names, ents),
                     "scope_revision": _derive_rev(appids), "omodel_request_id": rid}
     except Exception as e:  # fail-closed（含超时/连接错/解析错/非 2xx）
         return _failed(scope_revision, f"{type(e).__name__}: {str(e)[:150]}")

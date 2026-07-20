@@ -403,22 +403,38 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
 def _render_scope_apps(scope_ctx: dict[str, Any]) -> str:
     """list_scope_apps 的文案（提出来是为了脱开 agentscope 单测）：每行「appid｜名称」，无名退回裸 appid。
 
-    `scope_apps`（`[{appid, name}]`，omodel resolve 带出）只是 `effective_appids` 的显示装饰，
-    **仅在两者严格对齐时采用**——子 Agent 拷贝 ctx、测试手搓 scope_ctx、进程重启后读到旧 shadow
+    `scope_apps`（`[{appid, name, enterprise_id}]`，omodel resolve 带出）只是 `effective_appids` 的显示
+    装饰，**仅在两者严格对齐时采用**——子 Agent 拷贝 ctx、测试手搓 scope_ctx、进程重启后读到旧 shadow
     状态都可能让它对不上，此时整体退回裸列表，绝不半渲染。
+
+    企业 id 是 32 位长串，逐行重复会淹没 appid：全部应用同企业（绝大多数情况）时收进抬头只说一次；
+    跨租户（`_build_workspace_ui` 明确允许不同应用属不同租户）才逐行标注。
     """
     appids = scope_ctx.get("effective_appids", [])
     if not appids:
         return "当前工作范围为空（无可用应用）。"
     apps = scope_ctx.get("scope_apps") or []
     names: dict[str, str] = {}
+    ents: dict[str, str] = {}
     if [a.get("appid") for a in apps] == list(appids):
         names = {a["appid"]: str(a.get("name") or "") for a in apps}
-    # appid 必须打头且不加修饰：模型会原样复制它填工具参数，Tool Gateway 做精确字符串成员校验。
-    lines = [f"- {a}｜{names[a]}" if names.get(a) else f"- {a}" for a in appids]
-    return (f"当前工作范围内共 {len(appids)} 个应用（appid｜名称）：\n"
-            + "\n".join(lines)
-            + "\n（各查询工具的应用参数必须取自此范围，且只填 appid 本身、不要带名称）")
+        ents = {a["appid"]: str(a.get("enterprise_id") or "") for a in apps}
+    distinct = {e for e in ents.values() if e}
+    # 同企业且人人有值 → 抬头说一次；否则（跨租户/部分缺失）逐行标，宁可啰嗦也不含糊
+    uniform = distinct if len(distinct) == 1 and len(ents) == len(appids) and all(ents.values()) else set()
+    head = (f"当前工作范围内共 {len(appids)} 个应用（appid｜名称），企业 {next(iter(uniform))}：" if uniform
+            else f"当前工作范围内共 {len(appids)} 个应用（appid｜名称{'｜企业' if distinct else ''}）：")
+    lines = []
+    for a in appids:
+        # appid 必须打头且不加修饰：模型会原样复制它填工具参数，Tool Gateway 做精确字符串成员校验。
+        seg = f"- {a}"
+        if names.get(a):
+            seg += f"｜{names[a]}"
+        if not uniform and ents.get(a):
+            seg += f"｜企业 {ents[a]}"
+        lines.append(seg)
+    return (head + "\n" + "\n".join(lines)
+            + "\n（各查询工具的应用参数必须取自此范围，且只填 appid 本身、不要带名称或企业）")
 
 
 def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:

@@ -363,7 +363,7 @@ def test_list_scope_apps_renders_names_with_fallbacks():
     t = ar._render_scope_apps({"effective_appids": appids,
                                "scope_apps": [{"appid": "APP-REAL-1", "name": "支付核心交易"},
                                               {"appid": "APP-REAL-2", "name": ""}]})
-    assert "- APP-REAL-1｜支付核心交易\n" in t and t.endswith("- APP-REAL-2\n（各查询工具的应用参数必须取自此范围，且只填 appid 本身、不要带名称）")
+    assert "- APP-REAL-1｜支付核心交易\n" in t and "- APP-REAL-2\n（各查询工具" in t
 
     # ② scope_apps 与 effective_appids 不一致（少一个）→ 整体退回裸列表，不半渲染
     t = ar._render_scope_apps({"effective_appids": appids,
@@ -377,6 +377,37 @@ def test_list_scope_apps_renders_names_with_fallbacks():
 
     # ④ 空范围话术不变
     assert ar._render_scope_apps({"effective_appids": []}) == "当前工作范围为空（无可用应用）。"
+
+
+def test_list_scope_apps_renders_enterprise_id():
+    """企业 id 是 32 位长串：全员同企业 → 收进抬头只说一次；跨租户/部分缺失 → 逐行标注。"""
+    appids = ["APP-1", "APP-2"]
+
+    # ① 同企业：抬头一次，行内不重复
+    t = ar._render_scope_apps({"effective_appids": appids, "scope_apps": [
+        {"appid": "APP-1", "name": "支付", "enterprise_id": "ENT-1"},
+        {"appid": "APP-2", "name": "订单", "enterprise_id": "ENT-1"}]})
+    assert "，企业 ENT-1：" in t
+    assert t.count("ENT-1") == 1 and "- APP-1｜支付\n" in t and "- APP-2｜订单\n" in t
+
+    # ② 跨租户：抬头不收，逐行标
+    t = ar._render_scope_apps({"effective_appids": appids, "scope_apps": [
+        {"appid": "APP-1", "name": "支付", "enterprise_id": "ENT-1"},
+        {"appid": "APP-2", "name": "订单", "enterprise_id": "ENT-2"}]})
+    assert "（appid｜名称｜企业）：" in t
+    assert "- APP-1｜支付｜企业 ENT-1\n" in t and "- APP-2｜订单｜企业 ENT-2\n" in t
+
+    # ③ 部分缺企业：不算 uniform，有值的才标（缺的那行不留空段）
+    t = ar._render_scope_apps({"effective_appids": appids, "scope_apps": [
+        {"appid": "APP-1", "name": "支付", "enterprise_id": "ENT-1"},
+        {"appid": "APP-2", "name": "", "enterprise_id": ""}]})
+    assert "- APP-1｜支付｜企业 ENT-1\n" in t and "- APP-2\n（各查询工具" in t
+
+    # ④ 全员无企业 → 抬头退回旧形态，不出现「企业」字样
+    t = ar._render_scope_apps({"effective_appids": appids, "scope_apps": [
+        {"appid": "APP-1", "name": "支付", "enterprise_id": ""},
+        {"appid": "APP-2", "name": "订单", "enterprise_id": ""}]})
+    assert "（appid｜名称）：" in t and "企业" not in t.split("（各查询工具", 1)[0]
 
 
 def test_dynamic_tool_admin_no_approval_overrides_readonly_hint(monkeypatch):
