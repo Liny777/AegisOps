@@ -11,7 +11,20 @@
 # container_image 指向本镜像 tag（如 openops-sandbox:v1），默认仍是 python:3.11-slim。
 FROM python:3.11-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# 内网同样打不到 deb.debian.org（且公司代理常不可达）：传 APT_MIRROR 换成公司 Debian 源。
+# 传的是替换 http://deb.debian.org 的【基址】，如
+#   --build-arg APT_MIRROR=https://mirrors.tools.huawei.com
+# 其下须有 /debian 与 /debian-security。外网构建不传，走官方源。
+# 基础镜像为 Debian 13(trixie)，apt 源是 deb822 格式的 /etc/apt/sources.list.d/debian.sources
+# （无传统 /etc/apt/sources.list），故用 sed 改其 URIs。
+ARG APT_MIRROR=
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|http://deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+      unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
       curl \
       jq \
       procps \
@@ -19,8 +32,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       dnsutils \
       ca-certificates \
       less \
-      ripgrep \
-    && rm -rf /var/lib/apt/lists/*
+      ripgrep; \
+    rm -rf /var/lib/apt/lists/*
 
 # 内网构建走公司 PyPI 源（无公网直连）：由 build-sandbox-image.sh 透传，或直接
 #   --build-arg PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple \
