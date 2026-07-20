@@ -13,8 +13,11 @@ FROM python:3.11-slim
 
 # 内网同样打不到 deb.debian.org（且公司代理常不可达）：传 APT_MIRROR 换成公司 Debian 源。
 # 传的是替换 http://deb.debian.org 的【基址】，如
-#   --build-arg APT_MIRROR=https://mirrors.tools.huawei.com
+#   --build-arg APT_MIRROR=http://mirrors.tools.huawei.com
 # 其下须有 /debian 与 /debian-security。外网构建不传，走官方源。
+# ⚠ 用 http:// 而非 https://——公司镜像站证书由内网 CA 签发，基础镜像只带公共 CA，
+#   https 会 certificate verify failed（内网实测）。apt 的完整性由 GPG 签名保证
+#   （见 debian.sources 的 Signed-By），与 Debian 官方默认源同为 http，不是降级。
 # 基础镜像为 Debian 13(trixie)，apt 源是 deb822 格式的 /etc/apt/sources.list.d/debian.sources
 # （无传统 /etc/apt/sources.list），故用 sed 改其 URIs。
 ARG APT_MIRROR=
