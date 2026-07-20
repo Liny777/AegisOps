@@ -64,6 +64,30 @@ async def set_status(model_asset_id: str, status: str, by: str) -> int:
     )
 
 
+# 可经 PUT /model-assets/{id} 改写的列。model_id 不在内（实例 overlay.platform_model_id 的绑定键）；
+# status / access_scope 亦不在（各有专用端点）。
+_UPDATABLE = ("display_name", "base_url", "secret_env_var", "context_window_tokens")
+
+
+async def update_fields(model_asset_id: str, fields: dict[str, Any], by: str) -> int:
+    """按提供的键局部改写连接配置（PATCH 语义：未出现的列原样不动）。
+
+    SET 子句由 `_UPDATABLE` **字面量白名单**驱动，列名绝不来自请求体原文；值仍走 %(x)s 绑定。
+    同 [[agent_teams.asset_in_use]] 的 f-string 拼列名口径。
+    """
+    cols = [c for c in _UPDATABLE if c in fields]
+    if not cols:
+        return 0
+    sets = ", ".join(f"{c}=%({c})s" for c in cols)
+    return await exec1(
+        f"""
+        update sre_model_asset set {sets}, last_updated_by=%(b)s, last_update_date=now()
+        where model_asset_id=%(i)s and deleted_at is null
+        """,
+        {**{c: fields[c] for c in cols}, "i": model_asset_id, "b": by},
+    )
+
+
 async def set_access_scope(model_asset_id: str, access_scope: str, by: str) -> int:
     return await exec1(
         """

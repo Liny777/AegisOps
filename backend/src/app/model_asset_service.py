@@ -18,6 +18,10 @@ from infra.repositories import audit, model_assets
 # secret_env_var 是环境变量名（非 Key 本身）：大写惯例。实测有管理员把真实 Key 填进来 → 明文落库
 # + 日志泄漏（SEC-001），入口处直接拒绝。
 _ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
+# register 与 update 共用同一道闸、同一段文案：更新路径若绕过它，等于给「真实 Key 落库」开后门。
+_ENV_VAR_HINT = ("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）"
+                 "——看起来填入了 API Key 本身：真实 Key 绝不落库，请把 Key 配到后端进程环境变量"
+                 "（run-backend 里 export），此处只填变量名")
 
 
 async def admin_list() -> list[dict[str, Any]]:
@@ -28,10 +32,7 @@ async def register(req: Any, by: str) -> dict[str, Any]:
     if await model_assets.get_by_model_id(req.model_id):
         raise ApiError(Err.VALIDATION_FAILED, f"model_id 已存在：{req.model_id}")
     if req.secret_env_var and not _ENV_VAR_RE.match(req.secret_env_var):
-        raise ApiError(Err.VALIDATION_FAILED,
-                       "「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）"
-                       "——看起来填入了 API Key 本身：真实 Key 绝不落库，请把 Key 配到后端进程环境变量"
-                       "（run-backend 里 export），此处只填变量名")
+        raise ApiError(Err.VALIDATION_FAILED, _ENV_VAR_HINT)
     row = await model_assets.create(
         req.display_name, req.protocol, req.model_id, req.base_url,
         req.secret_env_var, req.access_scope, "active", by,
@@ -42,6 +43,37 @@ async def register(req: Any, by: str) -> dict[str, Any]:
         action="register", payload_redacted={"model_id": req.model_id, "access_scope": req.access_scope},
     )
     return row_json(row)
+
+
+async def update(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
+    """局部更新连接配置（PATCH：只改显式提供的键）。
+
+    典型用途：模型的 base_url 指错环境（如生产库里填了测试地址），无改库条件时经本接口纠正。
+    改完**新 run 立即生效**——[[model_gateway.resolve_runtime_model]] 每次 run 启动都重查库，
+    无缓存需失效；已在跑的 run 沿用 TaskState 里已解析的 spec 到结束。
+    """
+    if await model_assets.get(model_asset_id) is None:
+        raise ApiError(Err.NOT_FOUND, "模型资产不存在")
+    fields = req.model_dump(exclude_unset=True)  # 未出现的键不进 SET，与「显式传 null」区分开
+    fields.pop("client_request_id", None)
+    if not fields:
+        raise ApiError(Err.VALIDATION_FAILED, "未提供任何可更新字段")
+    if fields.get("secret_env_var") and not _ENV_VAR_RE.match(fields["secret_env_var"]):
+        raise ApiError(Err.VALIDATION_FAILED, _ENV_VAR_HINT)
+    # 这两列 NOT NULL：显式传 null 会被 DB 拒（整条 500），入口处给出可读原因
+    if "display_name" in fields and not (fields["display_name"] or "").strip():
+        raise ApiError(Err.VALIDATION_FAILED, "display_name 不可置空")
+    if "context_window_tokens" in fields and fields["context_window_tokens"] is None:
+        raise ApiError(Err.VALIDATION_FAILED, "context_window_tokens 不可置空")
+    await model_assets.update_fields(model_asset_id, fields, by)
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="model_asset.updated", user_id=by,
+        action="update",
+        # 只记改了哪些字段名 + 新 base_url；secret_env_var 虽是变量名非 Key，也不必进审计
+        payload_redacted={"model_asset_id": model_asset_id, "fields": sorted(fields),
+                          "base_url": fields.get("base_url")},
+    )
+    return row_json(await model_assets.get(model_asset_id))  # type: ignore[arg-type]
 
 
 async def set_status(model_asset_id: str, status: str, by: str) -> None:
