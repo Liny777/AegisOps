@@ -32,9 +32,9 @@ async def test_scope_apps_decorates_effective_appids(client):  # noqa: ARG001 �
     ok = await omodel_mock.resolve_scope("ws_pay_abc", "rev", "u")
     assert ok["effective_appids"] == ["APP-A", "APP-B", "APP-C"]
     assert [a["appid"] for a in ok["scope_apps"]] == ok["effective_appids"]
-    assert ok["scope_apps"] == [{"appid": "APP-A", "name": "支付核心交易"},
-                                {"appid": "APP-B", "name": "订单履约中心"},
-                                {"appid": "APP-C", "name": ""}]  # APP-C 无 apps 行 → 降级
+    assert ok["scope_apps"] == [{"appid": "APP-A", "name": "支付核心交易", "enterprise_id": "ENT-1"},
+                                {"appid": "APP-B", "name": "订单履约中心", "enterprise_id": "ENT-1"},
+                                {"appid": "APP-C", "name": "", "enterprise_id": ""}]  # APP-C 无 apps 行 → 降级
     for ws in ("ws_syncing", "ws_failed", "ws_missing"):
         assert (await omodel_mock.resolve_scope(ws, "rev", "u"))["scope_apps"] == []
 
