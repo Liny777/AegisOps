@@ -77,9 +77,38 @@ async def test_ext_omodel_resolve_from_projects(monkeypatch):
 
     res = await omodel_real.resolve_scope("ws-1", "old-rev", "0026demo01")
     assert cap[0][1] == "http://umodel:8080/api/v1/workspaces/ws-1/projects"
+    assert len(cap) == 1  # 装饰不额外发请求
     assert res["status"] == "ok"
-    assert res["effective_appids"] == ["APP-A", "APP-B"]  # 排序
+    assert res["effective_appids"] == ["APP-A", "APP-B"]  # 排序（回归护栏：装饰不得改这个键）
+    assert res["scope_apps"] == [{"appid": "APP-A", "name": "a"}, {"appid": "APP-B", "name": "b"}]  # 同序
     assert res["scope_revision"].startswith("sc-") and res["scope_revision"] != "old-rev"
+
+
+async def test_ext_omodel_resolve_scope_apps_degrades(monkeypatch):
+    """name_cn 缺失/为空/等于 appid → name 置 ""；scope_apps 严格跟随 effective_appids，不因名字表而扩范围。"""
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_OMODEL", "real")
+    monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "http://umodel:8080")
+    projects = [
+        {"project_id": "APP-A", "name_cn": "支付核心交易"},
+        {"project_id": "APP-B"},                              # 无 name_cn
+        {"project_id": "APP-C", "name_cn": ""},               # 空名
+        {"project_id": "APP-D", "name_cn": "APP-D"},          # projectCn 回填成 appid → 抑制
+        {"name_cn": "没有 project_id 的脏行"},                  # 不得进范围
+    ]
+    _install(monkeypatch, lambda m, u, k: _Resp(200, projects))
+
+    res = await omodel_real.resolve_scope("ws-1", "rev", "u")
+    assert res["effective_appids"] == ["APP-A", "APP-B", "APP-C", "APP-D"]
+    assert res["scope_apps"] == [
+        {"appid": "APP-A", "name": "支付核心交易"},
+        {"appid": "APP-B", "name": ""},
+        {"appid": "APP-C", "name": ""},
+        {"appid": "APP-D", "name": ""},
+    ]
+    # 不变式：scope_apps 是 effective_appids 的纯装饰（同元素同序）
+    assert [a["appid"] for a in res["scope_apps"]] == res["effective_appids"]
 
 
 async def test_ext_omodel_resolve_404_and_empty_failclosed(monkeypatch):
@@ -90,11 +119,16 @@ async def test_ext_omodel_resolve_404_and_empty_failclosed(monkeypatch):
 
     _install(monkeypatch, lambda m, u, k: _Resp(404, None))
     r404 = await omodel_real.resolve_scope("ws-x", "rev", "u")
-    assert r404["status"] == "failed" and r404["effective_appids"] == []
+    assert r404["status"] == "failed" and r404["effective_appids"] == [] and r404["scope_apps"] == []
 
     _install(monkeypatch, lambda m, u, k: _Resp(200, []))  # 空关联项目
     rempty = await omodel_real.resolve_scope("ws-e", "rev", "u")
     assert rempty["status"] == "ok" and rempty["effective_appids"] == []  # scope_service 兜 EMPTY_SCOPE
+    assert rempty["scope_apps"] == []
+
+    _install(monkeypatch, lambda m, u, k: _Resp(500, None))  # 上游 5xx
+    r500 = await omodel_real.resolve_scope("ws-5", "rev", "u")
+    assert r500["status"] == "failed" and r500["scope_apps"] == []
 
 
 async def test_ext_omodel_get_and_list_map_metadata(monkeypatch):
