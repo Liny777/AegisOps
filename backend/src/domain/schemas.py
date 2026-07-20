@@ -179,6 +179,21 @@ class ModelStatusRequest(BaseModel):
     status: str = Field(pattern="^(active|disabled)$")
 
 
+class UpdateModelAssetRequest(BaseModel):
+    """更新模型资产连接配置（PATCH 语义：只改显式提供的键，服务层用 exclude_unset 取差集）。
+
+    base_url / secret_env_var 显式传 null 表示清空（走平台网关的模型本就不填 base_url），
+    所以「没传」和「传 null」必须可区分——靠默认值区分不了，只能靠 exclude_unset。
+    刻意不含 model_id：它是实例 overlay.platform_model_id 的绑定键，改了会让已绑定实例静默失配。
+    status / access_scope 亦不含——已有 :status 与 /grants 专用端点。
+    """
+    client_request_id: str = Field(min_length=1)
+    display_name: str | None = Field(default=None, min_length=1)
+    base_url: str | None = None
+    secret_env_var: str | None = None
+    context_window_tokens: int | None = Field(default=None, gt=0)
+
+
 class UpdateRuntimeConfigRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     updates: dict[str, Any] = Field(default_factory=dict)

@@ -24,6 +24,7 @@ from domain.schemas import (
     SaveTemplateVersionRequest,
     SetRoleRequest,
     TemplateVersionActionRequest,
+    UpdateModelAssetRequest,
     UpdateRuntimeConfigRequest,
     WhitelistRequest,
 )
@@ -155,6 +156,14 @@ async def model_assets_register(req: RegisterModelAssetRequest, admin: Admin):
 async def model_assets_status(model_asset_id: str, req: ModelStatusRequest, admin: Admin):
     await model_asset_service.set_status(model_asset_id, req.status, admin["user_id"])
     return ok({"status": req.status})
+
+
+# 注意：本路由必须留在 `:status` 之后——路径参数不匹配 `/` 但**匹配 `:`**，先注册的话
+# `/model-assets/abc:status` 会被它吃掉（model_asset_id="abc:status"）。`/grants` 带 `/`，不受影响。
+@router.put("/model-assets/{model_asset_id}")
+async def model_assets_update(model_asset_id: str, req: UpdateModelAssetRequest, admin: Admin):
+    """更新模型资产连接配置（PATCH 语义，只改请求体里显式给出的键）。"""
+    return ok(await model_asset_service.update(model_asset_id, req, admin["user_id"]))
 
 
 @router.get("/model-assets/{model_asset_id}/grants")
