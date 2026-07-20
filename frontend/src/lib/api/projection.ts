@@ -35,6 +35,9 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   "openops.tool.blocked": { icon: "ban", tone: "danger", title: "工具被阻断" },
   // 发现到、但未在模板 default_tools 白名单故未装配的动态 MCP 工具（非阻断，中性提示，区别于上方红色 blocked）
   "openops.tool.skipped": { icon: "info-circle", tone: "neutral", title: "工具未装配" },
+  // 子 Agent 画像里配了 Skill、运行时却没装配上（key 已下架/改名——编辑器仍显示为已勾选）。
+  // 同为非阻断中性提示：此前静默切空、零信号，管理员只能从「子 Agent 不调 Skill」的体感反推
+  "openops.skill.skipped": { icon: "info-circle", tone: "neutral", title: "Skill 未装配" },
   // B2：模型推理事件
   "openops.model.call.started": { icon: "cpu", tone: "neutral", title: "模型推理" },
   "openops.model.call.succeeded": { icon: "cpu", tone: "good", title: "模型完成" },

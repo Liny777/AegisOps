@@ -196,6 +196,98 @@ def test_build_system_prompt_uses_role_and_platform_rules():
     assert rt._DEFAULT_MAIN_ROLE in rt._build_system_prompt(st_bare)  # role 缺失 → 兜底默认
 
 
+def test_build_sub_system_prompt_carries_skill_and_safety_rules():
+    """子 Agent 人设装配：画像 role + 主/子共享的「优先用 Skill」引导与安全护栏 + 汇报纪律。
+
+    修「子 Agent 只拿到 role + 汇报纪律」——既无 Skill 偏好引导、又被纪律里的「禁止无差别调用
+    通用工具」反向抑制，导致概率性不调 Skill（用户体感「子 Agent 时灵时不灵地不加载 Skill」）。
+    """
+    import pytest as _pytest
+
+    rt = _pytest.importorskip("runtime.agentscope_runtime")
+    from runtime.subagent_dispatch import _child_state
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.skills_pool = {"inspection": {"display_name": "巡检"}, "other": {}}
+    sub = {"key": "inspect", "label": "巡检", "role": "只做查询不做变更。", "skills": ["inspection"]}
+
+    p = rt._build_sub_system_prompt(_child_state(st, sub, "inspect", "查一下", "d" * 32), sub)
+    assert "只做查询不做变更。" in p                              # 画像人设
+    assert "必须优先调用该 Skill" in p and "不要自行发挥" in p     # 主/子共享 skill 引导（本次修复核心）
+    assert "人工批准" in p                                        # 安全护栏下沉到子 Agent
+    assert "一次性汇报结果" in p                                  # 汇报纪律保留
+    assert "render_chart" not in p                                # 该工具只注册给 main，规则不下发
+    # 顺序：Skill 规则必须在汇报纪律之前，否则「禁止无差别调用通用工具」会被读成对 Skill 的抑制
+    assert p.index("必须优先调用该 Skill") < p.index("禁止无差别调用所有通用工具")
+
+
+def test_sub_skill_hint_propagates_only_when_child_assembled_it():
+    """skill_hint 透传：/<skill> 的确定性引导原本只到 main，主 Agent 一转派就丢失。
+
+    但必须按**子**技能面复核——子面是 leader 的子集，透传未装配的 hint 会引导子 Agent 去调
+    一个必被 fail-closed 的 skill。"""
+    import pytest as _pytest
+
+    rt = _pytest.importorskip("runtime.agentscope_runtime")
+    from runtime.subagent_dispatch import _child_state
+    from runtime.task_registry import TaskState
+
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.skills_pool = {"inspection": {}, "fault-diagnosis": {}}
+    st.skill_hint = "inspection"
+    sub_hit = {"key": "inspect", "role": "R", "skills": ["inspection"]}
+    sub_miss = {"key": "recover", "role": "R", "skills": ["fault-diagnosis"]}
+
+    child_hit = _child_state(st, sub_hit, "inspect", "x", "d" * 32)
+    assert child_hit.skill_hint == "inspection"  # 透传到 child
+    assert "run_platform_skill(skill_name='inspection')" in rt._build_sub_system_prompt(child_hit, sub_hit)
+
+    child_miss = _child_state(st, sub_miss, "recover", "x", "d" * 32)
+    assert "run_platform_skill(skill_name='inspection')" not in rt._build_sub_system_prompt(child_miss, sub_miss)
+
+
+def test_emit_skill_gaps_flags_configured_but_unassembled_skills(monkeypatch):
+    """画像配了 Skill、切片后却拿不到 → skill.skipped（info）可观测。
+
+    模板对 sub_agents[].skills 只校验「是字符串数组」（不校验 key 存在）、编辑器 ChipPicker 又把
+    失效 key 显示为已勾选，运行时静默切空此前是**零信号**。"""
+    import asyncio as _asyncio
+
+    from runtime import subagent_dispatch as sd
+    from runtime.task_registry import TaskState
+
+    seen: list[tuple[str, dict]] = []
+
+    async def _fake_emit(st, run, event_type, **kw):
+        seen.append((event_type, kw))
+
+    monkeypatch.setattr(sd, "emit", _fake_emit)
+    st = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
+    st.skills_pool = {"inspection": {}}
+
+    def _gaps(sub):
+        _asyncio.run(sd._emit_skill_gaps(sd._child_state(st, sub, sub["key"], "x", "d" * 32), {}, sub))
+
+    # 配了 2 个、只装配上 1 个 → 报缺失
+    sub = {"key": "inspect", "label": "巡检", "role": "R", "skills": ["inspection", "gone-key"]}
+    child = sd._child_state(st, sub, "inspect", "x", "d" * 32)
+    _asyncio.run(sd._emit_skill_gaps(child, {}, sub))
+    assert len(seen) == 1
+    ev, kw = seen[0]
+    assert ev == "openops.skill.skipped" and kw["reason_code"] == "SKILL_NOT_ASSEMBLED"
+    # keys 而非自定义键名——payload 脱敏对未知事件只放行 keys 列表（infra/redact.py）
+    assert kw["payload"]["keys"] == ["gone-key"] and kw["payload"]["assembled"] == ["inspection"]
+    assert "gone-key" in kw["message"]  # summary 是唯一必达 UI 的通道，缺失名必须在文案里
+    assert not child.tool_blocked  # 「未装配」≠「被拦截」，不得压制本轮结论
+
+    seen.clear()
+    _gaps({"key": "inspect", "role": "R", "skills": ["inspection"]})   # 全部装配上 → 不报
+    assert seen == []
+    _gaps({"key": "recover", "role": "R", "skills": []})               # 本就没配（有意隔离）→ 不报
+    assert seen == []
+
+
 def test_start_task_populates_main_role_not_dropped(client):
     """回归根因：start_task 把模板 content_json.main.role 流入 st.main_role（此前被丢弃）。
     自然语言（无 / 前缀）→ skill_hint 不强制。"""

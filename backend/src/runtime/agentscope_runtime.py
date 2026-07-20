@@ -440,18 +440,46 @@ def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:
 
 # 主 Agent 人设兜底（模板 main.role 必填，通常不会走到；仅防御 role 缺失/空）
 _DEFAULT_MAIN_ROLE = "你是资深 SRE 诊断 Agent：理解用户任务，调度平台巡检/定界/恢复能力完成诊断与恢复。"
-# 平台层固定规则：始终附在角色人设之后。含「优先用匹配 Skill、别自行发挥」引导 + 安全护栏
-# （审批/图表/不臆造）——安全项声明优先级高于角色设定，用户人设无法绕过。
-_PLATFORM_RULES = (
-    "\n\n【平台规则（始终遵守；安全项优先级高于以上角色设定）】\n"
+# 平台层固定规则：始终附在角色人设之后。安全项声明优先级高于角色设定，用户人设无法绕过。
+# **按受众拆块**（原为单块常量，主 Agent 独享）：子 Agent 曾只拿到 role + 汇报纪律，既没有
+# 「优先用 Skill」引导、又被纪律里的「禁止无差别调用工具」反向抑制，导致概率性不调 Skill
+# （用户体感「子 Agent 时灵时不灵地不加载 Skill」）；同时也没被告知审批要求。故共享块下沉，
+# 主/子经 _build_system_prompt / _build_sub_system_prompt 各自拼装，规则新增时不会再漏掉子 Agent。
+_RULES_HEADER = "\n\n【平台规则（始终遵守；安全项优先级高于以上角色设定）】\n"
+# 主/子共享：Skill 偏好引导——这条是 Skill 调用确定性的来源，两边都必须有
+_SKILL_PREFERENCE_RULE = (
     "- 当某个可用 Skill 的用途与当前任务匹配时，必须优先调用该 Skill（run_platform_skill）并严格按其步骤/流程执行，"
     "不要自行发挥；只有在没有任何匹配 Skill 时，才用通用工具（查询/命令/Read/Grep）自己诊断。\n"
+)
+# 主/子共享：安全护栏（子 Agent 可绑 recover_execute，同样需要知道审批要求——纵深防御）
+_SAFETY_RULES = (
     "- 恢复类/写操作必须先请求人工批准、获批后才执行。\n"
     "- 若完成用户诉求需要某个当前工具列表里并不存在的能力（如查询告警、拓扑/对象关系等外部 MCP 工具），"
     "不要笼统说「MCP 工具没有注册/没有被加载」；应据实说明：该能力对应的 MCP 工具需要管理员先在插件页"
     "注册并标注、且加入当前实例模板后才可用，并同时用你现有的工具尽力给出可行的替代帮助或下一步建议。\n"
+)
+# 仅主 Agent：render_chart 只注册给 main（见 _build_toolkit 的 agent_key == "main" 分支）
+_MAIN_ONLY_RULES = (
     "- 仅当本轮已取得的数值适合做趋势或对比时才调用 render_chart；不得为图表臆造数据。"
 )
+_PLATFORM_RULES = _RULES_HEADER + _SKILL_PREFERENCE_RULE + _SAFETY_RULES + _MAIN_ONLY_RULES
+
+# D 块：worker 汇报纪律（37 号老 roles.yaml 口径翻译）——拼进每个 sub agent 的 system_prompt。
+# 原住 infra.seed（DB 播种模块）却只被运行时消费，与 _PLATFORM_RULES 不同源；迁来与之并置。
+SUB_REPORT_DISCIPLINE = (
+    "缺参数时直接返回 blocker 说明，绝不凭空造参数。"
+    "禁止无差别调用所有通用工具——按任务选择所需工具，同参数每个工具只调用一次"
+    "（上述「优先调用用途匹配的 Skill」不受本条限制）；"
+    "工具返回空结果/无数据 = 查询完成，严禁对同一条件重复调用或自行调整参数重试。"
+    "必须在全部步骤执行完成后一次性汇报结果，禁止中途输出部分结论；"
+    "只汇报查询结果本身，不要发散分析置信度、caveats 或建议——这些由主 Agent 判断。"
+)
+
+
+def _skill_hint_clause(skill_hint: str) -> str:
+    """/<skill> 显式触发时的确定性执行指令（主/子同形）。"""
+    return (f"\n- 本轮用户已显式指定优先执行 Skill `{skill_hint}`："
+            f"请第一步调用 run_platform_skill(skill_name='{skill_hint}')，除非用户另有明确指示。")
 
 
 def _build_system_prompt(st: TaskState) -> str:
@@ -463,9 +491,25 @@ def _build_system_prompt(st: TaskState) -> str:
         persona = f"{persona}\n{st.main_role_append.strip()}"
     prompt = persona + _PLATFORM_RULES
     if st.skill_hint:  # /<skill> 显式触发：确定性优先执行指定 Skill（start_task 已按 available_skills 校验命中）
-        prompt += (f"\n- 本轮用户已显式指定优先执行 Skill `{st.skill_hint}`："
-                   f"请第一步调用 run_platform_skill(skill_name='{st.skill_hint}')，除非用户另有明确指示。")
+        prompt += _skill_hint_clause(st.skill_hint)
     return prompt
+
+
+def _build_sub_system_prompt(child: TaskState, sub: dict[str, Any]) -> str:
+    """装配子 Agent 的 system_prompt：画像人设 + 主/子共享平台规则 + 汇报纪律。
+
+    顺序刻意：Skill 规则**先于**汇报纪律，否则纪律里的「禁止无差别调用通用工具」会被读成
+    对 Skill 的抑制。skill_hint 必须按 **child** 的技能面重新校验——子技能面是 leader 的子集，
+    主 Agent 能跑的 hint 子 Agent 未必装配，直接透传会引导它调一个必被 fail-closed 的 skill。
+    """
+    # rstrip：_SAFETY_RULES 末尾的 \n 与 hint 子句开头的 \n 会叠出空行（主 Agent 侧因
+    # _MAIN_ONLY_RULES 不带尾换行而无此问题）——对齐两边的行距
+    prompt = str(sub["role"]) + (_RULES_HEADER + _SKILL_PREFERENCE_RULE + _SAFETY_RULES).rstrip("\n")
+    if child.skill_hint and child.skill_hint in (child.available_skills or {}):
+        prompt += _skill_hint_clause(child.skill_hint)
+    # 独立小节标题：纪律原本紧贴规则列表，读起来像上一条 bullet 的续行——本次修复的要害正是
+    # 让模型把「优先用 Skill」和「别乱调工具」当成两条互不覆盖的指令，分节可降低误读
+    return f"{prompt}\n\n【汇报纪律】\n{SUB_REPORT_DISCIPLINE}"
 
 
 async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
