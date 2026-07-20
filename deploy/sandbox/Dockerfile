@@ -103,3 +103,10 @@ ENV UV_SYSTEM_CERTS=1 \
     UV_CACHE_DIR=/tmp/uv-cache \
     UV_LINK_MODE=copy \
     PIP_DISABLE_PIP_VERSION_CHECK=1
+
+# ── 时区：Asia/Shanghai ────────────────────────────────────────────────────────
+# 沙箱是 Agent 取「当前时间」的唯一来源（date / Python datetime.now()）——slim 基础镜像
+# 默认 UTC，会让"近一小时"这类相对时间范围整体偏移 -8h。zoneinfo 数据镜像已自带
+# （/usr/share/zoneinfo/Asia/Shanghai 存在），无需 apt 装 tzdata；平台建容器时 Env:[]
+# 不注入任何变量（09 号铁律），但镜像 ENV 仍存活（同上 UV_INDEX_URL 惯例，已实测）。
+ENV TZ=Asia/Shanghai
