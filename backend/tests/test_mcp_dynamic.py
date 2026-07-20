@@ -246,7 +246,9 @@ def test_dynamic_specs_scope_from_project_id(monkeypatch):
     async def _list():
         return [{"server_id": "alarm-server", "server_name": "a", "server_url": "http://mcpgw/x", "description": ""}]
 
-    async def _disc(url):
+    async def _disc(url, extra_headers=None):
+        # 平台发现路径必须带 x-ec-ip（本用例未设 OPENOPS_EC_IP，故只断言参数被传到而非其值）
+        assert extra_headers is not None, "平台发现路径应显式传 extra_headers（哪怕为空 dict）"
         return [
             {"tool_name": "query_alarm_list", "description": "告警列表", "readonly": True,
              "input_schema": {"type": "object", "properties": {"project_id": {"type": "string"}}}},
@@ -578,7 +580,8 @@ def test_reconcile_isolates_bad_server(client, monkeypatch):
 
     asyncio.run(_setup())
 
-    async def _disc(server_url):
+    async def _disc(server_url, extra_headers=None):
+        assert extra_headers is not None, "对账走平台发现路径，应显式传 extra_headers"
         if "bad.internal" in (server_url or ""):
             raise RuntimeError("MCP initialize 错误：Bad Request")
         return [{"tool_name": "good_tool", "description": "d", "readonly": True,
@@ -804,3 +807,185 @@ def test_user_mcp_placeholder_endpoint_no_egress(monkeypatch):
         assert (await tk.get_tool("cmdb_query")) is None
 
     asyncio.run(scenario())
+
+
+# ---------------------------------------------------------------------------
+# x-ec-ip（后端主机 IP）：仅平台 MCP 的调用面与发现面带；用户自注册 MCP 一律不带。
+# 每条负向断言都在**同一测试体内**先做正向控制断言——否则 ec_ip() 取不到值时断言恒真，
+# 护栏在最需要它的场景下静默失效。
+# ---------------------------------------------------------------------------
+
+def _has_ec_ip(headers: dict) -> bool:
+    return any(k.lower() == "x-ec-ip" for k in headers)
+
+
+def _ec(monkeypatch, ip: str = "10.1.2.3") -> dict:
+    from infra import host_ip
+
+    monkeypatch.setenv("OPENOPS_EC_IP", ip)
+    hdrs = host_ip.ec_ip_headers()
+    assert hdrs == {"x-ec-ip": ip}  # 前置条件：值确实可得，下面的负向断言才有意义
+    return hdrs
+
+
+def _direct(monkeypatch):
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.delenv("OPENOPS_MCP_ROUTE", raising=False)  # 默认 direct
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    http_mcp_client._sessions.clear()
+
+
+def test_ec_ip_on_all_three_hops_of_platform_call(monkeypatch):
+    """承重：direct 调用面 initialize / notifications/initialized / tools/call **三跳全带**。
+
+    只在 tools/call 带、握手不带，会让「在 initialize 阶段就按 IP 准入」的对端握手即失败，
+    表现为工具静默消失（外层 except 吞掉）——direct 路由无 debug 钩子，是最难定位的一类失败。
+    """
+    _direct(monkeypatch)
+    ec = _ec(monkeypatch)
+    asyncio.run(http_mcp_client.call_tool(
+        "t1", {}, headers={**ec, "X-OpenOps-User-Id": "u"},
+        server_url="http://mcpgw/x", handshake_headers=ec))
+    methods = [(c["json"] or {}).get("method") for c in _FakeClient.calls]
+    assert methods == ["initialize", "notifications/initialized", "tools/call"]
+    for c in _FakeClient.calls:
+        assert c["headers"].get("x-ec-ip") == "10.1.2.3", c["json"]
+
+
+def test_ec_ip_absent_for_user_mcp_call(monkeypatch):
+    """用户支路：headers 空 + handshake_headers=None ⇒ **每一次**请求都无该头。"""
+    _direct(monkeypatch)
+    ec = _ec(monkeypatch)
+    # 控制组：同一进程、同一 env 下平台侧确实带得上
+    asyncio.run(http_mcp_client.call_tool("t1", {}, headers=dict(ec),
+                                          server_url="http://mcpgw/p", handshake_headers=ec))
+    assert all(_has_ec_ip(c["headers"]) for c in _FakeClient.calls)
+
+    _FakeClient.calls = []
+    asyncio.run(http_mcp_client.call_tool("t1", {}, headers={}, server_url="http://mcpgw/u"))
+    assert _FakeClient.calls, "用户支路应真的发出了请求，否则断言是空的"
+    for c in _FakeClient.calls:
+        assert not _has_ec_ip(c["headers"]), f"用户 MCP 收到了后端主机内网 IP：{c['json']}"
+
+
+def test_ec_ip_on_rehandshake_path(monkeypatch):
+    """会话失效重握手（4 跳）也必须全带——重握手走的是另一条代码路径。"""
+    _direct(monkeypatch)
+    ec = _ec(monkeypatch)
+    asyncio.run(http_mcp_client.call_tool("t1", {}, headers=dict(ec),
+                                          server_url="http://mcpgw/x", handshake_headers=ec))
+    _FakeClient.calls = []
+    _FakeClient.expire_once = True
+    asyncio.run(http_mcp_client.call_tool("t2", {}, headers=dict(ec),
+                                          server_url="http://mcpgw/x", handshake_headers=ec))
+    methods = [(c["json"] or {}).get("method") for c in _FakeClient.calls]
+    assert methods == ["tools/call", "initialize", "notifications/initialized", "tools/call"]
+    for c in _FakeClient.calls:
+        assert c["headers"].get("x-ec-ip") == "10.1.2.3"
+
+
+def test_session_not_shared_between_user_and_platform(monkeypatch):
+    """同一 server_url 的用户会话与平台会话不可互相复用。
+
+    _sessions 若只按 server_url 分键：用户把自注册 MCP 填成与平台 MCP 相同的 URL 时，平台带
+    x-ec-ip 握手换来的 sid 会被随后的用户 tools/call 直接复用——用户请求骑在平台身份换来的会话上。
+    """
+    _direct(monkeypatch)
+    ec = _ec(monkeypatch)
+    url = "http://mcpgw/shared"
+    asyncio.run(http_mcp_client.call_tool("t", {}, headers={}, server_url=url))          # 用户先建会话
+    asyncio.run(http_mcp_client.call_tool("t", {}, headers=dict(ec),
+                                          server_url=url, handshake_headers=ec))          # 平台随后
+    assert len(_inits(_FakeClient.calls)) == 2, "平台侧必须另起握手，不得复用用户会话"
+    # 且两次握手的身份不同：用户那次无头、平台那次有头
+    assert [_has_ec_ip(c["headers"]) for c in _inits(_FakeClient.calls)] == [False, True]
+
+
+def test_discover_sends_ec_ip_only_when_passed(monkeypatch):
+    """发现面：显式传才带（两跳都带）；**默认不带**——锁死 fail-closed 默认值。"""
+    _direct(monkeypatch)
+    ec = _ec(monkeypatch)
+    sse = ('event: message\n'
+           'data: {"jsonrpc":"2.0","id":1,"result":{"tools":[]}}\n')
+    _FakeClient.resp = _Resp(text=sse, content_type="text/event-stream")
+    try:
+        asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x", ec))
+        assert len(_FakeClient.calls) == 3  # initialize + initialized + tools/list
+        assert all(c["headers"].get("x-ec-ip") == "10.1.2.3" for c in _FakeClient.calls)
+
+        _FakeClient.calls = []
+        asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x"))  # 默认实参
+        assert _FakeClient.calls
+        assert not any(_has_ec_ip(c["headers"]) for c in _FakeClient.calls)
+    finally:
+        _FakeClient.resp = None
+
+
+def test_user_mcp_discovery_passes_no_ec_ip(monkeypatch):
+    """_user_mcp_specs 必须不给 discover_tools 传 extra_headers（发现面每轮无条件出网）。
+
+    刻意**不**用 importorskip("agentscope")：这是承重的安全护栏，_user_mcp_specs 本身不依赖
+    agentscope（只有 _build_toolkit 才依赖），无 agentscope 的环境下静默跳过等于没有护栏。
+    """
+    from infra import egress
+
+    monkeypatch.setattr(egress, "check_mcp_egress", lambda _u: None)
+    _ec(monkeypatch)
+    seen: list = []
+
+    async def fake_discover(url, extra_headers=None):
+        seen.append(extra_headers)
+        return []
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+
+    async def scenario():
+        st, run = _user_st_run()
+        await ar._user_mcp_specs(st)
+
+    asyncio.run(scenario())
+    assert seen, "用户 MCP 发现路径应被真的走到，否则断言是空的"
+    assert all(not h for h in seen), f"用户 MCP 发现路径泄露了后端主机 IP：{seen}"
+
+
+def test_ec_ip_proxy_route_reaches_console(monkeypatch):
+    """proxy 路由：调用面与发现面发往 console 的请求都带该头。
+
+    能力边界：该头只保证到达 console 网关，**能否前递给目标 MCP 取决于 console 侧实现**。
+    """
+    monkeypatch.setenv("OPENOPS_MCP", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCP_ROUTE", "proxy")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console.x")
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
+    _FakeClient.reset()
+    ec = _ec(monkeypatch)
+    asyncio.run(http_mcp_client.call_tool("t", {}, headers=dict(ec), server_url="http://mcpgw/x"))
+    assert _FakeClient.captured["headers"].get("x-ec-ip") == "10.1.2.3"
+
+    _FakeClient.resp = _Resp({"code": 0, "data": {"result": {"tools": []}}})
+    try:
+        asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x", ec))
+    finally:
+        _FakeClient.resp = None
+    assert _FakeClient.captured["headers"].get("x-ec-ip") == "10.1.2.3"
+
+
+def test_platform_call_succeeds_without_ec_ip(monkeypatch):
+    """fail-open：取不到本机 IP 时工具调用照常成功，只是不带该头（绝不发空值头）。"""
+    from infra import host_ip
+
+    _direct(monkeypatch)
+    monkeypatch.delenv("OPENOPS_EC_IP", raising=False)
+    ec = host_ip.ec_ip_headers()
+    assert ec == {}
+    r = asyncio.run(http_mcp_client.call_tool("t", {}, headers={"X-OpenOps-User-Id": "u"},
+                                              server_url="http://mcpgw/x", handshake_headers=ec))
+    assert r["status"] == "ok"
+    assert not any(_has_ec_ip(c["headers"]) for c in _FakeClient.calls)

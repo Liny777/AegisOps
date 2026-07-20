@@ -18,6 +18,7 @@ import os
 import uuid
 from typing import Any
 
+from infra import host_ip
 from infra.external import http_mcp_client
 from infra.external.mcp_registry_client import _BROWSER_UA
 from infra.redact import redact_args
@@ -90,6 +91,10 @@ def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
     if ip:
         h["IAM-Client-Ip"] = ip
         h["X-Forwarded-For"] = ip
+    # x-ec-ip = **OpenOps 后端主机自身的 IP**（对端按调用来源主机做准入/审计）。与上面两个头语义
+    # 完全不同——那是**用户浏览器**的 IP（IAM 会话绑它）——两者并存，任一取不到都不可用另一个顶替。
+    # 只在本函数（平台支路）构建 ⇒ 用户自注册 MCP 天然收不到（其 URL 由用户任填，见 28.2）。
+    h.update(host_ip.ec_ip_headers())
     return h
 
 
@@ -214,7 +219,11 @@ async def invoke(
                         # Secret 不在 arguments（gateway 在调用边界注 header，28.2 不破）；超长截断防事件膨胀
                         "arguments": _args_for_event(arguments)})
     try:
-        result = await http_mcp_client.call_tool(tool_name, arguments, headers=headers, server_url=server_url)
+        # 握手头显式按 source_type 传（非从 headers 反查）：direct 路由下 initialize 与 tools/call
+        # 必须同带 x-ec-ip，否则对端若在握手阶段就按 IP 准入会握手即失败（见 call_tool docstring）。
+        result = await http_mcp_client.call_tool(
+            tool_name, arguments, headers=headers, server_url=server_url,
+            handshake_headers=host_ip.ec_ip_headers() if source_type == "platform" else None)
     except Exception as e:
         await emit(st, run, "openops.tool.call.failed", severity="error", action=tool_name,
                    message=f"工具 {tool_name} 调用失败", reason_code="TOOL_CALL_FAILED",

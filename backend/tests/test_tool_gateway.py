@@ -168,6 +168,35 @@ async def test_tool_005_user_mcp_no_platform_headers(quiet_emit):
     headers = (http_mcp_client.last_call or {})["headers"]
     assert not any(k.startswith("X-OpenOps-") for k in headers)
     assert "Cookie" not in headers and "Authorization" not in headers
+    assert headers == {}  # 用户支路 headers 恒空字典（含 x-ec-ip 亦不带）
+    assert (http_mcp_client.last_call or {}).get("handshake_headers") is None
+
+
+def test_tool_012_platform_headers_carry_ec_ip(monkeypatch):
+    """平台 MCP 出站带 x-ec-ip = **后端主机自身 IP**（scope_ctx 无关；未配置即不发=零回归）。"""
+    st = _st({})
+    monkeypatch.setenv("OPENOPS_EC_IP", "10.7.7.7")
+    assert tool_gateway._platform_headers(st, _RUN)["x-ec-ip"] == "10.7.7.7"
+
+    monkeypatch.delenv("OPENOPS_EC_IP")
+    assert "x-ec-ip" not in tool_gateway._platform_headers(st, _RUN)
+
+
+def test_tool_013_ec_ip_is_not_the_browser_client_ip(monkeypatch):
+    """锁住两个 IP 的语义区分：x-ec-ip=后端主机，IAM-Client-Ip/X-Forwarded-For=用户浏览器。
+    二者并存且值不同，任一取不到都不可用另一个顶替。"""
+    from infra import request_context as rc
+
+    st = _st({})
+    monkeypatch.setenv("OPENOPS_EC_IP", "10.7.7.7")
+    rc.set_client_ip("203.0.113.9")  # 用户浏览器 IP，与后端主机 IP 无关
+    try:
+        h = tool_gateway._platform_headers(st, _RUN)
+    finally:
+        rc.clear()
+    assert h["x-ec-ip"] == "10.7.7.7"
+    assert h["IAM-Client-Ip"] == "203.0.113.9" and h["X-Forwarded-For"] == "203.0.113.9"
+    assert h["x-ec-ip"] != h["IAM-Client-Ip"]
 
 
 async def test_tool_005b_call_lifecycle_has_one_stable_correlation_id(quiet_emit):

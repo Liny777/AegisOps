@@ -17,6 +17,7 @@ import time
 import uuid
 from typing import Any
 
+from infra import host_ip
 from infra.external import mcp_registry_client, skill_hub_client
 from infra.repositories import assets, audit, mcp_tools
 
@@ -139,7 +140,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         for m in await assets.list_platform_mcps():
             server_url = (m.get("endpoint_config_json") or {}).get("endpoint", "")  # 29.3 proxy 必填 url（mock 忽略）
             try:
-                for t in await mcp_registry_client.discover_tools(server_url):
+                # 平台支路（上面 list_platform_mcps 已按 source_type='platform' 过滤）：带 x-ec-ip
+                for t in await mcp_registry_client.discover_tools(server_url, host_ip.ec_ip_headers()):
                     res = await mcp_tools.sync_catalog_tool(
                         str(m["mcp_version_id"]), t["tool_name"], t["description"],
                         t["input_schema"], t["schema_hash"],

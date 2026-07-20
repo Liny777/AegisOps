@@ -192,7 +192,12 @@ _MCP_ACCEPT = "application/json, text/event-stream"  # streamable-HTTP：server 
 
 
 def mcp_headers(session_id: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
-    """MCP 出站头：Accept 双形态 + 会话头（stateful server 的 Mcp-Session-Id；None=不带）。"""
+    """MCP 出站头：Accept 双形态 + 会话头（stateful server 的 Mcp-Session-Id；None=不带）。
+
+    ⚠本函数是 platform / user 两条支路**共用**的协议层合并点：**严禁**在此注入 x-ec-ip、Cookie
+    或任何身份/拓扑信息——在这里加等于同时发给用户自注册的 MCP（URL 由用户任填）。来源相关的头
+    一律由调用方经 `extra` 显式传入（平台侧 host_ip.ec_ip_headers()，用户侧不传）。
+    """
     hdrs = dict(extra or {})
     hdrs["Accept"] = _MCP_ACCEPT
     if session_id:
@@ -200,17 +205,22 @@ def mcp_headers(session_id: str | None, extra: dict[str, str] | None = None) -> 
     return hdrs
 
 
-async def mcp_initialize(cli: Any, server_url: str) -> str | None:
+async def mcp_initialize(cli: Any, server_url: str, extra_headers: dict[str, str] | None = None) -> str | None:
     """MCP streamable-HTTP 会话握手（2026-07-14 内网实测：严格 stateful server 必须先 initialize
     再 tools/list，否则不响应）：initialize → 取响应头 Mcp-Session-Id → notifications/initialized。
 
     返回 session id；stateless server（如 FastMCP stateless_http）无该头返回 None，后续不带头。
-    initialized 通知的任何错误忽略——严格 SDK 需要它、部分 stateless 实现会 4xx 拒绝，两类都兼容。"""
+    initialized 通知的任何错误忽略——严格 SDK 需要它、部分 stateless 实现会 4xx 拒绝，两类都兼容。
+
+    extra_headers：对端可能**在 initialize 阶段就校验**的头（当前只有平台侧 x-ec-ip）。握手与业务
+    请求的头必须对称：只在 tools/call 带、握手不带，会表现为「工具静默消失 / 每次调用都 4xx」——
+    发现与调用三处外层都是 `except Exception: log.warning` 吞掉，且 direct 路由没有 debug 钩子，
+    是最难定位的一类失败。默认 None ⇒ 用户支路与既有调用点零行为变化。"""
     r = await cli.post(server_url,
                        json={"jsonrpc": "2.0", "id": 0, "method": "initialize",
                              "params": {"protocolVersion": "2025-03-26", "capabilities": {},
                                         "clientInfo": {"name": "openops", "version": "1"}}},
-                       headers=mcp_headers(None))
+                       headers=mcp_headers(None, extra_headers))
     raise_with_body(r)
     rpc = parse_mcp_response(r)
     if "error" in rpc:
@@ -218,7 +228,7 @@ async def mcp_initialize(cli: Any, server_url: str) -> str | None:
     sid = r.headers.get("Mcp-Session-Id")  # httpx 头大小写不敏感
     try:
         await cli.post(server_url, json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                       headers=mcp_headers(sid))
+                       headers=mcp_headers(sid, extra_headers))
     except Exception:  # noqa: BLE001 —— 通知失败不阻断（见 docstring）
         pass
     return sid
@@ -311,11 +321,17 @@ def is_placeholder_endpoint(server_url: str) -> bool:
     return not server_url or urlparse(server_url).hostname == "mock"
 
 
-async def discover_tools(server_url: str) -> list[dict[str, Any]]:
+async def discover_tools(server_url: str, extra_headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """平台 MCP `tools/list`（29.3 §4.1 Proxy）。real 经 `POST /obsv/agent/management/mcps/proxy` 转发到目标 MCP server。
 
     `server_url` = 平台 MCP 资产的 endpoint（目标 MCP server URL，proxy 必填 `url`）；mock 忽略它返回硬编码 `_TOOLS`。
     OpenOps 侧自算 schema_hash（29.3 分工：Registry 不做发现，OpenOps 落 catalog）。
+
+    `extra_headers`：**仅平台调用点**传 `host_ip.ec_ip_headers()`（agentscope_runtime._dynamic_mcp_specs、
+    asset_reconcile_service）。默认 None = 不带，是**承重的 fail-closed 默认值**：用户自注册 MCP 的 URL
+    由用户任填，带上等于把后端主机内网 IP 送给任意外部地址（同 28.2「用户支路不透传 Cookie」的理由），
+    且发现路径每轮无条件出网，泄露发生在任何审批/标注之前。新增调用点漏传只会「少带一个头」——
+    **勿把默认值改成带头**。
     """
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
         # 占位符直接走内置工具；其它 URL 照走 real 校验链（无 BASE_URL 仍 fail-loud，EXT-007）
@@ -327,8 +343,8 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
         if mcp_route() == "direct":  # 标准 MCP streamable-HTTP 直连 server_url（实测通；无需 console cookie）
             async with httpx.AsyncClient(timeout=15, verify=console_tls_verify(), trust_env=http_trust_env()) as cli:
                 # 严格 stateful server 必须先握手（发现是一次性动作，不缓存会话）
-                sid = await mcp_initialize(cli, server_url)
-                r = await mcp_request(cli, server_url, "tools/list", {}, sid)
+                sid = await mcp_initialize(cli, server_url, extra_headers)
+                r = await mcp_request(cli, server_url, "tools/list", {}, sid, extra_headers)
                 raise_with_body(r)
                 rpc = parse_mcp_response(r)
             if "error" in rpc:
@@ -342,7 +358,11 @@ async def discover_tools(server_url: str) -> list[dict[str, Any]]:
                 raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
             url = f"{base.rstrip('/')}{console_api_prefix()}/mcps/proxy"
             async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
-                r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}})
+                # extra_headers 作 per-request 头（与 client 级的 Cookie/UA/CSRF 合并，不覆盖）。
+                # 能力边界：proxy 路由下该头只到达 console 网关，**能否前递给目标 MCP 取决于 console 侧实现**
+                # ——本特性的端到端保证仅在 OPENOPS_MCP_ROUTE=direct（默认）下成立。
+                r = await cli.post(url, json={"url": server_url, "method": "tools/list", "params": {}},
+                                   headers=extra_headers or None)
                 raise_with_body(r)
                 body = r.json()
             if int(body.get("code", -1)) not in (0, 200):  # 29.3 信封；2026-07-13 对端统一 200，0 兼容旧版

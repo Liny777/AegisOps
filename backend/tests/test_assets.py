@@ -238,7 +238,7 @@ def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runti
                                                            "grace_seconds": {"type": "number"}}}},  # schema 变了
     ]
 
-    async def fake_discover(_name: str):
+    async def fake_discover(_name: str, _extra=None):  # 平台发现路径现传 extra_headers（x-ec-ip）
         return [{**t, "schema_hash": mcp_registry_client._schema_hash(t["input_schema"])} for t in tools]
 
     monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
@@ -261,7 +261,7 @@ def test_annotation_reannotate_after_soft_delete_revives_not_500(client, monkeyp
     base = {"tool_name": "recover_execute", "description": "执行受控恢复动作",
             "input_schema": {"type": "object", "properties": {"appid": {"type": "string"}}}}
 
-    async def discover_v1(_name):
+    async def discover_v1(_name, _extra=None):
         return [{**base, "schema_hash": mcp_registry_client._schema_hash(base["input_schema"])}]
 
     monkeypatch.setattr(mcp_registry_client, "discover_tools", discover_v1)
@@ -277,7 +277,7 @@ def test_annotation_reannotate_after_soft_delete_revives_not_500(client, monkeyp
     changed = {**base, "input_schema": {"type": "object", "properties": {
         "appid": {"type": "string"}, "grace": {"type": "number"}}}}
 
-    async def discover_v2(_name):
+    async def discover_v2(_name, _extra=None):
         return [{**changed, "schema_hash": mcp_registry_client._schema_hash(changed["input_schema"])}]
 
     monkeypatch.setattr(mcp_registry_client, "discover_tools", discover_v2)
