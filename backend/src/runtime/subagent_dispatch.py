@@ -67,6 +67,10 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
     # （老 D6 主从技能面独立；skills_pool 缺省回退 available_skills 兼容旧快照恢复路径）
     _pool = st.skills_pool if st.skills_pool is not None else (st.available_skills or {})
     child.available_skills = {k: v for k, v in _pool.items() if k in allowed_sk}
+    # skill_hint 透传：/<skill> 的确定性引导原本只到 main，主 Agent 一转派就丢失。
+    # 这里只搬运，命中与否由 _build_sub_system_prompt 按 child.available_skills 复核
+    # （子技能面是 leader 子集，透传未装配的 hint 会引导子 Agent 调必被 fail-closed 的 skill）。
+    child.skill_hint = st.skill_hint
     anns = st.tool_annotations or {}
     # mcp_servers **刻意不继承**（子恒 None）：用户自定义 MCP 只豁免 main 的模板白名单，子 Agent 工具面
     # 仍严格按画像 mcp_tools 裁剪（B7 角色隔离——否则每个子角色都能看到用户全部 MCP 工具）。
@@ -75,6 +79,31 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
     child.template_tools = set(sub.get("mcp_tools") or [])
     child.tool_annotations = {k: v for k, v in anns.items() if k in child.template_tools}
     return child
+
+
+async def _emit_skill_gaps(child: TaskState, run: dict[str, Any], sub: dict[str, Any]) -> None:
+    """画像里配了 Skill、切片后却拿不到 → 发 skill.skipped（info）让管理员在活动栏可见。
+
+    对齐 MCP 侧的 tool.skipped，但**不设 tool_blocked**：「未装配」不是「被拦截」，不该压制结论。
+    动机：模板对 sub_agents[].skills 只校验「是字符串数组」（不校验 key 存在），前端 ChipPicker
+    渲染「目录 ∪ 已选」——失效 key 在编辑器里仍显示为已勾选，运行时静默切空、无任何信号。
+    """
+    wanted = [k for k in (sub.get("skills") or []) if isinstance(k, str)]
+    if not wanted:
+        return  # 画像本就没配 Skill：这是有意的角色隔离，不是异常
+    missing = [k for k in wanted if k not in (child.available_skills or {})]
+    if not missing:
+        return
+    await emit(child, run, "openops.skill.skipped", severity="info", action="skill_not_assembled",
+               message=(f"子 Agent「{sub.get('label', child.agent_key)}」画像配置的 "
+                        f"{len(missing)} 个 Skill 未装配到本实例：{'、'.join(missing)}。"
+                        f"请在模板编辑器确认 skill_key 仍存在于当前 Skill 目录（已下架/改名的 key "
+                        f"在编辑器里仍会显示为已勾选）。"),
+               reason_code="SKILL_NOT_ASSEMBLED",
+               # 缺失清单走 payload["keys"]：sanitize_activity_payload 对任意事件都保留 keys 列表
+               # （见 infra/redact.py），换个键名就会被裁掉、审计里只剩 summary 文本
+               payload={"keys": missing, "assembled": sorted(child.available_skills or {}),
+                        "phase": "subagent_spawn"})
 
 
 async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
@@ -98,17 +127,17 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
     except ImportError:  # pragma: no cover
         from agentscope.agent._config import ContextConfig, ReActConfig
 
-    from infra.seed import SUB_REPORT_DISCIPLINE
     from runtime import agentscope_runtime as rt  # 惰性：打破与 runtime 主模块的循环 import
 
     child = _child_state(st, sub, agent_key, text, did,
                          dispatch_batch_id=dispatch_batch_id, dispatch_batch_no=dispatch_batch_no)
     task_registry.register_subtask(child)  # E1：decide_approval 按子 task_id 路由到 child.approval_ev
     try:
+        await _emit_skill_gaps(child, run, sub)
         toolkit, _pruned = await rt._build_toolkit(child, run)
         agent = Agent(
             name=f"sre-{agent_key}",
-            system_prompt=f"{sub['role']}\n{SUB_REPORT_DISCIPLINE}",
+            system_prompt=rt._build_sub_system_prompt(child, sub),
             model=await rt._build_model(child),
             toolkit=toolkit,
             state=AgentState(session_id=f"{run['framework_session_id']}:{agent_key}-{did[:8]}",
@@ -150,6 +179,12 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                                  for tc in require_ev.tool_calls],
             )
         report = "".join(chunks).strip() or "（子 Agent 未产出文本汇报；执行过程见活动栏）"
+        if child.tool_blocked:
+            # B6-RT-001 对子 Agent 补齐：拦截标记原本只在主循环消费（run_task 的 st.tool_blocked
+            # 分支），子 Agent 的 Skill/工具被拒后照样能汇报「已完成」、主 Agent 采信 → 假闭环。
+            # 不改写模型原文，只前置声明，让主 Agent 判断时看得到。
+            report = ("【注意】本子任务执行过程中有工具或 Skill 被运行时拦截（未装配/标注变更/未获批），"
+                      "以下结论不完整，不得据此判定已闭环。\n" + report)
         await emit(child, run, "openops.subagent.reported", action=agent_key,
                    message=f"子 Agent「{sub.get('label', agent_key)}」已汇报",
                    payload={"report_chars": len(report),

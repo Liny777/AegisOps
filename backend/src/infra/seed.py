@@ -49,15 +49,6 @@ MODEL_ASSETS = [
     ("交易大模型-TX", "tx-llm-v2", None, None, "restricted", "active"),
 ]
 
-# D 块：worker 汇报纪律（37 号老 roles.yaml 口径翻译）——拼进每个 sub agent 的 system_prompt
-SUB_REPORT_DISCIPLINE = (
-    "缺参数时直接返回 blocker 说明，绝不凭空造参数。"
-    "禁止无差别调用所有工具——按任务选择所需工具，同参数每个工具只调用一次；"
-    "工具返回空结果/无数据 = 查询完成，严禁对同一条件重复调用或自行调整参数重试。"
-    "必须在全部步骤执行完成后一次性汇报结果，禁止中途输出部分结论；"
-    "只汇报查询结果本身，不要发散分析置信度、caveats 或建议——这些由主 Agent 判断。"
-)
-
 TEMPLATE_CONTENT = {
     "main": {
         "role": "理解用户任务，调度巡检/定界/恢复能力，工具调用前遵守平台安全策略。",
