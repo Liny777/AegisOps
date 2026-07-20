@@ -40,6 +40,8 @@ export function AdminConsole() {
   const [wlAddOpen, setWlAddOpen] = useState(false);
   const [actionErr, setActionErr] = useState("");
   const [traceFilter, setTraceFilter] = useState("");
+  // 用户表关键字搜索（服务端 q 过滤 user_id/display_name，与审计过滤同做法：输入即查）
+  const [userQ, setUserQ] = useState("");
 
   const isTable = ["templates", "model-assets", "skills", "users"].includes(page);
 
@@ -78,14 +80,17 @@ export function AdminConsole() {
         setTable(await api.getAdminTable("templates"));
       }
     } else if (isTable) {
-      setTable(await api.getAdminTable(page, { page: tablePage, pageSize: ADMIN_PAGE_SIZE }));
+      setTable(await api.getAdminTable(page, {
+        page: tablePage, pageSize: ADMIN_PAGE_SIZE,
+        q: page === "users" ? userQ.trim() || undefined : undefined,
+      }));
     } else if (page === "audit") {
       setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); }, [page]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill]);  // 换页签/钻取回第 1 页，免停在越界页看空表
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); }, [page]);
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ]);  // 换页签/钻取/改搜索词回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
@@ -118,6 +123,12 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminSetRole(rowId, key === "role-admin" ? "platform_admin" : "user")
         .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
+    else if (key === "user-delete") {
+      // 删除用户（软删 + 连带撤白）：破坏性动作先确认；删自己后端 400 拦（防管理面锁死）
+      if (!window.confirm(`确认删除用户 ${rowId}？将同时移出白名单并收回访问权限，重新加入白名单才会恢复。`)) return;
+      setActionErr("");
+      void api.adminDeleteUser(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
   };
 
@@ -174,6 +185,14 @@ export function AdminConsole() {
         <div style={{ flex: 1 }} />
         {page === "model-assets" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setRegisterOpen(true)}>{table.primary.label}</Button>
+        ) : null}
+        {page === "users" ? (
+          <input
+            placeholder="搜索 user_id / 展示名"
+            value={userQ}
+            onChange={(e) => setUserQ(e.target.value)}
+            style={{ width: 220, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
+          />
         ) : null}
         {page === "users" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setWlAddOpen(true)}>{table.primary.label}</Button>

@@ -9,9 +9,19 @@ from infra.repositories import agent_teams, audit, users
 
 
 async def resolve_user(user_id: str, display_name: str | None) -> dict[str, Any]:
-    """登录态解析：首登 upsert（角色以 DB 为准，默认 user）。"""
+    """登录态解析：首登 upsert（角色以 DB 为准，默认 user）。已删用户不复活、不落库——
+    否则被删用户随便发一个请求就重建行、回到管理台列表；按未开通普通用户对待（白名单
+    闸自然拦截），仅管理员重新加白名单才复活（add_whitelist → upsert_user 清 deleted_at）。"""
     row = await users.get_user(user_id)
     if row is None:
+        existing = await users.get_user_any(user_id)
+        if existing is not None:  # 软删行：只读身份，不写库
+            return {
+                "user_id": user_id,
+                "display_name": existing["display_name"] or display_name or user_id,
+                "role": "user",  # 不沿用删除前角色（删除即收回全部授权）
+                "whitelisted": False,
+            }
         await users.upsert_user(user_id, display_name or user_id, "user")
         row = await users.get_user(user_id)
     assert row is not None
@@ -41,8 +51,12 @@ async def me(user: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---- 管理台：用户与白名单（router 不直连 users repo，走本服务） ----
-async def list_users() -> list[dict[str, Any]]:
-    return [dict(r) for r in await users.list_users_with_whitelist()]
+async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None) -> dict[str, Any]:
+    """分页 + 关键字搜索（q 按 user_id/display_name 模糊，服务端过滤）→ {items,total,page,page_size}。"""
+    rows, total = await users.list_users_with_whitelist(
+        q=(q.strip() or None) if q else None, limit=page_size, offset=(page - 1) * page_size,
+    )
+    return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
 
 
 # ---- 开放查询面（免鉴权 GET /whitelist，老项目 1cd7ef0 口径）：外部系统判断
@@ -95,4 +109,21 @@ async def revoke_whitelist(user_id: str, by: str) -> None:
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="whitelist.revoked", user_id=by,
         action="revoke", actor_type="user", payload_redacted={"target_user_id": user_id},
+    )
+
+
+async def delete_user(user_id: str, by: str) -> None:
+    """删除用户（管理台）：软删用户行 + 连带撤销白名单（不撤的话 is_whitelisted 仍放行）。
+    守卫同 revoke：不能删自己（防管理面锁死）。已删/不存在 → 404。删除后该用户再登录
+    **不复活**（resolve_user 按未开通普通用户对待），仅管理员重新加白名单才复活。"""
+    if user_id == by:
+        raise ApiError(Err.VALIDATION_FAILED, "不能删除自己（防止管理面锁死）")
+    n = await users.soft_delete_user(user_id, by)
+    if n == 0:
+        raise ApiError(Err.NOT_FOUND, f"用户不存在：{user_id}")
+    revoked = await users.revoke_whitelist(user_id, by)  # 可能本就不在白名单，0 行不算错
+    await audit.insert_event(  # 管理面动作必审计（B7·三）
+        audit_trace_id=str(uuid.uuid4()), event_type="user.deleted", user_id=by,
+        action="delete", actor_type="user",
+        payload_redacted={"target_user_id": user_id, "whitelist_revoked": revoked > 0},
     )

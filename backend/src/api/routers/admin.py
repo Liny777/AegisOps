@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from api.deps import Admin
 from api.responses import ok
@@ -70,8 +70,21 @@ async def save_annotation(tool_catalog_id: str, payload: dict[str, Any], admin: 
 
 
 @router.get("/users")
-async def list_users(_admin: Admin):
-    return ok(await identity_service.list_users())
+async def list_users(
+    _admin: Admin,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),  # 上限对齐 29.3 §2.2
+    q: str | None = Query(default=None, max_length=200),  # 按 user_id/display_name 模糊搜（服务端过滤）
+):
+    """分页 + 搜索 → {items,total,page,page_size}。"""
+    return ok(await identity_service.list_users(page=page, page_size=page_size, q=q))
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: str, admin: Admin):
+    """删除用户（软删 + 连带撤白名单；写 user.deleted 审计）。不能删自己（防管理面锁死）。"""
+    await identity_service.delete_user(user_id, admin["user_id"])
+    return ok({"deleted": True})
 
 
 @router.post("/users/whitelist")
