@@ -14,8 +14,10 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "workspace_id": "ws_pay_abc", "name": "支付核心域",
         "scope_revision": "rev-20260708-001", "sync_status": "ready",
         "app_ids": ["APP-A", "APP-B", "APP-C"],
-        # apps：向导传入的 apptree 行（{app_id, name, ...}），只为 scope_apps 显示名；APP-C 故意无名，覆盖降级
-        "apps": [{"app_id": "APP-A", "name": "支付核心交易"}, {"app_id": "APP-B", "name": "订单履约中心"}],
+        # apps：向导传入的 apptree 行（{app_id, name, tenant_id, ...}），只为 scope_apps 显示；
+        # APP-C 故意缺行，覆盖「无名 + 无企业」降级
+        "apps": [{"app_id": "APP-A", "name": "支付核心交易", "tenant_id": "ENT-1"},
+                 {"app_id": "APP-B", "name": "订单履约中心", "tenant_id": "ENT-1"}],
     },
     "ws_syncing": {
         "workspace_id": "ws_syncing", "name": "同步中范围",
@@ -93,12 +95,15 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
     if sync == "failed":
         return {"status": "failed", "effective_appids": [], "scope_apps": [], "scope_revision": ws["scope_revision"], "omodel_request_id": _req_id()}
     appids = list(ws["app_ids"])
-    names = {a["app_id"]: str(a.get("name") or "") for a in (ws.get("apps") or []) if a.get("app_id")}
+    rows = [a for a in (ws.get("apps") or []) if a.get("app_id")]
+    names = {a["app_id"]: str(a.get("name") or "") for a in rows}
+    ents = {a["app_id"]: str(a.get("tenant_id") or "") for a in rows}  # apptree 行的 tenant_id 即企业 id
     return {
         "status": "ok",
         "effective_appids": appids,
-        # 与 real 侧同形：按 appids 迭代向名字表查（绝不反向），无名留空 —— 见 omodel_real._decorate
-        "scope_apps": [{"appid": a, "name": "" if names.get(a) == a else names.get(a, "")} for a in appids],
+        # 与 real 侧同形：按 appids 迭代向名字表查（绝不反向），缺失留空 —— 见 omodel_real._decorate
+        "scope_apps": [{"appid": a, "name": "" if names.get(a) == a else names.get(a, ""),
+                        "enterprise_id": ents.get(a, "")} for a in appids],
         "scope_revision": ws["scope_revision"],
         "omodel_request_id": _req_id(),
     }
