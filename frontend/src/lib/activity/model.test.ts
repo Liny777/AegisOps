@@ -10,7 +10,7 @@ import {
   prependActivityPage,
   projectRailModel,
 } from "./model";
-import { showInBusinessTimeline, technicalMeta } from "../../workbench/activity/eventPresentation";
+import { isOpsDiagnosticEvent, showInBusinessTimeline, technicalMeta } from "../../workbench/activity/eventPresentation";
 
 const auditEvent = (
   id: string,
@@ -309,6 +309,12 @@ test("装配缺口诊断事件不进业务时间线（只进技术轨）", () =>
     auditEvent("skill", "openops.skill.completed", "2026-07-14T04:00:03Z"),
   ], "state");
   assert.deepEqual(events.filter(showInBusinessTimeline).map((event) => event.eventId), ["tool", "skill"]);
+  // 「全部动态」（ActivityRail.GeneralActivityEvents）走 isOpsDiagnosticEvent 反向过滤——
+  // 主 Agent 发的 tool.skipped 不进子 Agent 轮次、只出现在 generalEvents，业务时间线的
+  // 过滤器管不到它；此判定必须与上面保持同一事件集，否则又从「全部动态」漏出去。
+  assert.deepEqual(events.filter((event) => !isOpsDiagnosticEvent(event)).map((event) => event.eventId), [
+    "tool", "skill",
+  ]);
 });
 
 test("等待审批只是 running 子态，cancelled 会清除；安全投影不读取 raw 文本", () => {

@@ -3,7 +3,7 @@ import type { ActivityEvent, ActivityGroup, ActivityNode, DispatchRound } from "
 import { color, radius, toneColor } from "../theme/tokens";
 import { Icon } from "../ui";
 import { RoundBlock, type WorkerViewMode } from "./activity/RoundBlock";
-import { eventIcon, eventSummary, eventTitle, eventTone, eventTool } from "./activity/eventPresentation";
+import { eventIcon, eventSummary, eventTitle, eventTone, eventTool, isOpsDiagnosticEvent } from "./activity/eventPresentation";
 import { formatClock, orderedRounds } from "./activity/visuals";
 import "./activity/ActivityRail.css";
 
@@ -23,7 +23,12 @@ export interface ActivityRailProps {
   onLoadMore?: () => void | Promise<void>;
 }
 
-function GeneralActivityEvents({ events }: { events: ActivityEvent[] }) {
+function GeneralActivityEvents({ events: rawEvents }: { events: ActivityEvent[] }) {
+  // 装配缺口诊断事件（tool.skipped / skill.skipped）不进「全部动态」：上一轮只在业务时间线
+  // 剔除，主 Agent 发的 tool.skipped 走的是本组件（generalEvents，无任何过滤），照样糊在
+  // 用户眼前。按事件类型滤（而非消息内容），历史库里的旧事件同样消失；运维排障走
+  // run 审计回放页与审计表 payload.tools，那两处不受影响。
+  const events = rawEvents.filter((event) => !isOpsDiagnosticEvent(event));
   if (!events.length) return <ActivityNodes groups={[]} />;
   const lifecycleKey = (event: ActivityEvent): string | undefined => {
     const type = event.eventType.toLowerCase();

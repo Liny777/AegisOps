@@ -9,8 +9,14 @@ const BUSINESS_MILESTONE = /(subagent\.|tool(?:\.call)?\.|skill\.|approval\.)/i;
 // 那个正则已经够绕，改写易误伤其它 tool.*/skill.* 里程碑。
 const TECHNICAL_ONLY = /^openops\.(tool|skill)\.skipped$/i;
 
+/** 装配缺口类运维诊断事件：工作台活动栏（业务时间线 + 「全部动态」）一律不展示，
+ * 只留审计回放页（getAuditNodes → run 审计页）与审计表 payload 供管理员排障。 */
+export function isOpsDiagnosticEvent(event: ActivityEvent): boolean {
+  return TECHNICAL_ONLY.test(event.eventType);
+}
+
 export function showInBusinessTimeline(event: ActivityEvent): boolean {
-  if (TECHNICAL_ONLY.test(event.eventType)) return false;
+  if (isOpsDiagnosticEvent(event)) return false;
   return BUSINESS_MILESTONE.test(event.eventType);
 }
 
