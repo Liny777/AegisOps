@@ -210,6 +210,13 @@ def sanitize_activity_payload(
     if event == "rca.updated":
         out.update(_safe_rca(source))
 
+    if event == "workspace.admin_created":
+        # 管理员代查审计：哪个 APPID 被手输纳入范围是事件核心，必须在管理台可见
+        for key in ("manual_app_ids", "app_ids"):
+            if isinstance(source.get(key), list):
+                out[key] = [redact_text(v, max_length=100) for v in source[key][:30]]
+        _copy_scalar(source, out, "name", limit=200)
+
     if event.startswith("tool.") or event == "tool.blocked" or event == "runtime_plan.updated":
         for key in ("tool", "source_type", "status", "execution_id"):
             _copy_scalar(source, out, key, limit=200)

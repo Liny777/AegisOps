@@ -33,6 +33,8 @@ async def create_workspace(req: CreateWorkspaceRequest, _user: User):
     return ok(await workspace_service.create_workspace(
         req.name, req.app_ids, apps=apps,
         owner=str(_user.get("display_name") or _user["user_id"]),
+        manual_app_ids=req.manual_app_ids, reason=req.reason,
+        user_id=str(_user["user_id"]), user_role=str(_user.get("role") or ""),
     ))
 
 
