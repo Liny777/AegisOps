@@ -241,6 +241,8 @@ export interface OpenOpsApi {
   getWorkspaceStatus(workspaceId: string): Promise<{ sync_status: string; scope_revision: string; app_ids: string[] }>;
   getScopeApps(): Promise<ScopeApp[]>;
   createWorkspace(name: string, apps: { app_id: string; name?: string; tenant_id?: string }[]): Promise<{ workspace_id: string }>;
+  /** 管理员代查通道：手输 APPID（未经权限过滤）创建范围；reason 必填进审计。 */
+  adminCreateWorkspace(name: string, apps: { app_id: string; name?: string }[], reason: string): Promise<{ workspace_id: string }>;
   /** 编辑向导预填：范围详情（含 name + 已选 app_ids）。 */
   getWorkspace(workspaceId: string): Promise<WorkspaceDetail>;
   /** 编辑系统范围（改名 + 重选应用）：apps 全量覆盖 scopes。 */
@@ -940,6 +942,17 @@ const realApi: OpenOpsApi = {
     });
     return { workspace_id: String(d.workspace_id) };
   },
+  async adminCreateWorkspace(name, apps, reason) {
+    // 同一创建端点：manual_app_ids 非空触发后端 reason 必填校验 + workspace.admin_created 审计
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/workspaces", {
+      method: "POST",
+      body: {
+        client_request_id: crid(), name, app_ids: apps.map((a) => a.app_id), apps,
+        manual_app_ids: apps.map((a) => a.app_id), reason,
+      },
+    });
+    return { workspace_id: String(d.workspace_id) };
+  },
   async getWorkspace(workspaceId) {
     const d = await apiFetch<Record<string, unknown>>(`/openops/v1/workspaces/${workspaceId}`);
     return {
@@ -1127,6 +1140,8 @@ const mockApi: OpenOpsApi = {
     M.mockWorkspaceApps[id] = apps.map((a) => a.app_id);
     return delay({ workspace_id: id });
   },
+  adminCreateWorkspace: (name, apps) => mockApi.createWorkspace(name, apps), // 演示模式：reason 不落 mock
+
   getWorkspace: (workspaceId) => {
     const ws = M.mockWorkspaces.find((w) => w.workspace_id === workspaceId);
     if (!ws) return Promise.reject(new Error("workspace 不存在"));

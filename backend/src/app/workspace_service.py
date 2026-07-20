@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 from domain.errors import ApiError, Err
 from infra.external import apptree_client, omodel_client
+from infra.repositories import audit
 
 
 async def list_apps(user_id: str) -> list[dict[str, Any]]:
@@ -57,16 +59,36 @@ def _map_omodel_error(e: "omodel_client.OModelError", *, action: str) -> ApiErro
 
 
 async def create_workspace(name: str, app_ids: list[str], *,
-                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:
-    """创建系统范围；上游细节只用于服务端诊断，不向浏览器回显。"""
+                           apps: list[dict[str, Any]] | None = None, owner: str = "",
+                           manual_app_ids: list[str] | None = None, reason: str = "",
+                           user_id: str = "", user_role: str = "") -> dict[str, Any]:
+    """创建系统范围；上游细节只用于服务端诊断，不向浏览器回显。
+
+    manual_app_ids 非空 = 管理员代查通道（手输 APPID，未经 apptree 权限过滤）：
+    仅 platform_admin 可用（否则审计会出现「非管理员的 admin_created」事件，污染留痕语义），
+    reason 必填，创建成功后写 workspace.admin_created 审计（失败不留痕，同 set_role 只审计实际变更）。
+    """
+    manual = [a.strip() for a in (manual_app_ids or []) if a.strip()]
+    if manual and user_role != "platform_admin":
+        raise ApiError(Err.FORBIDDEN, "仅平台管理员可手动输入 APPID 创建范围")
+    if manual and not reason.strip():
+        raise ApiError(Err.VALIDATION_FAILED, "手动输入 APPID 需填写原因/工单号")
     try:
-        return await omodel_client.create_workspace(name, app_ids, apps=apps, owner=owner)
+        ws = await omodel_client.create_workspace(name, app_ids, apps=apps, owner=owner)
     except ApiError:
         raise
     except omodel_client.OModelError as e:
         raise _map_omodel_error(e, action="创建") from e
     except Exception as e:  # noqa: BLE001
         raise ApiError(Err.INTERNAL_ERROR, f"创建系统范围失败：{str(e)[:300]}", retryable=True) from e
+    if manual:
+        await audit.insert_event(  # 管理面动作必审计（B7·三）
+            audit_trace_id=str(uuid.uuid4()), event_type="workspace.admin_created",
+            user_id=user_id, actor_type="user", action="manual_appid_scope",
+            payload_redacted={"workspace_id": ws.get("workspace_id"), "name": name,
+                              "app_ids": app_ids, "manual_app_ids": manual,
+                              "reason": reason.strip()})
+    return ws
 
 
 async def get(workspace_id: str) -> dict[str, Any]:

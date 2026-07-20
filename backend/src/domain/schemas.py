@@ -17,6 +17,9 @@ class CreateWorkspaceRequest(BaseModel):
     name: str = Field(min_length=1)
     app_ids: list[str] = Field(default_factory=list)
     apps: list[WorkspaceAppItem] | None = None  # 可选：带名称的应用清单（省略则 projectCn=app_id）
+    # 管理员代查通道（问题复现）：手动输入、未经权限过滤的 APPID 子集；非空时 reason 必填并写审计
+    manual_app_ids: list[str] = Field(default_factory=list)
+    reason: str = ""  # 手输时的原因/工单号（进审计 payload，普通创建留空）
 
 
 class UpdateWorkspaceRequest(BaseModel):

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { color, radius } from "../theme/tokens";
-import { Modal, OverlayHeader, Icon, TextInput } from "../ui";
+import { Modal, OverlayHeader, Icon, TextInput, SegRadio } from "../ui";
 import { api } from "../lib/api";
 import { ApiError } from "../lib/api/client";
+import { useApp } from "../lib/appState";
 import type { ScopeApp } from "../lib/api/types";
 
 /** 系统范围创建/编辑：平铺应用列表（真实 APPID），勾选后落库为 workspace 范围。
@@ -11,6 +12,9 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
   open: boolean; onClose: () => void; onSaved: (id: string) => void; editWorkspaceId?: string | null;
 }) {
   const editing = !!editWorkspaceId;
+  const { me } = useApp();
+  // 管理员代查通道：仅创建态展示（编辑态手输应用以现有「孤儿行」形态维护）
+  const adminManual = me?.role === "platform_admin" && !editing;
   const [apps, setApps] = useState<ScopeApp[]>([]);
   const [loading, setLoading] = useState(false);
   const [name, setName] = useState("");
@@ -18,11 +22,17 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
+  const [tab, setTab] = useState<"pick" | "manual">("pick");
+  const [manualApps, setManualApps] = useState<{ app_id: string; name?: string }[]>([]);
+  const [manualId, setManualId] = useState("");
+  const [manualName, setManualName] = useState("");
+  const [reason, setReason] = useState("");
 
   useEffect(() => {
     if (!open) return;
     // busy 必须一并复位：组件常驻不卸载，上次提交成功后 busy 遗留 true → 重开按钮永远转圈（实测踩坑）
     setName(""); setQ(""); setSelected(new Set()); setErr(""); setBusy(false);
+    setTab("pick"); setManualApps([]); setManualId(""); setManualName(""); setReason("");
     setLoading(true);
     // 编辑态并取应用列表 + 范围详情（详情预填名称/勾选）；创建态只取应用列表
     Promise.all([api.getScopeApps(), editWorkspaceId ? api.getWorkspace(editWorkspaceId) : Promise.resolve(null)])
@@ -40,14 +50,32 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
   const filtered = kw ? apps.filter((a) => a.app_id.toLowerCase().includes(kw) || a.name.toLowerCase().includes(kw)) : apps;
   // 孤儿：已选但不在当前可见应用列表里的 app_id（编辑者权限变更/应用下线）——仍以已勾选保留，防静默缩小范围。
   const orphanIds = editing ? [...selected].filter((id) => !apps.some((a) => a.app_id === id)) : [];
+  // 手输面板：重复项即时提示；添加后清空输入
+  const manualTrimmed = manualId.trim();
+  const manualDup = !!manualTrimmed && manualApps.some((a) => a.app_id === manualTrimmed);
+  const addManual = () => {
+    if (!manualTrimmed || manualDup) return;
+    setManualApps((l) => [...l, { app_id: manualTrimmed, ...(manualName.trim() ? { name: manualName.trim() } : {}) }]);
+    setManualId(""); setManualName("");
+  };
+
   // 缺项提示：按钮为什么不可点必须让用户一眼看到（实测有人勾满应用却漏了名称，卡在灰按钮上）
-  const missing = !name.trim() ? "先在上方填写范围名称" : selected.size === 0 ? "至少勾选一个应用" : "";
+  const missing = !name.trim() ? "先在上方填写范围名称"
+    : tab === "manual"
+      ? (manualApps.length === 0 ? "至少添加一个 APPID" : !reason.trim() ? "请填写原因/工单号" : "")
+      : (selected.size === 0 ? "至少勾选一个应用" : "");
   const canSubmit = !missing && !busy;
 
   const submit = async () => {
     if (!canSubmit) return;
     setBusy(true); setErr("");
     try {
+      if (tab === "manual") {
+        // 管理员代查：手输 APPID 走同一创建端点，后端按 manual_app_ids 写审计
+        const { workspace_id } = await api.adminCreateWorkspace(name.trim(), manualApps, reason.trim());
+        onSaved(workspace_id);
+        return;
+      }
       // 从 selected 出发（含孤儿）；带应用中文名（→ umodel scopes[].projectCn）与 oModel 页面创建的展示一致
       const picked = [...selected].map((id) => {
         const a = apps.find((x) => x.app_id === id);
@@ -72,6 +100,15 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
         </label>
         <TextInput value={name} onChange={setName} placeholder="例如：支付核心域" />
 
+        {adminManual ? (
+          <div style={{ marginTop: 18 }}>
+            <SegRadio
+              options={[{ label: "选择应用", value: "pick" as const }, { label: "手动输入 APPID", value: "manual" as const }]}
+              value={tab} onChange={setTab} />
+          </div>
+        ) : null}
+
+        {tab === "pick" ? (<>
         <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "18px 0 8px" }}>
           <span style={{ fontSize: 13, fontWeight: 600 }}>选择应用（APPID）</span>
           <span style={{ fontSize: 11.5, color: color.textSubtle }}>已选 {selected.size}</span>
@@ -136,6 +173,49 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
             </>
           )}
         </div>
+        </>) : (<>
+        <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", margin: "18px 0 8px" }}>
+          <span style={{ fontSize: 13, fontWeight: 600 }}>手动输入 APPID（管理员）</span>
+          <span style={{ fontSize: 11.5, color: color.textSubtle }}>已添加 {manualApps.length}</span>
+        </div>
+        <div style={{ fontSize: 11.5, color: color.warningText, lineHeight: 1.6, marginBottom: 10, background: color.surfaceAlt, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px" }}>
+          管理员通道：直接输入 APPID 纳入看护范围，无需应用权限，用于复现用户问题。系统不校验 APPID 是否真实存在，填错将导致范围解析不到数据；操作会记录审计。
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <div style={{ flex: 1.1, minWidth: 0 }}>
+            <TextInput mono value={manualId} onChange={setManualId} placeholder="输入 APPID，回车或点击添加"
+              onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <TextInput value={manualName} onChange={setManualName} placeholder="应用名称（选填）"
+              onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+          </div>
+          <button onClick={addManual} disabled={!manualTrimmed || manualDup}
+            style={{ height: 38, padding: "0 14px", flex: "0 0 auto", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 12.5, fontWeight: 600, color: "#313844", cursor: !manualTrimmed || manualDup ? "not-allowed" : "pointer", opacity: !manualTrimmed || manualDup ? 0.5 : 1 }}>
+            添加
+          </button>
+        </div>
+        {manualDup ? <div style={{ fontSize: 11.5, color: color.warningText, marginBottom: 8 }}>该 APPID 已添加</div> : null}
+        <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, overflow: "hidden", minHeight: 120 }}>
+          {manualApps.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "36px 0", color: color.textSubtle, fontSize: 12.5 }}>尚未添加 APPID</div>
+          ) : manualApps.map((a) => (
+            <div key={a.app_id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderBottom: `1px solid ${color.borderFaint}` }}>
+              <Icon name="apps" size={15} color={color.textSubtle} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 500, color: color.textStrong, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.name || "（未填名称）"}</div>
+                <div style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{a.app_id}</div>
+              </div>
+              <Icon name="trash" size={15} color={color.textFaint} title="移除该 APPID"
+                onClick={() => setManualApps((l) => l.filter((x) => x.app_id !== a.app_id))} />
+            </div>
+          ))}
+        </div>
+        <label style={{ fontSize: 13, fontWeight: 600, display: "block", margin: "14px 0 8px" }}>
+          原因/工单号<span style={{ color: color.dangerText, marginLeft: 4 }}>*</span>
+        </label>
+        <TextInput value={reason} onChange={setReason} placeholder="例如：工单 T-xxxx，复现用户上报问题" />
+        </>)}
         {err ? <div style={{ marginTop: 10, fontSize: 12, color: color.dangerText }}>{err}</div> : null}
       </div>
       <div style={{ flex: "0 0 auto", display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8, padding: "14px 20px", borderTop: `1px solid ${color.border}`, background: color.surfaceAlt }}>
@@ -147,7 +227,7 @@ export function WorkspaceDialog({ open, onClose, onSaved, editWorkspaceId }: {
         <button onClick={onClose} disabled={busy} style={{ height: 36, padding: "0 16px", border: `1px solid ${color.border}`, background: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 600, color: "#313844", cursor: busy ? "not-allowed" : "pointer" }}>取消</button>
         <button onClick={submit} disabled={!canSubmit}
           style={{ height: 36, padding: "0 18px", border: "none", background: color.brand, color: "#fff", borderRadius: radius.md, fontSize: 13, fontWeight: 700, cursor: canSubmit ? "pointer" : "not-allowed", opacity: canSubmit ? 1 : 0.5, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          {busy ? <Icon name="loader-2" size={14} color="#fff" spin /> : null}{editing ? `保存修改（${selected.size}）` : `创建系统范围（${selected.size}）`}
+          {busy ? <Icon name="loader-2" size={14} color="#fff" spin /> : null}{editing ? `保存修改（${selected.size}）` : `创建系统范围（${tab === "manual" ? manualApps.length : selected.size}）`}
         </button>
       </div>
     </Modal>

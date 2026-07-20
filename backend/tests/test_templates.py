@@ -329,3 +329,85 @@ def test_main_skills_whitelist_exempts_user_skills(client):
                             headers=USER_HEADERS))
     keys = {x["skill_key"] for x in out}
     assert ka in keys and kb in keys  # 用户 skill 豁免 main.skills 白名单（改动前 kb 会被误收窄）
+
+
+# ---- 管理员代查通道：手输 APPID 创建系统范围（必填原因 + 审计） ----
+
+def _admin_audit_events(client, event_type: str) -> list[dict]:
+    rows = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
+    return [e for e in rows if e["event_type"] == event_type]
+
+
+def test_workspace_manual_appid_creates_and_audits(client):
+    """手输 APPID（未经 apptree 权限过滤）创建成功；写 workspace.admin_created 审计，
+    管理台 recent 投影可见 manual_app_ids/app_ids/name/workspace_id 与 reason_summary。"""
+    out = unwrap(client.post("/api/openops/v1/workspaces", headers=ADMIN_HEADERS, json={
+        "client_request_id": "manual-1", "name": "代查-支付故障",
+        "app_ids": ["APP-NOPERM-01"], "apps": [{"app_id": "APP-NOPERM-01"}],
+        "manual_app_ids": ["APP-NOPERM-01"], "reason": "工单 T-20260720-001 复现用户上报",
+    }))
+    ws_id = out["workspace_id"]
+    detail = unwrap(client.get(f"/api/openops/v1/workspaces/{ws_id}", headers=ADMIN_HEADERS))
+    assert detail["app_ids"] == ["APP-NOPERM-01"]
+
+    events = _admin_audit_events(client, "workspace.admin_created")
+    assert len(events) == 1
+    ev = events[0]
+    assert ev["user_id"] == "admin" and ev["actor_type"] == "user"
+    payload = ev["payload_redacted_json"]
+    assert payload["workspace_id"] == ws_id
+    assert payload["manual_app_ids"] == ["APP-NOPERM-01"]
+    assert payload["app_ids"] == ["APP-NOPERM-01"]
+    assert payload["name"] == "代查-支付故障"
+    assert "T-20260720-001" in payload["reason_summary"]
+
+
+def test_workspace_manual_appid_requires_reason(client):
+    """manual_app_ids 非空但 reason 空白 → 400 VALIDATION_FAILED，且不落 workspace、不写审计。"""
+    before = unwrap(client.get("/api/openops/v1/workspaces", headers=ADMIN_HEADERS))
+    r = client.post("/api/openops/v1/workspaces", headers=ADMIN_HEADERS, json={
+        "client_request_id": "manual-2", "name": "缺原因",
+        "app_ids": ["APP-X"], "manual_app_ids": ["APP-X"], "reason": "   ",
+    })
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_FAILED"
+    assert len(unwrap(client.get("/api/openops/v1/workspaces", headers=ADMIN_HEADERS))) == len(before)
+    assert _admin_audit_events(client, "workspace.admin_created") == []
+
+
+def test_workspace_normal_create_unchanged_no_admin_audit(client):
+    """普通创建（不带新字段）行为零变化：成功且不产生 workspace.admin_created 事件。"""
+    out = unwrap(client.post("/api/openops/v1/workspaces", headers=USER_HEADERS, json={
+        "client_request_id": "normal-1", "name": "普通范围", "app_ids": ["APP-A"],
+    }))
+    assert out["workspace_id"]
+    assert _admin_audit_events(client, "workspace.admin_created") == []
+
+
+def test_workspace_manual_appid_no_audit_on_omodel_failure(client, monkeypatch):
+    """oModel 创建失败（上游 5xx）→ 报错透传映射，且不写审计（同 set_role 只审计实际变更）。"""
+    from infra.external import omodel_client
+
+    async def _fail(*_args, **_kwargs):
+        raise omodel_client.OModelError("upstream", "boom", status_code=503)
+
+    monkeypatch.setattr(omodel_client, "create_workspace", _fail)
+    r = client.post("/api/openops/v1/workspaces", headers=ADMIN_HEADERS, json={
+        "client_request_id": "manual-3", "name": "失败不留痕",
+        "app_ids": ["APP-Y"], "manual_app_ids": ["APP-Y"], "reason": "复现工单 T-2",
+    })
+    assert r.status_code == 502
+    assert _admin_audit_events(client, "workspace.admin_created") == []
+
+
+def test_workspace_manual_appid_forbidden_for_non_admin(client):
+    """手输通道服务端角色校验：普通白名单用户带 manual_app_ids 直调 → 403，
+    不创建 workspace、不产生「非管理员的 admin_created」审计（留痕语义完整性）。"""
+    before = unwrap(client.get("/api/openops/v1/workspaces", headers=USER_HEADERS))
+    r = client.post("/api/openops/v1/workspaces", headers=USER_HEADERS, json={
+        "client_request_id": "manual-4", "name": "越权手输",
+        "app_ids": ["APP-Z"], "manual_app_ids": ["APP-Z"], "reason": "工单 T-3",
+    })
+    assert r.status_code == 403
+    assert len(unwrap(client.get("/api/openops/v1/workspaces", headers=USER_HEADERS))) == len(before)
+    assert _admin_audit_events(client, "workspace.admin_created") == []
