@@ -1,0 +1,6 @@
+# 构建上下文只需要 Dockerfile + requirements.txt。
+# 排除临时放进本目录的离线镜像工件等大文件，避免白白上传几十 MB 构建上下文。
+*.tar
+*.tar.gz
+*.tgz
+*.zip
