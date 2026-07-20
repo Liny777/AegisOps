@@ -13,7 +13,7 @@
 
 1. `.venv` 装 sandbox extra：`pip install -e ".[sandbox]"`（aiodocker）。
 2. docker.sock 权限：systemd 取消注释 `SupplementaryGroups=docker`（`deploy/systemd/openops-backend.service`）+ `systemctl daemon-reload`；或 `usermod -aG docker openops` 后重登。宿主须已有 docker 组。
-3. 离线镜像：Mac 侧 `bash deploy/sandbox/build-sandbox-image.sh [ver]` → 传 `deploy/artifacts/openops-sandbox-image.tar.gz` → 后端机 `docker load -i openops-sandbox-image.tar.gz`。
+3. 离线镜像：Mac 侧 `bash deploy/sandbox/build-sandbox-image.sh [ver]` → 传 `deploy/artifacts/openops-sandbox-image.tar.gz` → 后端机 `docker load -i openops-sandbox-image.tar.gz`。镜像自带一组常用 pip 依赖（`requests`/`httpx`/`pyyaml`/`python-dateutil`/`tabulate`/`rich`/`uv`，构建期烘焙，运行态只读 rootfs 装不了包）；**内网构建须先 `export PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple PIP_TRUSTED_HOST=mirrors.tools.huawei.com` 走公司源**（详见 `docs/build-images-intranet.md` §四）。传源构建还会把源持久化进镜像（`/etc/pip.conf` + `UV_INDEX_URL`），skill 运行期在容器内 `pip`/`uv` 自取额外包也自动走公司源（受只读 rootfs `--target` / HITL / `bridge` 网络约束）。⚠ 这些依赖只在自建镜像里，默认 `container_image=python:3.11-slim` 没有——须在 §3 把 `container_image` 指向 `openops-sandbox:<版本>` 才吃得到。
 
 ## 3. 配置面速查
 
