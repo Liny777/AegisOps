@@ -5,10 +5,12 @@
 # 用法：
 #   bash deploy/sandbox/build-sandbox-image.sh [版本标签，默认 v1]
 # 内网构建（无公网直连，apt/pip 都走公司源）：先 export 三个源变量再跑本脚本——
-#   export APT_MIRROR=https://mirrors.tools.huawei.com          # 替换 http://deb.debian.org 的基址
+#   export APT_MIRROR=http://mirrors.tools.huawei.com           # 替换 http://deb.debian.org 的基址
 #   export PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple
 #   export PIP_TRUSTED_HOST=mirrors.tools.huawei.com
 #   bash deploy/sandbox/build-sandbox-image.sh v1
+# APT_MIRROR 用 http（内网 CA 签的证书基础镜像验不过，apt 完整性靠 GPG 签名）；
+# pip 用 https + trusted-host（跳过该主机证书校验）。
 # 外网构建：不 export，apt 走 deb.debian.org、pip 走默认 PyPI。
 # 后端机侧：
 #   docker load -i openops-sandbox-image.tar.gz

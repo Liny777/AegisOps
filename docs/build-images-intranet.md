@@ -81,13 +81,22 @@ skill 脚本在沙箱容器里跑，容器运行态只读 rootfs 装不了包，
 `deploy/sandbox/requirements.txt`、构建期烘焙进 `openops-sandbox` 镜像。内网无公网直连、
 `pip` 默认打 pypi.org 不通，须走公司源（与上面 `NPM_REGISTRY` 同理，用 pip 的 build-arg）。
 
+前置：基础镜像 `python:3.11-slim` 须已在本机（内网拉 docker.io 会 407 Proxy Authentication
+Required）——按 §一.2 从内网 registry 拉、或外网 `docker save | gzip` 带入后 `docker load`。
+
 ```bash
 cd <仓库根>
+export APT_MIRROR=http://mirrors.tools.huawei.com            # 替换 http://deb.debian.org 的基址
 export PIP_INDEX_URL=https://mirrors.tools.huawei.com/pypi/simple
 export PIP_TRUSTED_HOST=mirrors.tools.huawei.com
 bash deploy/sandbox/build-sandbox-image.sh v1
 # → deploy/artifacts/openops-sandbox-image.tar.gz（可 docker load 的离线工件）
 ```
+
+**`APT_MIRROR` 必须用 `http://`**：公司镜像站证书由内网 CA 签发，基础镜像只带公共 CA，
+`https` 会 `certificate verify failed`（内网实测）。apt 完整性由 GPG 签名保证（`debian.sources`
+的 `Signed-By`），Debian 官方默认源本身也是 http，这不是降级。pip 则用 `https` +
+`PIP_TRUSTED_HOST`（跳过该主机证书校验）。
 
 传了 `PIP_INDEX_URL` 的构建，还会把源**持久化进镜像**（`/etc/pip.conf` + `UV_INDEX_URL`
 环境变量），所以 skill 运行期在容器里自己 `pip install` / `uv pip install` 额外包时**也自动
@@ -135,6 +144,9 @@ DDL 有变时**先库后码**：重跑 `sql/openops_v1_core.sql`（幂等）或�
 |---|---|
 | dist 断言命中「mock 指纹」 | 构建 shell 没带 `VITE_OPENOPS_API_MODE=real`（.env.local 的 mock 污染） |
 | 沙箱镜像构建卡在 pip | 没 `export PIP_INDEX_URL`/`PIP_TRUSTED_HOST`，在打外网源 pypi.org（内网不通） |
+| 沙箱镜像 Step 1 `FROM` 报 407 Proxy Authentication Required | 基础镜像 `python:3.11-slim` 未预先带入，docker 在拉 docker.io。按 §一.2 `docker load` 后重试 |
+| 沙箱镜像 apt 报 `Unable to connect to proxy...:8080` / `Unable to locate package` | 没 `export APT_MIRROR`，apt 在打 deb.debian.org 且被不可达的公司代理拦截 |
+| 沙箱镜像 apt 报 `SSL routines::certificate verify failed` | `APT_MIRROR` 写成了 `https://`。改 `http://`（内网 CA 证书基础镜像验不过，apt 靠 GPG 保完整性） |
 | 资源 URL 混入 `/Program Files/Git/`、页面白屏 | **Windows Git Bash 的 MSYS 路径翻译**把 `/openops/` 等路径型 env 改写成了 Windows 路径。修法任选：①（推荐，任何 shell 免疫）两个路径 env 改写进 `frontend/.env.production.local`（`VITE_OPENOPS_BASE=/openops/` 与 `VITE_OPENOPS_API_BASE=/openops/api`），命令行只留 real/agui；② 构建前 `export MSYS_NO_PATHCONV=1`（MSYS2 用 `MSYS2_ENV_CONV_EXCL`）。重建后跑上方 §二.2 断言再打镜像 |
 | sidecar 构建卡在 npm ci | 没传 `--build-arg NPM_REGISTRY=`，在打外网源 |
 | docker build 报找不到基础镜像 | 首次未做 §一.2 的基础镜像带入 |
