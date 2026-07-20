@@ -18,13 +18,28 @@ async def get_user(user_id: str) -> dict[str, Any] | None:
     )
 
 
+async def get_user_any(user_id: str) -> dict[str, Any] | None:
+    """含软删行读（resolve_user 判「已删用户」用：已删不复活、不落库，见 identity_service）。"""
+    return await q_one(
+        "select *, user_role as role from sre_openops_user where user_id=%(u)s",
+        {"u": user_id},
+    )
+
+
 async def upsert_user(user_id: str, display_name: str, role: str = "user") -> None:
+    # 软删行复活：user_id 是 PK，管理员对已删用户重新加白会撞冲突分支——不清 deleted_at
+    # 会让 get_user 永远拿不到行。复活按「新用户」对待（role/display_name 取传入值）；
+    # 未删的活行保持只刷 last_login_at（防重复授权误降级）。登录链路对已删用户不会走到
+    # 这里（resolve_user 先判 get_user_any，已删不复活）。
     await exec1(
         """
         insert into sre_openops_user (user_id, user_role, display_name, status, created_by, last_updated_by)
         values (%(u)s, %(r)s, %(d)s, 'active', 'system', 'system')
         on conflict (user_id) do update
-          set last_login_at = now(), last_update_date = now()
+          set last_login_at = now(), last_update_date = now(),
+              user_role = case when sre_openops_user.deleted_at is not null then %(r)s else sre_openops_user.user_role end,
+              display_name = case when sre_openops_user.deleted_at is not null then %(d)s else sre_openops_user.display_name end,
+              status = 'active', deleted_at = null
         """,
         {"u": user_id, "r": role, "d": display_name},
     )
@@ -92,15 +107,41 @@ async def revoke_whitelist(user_id: str, by: str) -> int:
     )
 
 
-async def list_users_with_whitelist() -> list[dict[str, Any]]:
-    return await q_all(
-        """
-        select u.user_id, u.display_name, u.user_role as role, u.last_login_at,
-               coalesce(w.status, 'none') whitelist_status
+# 管理台用户列表 FROM/WHERE 片段：count 与分页页共用，避免两处漂移（同 assets 仓储做法）。
+_USERS_FROM = """
         from sre_openops_user u
         left join sre_user_whitelist w
           on w.user_id = u.user_id and w.deleted_at is null
         where u.deleted_at is null
-        order by u.user_id
+          and (%(qlike)s::text is null or u.user_id ilike %(qlike)s or u.display_name ilike %(qlike)s)
+"""
+
+
+async def list_users_with_whitelist(
+    *, q: str | None = None, limit: int = 20, offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """管理台分页列表 → (rows, total)：q 按 user_id/display_name 模糊搜（服务端过滤，29.3 口径）。"""
+    p: dict[str, Any] = {"qlike": f"%{q}%" if q else None}
+    total = int(((await q_one(f"select count(*) as n{_USERS_FROM}", p)) or {}).get("n") or 0)
+    rows = await q_all(
+        f"""
+        select u.user_id, u.display_name, u.user_role as role, u.last_login_at,
+               coalesce(w.status, 'none') whitelist_status
+        {_USERS_FROM}
+        order by u.user_id limit %(lim)s offset %(off)s
+        """,
+        {**p, "lim": limit, "off": offset},
+    )
+    return rows, total
+
+
+async def soft_delete_user(user_id: str, by: str) -> int:
+    """删除用户（管理台）：软删 sre_openops_user 行；返回影响行数（0=不存在或已删）。"""
+    return await exec1(
         """
+        update sre_openops_user
+        set deleted_at=now(), status='deleted', last_updated_by=%(b)s, last_update_date=now()
+        where user_id=%(u)s and deleted_at is null
+        """,
+        {"u": user_id, "b": by},
     )

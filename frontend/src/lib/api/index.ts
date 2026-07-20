@@ -202,8 +202,8 @@ export interface OpenOpsApi {
   saveMainAppend(instanceId: string, text: string): Promise<void>;
   reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
-  /** 管理台表格；分页参数目前只有 Skill 基线（key="skills"）消费（服务端 platform 过滤 + 分页）。 */
-  getAdminTable(key: string, params?: { page?: number; pageSize?: number }): Promise<AdminTableData>;
+  /** 管理台表格；分页/搜索参数由 Skill 基线（key="skills"）与用户表（key="users"）消费（服务端过滤 + 分页）。 */
+  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string }): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
@@ -223,6 +223,8 @@ export interface OpenOpsApi {
   adminAddWhitelist(userId: string, displayName: string): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
+  /** 删除用户（软删 + 连带撤白名单）：该用户重新被加白名单前不再出现在列表。 */
+  adminDeleteUser(userId: string): Promise<void>;
   getAuditTrace(traceId: string): Promise<AuditNode[]>;
   // admin B7a：模板 drill（资产治理→Tool 标注）+ 标注保存 + 模型资产授权
   getAdminTemplateAssets(): Promise<AdminTableData>;
@@ -694,12 +696,13 @@ const realApi: OpenOpsApi = {
       };
     }
     if (key === "users") {
-      const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/users");
+      // 服务端分页 + q 搜索（user_id/display_name 模糊）：分页后客户端 filter 会每页数量错乱
+      const d = await apiFetch<AssetPageDto>(`/openops/v1/admin/users${assetQs(params)}`);
       return {
         title: "用户与白名单",
         primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }],
-        rows: rows.map((r) => ({
+        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }, { label: "删除", width: "56px" }],
+        rows: d.items.map((r) => ({
           id: String(r.user_id),
           cells: [
             { text: String(r.user_id), mono: true },
@@ -714,8 +717,11 @@ const realApi: OpenOpsApi = {
             r.role === "platform_admin"
               ? { text: "撤销管理员", kind: "action" as const, onClickKey: "role-user" }
               : { text: "设为管理员", kind: "action" as const, onClickKey: "role-admin" },
+            // 删除（软删 + 连带撤白）：删自己后端 400 拦（防锁死）；确认弹窗在 AdminConsole
+            { text: "删除", kind: "action" as const, onClickKey: "user-delete" },
           ],
         })),
+        total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
     if (key === "skills") {
@@ -835,8 +841,14 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/admin/mcp-tools/${toolCatalogId}/annotation`, { method: "PUT", body: payload });
   },
   async adminListUsers() {
-    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/users");
-    return rows.map((r) => ({ user_id: String(r.user_id), display_name: String(r.display_name ?? "") }));
+    // 授权弹窗要**完整**用户集：翻完所有页（pageSize 上限 100 压页数），只取首页会静默漏人
+    const out: { user_id: string; display_name: string }[] = [];
+    for (let page = 1; ; page++) {
+      const d = await apiFetch<AssetPageDto>(`/openops/v1/admin/users${assetQs({ page, pageSize: 100 })}`);
+      out.push(...d.items.map((r) => ({ user_id: String(r.user_id), display_name: String(r.display_name ?? "") })));
+      if (!d.items.length || page * d.page_size >= d.total) break;
+    }
+    return out;
   },
   async adminAddWhitelist(userId, displayName) {
     await apiFetch("/openops/v1/admin/users/whitelist", {
@@ -855,6 +867,9 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { client_request_id: crid(), role },
     });
+  },
+  async adminDeleteUser(userId) {
+    await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   },
   async adminGetModelGrants(modelAssetId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
@@ -1118,6 +1133,7 @@ const mockApi: OpenOpsApi = {
   adminAddWhitelist: () => delay(undefined as unknown as void),
   adminRevokeWhitelist: () => delay(undefined as unknown as void),
   adminSetRole: () => delay(undefined as unknown as void),
+  adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),
   getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
   getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),

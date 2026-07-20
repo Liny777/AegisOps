@@ -25,7 +25,7 @@ def test_iam_003_regular_user_cannot_access_admin(client):
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "FORBIDDEN"
 
-    rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))
+    rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))["items"]
     assert any(r["user_id"] == "0026demo01" for r in rows)
 
 
@@ -45,7 +45,7 @@ def test_iam_whitelist_grant_revoke_cycle(client):
     import time as _time
 
     def _wl(uid):
-        rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))
+        rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))["items"]
         return [r for r in rows if r["user_id"] == uid]
 
     # 加入（新用户自动建行）+ 幂等重复加入
@@ -511,7 +511,7 @@ def test_set_role_promotes_existing_user(client):
                            json={"client_request_id": "sr-1", "role": "platform_admin"},
                            headers=ADMIN_HEADERS))
     assert r == {"user_id": "0026demo01", "role": "platform_admin", "changed": True}
-    rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))
+    rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))["items"]
     assert next(u for u in rows if u["user_id"] == "0026demo01")["role"] == "platform_admin"
 
     again = unwrap(client.post("/api/openops/v1/admin/users/0026demo01:set-role",
@@ -544,3 +544,85 @@ def test_set_role_guards(client):
                            json={"client_request_id": "sr-6", "role": "root"},
                            headers=ADMIN_HEADERS)
     assert bad_role.status_code == 422  # pydantic Literal 枚举拒收
+
+
+# ---- 管理台用户列表：搜索 + 分页；删除用户（软删 + 连带撤白 + 复活） ----
+
+def _add_wl(client, uid, name):
+    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"wl-{uid}", "user_id": uid, "display_name": name}))
+
+
+def test_admin_users_search_and_pagination(client):
+    """q 按 user_id/display_name 模糊搜（服务端过滤）；分页 total 为过滤后总数、翻页不重不漏。"""
+    for i in range(3):
+        _add_wl(client, f"0031srch{i}", f"搜索样本{i}")
+    _add_wl(client, "0032other", "旁观者")
+
+    # 按 user_id 片段搜
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "31srch"}, headers=ADMIN_HEADERS))
+    assert d["total"] == 3 and {r["user_id"] for r in d["items"]} == {f"0031srch{i}" for i in range(3)}
+
+    # 按 display_name 片段搜（中文）
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "旁观"}, headers=ADMIN_HEADERS))
+    assert d["total"] == 1 and d["items"][0]["user_id"] == "0032other"
+
+    # 搜不到 → 空页但 total=0（不是报错）
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "绝不存在xyz"}, headers=ADMIN_HEADERS))
+    assert d == {"items": [], "total": 0, "page": 1, "page_size": 20}
+
+    # 分页：page_size=2 → 第 1 页 2 行、第 2 页 1 行，total 恒为 3，无重复
+    p1 = unwrap(client.get("/api/openops/v1/admin/users",
+                           params={"q": "31srch", "page": 1, "page_size": 2}, headers=ADMIN_HEADERS))
+    p2 = unwrap(client.get("/api/openops/v1/admin/users",
+                           params={"q": "31srch", "page": 2, "page_size": 2}, headers=ADMIN_HEADERS))
+    assert p1["total"] == p2["total"] == 3
+    assert len(p1["items"]) == 2 and len(p2["items"]) == 1
+    assert {r["user_id"] for r in p1["items"]}.isdisjoint({r["user_id"] for r in p2["items"]})
+
+    # page_size 超上限 → 422（Query le=100）
+    assert client.get("/api/openops/v1/admin/users",
+                      params={"page_size": 101}, headers=ADMIN_HEADERS).status_code == 422
+
+
+def test_admin_delete_user_cycle(client):
+    """删除闭环：删除→列表消失、白名单闸 403、/me 不 500 且不复活；重复删 404；重新加白才复活。"""
+    _add_wl(client, "0033victim", "被删者")
+    hdr = {"X-OpenOps-Mock-User": "0033victim", "X-OpenOps-Mock-Name": "Victim"}
+    assert client.get("/api/openops/v1/agent-teams", headers=hdr).status_code == 200
+
+    unwrap(client.request("DELETE", "/api/openops/v1/admin/users/0033victim", headers=ADMIN_HEADERS))
+
+    # 列表消失 + 白名单闸拦截（连带撤白，不然 is_whitelisted 仍放行）
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "0033victim"}, headers=ADMIN_HEADERS))
+    assert d["total"] == 0
+    assert client.get("/api/openops/v1/agent-teams", headers=hdr).status_code == 403
+
+    # 被删用户再登录：/me 不 500，按未开通普通用户对待；且**不复活**（发请求不重建行）
+    me = unwrap(client.get("/api/openops/v1/me", headers=hdr))
+    assert me["role"] == "user" and me["whitelisted"] is False
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "0033victim"}, headers=ADMIN_HEADERS))
+    assert d["total"] == 0
+
+    # 重复删除 → 404（软删行对 delete 不可见；上面那些请求也没把行救活）
+    assert client.request("DELETE", "/api/openops/v1/admin/users/0033victim",
+                          headers=ADMIN_HEADERS).status_code == 404
+
+    # 管理员重新加白名单 → 软删行复活为「新用户」且在白名单
+    _add_wl(client, "0033victim", "被删者回归")
+    d = unwrap(client.get("/api/openops/v1/admin/users", params={"q": "0033victim"}, headers=ADMIN_HEADERS))
+    assert d["total"] == 1 and d["items"][0]["whitelist_status"] == "active"
+    assert client.get("/api/openops/v1/agent-teams", headers=hdr).status_code == 200
+
+
+def test_admin_delete_user_guards(client):
+    """守卫：非管理员 403 / 删自己 400（防管理面锁死） / 删不存在 404。"""
+    forbidden = client.request("DELETE", "/api/openops/v1/admin/users/admin", headers=USER_HEADERS)
+    assert forbidden.status_code == 403
+
+    self_del = client.request("DELETE", "/api/openops/v1/admin/users/admin", headers=ADMIN_HEADERS)
+    assert self_del.status_code == 400
+    assert self_del.json()["error"]["code"] == "VALIDATION_FAILED"
+
+    assert client.request("DELETE", "/api/openops/v1/admin/users/0077ghost",
+                          headers=ADMIN_HEADERS).status_code == 404
