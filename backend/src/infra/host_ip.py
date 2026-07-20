@@ -1,4 +1,4 @@
-"""OpenOps 后端主机自身的出站 IP（平台 MCP 出站头 `x-ec-ip`）。
+"""OpenOps 后端主机自身的出站 IP（平台 MCP 出站头 `x-ec2-ip`）。
 
 与 request_context.client_ip() **严格区分**：那是登录用户浏览器的 IP（出站为 IAM-Client-Ip /
 X-Forwarded-For，华为 IAM 会话绑它）；本模块是**后端主机自己**的 IP，属内网拓扑信息。两者语义
@@ -8,7 +8,7 @@ X-Forwarded-For，华为 IAM 会话绑它）；本模块是**后端主机自己*
 主机 IP 送出去；且发现路径对每个已登记用户 MCP 每轮无条件出网，泄露发生在任何审批/标注之前。
 注入点唯一：tool_gateway._platform_headers（调用面）+ 两个平台 discover_tools 调用点（发现面）。
 
-**值只来自 `OPENOPS_EC_IP`，本模块不做任何自动探测**（2026-07-20 与对端确认的语义）：对端按该 IP
+**值只来自 `OPENOPS_EC2_IP`，本模块不做任何自动探测**（2026-07-20 与对端确认的语义）：对端按该 IP
 做**白名单准入**——只授权特定主机调它的 MCP。因此这个值必须与对端登记项**逐字节一致**，而探测出来
 的是「内核去往某个目标时选的网卡地址」，多网卡 / NAT / SNAT 下与对端登记项对不上是常态。上报一个错
 的 IP 比不上报更糟：不带头对端顶多按未授权拒绝，带错值会被判成伪造。运维按对端登记项显式配置。
@@ -23,7 +23,7 @@ log = logging.getLogger("openops.hostip")
 
 # 头名常量：HTTP 头名大小写不敏感、httpx 原样发出，但内网自研网关有过大小写敏感解析的先例，
 # 故收敛到一处便于按对端口径改。
-EC_IP_HEADER = "x-ec-ip"
+EC2_IP_HEADER = "x-ec2-ip"
 
 
 def _sane(raw: str) -> str:
@@ -46,22 +46,22 @@ def _sane(raw: str) -> str:
     return str(a)
 
 
-def ec_ip() -> str:
-    """本机出站 IP：只读 `OPENOPS_EC_IP`（每次现读，同 mcp_route() 的 os.getenv 直读口径）。
+def ec2_ip() -> str:
+    """本机出站 IP：只读 `OPENOPS_EC2_IP`（每次现读，同 mcp_route() 的 os.getenv 直读口径）。
 
     未配置或值非法 → ""，出站不带该头（fail-open：不在本端阻断调用，让对端的未授权响应作为
     权威信号——那比本端抛一个自造的错误更好定位）。
     """
-    return _sane(os.getenv("OPENOPS_EC_IP", ""))
+    return _sane(os.getenv("OPENOPS_EC2_IP", ""))
 
 
-def ec_ip_headers() -> dict[str, str]:
-    """平台 MCP 出站的 x-ec-ip 头片段；取不到返回**空 dict**。
+def ec2_ip_headers() -> dict[str, str]:
+    """平台 MCP 出站的 x-ec2-ip 头片段；取不到返回**空 dict**。
 
-    绝不发 `x-ec-ip: ""`——空值头会让对端把「本端未配置」误读成「本端声称自己 IP 为空」。
+    绝不发 `x-ec2-ip: ""`——空值头会让对端把「本端未配置」误读成「本端声称自己 IP 为空」。
     """
-    ip = ec_ip()
-    return {EC_IP_HEADER: ip} if ip else {}
+    ip = ec2_ip()
+    return {EC2_IP_HEADER: ip} if ip else {}
 
 
 def log_startup() -> None:
@@ -71,12 +71,12 @@ def log_startup() -> None:
     该配哪个 IP 由对端的授权登记项决定，本端不猜；部署机多网卡时可用
     `ip route get <MCP网关IP>` 的 src 字段自查实际出站地址。
     """
-    ip = ec_ip()
+    ip = ec2_ip()
     if ip:
-        log.warning("[OpenOps][hostip] %s=%s（source=OPENOPS_EC_IP）", EC_IP_HEADER, ip)
+        log.warning("[OpenOps][hostip] %s=%s（source=OPENOPS_EC2_IP）", EC2_IP_HEADER, ip)
         return
-    raw = os.getenv("OPENOPS_EC_IP", "").strip()
+    raw = os.getenv("OPENOPS_EC2_IP", "").strip()
     why = "值非法（非 IP 字面量，或为环回/未指定地址）" if raw else "未配置"
-    log.warning("[OpenOps][hostip] OPENOPS_EC_IP %s ⇒ 平台 MCP 出站不带 %s。"
+    log.warning("[OpenOps][hostip] OPENOPS_EC2_IP %s ⇒ 平台 MCP 出站不带 %s。"
                 "对端按该 IP 做白名单准入，缺失将被判为未授权调用方——请按对端登记的地址配置。",
-                why, EC_IP_HEADER)
+                why, EC2_IP_HEADER)

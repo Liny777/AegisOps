@@ -1,8 +1,8 @@
 """平台 HTTP MCP client：tools/call（EXT-005/006，28.2 出站契约）。
 
 `OPENOPS_MCP=mock(默认)|real`：real 经平台 MCP 网关 `OPENOPS_MCP_BASE_URL` 发 `POST /tools/{name}:call`，
-Tool Gateway 构建的 headers（平台=Cookie/x-ec-ip/X-OpenOps-*/effective_appids；用户 MCP=空字典，
-**含 x-ec-ip 亦不带**）原样透传。mock 记录 last_call 供测试断言 header 注入口径；两实现签名一致。
+Tool Gateway 构建的 headers（平台=Cookie/x-ec2-ip/X-OpenOps-*/effective_appids；用户 MCP=空字典，
+**含 x-ec2-ip 亦不带**）原样透传。mock 记录 last_call 供测试断言 header 注入口径；两实现签名一致。
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ last_call: dict[str, Any] | None = None  # 测试钩子：最近一次调用的 
 # direct 路由会话缓存：(server_url, 握手头指纹) → Mcp-Session-Id（None=已知 stateless，直发不带头）。
 # 命中省 2 个握手往返；400/404 视为会话过期（MCP 规范 404=session 失效）清缓存重握手重试一次。
 # 键**必须**含握手头指纹而非只有 server_url：若某用户把自注册 MCP 的 endpoint 填成与某平台 MCP
-# 相同的 URL，平台侧带 x-ec-ip 握手换来的 sid 会被随后的用户侧 tools/call 直接复用——用户请求实际
+# 相同的 URL，平台侧带 x-ec2-ip 握手换来的 sid 会被随后的用户侧 tools/call 直接复用——用户请求实际
 # 骑在一个由平台身份换来的会话上（对端按会话授权时即越权）。指纹只取头名不取值：值是进程内常量，
 # 而头名集合恰好表达「这个会话是以什么身份换来的」。
 _sessions: dict[tuple[str, str], str | None] = {}
@@ -46,10 +46,10 @@ async def call_tool(
     否则=旧单一平台网关（demo query_resource/recover_execute）。两者都透传 Tool Gateway 构建的 headers（28.2）。
 
     `handshake_headers`：direct 路由下随 MCP 握手（initialize / notifications/initialized）一并发送的头，
-    由 Tool Gateway 按 source_type **显式**传入（平台=host_ip.ec_ip_headers()，用户=None）——**不**从
-    `headers` 里按名过滤反推来源：那等于把「某个头在场」当作平台身份判据，未配置 OPENOPS_EC_IP 时
+    由 Tool Gateway 按 source_type **显式**传入（平台=host_ip.ec2_ip_headers()，用户=None）——**不**从
+    `headers` 里按名过滤反推来源：那等于把「某个头在场」当作平台身份判据，未配置 OPENOPS_EC2_IP 时
     平台支路会被误判成用户支路，而 direct 路由下这类错判只表现为对端 4xx，极难定位。
-    ⚠仅限对端可能在 initialize 阶段就校验的头（当前只有 x-ec-ip）；**不得**用它把 Cookie / X-OpenOps-*
+    ⚠仅限对端可能在 initialize 阶段就校验的头（当前只有 x-ec2-ip）；**不得**用它把 Cookie / X-OpenOps-*
     扩散到握手——握手的凭据口径保持现状不变。
     """
     if os.getenv("OPENOPS_MCP", "mock").lower() == "real":

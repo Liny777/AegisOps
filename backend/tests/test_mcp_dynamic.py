@@ -247,7 +247,7 @@ def test_dynamic_specs_scope_from_project_id(monkeypatch):
         return [{"server_id": "alarm-server", "server_name": "a", "server_url": "http://mcpgw/x", "description": ""}]
 
     async def _disc(url, extra_headers=None):
-        # 平台发现路径必须带 x-ec-ip（本用例未设 OPENOPS_EC_IP，故只断言参数被传到而非其值）
+        # 平台发现路径必须带 x-ec2-ip（本用例未设 OPENOPS_EC2_IP，故只断言参数被传到而非其值）
         assert extra_headers is not None, "平台发现路径应显式传 extra_headers（哪怕为空 dict）"
         return [
             {"tool_name": "query_alarm_list", "description": "告警列表", "readonly": True,
@@ -810,21 +810,21 @@ def test_user_mcp_placeholder_endpoint_no_egress(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# x-ec-ip（后端主机 IP）：仅平台 MCP 的调用面与发现面带；用户自注册 MCP 一律不带。
-# 每条负向断言都在**同一测试体内**先做正向控制断言——否则 ec_ip() 取不到值时断言恒真，
+# x-ec2-ip（后端主机 IP）：仅平台 MCP 的调用面与发现面带；用户自注册 MCP 一律不带。
+# 每条负向断言都在**同一测试体内**先做正向控制断言——否则 ec2_ip() 取不到值时断言恒真，
 # 护栏在最需要它的场景下静默失效。
 # ---------------------------------------------------------------------------
 
 def _has_ec_ip(headers: dict) -> bool:
-    return any(k.lower() == "x-ec-ip" for k in headers)
+    return any(k.lower() == "x-ec2-ip" for k in headers)
 
 
 def _ec(monkeypatch, ip: str = "10.1.2.3") -> dict:
     from infra import host_ip
 
-    monkeypatch.setenv("OPENOPS_EC_IP", ip)
-    hdrs = host_ip.ec_ip_headers()
-    assert hdrs == {"x-ec-ip": ip}  # 前置条件：值确实可得，下面的负向断言才有意义
+    monkeypatch.setenv("OPENOPS_EC2_IP", ip)
+    hdrs = host_ip.ec2_ip_headers()
+    assert hdrs == {"x-ec2-ip": ip}  # 前置条件：值确实可得，下面的负向断言才有意义
     return hdrs
 
 
@@ -853,7 +853,7 @@ def test_ec_ip_on_all_three_hops_of_platform_call(monkeypatch):
     methods = [(c["json"] or {}).get("method") for c in _FakeClient.calls]
     assert methods == ["initialize", "notifications/initialized", "tools/call"]
     for c in _FakeClient.calls:
-        assert c["headers"].get("x-ec-ip") == "10.1.2.3", c["json"]
+        assert c["headers"].get("x-ec2-ip") == "10.1.2.3", c["json"]
 
 
 def test_ec_ip_absent_for_user_mcp_call(monkeypatch):
@@ -885,14 +885,14 @@ def test_ec_ip_on_rehandshake_path(monkeypatch):
     methods = [(c["json"] or {}).get("method") for c in _FakeClient.calls]
     assert methods == ["tools/call", "initialize", "notifications/initialized", "tools/call"]
     for c in _FakeClient.calls:
-        assert c["headers"].get("x-ec-ip") == "10.1.2.3"
+        assert c["headers"].get("x-ec2-ip") == "10.1.2.3"
 
 
 def test_session_not_shared_between_user_and_platform(monkeypatch):
     """同一 server_url 的用户会话与平台会话不可互相复用。
 
     _sessions 若只按 server_url 分键：用户把自注册 MCP 填成与平台 MCP 相同的 URL 时，平台带
-    x-ec-ip 握手换来的 sid 会被随后的用户 tools/call 直接复用——用户请求骑在平台身份换来的会话上。
+    x-ec2-ip 握手换来的 sid 会被随后的用户 tools/call 直接复用——用户请求骑在平台身份换来的会话上。
     """
     _direct(monkeypatch)
     ec = _ec(monkeypatch)
@@ -915,7 +915,7 @@ def test_discover_sends_ec_ip_only_when_passed(monkeypatch):
     try:
         asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x", ec))
         assert len(_FakeClient.calls) == 3  # initialize + initialized + tools/list
-        assert all(c["headers"].get("x-ec-ip") == "10.1.2.3" for c in _FakeClient.calls)
+        assert all(c["headers"].get("x-ec2-ip") == "10.1.2.3" for c in _FakeClient.calls)
 
         _FakeClient.calls = []
         asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x"))  # 默认实参
@@ -967,14 +967,14 @@ def test_ec_ip_proxy_route_reaches_console(monkeypatch):
     _FakeClient.reset()
     ec = _ec(monkeypatch)
     asyncio.run(http_mcp_client.call_tool("t", {}, headers=dict(ec), server_url="http://mcpgw/x"))
-    assert _FakeClient.captured["headers"].get("x-ec-ip") == "10.1.2.3"
+    assert _FakeClient.captured["headers"].get("x-ec2-ip") == "10.1.2.3"
 
     _FakeClient.resp = _Resp({"code": 0, "data": {"result": {"tools": []}}})
     try:
         asyncio.run(mcp_registry_client.discover_tools("http://mcpgw/x", ec))
     finally:
         _FakeClient.resp = None
-    assert _FakeClient.captured["headers"].get("x-ec-ip") == "10.1.2.3"
+    assert _FakeClient.captured["headers"].get("x-ec2-ip") == "10.1.2.3"
 
 
 def test_platform_call_succeeds_without_ec_ip(monkeypatch):
@@ -982,8 +982,8 @@ def test_platform_call_succeeds_without_ec_ip(monkeypatch):
     from infra import host_ip
 
     _direct(monkeypatch)
-    monkeypatch.delenv("OPENOPS_EC_IP", raising=False)
-    ec = host_ip.ec_ip_headers()
+    monkeypatch.delenv("OPENOPS_EC2_IP", raising=False)
+    ec = host_ip.ec2_ip_headers()
     assert ec == {}
     r = asyncio.run(http_mcp_client.call_tool("t", {}, headers={"X-OpenOps-User-Id": "u"},
                                               server_url="http://mcpgw/x", handshake_headers=ec))

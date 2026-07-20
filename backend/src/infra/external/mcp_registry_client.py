@@ -194,9 +194,9 @@ _MCP_ACCEPT = "application/json, text/event-stream"  # streamable-HTTP：server 
 def mcp_headers(session_id: str | None, extra: dict[str, str] | None = None) -> dict[str, str]:
     """MCP 出站头：Accept 双形态 + 会话头（stateful server 的 Mcp-Session-Id；None=不带）。
 
-    ⚠本函数是 platform / user 两条支路**共用**的协议层合并点：**严禁**在此注入 x-ec-ip、Cookie
+    ⚠本函数是 platform / user 两条支路**共用**的协议层合并点：**严禁**在此注入 x-ec2-ip、Cookie
     或任何身份/拓扑信息——在这里加等于同时发给用户自注册的 MCP（URL 由用户任填）。来源相关的头
-    一律由调用方经 `extra` 显式传入（平台侧 host_ip.ec_ip_headers()，用户侧不传）。
+    一律由调用方经 `extra` 显式传入（平台侧 host_ip.ec2_ip_headers()，用户侧不传）。
     """
     hdrs = dict(extra or {})
     hdrs["Accept"] = _MCP_ACCEPT
@@ -212,7 +212,7 @@ async def mcp_initialize(cli: Any, server_url: str, extra_headers: dict[str, str
     返回 session id；stateless server（如 FastMCP stateless_http）无该头返回 None，后续不带头。
     initialized 通知的任何错误忽略——严格 SDK 需要它、部分 stateless 实现会 4xx 拒绝，两类都兼容。
 
-    extra_headers：对端可能**在 initialize 阶段就校验**的头（当前只有平台侧 x-ec-ip）。握手与业务
+    extra_headers：对端可能**在 initialize 阶段就校验**的头（当前只有平台侧 x-ec2-ip）。握手与业务
     请求的头必须对称：只在 tools/call 带、握手不带，会表现为「工具静默消失 / 每次调用都 4xx」——
     发现与调用三处外层都是 `except Exception: log.warning` 吞掉，且 direct 路由没有 debug 钩子，
     是最难定位的一类失败。默认 None ⇒ 用户支路与既有调用点零行为变化。"""
@@ -327,7 +327,7 @@ async def discover_tools(server_url: str, extra_headers: dict[str, str] | None =
     `server_url` = 平台 MCP 资产的 endpoint（目标 MCP server URL，proxy 必填 `url`）；mock 忽略它返回硬编码 `_TOOLS`。
     OpenOps 侧自算 schema_hash（29.3 分工：Registry 不做发现，OpenOps 落 catalog）。
 
-    `extra_headers`：**仅平台调用点**传 `host_ip.ec_ip_headers()`（agentscope_runtime._dynamic_mcp_specs、
+    `extra_headers`：**仅平台调用点**传 `host_ip.ec2_ip_headers()`（agentscope_runtime._dynamic_mcp_specs、
     asset_reconcile_service）。默认 None = 不带，是**承重的 fail-closed 默认值**：用户自注册 MCP 的 URL
     由用户任填，带上等于把后端主机内网 IP 送给任意外部地址（同 28.2「用户支路不透传 Cookie」的理由），
     且发现路径每轮无条件出网，泄露发生在任何审批/标注之前。新增调用点漏传只会「少带一个头」——
