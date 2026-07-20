@@ -263,9 +263,9 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
         if not surl:
             continue
         try:
-            # 平台支路：发现面与调用面头对称，同带 x-ec-ip（后端主机 IP）。对照 _user_mcp_specs——
+            # 平台支路：发现面与调用面头对称，同带 x-ec2-ip（后端主机 IP）。对照 _user_mcp_specs——
             # 那边不传，默认 None 即不带。
-            tools = await mcp_registry_client.discover_tools(surl, host_ip.ec_ip_headers())
+            tools = await mcp_registry_client.discover_tools(surl, host_ip.ec2_ip_headers())
         except Exception as e:  # noqa: BLE001
             log.warning("发现 MCP 工具失败 server=%s：%s", srv.get("server_id"), _redact(str(e)))
             continue
@@ -303,7 +303,7 @@ async def _user_mcp_specs(st: TaskState) -> list[dict[str, Any]]:
        source_type 默认值就是 "platform"，不显式传即泄（_platform_headers 会带上 Cookie + effective_appids）。
     4) **scope_mode 恒 none / appid_arg_path 恒 None**：用户分支本就不校 scope；且 _make_dynamic_tool 的
        「单 appid 自动补」会把**平台 APPID 塞进用户 server 的入参**（越权外泄），必须靠 appid_field=="" 关死。
-    5) **发现与调用两面都不带 x-ec-ip**（后端主机内网 IP）：用户可填任意 URL，带上即泄露内网拓扑；
+    5) **发现与调用两面都不带 x-ec2-ip**（后端主机内网 IP）：用户可填任意 URL，带上即泄露内网拓扑；
        且本函数对每个已登记用户 MCP **每轮无条件出网**，泄露发生在任何审批/标注之前。靠 discover_tools
        的 extra_headers 默认 None 与 tool_gateway.invoke 用户支路不传 handshake_headers 两处保证——
        **勿给 discover_tools 加带头的默认值**（理由同 3 的 Cookie）。

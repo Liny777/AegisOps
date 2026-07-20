@@ -238,7 +238,7 @@ def test_asset_schema_change_annotation_not_inherited(client, monkeypatch, runti
                                                            "grace_seconds": {"type": "number"}}}},  # schema 变了
     ]
 
-    async def fake_discover(_name: str, _extra=None):  # 平台发现路径现传 extra_headers（x-ec-ip）
+    async def fake_discover(_name: str, _extra=None):  # 平台发现路径现传 extra_headers（x-ec2-ip）
         return [{**t, "schema_hash": mcp_registry_client._schema_hash(t["input_schema"])} for t in tools]
 
     monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)

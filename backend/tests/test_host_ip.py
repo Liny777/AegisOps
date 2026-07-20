@@ -1,6 +1,6 @@
-"""infra.host_ip：平台 MCP 出站头 x-ec-ip 的取值口径。
+"""infra.host_ip：平台 MCP 出站头 x-ec2-ip 的取值口径。
 
-承重点：值**只**来自 OPENOPS_EC_IP（对端按 IP 白名单准入，值必须与登记项一致，绝不能靠猜）；
+承重点：值**只**来自 OPENOPS_EC2_IP（对端按 IP 白名单准入，值必须与登记项一致，绝不能靠猜）；
 脏值一律判无效（含 header 注入形状）；取不到时返回空 dict 而非空值头。
 fake_sock 在每个用例里替换 socket.socket，用来断言**本模块从不建 socket**。
 """
@@ -46,41 +46,41 @@ def fake_sock(monkeypatch):
     _FakeSock.sockname = ("10.9.9.9", 0)
     _FakeSock.raise_on_connect = None
     monkeypatch.setattr(socket, "socket", _FakeSock)
-    monkeypatch.delenv("OPENOPS_EC_IP", raising=False)
+    monkeypatch.delenv("OPENOPS_EC2_IP", raising=False)
     return _FakeSock
 
 
-# --- 取值：只认 OPENOPS_EC_IP ----------------------------------------------------
+# --- 取值：只认 OPENOPS_EC2_IP ----------------------------------------------------
 
 def test_env_is_the_only_source(monkeypatch, fake_sock):
     """承重：值只来自 env，且**完全不建 socket**——对端按白名单准入，探测出来的网卡地址与登记项
     对不上是常态，上报错值会被判成伪造。"""
-    monkeypatch.setenv("OPENOPS_EC_IP", "10.1.2.3")
-    assert host_ip.ec_ip() == "10.1.2.3"
-    assert host_ip.ec_ip_headers() == {"x-ec-ip": "10.1.2.3"}
+    monkeypatch.setenv("OPENOPS_EC2_IP", "10.1.2.3")
+    assert host_ip.ec2_ip() == "10.1.2.3"
+    assert host_ip.ec2_ip_headers() == {"x-ec2-ip": "10.1.2.3"}
     assert fake_sock.made == []
 
 
 def test_unset_env_yields_no_header_and_never_probes(monkeypatch, fake_sock):
     """未配置 → 不带头（fail-open），且**不回退探测**。"""
-    assert host_ip.ec_ip() == ""
-    assert host_ip.ec_ip_headers() == {}
+    assert host_ip.ec2_ip() == ""
+    assert host_ip.ec2_ip_headers() == {}
     assert fake_sock.made == []
 
 
 def test_illegal_env_yields_no_header_not_a_guess(monkeypatch, fake_sock):
     """env 非法 → 不带头，而不是退而求其次猜一个。"""
-    monkeypatch.setenv("OPENOPS_EC_IP", "0.0.0.0")
-    assert host_ip.ec_ip_headers() == {}
+    monkeypatch.setenv("OPENOPS_EC2_IP", "0.0.0.0")
+    assert host_ip.ec2_ip_headers() == {}
     assert fake_sock.made == []
 
 
 def test_env_is_read_fresh_not_cached(monkeypatch, fake_sock):
     """每次现读（同 mcp_route() 口径），无缓存——改 env 立即生效，测试也不需要 reset 钩子。"""
-    monkeypatch.setenv("OPENOPS_EC_IP", "10.1.1.1")
-    assert host_ip.ec_ip() == "10.1.1.1"
-    monkeypatch.setenv("OPENOPS_EC_IP", "10.2.2.2")
-    assert host_ip.ec_ip() == "10.2.2.2"
+    monkeypatch.setenv("OPENOPS_EC2_IP", "10.1.1.1")
+    assert host_ip.ec2_ip() == "10.1.1.1"
+    monkeypatch.setenv("OPENOPS_EC2_IP", "10.2.2.2")
+    assert host_ip.ec2_ip() == "10.2.2.2"
 
 
 @pytest.mark.parametrize("bad", [
@@ -116,7 +116,7 @@ def test_log_startup_warns_loudly_when_unconfigured(monkeypatch, fake_sock, capl
 
 
 def test_log_startup_reports_configured_value(monkeypatch, fake_sock, caplog):
-    monkeypatch.setenv("OPENOPS_EC_IP", "10.1.2.3")
+    monkeypatch.setenv("OPENOPS_EC2_IP", "10.1.2.3")
     with caplog.at_level("WARNING"):
         host_ip.log_startup()
     assert "10.1.2.3" in caplog.text
