@@ -354,6 +354,31 @@ def test_toolkit_demo_retirement_and_scope_tool(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_list_scope_apps_renders_names_with_fallbacks():
+    """list_scope_apps 文案：显示 appid｜名称，无名退回裸 appid；scope_apps 与 effective_appids 对不上时
+    整体退回裸列表（子 Agent 拷贝 ctx / 旧 shadow 状态 / 手搓 scope_ctx 都可能对不上）。"""
+    appids = ["APP-REAL-1", "APP-REAL-2"]
+
+    # ① 有名 + 无名混合：无名那行退回裸 appid，不留空分隔符
+    t = ar._render_scope_apps({"effective_appids": appids,
+                               "scope_apps": [{"appid": "APP-REAL-1", "name": "支付核心交易"},
+                                              {"appid": "APP-REAL-2", "name": ""}]})
+    assert "- APP-REAL-1｜支付核心交易\n" in t and t.endswith("- APP-REAL-2\n（各查询工具的应用参数必须取自此范围，且只填 appid 本身、不要带名称）")
+
+    # ② scope_apps 与 effective_appids 不一致（少一个）→ 整体退回裸列表，不半渲染
+    t = ar._render_scope_apps({"effective_appids": appids,
+                               "scope_apps": [{"appid": "APP-REAL-1", "name": "支付核心交易"}]})
+    assert "支付核心交易" not in t and "｜" not in t.split("：", 1)[1]
+    assert "- APP-REAL-1\n" in t and "- APP-REAL-2" in t
+
+    # ③ 老形态 scope_ctx（根本没有 scope_apps 键）→ 与今天一致
+    t = ar._render_scope_apps({"effective_appids": appids})
+    assert "- APP-REAL-1\n" in t and "- APP-REAL-2" in t
+
+    # ④ 空范围话术不变
+    assert ar._render_scope_apps({"effective_appids": []}) == "当前工作范围为空（无可用应用）。"
+
+
 def test_dynamic_tool_admin_no_approval_overrides_readonly_hint(monkeypatch):
     """真机动态工具：管理员『勿审批』标注胜过 server 的 readOnlyHint（修 readOnlyHint 静默覆盖标注、
     非只读动态工具永远弹审批）；未标注的非只读动态工具仍按 readOnlyHint 弹审批。"""

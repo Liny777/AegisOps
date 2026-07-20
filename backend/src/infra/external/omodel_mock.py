@@ -14,6 +14,8 @@ _DEFAULTS: dict[str, dict[str, Any]] = {
         "workspace_id": "ws_pay_abc", "name": "支付核心域",
         "scope_revision": "rev-20260708-001", "sync_status": "ready",
         "app_ids": ["APP-A", "APP-B", "APP-C"],
+        # apps：向导传入的 apptree 行（{app_id, name, ...}），只为 scope_apps 显示名；APP-C 故意无名，覆盖降级
+        "apps": [{"app_id": "APP-A", "name": "支付核心交易"}, {"app_id": "APP-B", "name": "订单履约中心"}],
     },
     "ws_syncing": {
         "workspace_id": "ws_syncing", "name": "同步中范围",
@@ -32,14 +34,15 @@ def _req_id() -> str:
 
 
 async def create_workspace(name: str, app_ids: list[str], *,
-                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:  # noqa: ARG001 —— mock 忽略
-    _ = (apps, owner)
+                           apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any]:  # noqa: ARG001 —— mock 忽略 owner
+    _ = owner
     ws_id = f"ws_{uuid.uuid4().hex[:8]}"
     ws = {
         "workspace_id": ws_id, "name": name,
         "scope_revision": "rev-" + uuid.uuid4().hex[:8],
         "sync_status": "ready",  # mock：立即 ready
         "app_ids": list(app_ids),
+        "apps": list(apps or []),  # 留名字给 resolve_scope 的 scope_apps（real 侧对应 /projects.name_cn）
     }
     _WORKSPACES[ws_id] = ws
     return ws
@@ -56,12 +59,13 @@ async def get_statistics(workspace_id: str) -> dict[str, Any]:  # noqa: ARG001 �
 
 async def update_workspace(workspace_id: str, name: str, app_ids: list[str], *,
                            apps: list[dict[str, Any]] | None = None, owner: str = "") -> dict[str, Any] | None:  # noqa: ARG001
-    _ = (apps, owner)
+    _ = owner
     ws = _WORKSPACES.get(workspace_id)
     if ws is None:
         return None
     ws["name"] = name
     ws["app_ids"] = list(app_ids)
+    ws["apps"] = list(apps or [])
     ws["scope_revision"] = "rev-" + uuid.uuid4().hex[:8]  # 范围/名称变即换版本
     return ws
 
@@ -82,15 +86,19 @@ async def resolve_scope(workspace_id: str, scope_revision: str, user_id: str) ->
     """
     ws = _WORKSPACES.get(workspace_id)
     if ws is None:
-        return {"status": "failed", "effective_appids": [], "scope_revision": scope_revision, "omodel_request_id": _req_id()}
+        return {"status": "failed", "effective_appids": [], "scope_apps": [], "scope_revision": scope_revision, "omodel_request_id": _req_id()}
     sync = ws["sync_status"]
     if sync in ("syncing", "creating"):
-        return {"status": "syncing", "effective_appids": [], "scope_revision": ws["scope_revision"], "omodel_request_id": _req_id()}
+        return {"status": "syncing", "effective_appids": [], "scope_apps": [], "scope_revision": ws["scope_revision"], "omodel_request_id": _req_id()}
     if sync == "failed":
-        return {"status": "failed", "effective_appids": [], "scope_revision": ws["scope_revision"], "omodel_request_id": _req_id()}
+        return {"status": "failed", "effective_appids": [], "scope_apps": [], "scope_revision": ws["scope_revision"], "omodel_request_id": _req_id()}
+    appids = list(ws["app_ids"])
+    names = {a["app_id"]: str(a.get("name") or "") for a in (ws.get("apps") or []) if a.get("app_id")}
     return {
         "status": "ok",
-        "effective_appids": list(ws["app_ids"]),
+        "effective_appids": appids,
+        # 与 real 侧同形：按 appids 迭代向名字表查（绝不反向），无名留空 —— 见 omodel_real._decorate
+        "scope_apps": [{"appid": a, "name": "" if names.get(a) == a else names.get(a, "")} for a in appids],
         "scope_revision": ws["scope_revision"],
         "omodel_request_id": _req_id(),
     }

@@ -400,6 +400,27 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
                         is_read_only=bool(spec.get("readonly")))
 
 
+def _render_scope_apps(scope_ctx: dict[str, Any]) -> str:
+    """list_scope_apps 的文案（提出来是为了脱开 agentscope 单测）：每行「appid｜名称」，无名退回裸 appid。
+
+    `scope_apps`（`[{appid, name}]`，omodel resolve 带出）只是 `effective_appids` 的显示装饰，
+    **仅在两者严格对齐时采用**——子 Agent 拷贝 ctx、测试手搓 scope_ctx、进程重启后读到旧 shadow
+    状态都可能让它对不上，此时整体退回裸列表，绝不半渲染。
+    """
+    appids = scope_ctx.get("effective_appids", [])
+    if not appids:
+        return "当前工作范围为空（无可用应用）。"
+    apps = scope_ctx.get("scope_apps") or []
+    names: dict[str, str] = {}
+    if [a.get("appid") for a in apps] == list(appids):
+        names = {a["appid"]: str(a.get("name") or "") for a in apps}
+    # appid 必须打头且不加修饰：模型会原样复制它填工具参数，Tool Gateway 做精确字符串成员校验。
+    lines = [f"- {a}｜{names[a]}" if names.get(a) else f"- {a}" for a in appids]
+    return (f"当前工作范围内共 {len(appids)} 个应用（appid｜名称）：\n"
+            + "\n".join(lines)
+            + "\n（各查询工具的应用参数必须取自此范围，且只填 appid 本身、不要带名称）")
+
+
 def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:
     """构造 run_platform_skill 的工具描述（发现链路核心）：逐条列出 `skill_key`（display_name）：用途。
     用途来自 SKILL.md 的 description（经 resolve_available_skills 流入 available_skills[k]['description']）。
@@ -540,15 +561,8 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
     async def list_scope_apps() -> Any:
-        """列出当前会话工作范围（scope）内可用的应用（appid）。用户问「我有哪些应用 / 能查哪些应用」时用此工具。"""
-        appids = (st.scope_ctx or {}).get("effective_appids", [])
-        if appids:
-            text = (f"当前工作范围内共 {len(appids)} 个应用（appid）：\n"
-                    + "\n".join(f"- {a}" for a in appids)
-                    + "\n（各查询工具的应用参数必须取自此范围）")
-        else:
-            text = "当前工作范围为空（无可用应用）。"
-        return ToolResponse(content=[TextBlock(type="text", text=text)])
+        """列出当前会话工作范围（scope）内可用的应用（appid 与名称）。用户问「我有哪些应用 / 能查哪些应用」时用此工具。"""
+        return ToolResponse(content=[TextBlock(type="text", text=_render_scope_apps(st.scope_ctx or {}))])
 
     async def render_chart(
         chart_type: str,

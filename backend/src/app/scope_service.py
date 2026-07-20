@@ -67,6 +67,7 @@ async def resolve_for_task(
     override = _scope_override()
     if override is not None:  # 联调缝：跳过 oModel，用真 appid 当 scope（omodel_request_id 打标记，审计可辨）
         res: dict[str, Any] = {"status": "ok", "effective_appids": override,
+                               "scope_apps": [{"appid": a, "name": ""} for a in override],  # 覆盖缝无名字来源
                                "scope_revision": instance_rev, "omodel_request_id": "scope-override"}
     else:
         res = await omodel_client.resolve_scope(ws_id, instance_rev, user_id)
@@ -106,7 +107,11 @@ async def resolve_for_task(
         user_id, instance_id, run_id, task_id, ws_id, new_rev, appids, res["omodel_request_id"], "task_start",
     )
     ctx = {
-        "scope_snapshot_id": snapshot_id, "effective_appids": appids, "scope_revision": new_rev,
+        "scope_snapshot_id": snapshot_id, "effective_appids": appids,
+        # scope_apps：`[{appid, name}]`，effective_appids 的纯显示装饰（list_scope_apps 用）。
+        # 用 .get 兜底——不返回该键的实现（旧 mock/三方）不得在任务启动处 KeyError。
+        "scope_apps": res.get("scope_apps") or [],
+        "scope_revision": new_rev,
         "workspace_id": ws_id,  # 出站平台 MCP header 用（omodel 工作空间 id，ws_id 见上）
         "omodel_request_id": res["omodel_request_id"], "cache_hit": False,
     }

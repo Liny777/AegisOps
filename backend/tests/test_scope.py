@@ -27,6 +27,18 @@ def test_scope_001_ready_resolves_effective_appids(client):
     assert "scope.resolved" in _audit_types(client, run["agent_run_id"])  # effective_appids 来自 oModel
 
 
+async def test_scope_apps_decorates_effective_appids(client):  # noqa: ARG001 —— 借 client 夹具复位 mock 库
+    """scope_apps 是 effective_appids 的纯装饰：同元素同序、无名留空、失败态给 []（不得缺键）。"""
+    ok = await omodel_mock.resolve_scope("ws_pay_abc", "rev", "u")
+    assert ok["effective_appids"] == ["APP-A", "APP-B", "APP-C"]
+    assert [a["appid"] for a in ok["scope_apps"]] == ok["effective_appids"]
+    assert ok["scope_apps"] == [{"appid": "APP-A", "name": "支付核心交易"},
+                                {"appid": "APP-B", "name": "订单履约中心"},
+                                {"appid": "APP-C", "name": ""}]  # APP-C 无 apps 行 → 降级
+    for ws in ("ws_syncing", "ws_failed", "ws_missing"):
+        assert (await omodel_mock.resolve_scope(ws, "rev", "u"))["scope_apps"] == []
+
+
 def test_scope_002_syncing_blocks_workspace_not_ready(client):
     instance = create_instance(client)  # 建实例时 ws_pay_abc ready；建后转 syncing
     omodel_mock._set_scope("ws_pay_abc", sync_status="syncing")
