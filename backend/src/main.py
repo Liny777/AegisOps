@@ -102,6 +102,11 @@ async def lifespan(_app: FastAPI):
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)
     print(f"[OpenOps][startup] {_banner}", flush=True)
 
+    # 平台 MCP 出站的 x-ec-ip（后端主机自身 IP，对端按它做白名单准入）：打印当前取值，未配置时告警
+    # ——未配置时出站只是静默少一个头（无异常/无 SSE/无审计），这行是运维唯一的抓手。
+    from infra import host_ip
+    host_ip.log_startup()
+
     # docker 档启动清理孤儿容器（上次进程遗留：注册表此刻必空，本 scope 带管理 label 的全是孤儿）
     if os.environ.get("OPENOPS_SANDBOX", "fake").lower() == "docker":
         try:
