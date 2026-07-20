@@ -438,6 +438,52 @@ def test_dynamic_tool_admin_blocked_not_assembled(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_toolkit_emits_skipped_for_non_whitelisted_dynamic(monkeypatch):
+    """可见性修复（白名单闸）：注册表发现的动态工具因不在模板 default_tools 白名单被丢时，
+    对 main 发一条 openops.tool.skipped 观测事件（reason=TOOL_NOT_WHITELISTED，payload.tools 含工具名），
+    且**不**置 st.tool_blocked（「未启用」非「被拦截」，不压制本轮闭环结论）；子 Agent 只落日志不发事件。
+    修此前该处静默 continue、真机上「已发现却没装配」全程无痕的缺口。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
+
+    spec = {"name": "query_alarm_list", "description": "d", "server_url": "http://s", "readonly": True,
+            "scope_mode": "none", "appid_arg_path": None,
+            "input_schema": {"type": "object", "properties": {}}}
+
+    async def _specs():
+        return [spec]
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    seen: list = []
+
+    async def _cap_emit(_st, _run, event_type, **kw):  # 拦截 emit 免 DB（同 test_user_mcp_invoke 口径）
+        seen.append((event_type, kw))
+
+    monkeypatch.setattr(ar, "emit", _cap_emit)
+
+    async def scenario():
+        # main：query_alarm_list 未勾进模板白名单（template_tools={query_resource,recover_execute}）→ 丢 + 发事件
+        st, run = _toolkit_st_run()
+        tk, _pruned = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("query_alarm_list")) is None  # 未装配
+        skipped = [kw for et, kw in seen if et == "openops.tool.skipped"]
+        assert len(skipped) == 1 and skipped[0]["reason_code"] == "TOOL_NOT_WHITELISTED"
+        assert "query_alarm_list" in skipped[0]["payload"]["tools"]
+        assert st.tool_blocked is not True  # 未启用不压制「已闭环」
+
+        # 子 Agent：白名单收窄是刻意角色隔离，只落日志、不发观测事件
+        seen.clear()
+        st2, run2 = _toolkit_st_run()
+        st2.agent_key = "diagnose"
+        await ar._build_toolkit(st2, run2)
+        assert not [et for et, _ in seen if et == "openops.tool.skipped"]
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     import pytest
 

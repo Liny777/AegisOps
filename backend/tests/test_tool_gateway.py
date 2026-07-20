@@ -238,7 +238,7 @@ async def test_tool_008_dynamic_unannotated_catalog_row_keeps_injection(quiet_em
     hot-update 用例护栏）。"""
     from infra.repositories import mcp_tools
 
-    async def unannotated_row(_name):
+    async def unannotated_row(_name, **_kw):  # **_kw 容纳 exclude_placeholder（真机排除占位平台 MCP）
         return {"annotation_id": None, "tool_name": "query_alarm_list"}
 
     monkeypatch.setattr(mcp_tools, "get_runtime_annotation", unannotated_row)

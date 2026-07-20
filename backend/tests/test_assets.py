@@ -435,6 +435,43 @@ def test_real_mode_hides_placeholder_platform_mcp(client, monkeypatch):
     assert total2 == total1 - 1
 
 
+def test_real_mode_placeholder_annotation_does_not_shadow_real_tool(client, monkeypatch):
+    """真机：占位平台 MCP（seed 的「oModel 查询与恢复」，endpoint=http://mock）**自带标注**，
+    不得盖掉真 server 上同名工具的管理员标注。
+
+    runtime_annotations() 按 tool_name 扁平收敛、底层 SQL 按 display_name 排序 ⇒「后者赢」；
+    中文名排在 `alarm-server` 这类 ASCII 名之后，故修复前占位那条（seed: recover_execute=需审批）
+    会盖掉管理员在真 server 上标的「免审批」——用户视角就是「管理台设了不生效、照样弹审批卡」。
+    mock/默认模式不变：占位标注仍是 demo 工具（query_resource/recover_execute）的唯一来源。"""
+    import asyncio
+
+    from app import mcp_tool_annotation_service as svc
+    from infra.repositories import assets as assets_repo
+    from infra.repositories import mcp_tools
+
+    async def _setup():
+        # 真 server 暴露与占位同名的 recover_execute，管理员标注为**免审批**
+        mcp = await assets_repo.create_mcp(None, "platform", "alarm-server", "http",
+                                           {"endpoint": "https://mcpgateway.local/alarm"}, {})
+        tcid = await mcp_tools.upsert_catalog_tool(
+            mcp["mcp_version_id"], "recover_execute", "真 server 的恢复动作",
+            {"type": "object", "properties": {}}, "h-real")
+        await mcp_tools.save_annotation(tcid, False, False, "none", None, "allowed", None, "admin")
+
+    asyncio.run(_setup())
+
+    # 默认 mock：占位那条排序在后 → 赢（这正是修复前真机上的错误行为，此处作为对照钉住）
+    anns = asyncio.run(svc.runtime_annotations())
+    assert anns["recover_execute"]["is_approval_required"] is True
+
+    # 真机：占位资产整体被排除 → 管理员在真 server 上的免审批终于生效
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    anns2 = asyncio.run(svc.runtime_annotations())
+    assert anns2["recover_execute"]["is_approval_required"] is False
+    # 仅存在于占位资产上的工具，真机下不再进运行时标注视图（真机的平台 MCP 应由注册表对账入库）
+    assert "query_resource" not in anns2
+
+
 def _make_skill_zip(name: str = "uploaded-skill", with_skill_md: bool = True) -> bytes:
     """内存造一个 Skill ZIP：含 SKILL.md（frontmatter name=<name>）+ run.py。"""
     import io

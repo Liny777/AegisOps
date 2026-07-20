@@ -33,6 +33,8 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   "openops.tool.call.succeeded": { icon: "circle-check", tone: "good", title: "工具完成" },
   "openops.tool.call.failed": { icon: "alert-triangle", tone: "danger", title: "工具失败" },
   "openops.tool.blocked": { icon: "ban", tone: "danger", title: "工具被阻断" },
+  // 发现到、但未在模板 default_tools 白名单故未装配的动态 MCP 工具（非阻断，中性提示，区别于上方红色 blocked）
+  "openops.tool.skipped": { icon: "info-circle", tone: "neutral", title: "工具未装配" },
   // B2：模型推理事件
   "openops.model.call.started": { icon: "cpu", tone: "neutral", title: "模型推理" },
   "openops.model.call.succeeded": { icon: "cpu", tone: "good", title: "模型完成" },

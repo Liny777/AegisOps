@@ -107,7 +107,11 @@ async def _effective_annotation(st: TaskState, run: dict[str, Any], tool_name: s
     """
     snap = (st.tool_annotations or {}).get(tool_name)
     try:
-        row = await mcp_tools.get_runtime_annotation(tool_name)
+        # 真机排除占位平台 MCP，与 runtime_annotations 的快照口径**保持一致**：本查询按 tool_name
+        # 全局取最新一条，占位资产（endpoint=http://mock）的 catalog 行可能比真 server 的更新而被选中，
+        # 两层取到不同标注就会重演「管理台设了不生效」。判定见 mcp_tools._EXCLUDE_PLACEHOLDER。
+        row = await mcp_tools.get_runtime_annotation(
+            tool_name, exclude_placeholder=os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real")
     except Exception:
         return snap  # ASSET-006：读取失败按缓存继续
     if row is None:

@@ -426,6 +426,9 @@ _PLATFORM_RULES = (
     "- 当某个可用 Skill 的用途与当前任务匹配时，必须优先调用该 Skill（run_platform_skill）并严格按其步骤/流程执行，"
     "不要自行发挥；只有在没有任何匹配 Skill 时，才用通用工具（查询/命令/Read/Grep）自己诊断。\n"
     "- 恢复类/写操作必须先请求人工批准、获批后才执行。\n"
+    "- 若完成用户诉求需要某个当前工具列表里并不存在的能力（如查询告警、拓扑/对象关系等外部 MCP 工具），"
+    "不要笼统说「MCP 工具没有注册/没有被加载」；应据实说明：该能力对应的 MCP 工具需要管理员先在插件页"
+    "注册并标注、且加入当前实例模板后才可用，并同时用你现有的工具尽力给出可行的替代帮助或下一步建议。\n"
     "- 仅当本轮已取得的数值适合做趋势或对比时才调用 render_chart；不得为图表臆造数据。"
 )
 
@@ -684,12 +687,20 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             st.template_tools.add("dispatch_subagents")
     # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
     # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
+    _skipped_dynamic: list[str] = []  # 发现到、但因不在白名单未装配的动态工具名（可见性：见循环后 emit）
     for spec in dynamic_specs:
         # per-agent 隔离（D/E 块，编排对称化）：动态工具对 main/sub 统一按白名单裁剪——
         # main 按模板 main.default_tools，子 Agent 按画像 mcp_tools（否则每个 Agent 都看到
         # 注册表全部真工具，角色隔离被击穿）。空白名单=纯编排者（main 被迫派发，老 D6 效果）；
         # main 需要直连的动态工具须在模板编辑器勾进 default_tools（先 allowed 标注）。
         if st.template_tools is None or spec["name"] not in st.template_tools:
+            # 可见性修复：此处曾静默 continue（不发事件/不打日志）——真机上「注册表已发现某 MCP 工具、
+            # 却因不在模板 default_tools 白名单而没装配到 Agent」全程无痕，用户只见模型据实说「没注册/没加载」。
+            # 收集工具名 + 打 info 日志（main/sub 都打，带 agent_key）；循环后仅对 main 发一条观测事件。
+            _skipped_dynamic.append(str(spec["name"]))
+            log.info("动态 MCP 工具未装配（不在%s白名单）：tool=%s agent=%s",
+                     "模板 default_tools" if st.agent_key == "main" else "子 Agent 画像 mcp_tools",
+                     spec["name"], st.agent_key)
             continue
         # 管理员在管理台显式标注即事实来源（runtime_annotations 已按 annotation_id 非空装进快照）：
         # is_approval_required（勿审批/需审批）/scope/secret/status 全以标注为准；server 的 readOnlyHint
@@ -711,6 +722,16 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             pruned.append((spec["name"], "TOOL_BLOCKED"))
             continue
         tools.append(_make_dynamic_tool(st, run, spec))
+    # 可见性（白名单闸）：注册表已发现、却因不在模板白名单未装配的动态工具——仅对 main 发一条 tool.skipped
+    # 观测事件（子 Agent 的白名单收窄是刻意角色隔离，噪声大，只落日志）。**不置 st.tool_blocked**：
+    # 「未启用」不是「被拦截」，不该压制本轮「已闭环」结论；故用独立事件类型（非 tool.blocked 的红色阻断）。
+    if st.agent_key == "main" and _skipped_dynamic:
+        await emit(st, run, "openops.tool.skipped", severity="info", action="mcp_not_whitelisted",
+                   message=(f"注册表发现的 {len(_skipped_dynamic)} 个 MCP 工具未装配到本实例"
+                            f"（不在模板 default_tools 白名单）：{'、'.join(_skipped_dynamic)}。"
+                            f"如需启用：模板编辑器勾入 default_tools + 插件页标注为 allowed。"),
+                   reason_code="TOOL_NOT_WHITELISTED",
+                   payload={"tools": _skipped_dynamic, "phase": "toolkit_build"})
     # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见
     # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP
     # 不可能出现在管理员维护的模板白名单里，若按白名单裁剪则本特性等于不存在。隔离靠「仅 main」
