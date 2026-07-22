@@ -1,23 +1,15 @@
 import type { ActivityEvent } from "../../lib/api/types";
 import type { Tone } from "../../theme/tokens";
 
-const BUSINESS_MILESTONE = /(subagent\.|tool(?:\.call)?\.|skill\.|approval\.)/i;
-// 运维诊断类事件：只进技术轨，不进面向用户的业务时间线。
-// tool.skipped（MCP 未进白名单）/ skill.skipped（画像 Skill 未装配）都是给管理员看的装配缺口信号，
-// 却天然命中上面的里程碑正则（`tool(?:\.call)?\.` 的 `.call` 可选、`skill\.` 更是直接匹配），
-// 于是「注册表发现 74 个工具未装配」这类内容会糊进用户对话栏。单列白名单而非往上面塞否定前瞻——
-// 那个正则已经够绕，改写易误伤其它 tool.*/skill.* 里程碑。
+// 装配缺口信号：tool.skipped（MCP 未进白名单）/ skill.skipped（画像 Skill 未装配）
+// 都是给管理员看的运维诊断事件，不该糊进面向用户的工作台活动栏。
 const TECHNICAL_ONLY = /^openops\.(tool|skill)\.skipped$/i;
 
-/** 装配缺口类运维诊断事件：工作台活动栏（业务时间线 + 「全部动态」）一律不展示，
- * 只留审计回放页（getAuditNodes → run 审计页）与审计表 payload 供管理员排障。 */
+/** 装配缺口类运维诊断事件：工作台活动栏一律不展示（业务时间线与「全部动态」已下线，
+ * 此判定仍是历史事件的过滤口径），只留审计回放页（getAuditNodes → run 审计页）与
+ * 审计表 payload 供管理员排障。 */
 export function isOpsDiagnosticEvent(event: ActivityEvent): boolean {
   return TECHNICAL_ONLY.test(event.eventType);
-}
-
-export function showInBusinessTimeline(event: ActivityEvent): boolean {
-  if (isOpsDiagnosticEvent(event)) return false;
-  return BUSINESS_MILESTONE.test(event.eventType);
 }
 
 export function eventTitle(event: ActivityEvent): string {

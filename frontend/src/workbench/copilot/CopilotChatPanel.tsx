@@ -64,7 +64,7 @@ export function CopilotChatPanel({
   /** 外链 ?q= 带入的待发问题（仅外链落地首个面板非空）；发送/放弃后经 onAutoSent 清除。 */
   autoQuestion?: string | null;
   onAutoSent?: () => void;
-  /** 定界卡片按钮等程序化发送（右栏在 CopilotKit Provider 外，必须经此状态桥）；
+  /** 诊断时间线按钮等程序化发送（右栏在 CopilotKit Provider 外，必须经此状态桥）；
    *  发送/放弃后经 onPendingSent 清除。 */
   pendingSend?: PendingSend | null;
   onPendingSent?: () => void;

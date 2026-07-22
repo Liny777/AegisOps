@@ -78,6 +78,8 @@ export interface RcaStep {
   num: number;
   label: string;
   state: "done" | "active" | "waiting";
+  /** 模型每步上报的一句小结（后端 step_summary 聚合）；缺失时前端 fallbackSummary 兜底。 */
+  summary?: string;
 }
 export interface RcaFact {
   text: string;

@@ -50,7 +50,7 @@
 .oa-activity-tabs {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 4px;
   padding: 8px 12px 7px;
   border-bottom: 1px solid #eef0f3;
@@ -77,7 +77,6 @@
 .oa-activity-tabs button:focus-visible,
 .oa-round-head:focus-visible,
 .oa-technical-track-head:focus-visible,
-.oa-view-switch button:focus-visible,
 .oa-load-earlier:focus-visible,
 .oa-graph-worker:focus-visible {
   outline: 2px solid #1683ff;
@@ -99,7 +98,7 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* 定界 tab 未读徽标：revision 领先已读基线且当前不在定界 tab 时点亮 */
+/* 诊断 tab 未读徽标：revision 领先已读基线且当前不在诊断 tab 时点亮 */
 .oa-tab-dot {
   display: inline-block;
   width: 6px;
@@ -179,8 +178,7 @@
 }
 
 .oa-activity-node-rail,
-.oa-technical-event-rail,
-.oa-business-event-rail {
+.oa-technical-event-rail {
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -197,8 +195,7 @@
 }
 
 .oa-activity-node-line,
-.oa-technical-event-line,
-.oa-business-event-line {
+.oa-technical-event-line {
   width: 1px;
   flex: 1;
   min-height: 10px;
@@ -225,7 +222,6 @@
 }
 
 .oa-activity-node-body code,
-.oa-business-event-tool,
 .oa-technical-event-type,
 .oa-technical-event-tool {
   display: block;
@@ -248,7 +244,6 @@
 }
 
 .oa-activity-node-body time,
-.oa-business-event time,
 .oa-technical-event time {
   color: #b3b8c2;
   font-size: 10px;
@@ -278,54 +273,9 @@
   line-height: 1.5;
 }
 
-/* 定界空态：五步全灰骨架 stepper（模型漏调上报时不造假，只给引导） */
+/* 诊断空态：五步 waiting 骨架时间线（模型漏调上报时不造假，只给引导） */
 .oa-rca-empty {
   gap: 9px;
-}
-
-.oa-rca-empty-stepper {
-  width: 100%;
-  max-width: 460px;
-  display: flex;
-  align-items: center;
-  margin-bottom: 10px;
-  padding: 13px 14px;
-  border: 1px solid #e6e8ec;
-  border-radius: 12px;
-  background: #fff;
-}
-
-.oa-rca-empty-step {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  color: #9aa0ab;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-}
-
-.oa-rca-empty-step span {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  flex: 0 0 20px;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: #e6e8ec;
-  color: #788192;
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.oa-rca-empty-line {
-  flex: 1;
-  height: 2px;
-  min-width: 10px;
-  margin: 0 7px;
-  background: #e6e8ec;
 }
 
 .oa-activity-empty-inline {
@@ -443,90 +393,10 @@
   white-space: nowrap;
 }
 
-.oa-view-switch {
-  margin-left: auto;
-  display: inline-flex;
-  flex: 0 0 auto;
-  overflow: hidden;
-  border: 1px solid #e2e5ea;
-  border-radius: 6px;
-}
-
-.oa-view-switch button {
-  border: 0;
-  background: #fff;
-  color: #9aa0ab;
-  cursor: pointer;
-  font-size: 10px;
-  padding: 3px 8px;
-}
-
-.oa-view-switch button.is-active {
-  background: #eef4ff;
-  color: #155eef;
-  font-weight: 700;
-}
-
-.oa-business-timeline,
 .oa-technical-events {
   margin: 0;
   padding: 2px 1px 0;
   list-style: none;
-}
-
-.oa-business-event {
-  display: grid;
-  grid-template-columns: 16px minmax(0, 1fr);
-  gap: 7px;
-}
-
-.oa-business-event-dot {
-  flex: 0 0 8px;
-  width: 8px;
-  height: 8px;
-  margin-top: 7px;
-  border-radius: 50%;
-}
-
-.oa-business-event-body {
-  min-width: 0;
-  padding-bottom: 10px;
-}
-
-.oa-business-event-title-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.oa-business-event-title-row strong {
-  min-width: 0;
-  overflow: hidden;
-  color: #2a2f38;
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oa-business-event-title-row time {
-  margin-left: auto;
-}
-
-.oa-business-event-role {
-  margin-top: 2px;
-  color: #788192;
-  font-size: 10px;
-}
-
-.oa-business-event-body p {
-  margin: 4px 0 0;
-  padding-left: 7px;
-  border-left: 2px solid #e6e8ec;
-  color: #788192;
-  font-size: 10.5px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
 }
 
 .oa-orchestration-graph {

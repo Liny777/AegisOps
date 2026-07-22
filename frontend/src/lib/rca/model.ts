@@ -1,9 +1,9 @@
 /**
- * 定界面板的 revision 守卫（纯函数）。
+ * 诊断面板的 revision 守卫（纯函数）。
  *
  * 双通道（AG-UI CUSTOM + 备用 SSE）会重复投递同一事件，SSE 重连 resync 也可能带回
  * 旧快照；渲染层靠 revision 幂等去重、永不闪回。最关键的一条：**revision 按面板身份
- * 分段单调**——同一 run 里第二次定界任务的 revision 从 1 重计，分段键变更即接受并
+ * 分段单调**——同一 run 里第二次诊断任务的 revision 从 1 重计，分段键变更即接受并
  * 重置基线，否则新任务的面板会被旧任务的高 revision 永久压制。
  *
  * 分段键由调用方提供：优先 payload.board_task_id（owner 主任务身份——事件 envelope

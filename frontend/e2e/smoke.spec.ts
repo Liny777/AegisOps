@@ -11,18 +11,18 @@ import { test, expect } from "@playwright/test";
  * mock module 态（mockAgents 等）每个 test 新 page 即重置，编辑幕的改名不会泄漏到其他幕。
  */
 
-test("对话工作台：多 Agent 轮次、双视图与历史分页", async ({ page }) => {
+test("对话工作台：多 Agent 轮次、技术轨与两 tab 面板", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("tab", { name: "全部动态" })).toBeVisible();
-  // 定界优先：mock 自带定界数据，载入自动落在「定界」tab（子 Agent 自动切换不再抢占）
-  await expect(page.getByRole("tab", { name: "定界" })).toHaveAttribute("aria-selected", "true");
+  // 「全部动态」tab 已随内网反馈下线，右栏只剩「诊断 | 子 Agent」两 tab
+  await expect(page.getByRole("tab", { name: "全部动态" })).toHaveCount(0);
+  // 诊断优先：mock 自带诊断数据，载入自动落在「诊断」tab（子 Agent 自动切换不再抢占）
+  await expect(page.getByRole("tab", { name: "诊断" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "子 Agent" }).click();
   await expect(page.getByText(/子 Agent 编排 · 2 轮/)).toBeVisible();
   await expect(page.getByRole("button", { name: /第 2 轮/ })).toHaveAttribute("aria-expanded", "true");
   await expect(page.getByRole("button", { name: /第 1 轮/ })).toHaveAttribute("aria-expanded", "false");
   await expect(page.getByText("待审批").first()).toBeVisible();
-  await page.getByRole("button", { name: "技术", exact: true }).click();
   await page.getByRole("button", { name: /第 1 轮/ }).click();
   await expect(page.getByRole("img", { name: /编排图/ })).toHaveCount(2);
   await expect(page.getByRole("region", { name: /巡检 Agent 活动轨迹/ })).toHaveCount(2);
@@ -30,18 +30,17 @@ test("对话工作台：多 Agent 轮次、双视图与历史分页", async ({ p
   await expect(page.getByText("已取消").first()).toBeVisible();
   await page.getByRole("button", { name: /查看 巡检 Agent 的活动轨迹/ }).first().click();
   await expect(page.getByRole("region", { name: /巡检 Agent 活动轨迹/ }).first()).toBeVisible();
-  await page.getByRole("tab", { name: "全部动态" }).click();
-  await expect(page.locator(".oa-general-events .oa-activity-node-body strong").first()).toHaveText("重启实例");
-  await page.getByRole("button", { name: "显示更早" }).click();
-  await expect(page.getByText("会话已创建")).toBeVisible();
-  await expect(page.getByRole("tab", { name: "全部动态" })).toHaveAttribute("aria-selected", "true");
+  // 子 Agent 恒为技术轨：业务/技术视图切换钮已删
+  await expect(page.getByRole("button", { name: "业务", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "技术", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "子 Agent" })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByText(/dom-secret-must-not-render|dom-cookie-must-not-render/)).toHaveCount(0);
   await expect(page.getByPlaceholder(/描述你的排障任务/)).toBeVisible();
   await page.reload();
-  // 刷新后 manualTabChoice 复位 → 回到默认「定界」tab；技术/业务视图偏好仍持久化
-  await expect(page.getByRole("tab", { name: "定界" })).toHaveAttribute("aria-selected", "true");
+  // 刷新后 manualTabChoice 复位 → 回到默认「诊断」tab
+  await expect(page.getByRole("tab", { name: "诊断" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "子 Agent" }).click();
-  await expect(page.getByRole("button", { name: "技术", exact: true }).first()).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText(/子 Agent 编排 · 2 轮/)).toBeVisible();
 });
 
 test("窄屏活动栏以右侧覆盖层展示", async ({ page }) => {
@@ -139,23 +138,26 @@ test("紧凑消息：复制按钮可用，窄屏 RCA/HITL 自动降列", async (
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.goto("/");
 
-  const botBody = page.locator(".oa-fallback-bot-body").filter({ hasText: "初步定界" });
+  const botBody = page.locator(".oa-fallback-bot-body").filter({ hasText: "初步诊断" });
   await botBody.hover();
   const copyButton = botBody.getByRole("button", { name: "复制消息" });
   await expect(copyButton).toHaveCSS("position", "absolute");
   await expect(copyButton).toHaveCSS("width", "28px");
   await copyButton.click();
   await expect(botBody.getByRole("button", { name: "已复制" })).toBeVisible();
-  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("初步定界");
+  await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("初步诊断");
 
   await page.setViewportSize({ width: 700, height: 900 });
-  // RCA 卡挂在右侧面板「定界」tab（默认选中）：窄屏 overlay 面板容器 420px（<520px）
-  // → 容器查询降列 tiles 2 列 / facts 1 列；HITL 卡仍在对话流，按视口媒体查询降列。
+  // 诊断时间线挂在右侧面板「诊断」tab（默认选中）：窄屏 overlay 面板容器 420px（<520px）
+  // → 容器查询降列 tiles 2 列 / facts 1 列（facts 在步 2 展开态内，先点开步卡）；
+  // HITL 卡仍在对话流，按视口媒体查询降列。
   const rail = page.getByLabel("活动 · 调查时间线");
   await expect(rail.locator(".oa-rca-tiles")).toBeVisible();
   await expect.poll(() => rail.locator(".oa-rca-tiles").evaluate((el) =>
     getComputedStyle(el).gridTemplateColumns.split(" ").length,
   )).toBe(2);
+  await rail.getByTestId("diagnosis-step-2").click();
+  await expect(rail.locator(".oa-rca-facts")).toBeVisible();
   await expect.poll(() => rail.locator(".oa-rca-facts").evaluate((el) =>
     getComputedStyle(el).gridTemplateColumns.split(" ").length,
   )).toBe(1);

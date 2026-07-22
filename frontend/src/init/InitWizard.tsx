@@ -738,6 +738,8 @@ function InlineField({ label, required, children }: { label: string; required?: 
 // 能力卡文案（激活页「能力识别」，原型 STEP2 并入）：模板 capabilities 中文名 → 图标+描述
 const CAP_META: Record<string, { icon: string; desc: string }> = {
   "巡检": { icon: "radar", desc: "基于看护范围查看健康状态、异常信号与风险，只做查询不做变更。" },
+  // 「诊断」为现口径（seed 新库）；「定界」键保留兼容存量环境的旧模板 label（管理员未同步前仍显示旧词）
+  "诊断": { icon: "stethoscope", desc: "结合告警/指标/日志/链路/拓扑按五步法诊断问题边界，输出证据与假设排行。" },
   "定界": { icon: "stethoscope", desc: "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行。" },
   "恢复": { icon: "first-aid-kit", desc: "执行受控恢复动作：先核对目标与影响面，需人工批准后执行。" },
 };

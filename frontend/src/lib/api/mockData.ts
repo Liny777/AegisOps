@@ -52,7 +52,7 @@ export const mockAgents: AgentInstance[] = [
 ];
 
 export const mockConversations: Conversation[] = [
-  { id: "conv_1", title: "支付延迟突增定界" },
+  { id: "conv_1", title: "支付延迟突增诊断" },
   { id: "conv_2", title: "对账任务超时排查" },
   { id: "conv_3", title: "Redis 连接池告警" },
 ];
@@ -139,10 +139,10 @@ export const mockActivitySnapshot = {
 };
 
 export const mockWorkbenchState = (): WorkbenchState => ({
-  chatTitle: "支付延迟突增定界",
+  chatTitle: "支付延迟突增诊断",
   agentName: "支付域感知快恢",
   summaryText:
-    "10:02 起支付下单 P99 从 180ms 升到 1.4s，错误率 0.6%。已定界到 svc-payment-api 依赖的 Redis 连接饱和，正在验证假设 H1。",
+    "10:02 起支付下单 P99 从 180ms 升到 1.4s，错误率 0.6%。已诊断到 svc-payment-api 依赖的 Redis 连接饱和，正在验证假设 H1。",
   statusChips: [
     { key: "agui", label: "AG-UI", value: "已连接", tone: "good" },
     { key: "mcp", label: "MCP 服务", value: "2/2 在线", tone: "good" },
@@ -154,18 +154,18 @@ export const mockWorkbenchState = (): WorkbenchState => ({
     {
       id: "m2",
       role: "bot",
-      text: "我已拉取近 30 分钟的指标与日志，确认 10:02 起 svc-payment-api 的 P99 从 180ms 升到 1.4s、错误率 0.6%。范围锁定在支付核心域（APP-A/B/C）。下面是我的定界进展。",
+      text: "我已拉取近 30 分钟的指标与日志，确认 10:02 起 svc-payment-api 的 P99 从 180ms 升到 1.4s、错误率 0.6%。范围锁定在支付核心域（APP-A/B/C）。下面是我的诊断进展。",
     },
     {
       id: "m3",
       role: "bot",
-      text: "初步定界：延迟与 Redis 连接池饱和高度相关（active 连接打满、等待队列上升）。正在验证是否由慢查询或连接泄漏引起。",
+      text: "初步诊断：延迟与 Redis 连接池饱和高度相关（active 连接打满、等待队列上升）。正在验证是否由慢查询或连接泄漏引起。",
       showCopy: true,
     },
   ],
   rca: {
     title: "支付延迟突增",
-    phaseLabel: "定界中",
+    phaseLabel: "诊断中",
     time: "10:11",
     revision: 4,
     status: "in_progress",
@@ -173,13 +173,14 @@ export const mockWorkbenchState = (): WorkbenchState => ({
       { label: "症状", value: "下单 P99 180ms→1.4s" },
       { label: "时间窗", value: "10:02 起 · 持续 9min" },
       { label: "影响面", value: "APP-A 支付下单 · 0.6% 错误" },
-      { label: "当前阶段", value: "定界 · 验证 H1" },
+      { label: "当前阶段", value: "诊断 · 验证 H1" },
     ],
+    // done 步必给 summary（e2e 断言收起态一行摘要）；step 5 waiting 留空走 fallbackSummary。
     steps: [
-      { num: 1, label: "范围", state: "done" },
-      { num: 2, label: "证据", state: "done" },
-      { num: 3, label: "假设", state: "done" },
-      { num: 4, label: "验证", state: "active" },
+      { num: 1, label: "范围", state: "done", summary: "范围锁定支付核心域（APP-A/B/C），主症状为下单 P99 突增" },
+      { num: 2, label: "证据", state: "done", summary: "指标与日志确认 Redis active 连接打满，同期无发布无变更" },
+      { num: 3, label: "假设", state: "done", summary: "生成 H1 连接泄漏 / H2 慢查询 / H3 流量突增三个假设" },
+      { num: 4, label: "验证", state: "active", summary: "正在区分连接泄漏与慢查询占用：核对 svc-a 连接持有时长" },
       { num: 5, label: "结论", state: "waiting" },
     ],
     currentQ: "Redis 连接饱和是慢查询导致，还是连接泄漏导致？",
@@ -230,7 +231,7 @@ export const mockWorkbenchState = (): WorkbenchState => ({
     {
       label: "进行中",
       items: [
-        { id: "a1", title: "定界 · 日志聚类", tool: "skill.logscan", detail: "Loki 拉取 svc-payment-api 近 30min 错误日志", time: "刚刚", icon: "loader-2", tone: "neutral", running: true },
+        { id: "a1", title: "诊断 · 日志聚类", tool: "skill.logscan", detail: "Loki 拉取 svc-payment-api 近 30min 错误日志", time: "刚刚", icon: "loader-2", tone: "neutral", running: true },
       ],
     },
     {
@@ -238,7 +239,7 @@ export const mockWorkbenchState = (): WorkbenchState => ({
       items: [
         { id: "a2", title: "范围解析", tool: "scope.resolved", detail: "effective_appids = APP-A/B/C（rev-20260708-001）", time: "10:02", icon: "target", tone: "good" },
         { id: "a3", title: "巡检 · 指标查询", tool: "mcp.query_metrics", detail: "P99 / 错误率 / Redis 连接数", time: "10:03", icon: "chart-line", tone: "good" },
-        { id: "a4", title: "定界 · 拓扑依赖", tool: "mcp.omodel_topo", detail: "svc-payment-api → Redis / MySQL 依赖图", time: "10:06", icon: "sitemap", tone: "good" },
+        { id: "a4", title: "诊断 · 拓扑依赖", tool: "mcp.omodel_topo", detail: "svc-payment-api → Redis / MySQL 依赖图", time: "10:06", icon: "sitemap", tone: "good" },
         { id: "a5", title: "假设生成", tool: "reasoning", detail: "H1/H2/H3 排行，置信度更新", time: "10:09", icon: "bulb", tone: "neutral" },
         { id: "a6", title: "ASK · 等待批准", tool: "approval.required", detail: "recover_execute 重启 svc-a", time: "10:11", icon: "shield-check", tone: "warning" },
       ],
@@ -259,20 +260,29 @@ export const mockWorkbenchState = (): WorkbenchState => ({
   currentModel: "Qwen3.5",
 });
 
-/** mock 定界完成态变体：mock send 两段式推进的第二拍（进行中 → 900ms 后闭环定格）。
+/** mock 诊断完成态变体：mock send 两段式推进的第二拍（进行中 → 900ms 后闭环定格）。
  *  五步全 done、status=concluded（后端权威信号的 mock 对位）、需确认动作已执行 →
- *  卡片 footer 主/副按钮都应隐藏。 */
+ *  时间线 footer 主/副按钮都应隐藏。 */
 export const mockRcaFinal = (): RcaCardData => {
   const base = mockWorkbenchState().rca!;
+  // 终态每步小结：4/5 两步补上验证结论与根因报告（与后端 step_summary 聚合口径对位）。
+  const finalStepSummaries: Record<number, string> = {
+    4: "重启 svc-a 后 active 连接回落、P99 恢复 190ms，H1 验证闭环",
+    5: "根因确认 H1 连接泄漏；短期加连接回收配置，长期补饱和告警",
+  };
   return {
     ...base,
-    phaseLabel: "已闭环",
+    phaseLabel: "诊断完成",
     revision: 5,
     status: "concluded",
-    steps: base.steps.map((step) => ({ ...step, state: "done" })),
+    steps: base.steps.map((step) => ({
+      ...step,
+      state: "done",
+      summary: finalStepSummaries[step.num] ?? step.summary,
+    })),
     tiles: base.tiles.map((tile) =>
-      tile.label === "当前阶段" ? { ...tile, value: "结论 · 已闭环" } : tile),
-    currentQ: "定界完成：根因确认为 H1（Redis 连接泄漏，svc-a 未释放）。",
+      tile.label === "当前阶段" ? { ...tile, value: "结论 · 已完成" } : tile),
+    currentQ: "诊断完成：根因确认为 H1（Redis 连接泄漏，svc-a 未释放）。",
     why: "重启 svc-a 后 active 连接回落、P99 恢复至 190ms，验证闭环，无需继续追问。",
     sources: base.sources.map((source) => ({ ...source, status: "done", tone: "good" })),
     hypotheses: [
@@ -392,7 +402,7 @@ export const sandboxCfg: SandboxCfg[] = [
 ];
 
 export const auditTimeline: AuditNode[] = [
-  { event: "task.started", detail: "task_id=tsk_… · 支付延迟突增定界" },
+  { event: "task.started", detail: "task_id=tsk_… · 支付延迟突增诊断" },
   { event: "scope.resolved", detail: "snapshot_id=snap_… · effective_appids=APP-A/B/C" },
   { event: "tool.call.started → allowed", detail: "query_metrics · request_id=req_…" },
   { event: "approval.required", detail: "recover_execute · appr_1" },
@@ -405,8 +415,8 @@ export const mockTemplates: Template[] = [
   {
     template_version_id: "tplv_sre_fast_recovery_3",
     name: "感知快恢 Agent",
-    desc: "面向 SRE 巡检 / 定界 / 恢复闭环的平台模板，V1 唯一可用模板。",
-    capabilities: ["巡检", "定界", "恢复"],
+    desc: "面向 SRE 巡检 / 诊断 / 恢复闭环的平台模板，V1 唯一可用模板。",
+    capabilities: ["巡检", "诊断", "恢复"],
     active_version: "v3",
   },
 ];
