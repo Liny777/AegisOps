@@ -792,6 +792,47 @@ def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monke
     assert "dyn_alarm_query" in st.tool_annotations and "dyn_log_query" not in st.tool_annotations
 
 
+def test_model_board_completion_keeps_tool_conclusion_and_neutral_wording(client, monkeypatch):
+    """A4 隔离（run_task 完结三处修正）：rca_source=model 时——
+    ① task.completed 不再用 demo「根因 H1」剧本文案（中性「任务完成」）；
+    ② 模型经 update_diagnosis_board 提交的 conclusion 不被最终对话文本覆盖；
+    ③ 末次面板 status=concluded（demo 剧本内容已被模型面板接管丢弃）。"""
+    import pytest as _pytest
+
+    _pytest.importorskip("agentscope")  # 本机未装 agentscope 时跳过（既有环境性缺口）
+    from test_agui import _annotate_recover_no_ask
+
+    monkeypatch.setenv("OPENOPS_RUNTIME", "agentscope")
+    monkeypatch.setenv("OPENOPS_DEMO_BOARD_STEP", "1")
+    _annotate_recover_no_ask(client)  # 免审批直通完成（无流内审批人）
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+    start_task(client, rid, "支付延迟突增，帮我定位")
+
+    def _done():
+        s = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+        at = s.get("active_task")
+        return at if at and at["status"] in ("completed", "failed") else None
+
+    assert wait_until(_done, timeout=15)["status"] == "completed"
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{rid}", headers=USER_HEADERS))
+
+    done = next(e for e in reversed(events) if e["event_type"] == "openops.task.completed")
+    assert done["payload_redacted_json"]["summary"] == "任务完成"  # 不再误报「根因 H1，已按审批执行恢复」
+
+    rca_evs = [e for e in events if e["event_type"] == "openops.rca.updated"]
+    last = rca_evs[-1]["payload_redacted_json"]
+    assert last["status"] == "concluded"
+    assert last["conclusion"].startswith("已确认 H1（Redis 连接泄漏）")  # 工具提交的结论原样保留
+    # 完结路径没有再发「结论已更新（模型生成）」的覆盖事件（面板已有 conclusion 即不覆盖）
+    assert all("结论已更新" not in str(e["payload_redacted_json"].get("summary") or "") for e in rca_evs)
+
+    # /state 顶层 rca 恢复（快照零改动生效）：status/conclusion 与末次事件一致
+    state = unwrap(client.get(f"/api/openops/v1/agent-runs/{rid}/state", headers=USER_HEADERS))
+    assert state["rca"] and state["rca"]["status"] == "concluded"
+
+
 # ---- 缺陷批回归（regression-0712 报告 DEF-1/2，替代未入库的探针文件） ----
 
 def test_def1_late_decide_does_not_pollute_main_handshake(client):

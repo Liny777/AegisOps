@@ -233,4 +233,49 @@ test.describe("真实 AG-UI 会话常驻", () => {
         .__openopsGrowthObserver?.disconnect();
     });
   });
+
+  test("定界面板：完成后出卡 → reload → /state 恢复且 revision 不回退", async ({ page }) => {
+    test.setTimeout(240_000);
+    const question = `定界面板持久化验收-${Date.now()}`;
+
+    await page.goto("./");
+    await expect(page.getByText("实时", { exact: true })).toBeVisible({ timeout: 30_000 });
+    await page.getByTestId("new-conversation").click();
+    await page.waitForURL(/\/agent-teams\/[^/]+\/chat\?run_id=/, { timeout: 30_000 });
+    await expect(page.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+      timeout: 30_000,
+    });
+
+    const input = await waitForComposerIdle(page);
+    await sendFromComposer(page, input, question);
+    await expect(page.getByText(question, { exact: true })).toBeVisible();
+
+    // 真实链路是否出卡取决于模型是否调用 update_diagnosis_board（漏调=空态骨架，不造假）。
+    // 卡片没出现时跳过持久化断言而不判失败——stub 全链路（OPENOPS_DEMO_BOARD_STEP=1）必出卡。
+    const card = page.getByTestId("rca-card");
+    const appeared = await card.waitFor({ state: "visible", timeout: 150_000 })
+      .then(() => true)
+      .catch(() => false);
+    test.skip(!appeared, "本轮模型未上报定界面板（未调用 update_diagnosis_board），跳过持久化断言");
+
+    // 等 revision 稳定（任务终态后不再增长），记录基线。
+    await expect.poll(async () => {
+      const cancelTask = page.getByRole("button", { name: "取消任务" });
+      return await cancelTask.isVisible().catch(() => false) ? "running" : "settled";
+    }, { timeout: 150_000 }).toBe("settled");
+    const revisionBefore = Number(await card.getAttribute("data-rca-revision"));
+    expect(revisionBefore).toBeGreaterThanOrEqual(1);
+
+    // reload → GET /state 顶层 rca 恢复：卡片仍在「定界」tab，revision 不回退。
+    await page.reload();
+    await expect(page.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("tab", { name: "定界" })).toHaveAttribute("aria-selected", "true", {
+      timeout: 30_000,
+    });
+    await expect(card).toBeVisible({ timeout: 30_000 });
+    const revisionAfter = Number(await card.getAttribute("data-rca-revision"));
+    expect(revisionAfter).toBeGreaterThanOrEqual(revisionBefore);
+  });
 });

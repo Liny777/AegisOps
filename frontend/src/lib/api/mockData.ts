@@ -2,6 +2,7 @@
 import type {
   Me,
   AgentInstance,
+  RcaCardData,
   WorkbenchState,
   Conversation,
   AdminTableData,
@@ -166,6 +167,8 @@ export const mockWorkbenchState = (): WorkbenchState => ({
     title: "支付延迟突增",
     phaseLabel: "定界中",
     time: "10:11",
+    revision: 4,
+    status: "in_progress",
     tiles: [
       { label: "症状", value: "下单 P99 180ms→1.4s" },
       { label: "时间窗", value: "10:02 起 · 持续 9min" },
@@ -255,6 +258,34 @@ export const mockWorkbenchState = (): WorkbenchState => ({
   ],
   currentModel: "Qwen3.5",
 });
+
+/** mock 定界完成态变体：mock send 两段式推进的第二拍（进行中 → 900ms 后闭环定格）。
+ *  五步全 done、status=concluded（后端权威信号的 mock 对位）、需确认动作已执行 →
+ *  卡片 footer 主/副按钮都应隐藏。 */
+export const mockRcaFinal = (): RcaCardData => {
+  const base = mockWorkbenchState().rca!;
+  return {
+    ...base,
+    phaseLabel: "已闭环",
+    revision: 5,
+    status: "concluded",
+    steps: base.steps.map((step) => ({ ...step, state: "done" })),
+    tiles: base.tiles.map((tile) =>
+      tile.label === "当前阶段" ? { ...tile, value: "结论 · 已闭环" } : tile),
+    currentQ: "定界完成：根因确认为 H1（Redis 连接泄漏，svc-a 未释放）。",
+    why: "重启 svc-a 后 active 连接回落、P99 恢复至 190ms，验证闭环，无需继续追问。",
+    sources: base.sources.map((source) => ({ ...source, status: "done", tone: "good" })),
+    hypotheses: [
+      { text: "H1 Redis 连接泄漏（svc-a 未释放）", tag: "已证实", tagTone: "good", conf: 0.93 },
+      { text: "H2 下游慢查询占用连接", tag: "已排除", tagTone: "neutral", conf: 0.08 },
+      { text: "H3 流量突增打满连接池", tag: "反证", tagTone: "danger", conf: 0.04 },
+    ],
+    actions: base.actions.map((action) =>
+      action.confirm ? { ...action, status: "已执行", statusTone: "good" } : action),
+    conclusion:
+      "根因 H1（连接泄漏）已确认：重启 svc-a 后 active 连接回落至 210/1000、P99 恢复 190ms。建议跟进短期（连接回收配置）与长期（饱和告警 + 自动扩容）加固项。",
+  };
+};
 
 /* ------------------------- 实例配置（30.5） ------------------------- */
 export const mockModels = [

@@ -578,10 +578,6 @@
   padding-block: 18px;
 }
 
-.oa-chat-rca-dock {
-  padding: 14px 24px 10px;
-}
-
 .oa-fallback-chat-list {
   gap: 14px;
   padding-inline: 24px;
@@ -640,12 +636,7 @@
   outline-offset: 2px;
 }
 
-/* RCA / HITL 的数据区在窄屏降列，避免每格只剩几个字。 */
-.oa-rca-tiles {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-}
-
-.oa-rca-facts,
+/* HITL 的数据区在窄屏降列，避免每格只剩几个字（RCA 规则已随卡片迁往 RcaCard.css）。 */
 .oa-hitl-facts {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -659,11 +650,6 @@
 }
 
 @media (max-width: 720px) {
-  .oa-rca-tiles {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .oa-rca-facts,
   .oa-hitl-facts {
     grid-template-columns: minmax(0, 1fr);
   }
@@ -680,10 +666,6 @@
 
   .oa-fallback-chat-list {
     padding-inline: 12px;
-  }
-
-  .oa-chat-rca-dock {
-    padding: 10px 12px 8px;
   }
 
   .oa-tool-call-group-toggle {

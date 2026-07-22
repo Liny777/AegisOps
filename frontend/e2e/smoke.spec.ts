@@ -15,7 +15,8 @@ test("对话工作台：多 Agent 轮次、双视图与历史分页", async ({ p
   await page.goto("/");
   await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("tab", { name: "全部动态" })).toBeVisible();
-  await expect(page.getByRole("tab", { name: "子 Agent" })).toHaveAttribute("aria-selected", "true");
+  // 定界优先：mock 自带定界数据，载入自动落在「定界」tab（子 Agent 自动切换不再抢占）
+  await expect(page.getByRole("tab", { name: "定界" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "子 Agent" }).click();
   await expect(page.getByText(/子 Agent 编排 · 2 轮/)).toBeVisible();
   await expect(page.getByRole("button", { name: /第 2 轮/ })).toHaveAttribute("aria-expanded", "true");
@@ -37,7 +38,9 @@ test("对话工作台：多 Agent 轮次、双视图与历史分页", async ({ p
   await expect(page.getByText(/dom-secret-must-not-render|dom-cookie-must-not-render/)).toHaveCount(0);
   await expect(page.getByPlaceholder(/描述你的排障任务/)).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("tab", { name: "子 Agent" })).toHaveAttribute("aria-selected", "true");
+  // 刷新后 manualTabChoice 复位 → 回到默认「定界」tab；技术/业务视图偏好仍持久化
+  await expect(page.getByRole("tab", { name: "定界" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "子 Agent" }).click();
   await expect(page.getByRole("button", { name: "技术", exact: true }).first()).toHaveAttribute("aria-pressed", "true");
 });
 
@@ -146,10 +149,14 @@ test("紧凑消息：复制按钮可用，窄屏 RCA/HITL 自动降列", async (
   await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toContain("初步定界");
 
   await page.setViewportSize({ width: 700, height: 900 });
-  await expect.poll(() => page.locator(".oa-rca-tiles").evaluate((el) =>
+  // RCA 卡挂在右侧面板「定界」tab（默认选中）：窄屏 overlay 面板容器 420px（<520px）
+  // → 容器查询降列 tiles 2 列 / facts 1 列；HITL 卡仍在对话流，按视口媒体查询降列。
+  const rail = page.getByLabel("活动 · 调查时间线");
+  await expect(rail.locator(".oa-rca-tiles")).toBeVisible();
+  await expect.poll(() => rail.locator(".oa-rca-tiles").evaluate((el) =>
     getComputedStyle(el).gridTemplateColumns.split(" ").length,
   )).toBe(2);
-  await expect.poll(() => page.locator(".oa-rca-facts").evaluate((el) =>
+  await expect.poll(() => rail.locator(".oa-rca-facts").evaluate((el) =>
     getComputedStyle(el).gridTemplateColumns.split(" ").length,
   )).toBe(1);
   await expect.poll(() => page.locator(".oa-hitl-facts").evaluate((el) =>

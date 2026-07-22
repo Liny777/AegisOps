@@ -106,6 +106,8 @@ export interface RcaCardData {
   phaseLabel: string;
   time?: string;
   revision?: number;
+  /** 完成态唯一权威信号（后端派生）；前端不得用 steps 全 done 自行推断闭环。 */
+  status?: "in_progress" | "concluded";
   tiles: RcaTile[];
   steps: RcaStep[];
   currentQ: string;

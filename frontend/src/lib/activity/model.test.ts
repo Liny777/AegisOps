@@ -384,3 +384,25 @@ test("空批次进入历史派发，历史页 prepend 后保留游标与去重",
   assert.equal(merged.nextCursor, "c0");
   assert.equal(merged.hasMore, false);
 });
+
+test("rca.updated 正常进活动线（回归保护：定界面板事件不得被可见性/诊断过滤误伤）", () => {
+  const events = mergeActivityEvents([], [{
+    event_id: "rca-1",
+    event_type: "openops.rca.updated",
+    agent_run_id: "run-1",
+    task_id: "task-1",
+    sequence: 6,
+    occurred_at: "2026-07-14T02:02:00Z",
+    message: "定界面板已更新（第 2 步 · 证据）",
+    payload_redacted_json: { revision: 2, status: "in_progress", agent_key: "main" },
+  }], "live");
+
+  assert.equal(events.length, 1);
+  assert.equal(events[0].eventType, "openops.rca.updated");
+  assert.equal(events[0].message, "定界面板已更新（第 2 步 · 证据）");
+  // 不属于装配缺口诊断事件：「全部动态」不得过滤掉
+  assert.equal(isOpsDiagnosticEvent(events[0]), false);
+  // 主 Agent 事件：不进子 Agent 轨，留在主控/全局动态里
+  const rail = projectRailModel({ events, delegations: [], nextCursor: null, hasMore: false });
+  assert.deepEqual(rail.generalEvents.map((event) => event.eventId), ["rca-1"]);
+});

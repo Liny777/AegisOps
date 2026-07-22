@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { ActivityEvent, ActivityGroup, ActivityNode, DispatchRound } from "../lib/api/types";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import type { ActivityEvent, ActivityGroup, ActivityNode, DispatchRound, RcaCardData } from "../lib/api/types";
 import { color, radius, toneColor } from "../theme/tokens";
 import { Icon } from "../ui";
+import { RcaCard, type RcaCardAction } from "./RcaCard";
 import { RoundBlock, type WorkerViewMode } from "./activity/RoundBlock";
 import { eventIcon, eventSummary, eventTitle, eventTone, eventTool, isOpsDiagnosticEvent } from "./activity/eventPresentation";
 import { formatClock, orderedRounds } from "./activity/visuals";
@@ -9,7 +10,10 @@ import "./activity/ActivityRail.css";
 
 const WORKER_VIEW_KEY = "openops.workerView";
 
-type RailTab = "all" | "subagents";
+type RailTab = "rca" | "all" | "subagents";
+
+/** 五步法固定骨架（与后端 rca_contract.derive_steps 的 label 同源）；空态骨架用。 */
+const RCA_STEP_LABELS = ["范围", "证据", "假设", "验证", "结论"] as const;
 
 export interface ActivityRailProps {
   /** 旧投影兼容入口；接入统一 reducer 后传「全部动态」分组。 */
@@ -21,6 +25,18 @@ export interface ActivityRailProps {
   hasMore?: boolean;
   loadingMore?: boolean;
   onLoadMore?: () => void | Promise<void>;
+  /** 定界面板数据（openops.rca.updated / /state 恢复）；无数据时定界 tab 显示空态骨架。 */
+  rca?: RcaCardData;
+  /** 任务运行中且未闭环：卡片 active 步与相位 chip 脉冲。 */
+  rcaLive?: boolean;
+  /** false = 卡片按钮禁用（任务运行中 / 程序化发送挂起）。 */
+  rcaActionsEnabled?: boolean;
+  /** 卡片按钮回调（以用户身份发消息）；缺省（run closed）时卡片 footer 不渲染。 */
+  onRcaAction?: (action: RcaCardAction) => void;
+  /** 用户拖拽后的面板宽度（px）；null/缺省 = CSS 默认 clamp(420px, 42vw, 760px)。 */
+  width?: number | null;
+  /** 左缘拖拽手柄回调；缺省不渲染手柄。 */
+  onResize?: (width: number) => void;
 }
 
 function GeneralActivityEvents({ events: rawEvents }: { events: ActivityEvent[] }) {
@@ -183,6 +199,28 @@ function ActivityNodes({ groups }: { groups: ActivityGroup[] }) {
   );
 }
 
+/** 定界空态：五步全灰骨架 stepper + 引导文案（对齐 .oa-activity-empty 风格）。
+ *  模型漏调上报工具时就停在这里——不做任何服务端/前端伪造。 */
+function RcaEmptyState() {
+  return (
+    <div className="oa-activity-empty oa-rca-empty" data-testid="rca-empty">
+      <div className="oa-rca-empty-stepper" aria-hidden>
+        {RCA_STEP_LABELS.map((label, index) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", flex: index < RCA_STEP_LABELS.length - 1 ? 1 : "0 0 auto" }}>
+            <div className="oa-rca-empty-step">
+              <span>{index + 1}</span>{label}
+            </div>
+            {index < RCA_STEP_LABELS.length - 1 ? <div className="oa-rca-empty-line" /> : null}
+          </div>
+        ))}
+      </div>
+      <Icon name="report-search" size={24} color={color.textFaint} />
+      <strong>定界尚未开始</strong>
+      <span>Agent 按五步法（范围 → 证据 → 假设 → 验证 → 结论）推进定界时，这里会实时点亮当前步骤，并沉淀成可交互的定界卡片。</span>
+    </div>
+  );
+}
+
 /** 新批次契约尚未恢复的兼容展示；不会用时间间隔猜测轮次。 */
 function LegacySubagentGroups({ groups }: { groups: ActivityGroup[] }) {
   const subagentGroups = groups.filter((group) => group.roleKey);
@@ -213,19 +251,51 @@ export function ActivityRail({
   hasMore = false,
   loadingMore = false,
   onLoadMore,
+  rca,
+  rcaLive = false,
+  rcaActionsEnabled = true,
+  onRcaAction,
+  width = null,
+  onResize,
 }: ActivityRailProps) {
   const ordered = useMemo(() => orderedRounds(rounds), [rounds]);
   const hasLegacySubagents = groups.some((group) => Boolean(group.roleKey));
   const hasSubagents = ordered.length > 0 || hasLegacySubagents;
-  const [tab, setTab] = useState<RailTab>(() => (hasSubagents ? "subagents" : "all"));
+  // 定界优先：挂载即有定界数据（恢复/mock）直接落在定界 tab。
+  const [tab, setTab] = useState<RailTab>(() => (rca ? "rca" : hasSubagents ? "subagents" : "all"));
   const [workerView, setWorkerView] = useState<WorkerViewMode>(() => loadWorkerView());
+  const [resizing, setResizing] = useState(false);
   const manualTabChoice = useRef(false);
   const previouslyHadSubagents = useRef(hasSubagents);
+  const previouslyHadRca = useRef(Boolean(rca));
+  const railRef = useRef<HTMLElement | null>(null);
+  // 未读基线：挂载时已有的 revision 不算未读，只对之后的更新亮点。
+  const [seenRcaRevision, setSeenRcaRevision] = useState<number>(() => rca?.revision ?? 0);
 
+  // 定界数据从无到有且用户未手动选过 tab：自动切「定界」。
   useEffect(() => {
-    if (!previouslyHadSubagents.current && hasSubagents && !manualTabChoice.current) setTab("subagents");
+    if (!previouslyHadRca.current && rca && !manualTabChoice.current) setTab("rca");
+    previouslyHadRca.current = Boolean(rca);
+  }, [rca]);
+
+  // 子 Agent 自动切换加 tab==="all" 前置：定界优先，不互抢。!rca 防同一 commit 内
+  // 定界与子 Agent 同时从无到有时（mock 初始 hydrate 即如此）两个 effect 先后 setTab 互踩。
+  useEffect(() => {
+    if (!previouslyHadSubagents.current && hasSubagents && !manualTabChoice.current && tab === "all" && !rca) {
+      setTab("subagents");
+    }
     previouslyHadSubagents.current = hasSubagents;
-  }, [hasSubagents]);
+  }, [hasSubagents, tab, rca]);
+
+  // 停在定界 tab 即视为已读；离开后 revision 变化才亮未读徽标。基线记「最后已读的
+  // revision」而非 Math.max 高水位：同 run 第二次定界任务 revision 从 1 重计，高水位
+  // 会把新任务的全部更新永久判成已读。Workbench 守卫保证展示值只前进或换任务重置，
+  // 不会来回摆，因此「不等即未读」成立。
+  const rcaRevision = rca?.revision ?? 0;
+  useEffect(() => {
+    if (tab === "rca") setSeenRcaRevision(rcaRevision);
+  }, [tab, rcaRevision]);
+  const rcaUnread = Boolean(rca) && tab !== "rca" && rcaRevision !== seenRcaRevision;
 
   const switchTab = (next: RailTab) => {
     manualTabChoice.current = true;
@@ -237,14 +307,54 @@ export function ActivityRail({
     saveWorkerView(mode);
   };
 
+  // 左缘拖拽调宽：宽度 = 面板右缘 - 指针位置；clamp 交给 Workbench（与持久化一处收口）。
+  const startResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!onResize) return;
+    event.preventDefault();
+    const right = railRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+    setResizing(true);
+    const onMove = (moveEvent: PointerEvent) => onResize(right - moveEvent.clientX);
+    const onUp = () => {
+      setResizing(false);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [onResize]);
+
   return (
-    <aside className="openops-activity-rail" aria-label="活动 · 调查时间线">
+    <aside
+      ref={railRef}
+      className={`openops-activity-rail${resizing ? " is-resizing" : ""}`}
+      aria-label="活动 · 调查时间线"
+      style={width != null ? { "--oa-rail-width": `${width}px` } as CSSProperties : undefined}
+    >
+      {onResize ? (
+        <div
+          className="oa-rail-resize-handle"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="拖拽调整面板宽度"
+          onPointerDown={startResize}
+        />
+      ) : null}
       <div className="oa-activity-title">
         <Icon name="timeline-event" size={16} color={color.brand} />
         <span>活动 · 调查时间线</span>
       </div>
 
       <div className="oa-activity-tabs" role="tablist" aria-label="活动类型">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "rca"}
+          className={tab === "rca" ? "is-active" : ""}
+          onClick={() => switchTab("rca")}
+        >
+          定界
+          {rcaUnread ? <span className="oa-tab-dot" aria-label="有新的定界更新" /> : null}
+        </button>
         <button
           type="button"
           role="tab"
@@ -267,7 +377,11 @@ export function ActivityRail({
       </div>
 
       <div className="oa-activity-scroll" role="tabpanel">
-        {tab === "all" ? (
+        {tab === "rca" ? (
+          rca
+            ? <RcaCard rca={rca} live={rcaLive} actionsEnabled={rcaActionsEnabled} onAction={onRcaAction} />
+            : <RcaEmptyState />
+        ) : tab === "all" ? (
           generalEvents.length ? <GeneralActivityEvents events={generalEvents} /> : <ActivityNodes groups={groups} />
         ) : ordered.length ? (
           <div className="oa-round-list">

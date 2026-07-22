@@ -182,10 +182,20 @@ export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
   };
 }
 
-/** 后端 rca payload（编排器产）→ RcaCardData（形状即为前端模型，补 time）。 */
-export function projectRca(p: Record<string, unknown> | null | undefined): RcaCardData | undefined {
-  if (!p || !p.title) return undefined;
-  return { ...(p as unknown as RcaCardData), time: hhmm(new Date().toISOString().replace("T", " ").slice(0, 16) + ":00") || undefined };
+/** 后端 rca payload（编排器产）→ RcaCardData（形状即为前端模型，补 time）。
+ *  occurredAt 用**事件时刻**（rca.updated 的 occurred_at），缺省（/state 恢复）保留
+ *  payload 自带 time，两者皆无才退回客户端时钟。 */
+export function projectRca(
+  p: Record<string, unknown> | null | undefined,
+  occurredAt?: string,
+): RcaCardData | undefined {
+  const steps = (p as { steps?: unknown } | null | undefined)?.steps;
+  if (!p || !Array.isArray(steps) || !steps.length) return undefined;
+  const data = p as unknown as RcaCardData;
+  return {
+    ...data,
+    time: (occurredAt ? hhmm(occurredAt) : data.time ?? hhmm(new Date().toISOString())) || undefined,
+  };
 }
 
 /** 后端实例行 → 前端 AgentInstance。wsNames = oModel workspace id→名称映射
