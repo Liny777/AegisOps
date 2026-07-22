@@ -1,9 +1,10 @@
-/* 真双屏宽面板：默认 clamp(420px, 42vw, 760px)（RcaCard 实测 ~420px 不横滚），
- * 拖拽后 Workbench 经 --oa-rail-width 注入用户宽度（同区间 clamp + localStorage 持久化）。
+/* 真双屏宽面板：默认占内容区（对话+右栏 flex 行）的 1/3——对话区自然占 2/3（用户拍板）；
+ * 下限 420px（时间线实测 ~420px 不横滚）、上限 760px（对话区不被挤瘦）。
+ * 拖拽后 Workbench 经 --oa-rail-width 注入用户宽度（[420,760] clamp + localStorage 持久化）。
  * container-type 供 RcaCard.css 按面板实际宽度（而非视口）自适应列数。 */
 .openops-activity-rail {
   position: relative;
-  width: var(--oa-rail-width, clamp(420px, 42vw, 760px));
+  width: var(--oa-rail-width, clamp(420px, 33.333%, 760px));
   flex: 0 0 auto;
   min-width: 0;
   border-left: 1px solid #e6e8ec;

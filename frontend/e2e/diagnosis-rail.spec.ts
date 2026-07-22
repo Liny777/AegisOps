@@ -24,11 +24,13 @@ test("载入即诊断 tab + 宽面板 + 进度行当前步正确", async ({ page
   // 诊断优先：mock 自带诊断数据，载入自动落在「诊断」tab
   await expect(rcaTab(page)).toHaveAttribute("aria-selected", "true");
   await expect(rcaCard(page)).toBeVisible();
-  // 宽面板：默认 clamp(420px, 42vw, 760px)；1280 视口 → 42vw ≈ 537.6px
+  // 宽面板：默认占内容区（对话+右栏 flex 行）1/3、下限 420px 上限 760px——对话区占 2/3。
+  // 期望值按 rail 父容器实宽推算，不依赖具体视口/侧栏宽度。
   const box = await rail(page).boundingBox();
   expect(box).toBeTruthy();
-  expect(box!.width).toBeGreaterThan(500);
-  expect(box!.width).toBeLessThan(580);
+  const rowWidth = await rail(page).evaluate((el) => el.parentElement!.getBoundingClientRect().width);
+  const expected = Math.min(760, Math.max(420, rowWidth / 3));
+  expect(Math.abs(box!.width - expected)).toBeLessThan(3);
   // 进度行：demo 处于第 4 步（验证），role=status 可读 + 可见文本 4/5
   await expect(progress(page)).toHaveAttribute("aria-label", "诊断进度：第4步 · 验证");
   await expect(progress(page)).toHaveText(/诊断进度 4\/5/);
