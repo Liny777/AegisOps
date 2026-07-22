@@ -71,7 +71,9 @@ TEMPLATE_CONTENT = {
     "sub_agents": [
         {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险，只做查询不做变更。",
          "skills": ["inspection"], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
-        {"key": "diagnose", "label": "定界", "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行。",
+        {"key": "diagnose", "label": "定界",
+         "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行；按五步法定界时，"
+                 "每进入或完成一步调用 update_diagnosis_board 上报进度与阶段产出。",
          "skills": [], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
         {"key": "recover", "label": "恢复", "role": "执行受控恢复动作：先核对目标与影响面，恢复类工具调用需人工批准后执行。",
          "skills": [], "mcp_tools": ["recover_execute"], "max_iters": 10, "tool_result_limit": 24000},

@@ -148,7 +148,7 @@ def _copy_scalar(source: dict[str, Any], target: dict[str, Any], key: str, *, li
         target[key] = value
 
 
-_RCA_SCALARS = ("revision", "title", "phaseLabel", "currentQ", "why", "conclusion")
+_RCA_SCALARS = ("revision", "title", "phaseLabel", "currentQ", "why", "conclusion", "status", "board_task_id")
 _RCA_LIST_FIELDS: dict[str, tuple[str, ...]] = {
     "tiles": ("label", "value"),
     "steps": ("num", "label", "state"),

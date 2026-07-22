@@ -1,36 +1,46 @@
-// 外链自动发问 · CopilotChat 路径 bridge（老项目 AutoSendBridge 的 v2 对位）。
+// 程序化发问 · CopilotChat 路径 bridge（老项目 AutoSendBridge 的 v2 对位）。
 //
 // 挂在 <CopilotKit> 内，经 useAgent 拿共享 AbstractAgent，程式化 addMessage + runAgent
 // ——与用户在输入框敲回车等效，消息即时进面板且流式回复正常渲染。
 //
 // 关键守卫（82e40e6 教训"发错会话"的 v2 版）：只在 agent.threadId === 本面板 runId 时才发。
 // CopilotChat 挂载后才把 threadId 绑到 agent，bridge effect 可能先跑——轮询短等而非直发。
-// threadId 做幂等键：同线程只发一次，StrictMode 双跑/重挂不重发。
+// 幂等键（programmaticSendKey）：外链场景（无 nonce）同线程只发一次；卡片按钮场景每次
+// 点击带新 nonce 可重复触发，但同一 nonce 在 StrictMode 双跑/重挂时仍只发一次。
 import { useEffect, useRef } from "react";
 import { useAgent } from "@copilotkit/react-core/v2";
+import {
+  programmaticMessageId,
+  programmaticSendKey,
+  type PendingSend,
+} from "./programmaticSend";
 
 export function CopilotAutoSend({
   question,
   threadId,
   agentId,
+  nonce,
   onSent,
 }: {
   question: string | null;
   threadId: string;
   agentId: string;
+  /** 缺省=外链单次语义（原行为不变）；卡片按钮传每次点击的新 nonce。 */
+  nonce?: string;
   onSent: () => void;
 }) {
   const { agent } = useAgent({ agentId });
   const sentForRef = useRef<string | null>(null);
+  const sendKey = programmaticSendKey(threadId, nonce);
 
   useEffect(() => {
     if (!question || !agent) return;
-    if (sentForRef.current === threadId) return;
+    if (sentForRef.current === sendKey) return;
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const started = Date.now();
     const trySend = () => {
-      if (cancelled || sentForRef.current === threadId) return;
+      if (cancelled || sentForRef.current === sendKey) return;
       const bound = (agent as { threadId?: string }).threadId;
       if (bound !== threadId) {
         // CopilotChat 尚未把 threadId 绑上 agent：短轮询等就绪；超时放弃并清 pending（宁丢勿发错会话）
@@ -42,11 +52,11 @@ export function CopilotAutoSend({
         timer = setTimeout(trySend, 100);
         return;
       }
-      sentForRef.current = threadId;
+      sentForRef.current = sendKey;
       console.info("[autosend] appending question to copilot thread", threadId);
       void (async () => {
         try {
-          agent.addMessage({ id: `autosend-${threadId}`, role: "user", content: question });
+          agent.addMessage({ id: programmaticMessageId(threadId, nonce), role: "user", content: question });
           await agent.runAgent();
           console.info("[autosend] copilot runAgent completed");
         } catch (e) {
@@ -61,7 +71,30 @@ export function CopilotAutoSend({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [question, threadId, agent, onSent]);
+  }, [question, threadId, agent, nonce, sendKey, onSent]);
 
   return null;
+}
+
+/** 卡片按钮等程序化发送的薄包装：语义化 props（PendingSend），行为全走 CopilotAutoSend。 */
+export function CopilotProgrammaticSend({
+  send,
+  threadId,
+  agentId,
+  onSent,
+}: {
+  send: PendingSend;
+  threadId: string;
+  agentId: string;
+  onSent: () => void;
+}) {
+  return (
+    <CopilotAutoSend
+      question={send.text}
+      nonce={send.nonce}
+      threadId={threadId}
+      agentId={agentId}
+      onSent={onSent}
+    />
+  );
 }

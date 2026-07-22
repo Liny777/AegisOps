@@ -1,0 +1,30 @@
+/* RCA 定界卡的自适应布局（自 CopilotChatPanel.css 迁入——卡片已从聊天 dock 移到
+ * 右侧宽面板「定界」tab，样式随组件走）。
+ * 列数按**容器**（活动面板声明 container-type: inline-size）而非视口自适应：
+ * 宽面板恢复 4 列 tiles / 双列 facts，窄拖（<520px）降 2 列 / 1 列。 */
+
+.oa-rca-tiles {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.oa-rca-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container (max-width: 519px) {
+  .oa-rca-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oa-rca-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* stepper 常驻：面板滚动时进度不离屏（卡片根不能 overflow:hidden，否则 sticky 失效）。 */
+.oa-rca-stepper {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}

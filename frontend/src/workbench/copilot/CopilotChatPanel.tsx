@@ -15,7 +15,8 @@ import { Icon } from "../../ui";
 import { color, radius } from "../../theme/tokens";
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
-import { CopilotAutoSend } from "./CopilotAutoSend";
+import { CopilotAutoSend, CopilotProgrammaticSend } from "./CopilotAutoSend";
+import type { PendingSend } from "./programmaticSend";
 import { ChatPresetsProvider } from "./CopilotPresetQuestions";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
@@ -45,6 +46,8 @@ export function CopilotChatPanel({
   blockedMessage,
   autoQuestion,
   onAutoSent,
+  pendingSend,
+  onPendingSent,
   onOpenOps,
   onRetryConnection,
 }: {
@@ -61,6 +64,10 @@ export function CopilotChatPanel({
   /** 外链 ?q= 带入的待发问题（仅外链落地首个面板非空）；发送/放弃后经 onAutoSent 清除。 */
   autoQuestion?: string | null;
   onAutoSent?: () => void;
+  /** 定界卡片按钮等程序化发送（右栏在 CopilotKit Provider 外，必须经此状态桥）；
+   *  发送/放弃后经 onPendingSent 清除。 */
+  pendingSend?: PendingSend | null;
+  onPendingSent?: () => void;
   /** 官方 CopilotChat 所消费的同一条 AG-UI 流中的 openops.* CUSTOM 事件。 */
   onOpenOps?: (event: OpenOpsEvent) => void;
   /** connect 恢复失败时重挂当前 run 的 Provider。 */
@@ -129,6 +136,14 @@ export function CopilotChatPanel({
           true,
         ) ? (
           <CopilotAutoSend question={autoQuestion} threadId={runId} agentId={AGENT_ID} onSent={onAutoSent} />
+        ) : null}
+        {/* 卡片按钮的程序化发送：与外链同一 sender 基建（threadId 守卫/10s 超时），nonce 幂等。 */}
+        {!readOnly && pendingSend && onPendingSent && shouldMountCopilotAutoSend(
+          blocked || connectionStatus !== "ready",
+          pendingSend.text,
+          true,
+        ) ? (
+          <CopilotProgrammaticSend send={pendingSend} threadId={runId} agentId={AGENT_ID} onSent={onPendingSent} />
         ) : null}
       </MermaidFullscreenBoundary>
     </CopilotThreadGate>

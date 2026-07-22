@@ -40,6 +40,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                                   started_msg="巡检 · 指标查询",
                                   succeeded_msg="P99 / 错误率 / Redis 连接数已取回")
         st.rca = _rca(1, "定界中")
+        st.rca_source = "demo"  # A4：mock 剧本面板显式标 demo（与真流程 model 面板双向隔离）
         await _emit(st, run, "openops.rca.updated", message="RCA 面板更新（定界中）", payload=st.rca)
         if not await _sleep(st):
             return await _finish_cancel(st, run)

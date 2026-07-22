@@ -164,6 +164,40 @@ def test_activity_payload_is_allowlisted_and_credentials_are_redacted(client):
     assert '"stdout"' not in exposed and '"stderr"' not in exposed
 
 
+def test_rca_updated_payload_keeps_status_and_steps_strips_unknown_and_redacts():
+    """rca.updated 白名单：status（完成态判定的后端权威信号）与 steps 保留；未知键剥除；凭证打码。"""
+    from infra.redact import sanitize_activity_payload
+
+    payload = {
+        "revision": 4,
+        "title": "支付下单 P99 突增",
+        "status": "concluded",
+        "phaseLabel": "已定界",
+        "board_task_id": "tsk_leader",
+        "steps": [{"num": 5, "label": "结论", "state": "done", "evil": "<script>alert(1)</script>"}],
+        "conclusion": "根因 H1；token=super-secret-value",
+        "facts": [{"text": "P99 1.4s", "password": "hunter2-value"}],
+        "internal_note": "must-not-leak",
+        "rca_source": "model",
+    }
+    out = sanitize_activity_payload("openops.rca.updated", payload)
+
+    assert out["status"] == "concluded" and out["revision"] == 4 and out["phaseLabel"] == "已定界"
+    assert out["board_task_id"] == "tsk_leader"  # 前端 revision 分段键（owner 身份）必须透传
+    # 列表项按字段白名单裁剪：未知键（含可执行内容）不落地
+    assert out["steps"] == [{"num": 5, "label": "结论", "state": "done"}]
+    assert out["facts"] == [{"text": "P99 1.4s"}]
+    encoded = json.dumps(out, ensure_ascii=False)
+    for leaked in ("internal_note", "must-not-leak", "rca_source", "hunter2-value",
+                   "super-secret-value", "<script>"):
+        assert leaked not in encoded
+    assert "token=[REDACTED]" in out["conclusion"]  # 凭证样式文本打码后保留语义
+
+    # status 仅是白名单标量，非法类型（对象注入）不透传
+    weird = sanitize_activity_payload("openops.rca.updated", {"status": {"nested": "x"}, "revision": 1})
+    assert "status" not in weird and weird["revision"] == 1
+
+
 def test_restart_can_restore_delegation_context_for_approval_events(client):
     from infra.repositories import delegations
     from runtime.emit import activity_context_of_task

@@ -100,6 +100,40 @@ def test_agui_agentscope_stub_streams_reasoning_card(client, monkeypatch):
     assert types[-1] == "RUN_FINISHED"
 
 
+def test_agui_stub_board_full_chain_emits_monotonic_rca_until_concluded(client, monkeypatch):
+    """OPENOPS_DEMO_BOARD_STEP=1 stub 全链路：update_diagnosis_board → rca_board 状态机 →
+    openops.rca.updated CUSTOM ≥2 次、revision 严格单调、末次 status=concluded 且 steps 合法；
+    demo 剧本被模型面板接管后，完结不再用「根因 H1」demo 文案、工具提交的 conclusion 不被覆盖。"""
+    import pytest as _pytest
+
+    _pytest.importorskip("agentscope")  # 本机未装 agentscope 时跳过（见既有环境性失败清单）
+    monkeypatch.setenv("OPENOPS_RUNTIME", "agentscope")
+    monkeypatch.setenv("OPENOPS_DEMO_BOARD_STEP", "1")
+    _annotate_recover_no_ask(client)
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    evs = _collect_events(client, run["agent_run_id"], _run_input())
+
+    boards = [e["value"]["payload_redacted_json"] for e in evs
+              if e["type"] == "CUSTOM" and e["name"] == "openops.rca.updated"]
+    assert len(boards) >= 2
+    revs = [b["revision"] for b in boards]
+    assert revs == sorted(revs) and len(set(revs)) == len(revs), revs  # 服务端自增：严格单调不重号
+
+    last = boards[-1]
+    assert last["status"] == "concluded"
+    assert [s["num"] for s in last["steps"]] == [1, 2, 3, 4, 5]
+    assert all(s["state"] == "done" for s in last["steps"])
+    assert {s["label"] for s in last["steps"]} == {"范围", "证据", "假设", "验证", "结论"}
+    # 工具提交的定界结论原样保留（不被 _final_text 覆盖）；demo 剧本内容已被丢弃
+    assert last["conclusion"].startswith("已确认 H1（Redis 连接泄漏）")
+    assert last["title"] == "支付下单 P99 突增"
+
+    done = next(e for e in evs if e["type"] == "CUSTOM" and e["name"] == "openops.task.completed")
+    assert done["value"]["message"] == "任务完成"  # rca_source=model：不再用 demo「根因 H1」完结文案
+    assert [e["type"] for e in evs][-1] == "RUN_FINISHED"
+
+
 def test_agui_tool_call_pairing(client):
     """TOOL_CALL_START/END 按调用配对（toolCallId 一致）。"""
     _annotate_recover_no_ask(client)

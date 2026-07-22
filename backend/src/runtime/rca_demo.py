@@ -13,6 +13,8 @@ def rca(revision: int, phase: str, extra: dict[str, Any] | None = None) -> dict[
         "revision": revision,
         "title": "支付延迟突增",
         "phaseLabel": phase,
+        # status 与真流程（rca_board 派生）同形：revision 3 = demo 剧本「已闭环」
+        "status": "concluded" if revision >= 3 else "in_progress",
         "tiles": [
             {"label": "症状", "value": "下单 P99 180ms→1.4s"},
             {"label": "时间窗", "value": "10:02 起 · 持续 9min"},
@@ -23,7 +25,7 @@ def rca(revision: int, phase: str, extra: dict[str, Any] | None = None) -> dict[
             {"num": 1, "label": "范围", "state": "done"},
             {"num": 2, "label": "证据", "state": "done" if revision >= 2 else "active"},
             {"num": 3, "label": "假设", "state": "done" if revision >= 2 else "waiting"},
-            {"num": 4, "label": "验证", "state": "active" if revision >= 2 else "waiting"},
+            {"num": 4, "label": "验证", "state": "done" if revision >= 3 else ("active" if revision >= 2 else "waiting")},
             {"num": 5, "label": "结论", "state": "done" if revision >= 3 else "waiting"},
         ],
         "currentQ": "Redis 连接饱和是慢查询导致，还是连接泄漏导致？",

@@ -18,6 +18,9 @@ class TaskState:
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     orchestrator: asyncio.Task[None] | None = None
     rca: dict[str, Any] | None = None  # RCA 快照（/state 恢复用）
+    # 面板数据来源（A4 双向守卫）："demo"=剧本（rca_demo）/"model"=模型自报（update_diagnosis_board）。
+    # model 一经接管，demo 工具不得覆写；model 首调时丢弃 demo 内容从骨架起步（revision 仍接续）。
+    rca_source: str | None = None
     selected_model: str | None = None
     model_spec: dict[str, Any] | None = None  # 平台模型元数据（无 API Key）；agentscope 后端据此建真模型/回退 stub
     scope_ctx: dict[str, Any] | None = None  # ScopeContext（effective_appids/snapshot_id/revision）；Tool Gateway 校验用

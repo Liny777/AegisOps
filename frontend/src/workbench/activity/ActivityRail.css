@@ -1,12 +1,38 @@
+/* 真双屏宽面板：默认 clamp(420px, 42vw, 760px)（RcaCard 实测 ~420px 不横滚），
+ * 拖拽后 Workbench 经 --oa-rail-width 注入用户宽度（同区间 clamp + localStorage 持久化）。
+ * container-type 供 RcaCard.css 按面板实际宽度（而非视口）自适应列数。 */
 .openops-activity-rail {
-  width: 320px;
-  flex: 0 0 320px;
+  position: relative;
+  width: var(--oa-rail-width, clamp(420px, 42vw, 760px));
+  flex: 0 0 auto;
   min-width: 0;
   border-left: 1px solid #e6e8ec;
   background: #fbfcfd;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  container-type: inline-size;
+  transition: width 160ms ease;
+}
+
+.openops-activity-rail.is-resizing {
+  transition: none; /* 拖拽跟手：过渡只留给程序化宽度变化 */
+}
+
+.oa-rail-resize-handle {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.oa-rail-resize-handle:hover,
+.openops-activity-rail.is-resizing .oa-rail-resize-handle {
+  background: rgba(22, 131, 255, 0.16);
 }
 .oa-activity-title {
   flex: 0 0 44px;
@@ -24,7 +50,7 @@
 .oa-activity-tabs {
   flex: 0 0 auto;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   padding: 8px 12px 7px;
   border-bottom: 1px solid #eef0f3;
@@ -71,6 +97,17 @@
   color: #1683ff;
   font-size: 9.5px;
   font-variant-numeric: tabular-nums;
+}
+
+/* 定界 tab 未读徽标：revision 领先已读基线且当前不在定界 tab 时点亮 */
+.oa-tab-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  vertical-align: 1px;
+  border-radius: 50%;
+  background: #1683ff;
 }
 
 .oa-activity-scroll {
@@ -239,6 +276,56 @@
   color: #9aa0ab;
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* 定界空态：五步全灰骨架 stepper（模型漏调上报时不造假，只给引导） */
+.oa-rca-empty {
+  gap: 9px;
+}
+
+.oa-rca-empty-stepper {
+  width: 100%;
+  max-width: 460px;
+  display: flex;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 13px 14px;
+  border: 1px solid #e6e8ec;
+  border-radius: 12px;
+  background: #fff;
+}
+
+.oa-rca-empty-step {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  color: #9aa0ab;
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.oa-rca-empty-step span {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  flex: 0 0 20px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: #e6e8ec;
+  color: #788192;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.oa-rca-empty-line {
+  flex: 1;
+  height: 2px;
+  min-width: 10px;
+  margin: 0 7px;
+  background: #e6e8ec;
 }
 
 .oa-activity-empty-inline {
@@ -659,15 +746,21 @@
     top: 56px;
     right: 0;
     bottom: 0;
-    width: min(320px, calc(100vw - 24px));
+    width: min(var(--oa-rail-width, 420px), calc(100vw - 24px));
     box-shadow: -12px 0 40px rgba(20, 24, 31, 0.18);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .openops-activity-rail {
+    transition: none !important;
+  }
+
   .openops-activity-rail *,
   .openops-activity-rail *::before,
   .openops-activity-rail *::after {
     scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
