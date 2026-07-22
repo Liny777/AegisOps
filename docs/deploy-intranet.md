@@ -89,9 +89,11 @@ sudo -u openops bash "$RELEASE/scripts/release_check.sh" \
 DATABASE_MODE=REPLACE_WITH_existing_OR_new
 case "$DATABASE_MODE" in
   existing)
-    # 存量库：先无损重命名旧对象，再补多 Agent 派发批次列，最后重放 core.sql；全部成功后才能发布新后端。
+    # 存量库：先无损重命名旧对象，再补多 Agent 派发批次列与 Agent Studio span 表，最后重放 core.sql；
+    # 全部成功后才能发布新后端。
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-ddl-object-names.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-subagent-activity.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-23-agent-studio-span.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
     ;;
   new)

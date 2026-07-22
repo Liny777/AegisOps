@@ -39,6 +39,22 @@ async def list_runs_by_user(user_id: str) -> list[dict[str, Any]]:
     )
 
 
+async def list_runs_by_user_paged(
+    user_id: str, *, limit: int, offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """Agent Studio（管理员回溯）用：**含软删** run（deleted_at 输出给调用方标记），
+    分页 + total 双查询，样板同 users.list_users_with_whitelist。"""
+    rows = await q_all(
+        """
+        select * from sre_agent_run where user_id=%(u)s
+        order by started_at desc limit %(l)s offset %(o)s
+        """,
+        {"u": user_id, "l": limit, "o": offset},
+    )
+    cnt = await q_one("select count(*) as n from sre_agent_run where user_id=%(u)s", {"u": user_id})
+    return rows, int(cnt["n"]) if cnt else 0
+
+
 async def soft_delete_run(run_id: str, updated_by: str) -> int:
     """软删（会话删除入口）：打 deleted_at 标记；get_run/list_runs_by_user 均已过滤。"""
     return await exec1(

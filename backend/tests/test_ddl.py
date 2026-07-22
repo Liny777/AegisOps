@@ -56,8 +56,9 @@ def _commented_columns(ddl: str, table: str) -> set[str]:
 def test_ddl_001_has_core_tables_plus_runtime_config():
     ddl = DDL.read_text(encoding="utf-8")
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 26  # 21 业务核心 + runtime_config + P 块三表 + D 块 delegation
+    assert len(tables) == 27  # 21 业务核心 + runtime_config + P 块三表 + D 块 delegation + studio span
     assert "sre_platform_runtime_config" in tables
+    assert "sre_agent_studio_span" in tables
     assert "sre_agent_team_tpl_version" in tables
     assert "sre_agent_team_template_version" not in tables
     assert "sre_model_asset" in tables

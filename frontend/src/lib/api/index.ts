@@ -26,6 +26,9 @@ import type {
   ModelOption,
   ActivityNode,
   ActivityEventsPage,
+  StudioRunsPage,
+  StudioRunDetail,
+  StudioMessage,
 } from "./types";
 import * as M from "./mockData";
 import { apiFetch, crid, demoIdentity } from "./client";
@@ -231,6 +234,11 @@ export interface OpenOpsApi {
   getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
   adminSaveAnnotation(toolCatalogId: string, payload: Record<string, unknown>): Promise<void>;
   adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
+  // admin Agent Studio（管理员回溯复盘）：按用户看 run 列表 → run 详情（span 原文 + 交接账本）
+  adminStudioRuns(userId: string, params?: { page?: number; pageSize?: number }): Promise<StudioRunsPage>;
+  adminStudioRunDetail(runId: string): Promise<StudioRunDetail>;
+  /** run 对话记录（用户↔助手全文；含软删 run）。mock runtime 不落对话 → 空数组。 */
+  adminStudioRunMessages(runId: string): Promise<StudioMessage[]>;
   adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
   adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
@@ -871,6 +879,18 @@ const realApi: OpenOpsApi = {
   async adminDeleteUser(userId) {
     await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   },
+  async adminStudioRuns(userId, params) {
+    const s = new URLSearchParams({ user_id: userId });
+    s.set("page", String(params?.page ?? 1));
+    s.set("page_size", String(params?.pageSize ?? 20));
+    return apiFetch<StudioRunsPage>(`/openops/v1/admin/studio/runs?${s.toString()}`);
+  },
+  async adminStudioRunDetail(runId) {
+    return apiFetch<StudioRunDetail>(`/openops/v1/admin/studio/runs/${encodeURIComponent(runId)}`);
+  },
+  async adminStudioRunMessages(runId) {
+    return apiFetch<StudioMessage[]>(`/openops/v1/admin/studio/runs/${encodeURIComponent(runId)}/messages`);
+  },
   async adminGetModelGrants(modelAssetId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
       `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
@@ -1139,6 +1159,9 @@ const mockApi: OpenOpsApi = {
   getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
+  adminStudioRuns: (userId) => delay(M.mockStudioRuns(userId)),
+  adminStudioRunDetail: (runId) => delay(M.mockStudioRunDetail(runId)),
+  adminStudioRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
   adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
   adminSaveModelGrants: () => delay(undefined as unknown as void),
   adminRegisterModel: () => delay(undefined as unknown as void),
