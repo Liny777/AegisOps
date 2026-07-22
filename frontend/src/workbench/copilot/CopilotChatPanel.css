@@ -308,12 +308,11 @@
 
 /* Streamdown 富内容工具条：CopilotKit 使用 cpk 前缀后，Streamdown 自带的无前缀
    utility class 不一定有对应 CSS；用公开语义属性补齐紧凑布局。 */
+/* 表格工具条（复制/下载 CSV·TSV·MD）内网用不到，隐去它占的一行空位。
+   注意用 display:none 而不是 Streamdown 的 controls={{table:false}}：后者会让工具条
+   整个不渲染，下面按 :first-child / :last-child 区分两个子 div 的选择器就会串位。 */
 .oa-chat-markdown div[data-streamdown="table-wrapper"] > div:first-child {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 4px;
-  min-height: 28px;
+  display: none;
 }
 
 .oa-chat-markdown div[data-streamdown="table-wrapper"] > div:last-child {
@@ -324,13 +323,22 @@
 .oa-chat-markdown [data-streamdown="table-wrapper"] table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
+  font-size: 12px;
+  border: 1px solid #dfe5ee;
 }
 
+/* 表头与数据列统一左对齐：Streamdown 默认 th 上的 text-left 是无前缀 Tailwind class，
+   本项目没有 Tailwind 不生效；不显式声明会退回浏览器默认（th 居中 / td 左对齐）而错位。 */
 .oa-chat-markdown [data-streamdown="table-header-cell"],
 .oa-chat-markdown [data-streamdown="table-cell"] {
-  padding: 7px 10px;
-  border-bottom: 1px solid #e6e8ec;
+  padding: 8px 12px;
+  border: 1px solid #e6e8ec;
+  text-align: left;
+}
+
+.oa-chat-markdown [data-streamdown="table-header-cell"] {
+  font-weight: 600;
+  background: #f8fafc;
 }
 
 .oa-chat-markdown [data-streamdown="mermaid-block"] {
