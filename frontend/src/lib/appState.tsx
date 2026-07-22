@@ -112,8 +112,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, [me?.user_id, me?.whitelisted]);
 
+  // 产品介绍页（/intro）不依赖任何业务数据：后端宕机/5xx 时也放行渲染，
+  // 不能让营销页跟着后端一起挂（bootError 整屏会顶掉全部 children）。
+  // AppProvider 在 Router 外层，只能用 location.pathname 判定（兼容 BASE_URL 文根前缀）。
+  const isIntroPath = window.location.pathname.replace(/\/+$/, "").endsWith("/intro");
+
   return (
-    bootError ? (
+    bootError && !isIntroPath ? (
       <div style={{ height: "100vh", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14, background: "#f7f8fa" }}>
         <div style={{ fontSize: 17, fontWeight: 700 }}>服务暂时不可用</div>
         <div style={{ fontSize: 13, color: "#788192", maxWidth: 420, textAlign: "center", lineHeight: 1.7 }}>{bootError}</div>
