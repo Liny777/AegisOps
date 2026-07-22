@@ -1,4 +1,4 @@
-"""诊断定界面板（update_diagnosis_board）的数据契约。
+"""诊断面板（update_diagnosis_board）的数据契约。
 
 模型只能提交短文本、枚举 tone 与 0..1 置信度；steps/phaseLabel/status 完全由服务端派生
 （rca_board 状态机），revision 由服务端自增——契约对模型提交的这些键一律拒收。与
@@ -14,7 +14,7 @@ from typing import Any
 
 
 class RcaBoardContractError(ValueError):
-    """定界面板参数不符合公开展示契约。"""
+    """诊断面板参数不符合公开展示契约。"""
 
 
 # 五步法固定标签（服务端唯一事实源；前端 stepper 直接渲染）
@@ -23,7 +23,7 @@ STEP_LABELS = ("范围", "证据", "假设", "验证", "结论")
 _TONES = {"good", "warning", "danger", "neutral"}
 # 顶层键 = 工具签名（除 step/step_completed 外全增量可选）；steps/revision/status 等派生键拒收
 _TOP_LEVEL_KEYS = {
-    "step", "step_completed", "title", "tiles", "current_question", "why",
+    "step", "step_completed", "step_summary", "title", "tiles", "current_question", "why",
     "facts", "unknowns", "sources", "hypotheses", "actions", "conclusion",
 }
 _TILE_KEYS = {"label", "value"}
@@ -98,8 +98,8 @@ def normalize_board_arguments(value: Any) -> dict[str, Any]:
     None 视为「本次未提交」，由合并器保留上次的值（增量语义）。
     """
     if not isinstance(value, dict):
-        raise RcaBoardContractError("定界面板参数必须是对象")
-    _only_keys(value, _TOP_LEVEL_KEYS, "定界面板参数")
+        raise RcaBoardContractError("诊断面板参数必须是对象")
+    _only_keys(value, _TOP_LEVEL_KEYS, "诊断面板参数")
 
     raw_step = value.get("step")
     if isinstance(raw_step, float) and raw_step.is_integer():
@@ -116,6 +116,8 @@ def normalize_board_arguments(value: Any) -> dict[str, Any]:
 
     scalars = (
         ("title", "title", 80),
+        # 当前步骤一句话小结：归属本次提交的 step（str(step) 键），由 rca_board 逐键累积
+        ("step_summary", "step_summary", 120),
         ("current_question", "currentQ", 200),
         ("why", "why", 300),
         ("conclusion", "conclusion", 1200),
@@ -201,8 +203,12 @@ def normalize_board_arguments(value: Any) -> dict[str, Any]:
     return out
 
 
-def derive_steps(step: int, completed: bool) -> list[dict[str, Any]]:
-    """服务端唯一 steps 生成器：i<step→done；i==step→completed?done:active；i>step→waiting。"""
+def derive_steps(step: int, completed: bool, summaries: dict[str, str] | None = None) -> list[dict[str, Any]]:
+    """服务端唯一 steps 生成器：i<step→done；i==step→completed?done:active；i>step→waiting。
+
+    summaries 为「步号（str）→ 一句话小结」映射（rca_board 逐键累积）；有值才输出 summary 键——
+    缺省不输出，旧快照/既有断言零影响。
+    """
     out: list[dict[str, Any]] = []
     for num, label in enumerate(STEP_LABELS, start=1):
         if num < step:
@@ -211,14 +217,18 @@ def derive_steps(step: int, completed: bool) -> list[dict[str, Any]]:
             state = "done" if completed else "active"
         else:
             state = "waiting"
-        out.append({"num": num, "label": label, "state": state})
+        item: dict[str, Any] = {"num": num, "label": label, "state": state}
+        summary = (summaries or {}).get(str(num))
+        if summary:
+            item["summary"] = summary
+        out.append(item)
     return out
 
 
 def derive_phase_label(step: int, completed: bool) -> str:
     """header 相位 chip 文案（与 steps 同源派生，不信模型自报）。"""
     if step >= 5 and completed:
-        return "已定界"
+        return "诊断完成"
     return f"第{step}步·{STEP_LABELS[step - 1]}"
 
 
@@ -227,5 +237,5 @@ def board_result_summary(board: dict[str, Any]) -> str:
     revision = board.get("revision")
     phase = board.get("phaseLabel", "")
     if board.get("status") == "concluded":
-        return f"定界面板已收尾（{phase}，revision {revision}），结论已同步到用户界面"
-    return f"定界面板已更新（{phase}，revision {revision}）"
+        return f"诊断面板已收尾（{phase}，revision {revision}），结论已同步到用户界面"
+    return f"诊断面板已更新（{phase}，revision {revision}）"

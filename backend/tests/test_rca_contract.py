@@ -104,12 +104,34 @@ def test_derive_steps_is_the_only_state_machine() -> None:
     assert [s["state"] for s in derive_steps(2, True)] == ["done", "done", "waiting", "waiting", "waiting"]
 
 
+def test_derive_steps_attaches_summaries_only_for_reported_steps() -> None:
+    steps = derive_steps(3, False, {"1": "范围已锁定：APP-A 支付链路", "3": "H1 连接泄漏领先"})
+    assert steps[0]["summary"] == "范围已锁定：APP-A 支付链路"
+    assert "summary" not in steps[1]  # 未上报小结的步不输出 summary 键（旧快照/前端 optional 兼容）
+    assert steps[2]["summary"] == "H1 连接泄漏领先"
+    assert all("summary" not in s for s in steps[3:])
+    # 缺省/空映射与二参调用完全同形（既有 deepEqual 断言零影响）
+    assert derive_steps(3, False, None) == derive_steps(3, False)
+    assert derive_steps(5, True, {}) == derive_steps(5, True)
+
+
+def test_step_summary_normalizes_and_rejects_invalid() -> None:
+    normalized = normalize_board_arguments({"step": 2, "step_summary": "  证据确认：Redis   连接打满 "})
+    assert normalized["step_summary"] == "证据确认：Redis 连接打满"
+    # 空串 = 本次未提交（增量语义）；超长 / 非字符串拒收
+    assert "step_summary" not in normalize_board_arguments({"step": 2, "step_summary": ""})
+    with pytest.raises(RcaBoardContractError):
+        normalize_board_arguments({"step": 2, "step_summary": "长" * 121})
+    with pytest.raises(RcaBoardContractError):
+        normalize_board_arguments({"step": 2, "step_summary": ["小结"]})
+
+
 def test_derive_phase_label_and_result_summary() -> None:
     assert derive_phase_label(2, False) == "第2步·证据"
     assert derive_phase_label(5, False) == "第5步·结论"
-    assert derive_phase_label(5, True) == "已定界"
+    assert derive_phase_label(5, True) == "诊断完成"
 
     running = {"phaseLabel": "第2步·证据", "revision": 3, "status": "in_progress"}
-    assert board_result_summary(running) == "定界面板已更新（第2步·证据，revision 3）"
-    concluded = {"phaseLabel": "已定界", "revision": 6, "status": "concluded"}
+    assert board_result_summary(running) == "诊断面板已更新（第2步·证据，revision 3）"
+    concluded = {"phaseLabel": "诊断完成", "revision": 6, "status": "concluded"}
     assert "已收尾" in board_result_summary(concluded) and "revision 6" in board_result_summary(concluded)

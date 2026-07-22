@@ -1,4 +1,4 @@
-"""诊断定界面板（openops.rca.updated）的服务端状态机（A3）。
+"""诊断面板（openops.rca.updated）的服务端状态机（A3）。
 
 模型经 update_diagnosis_board 自报进度，本模块负责「不信任模型」的那一半：
 - owner=主任务：子 Agent 的更新合并进 leader 的 `st.rca` → get_state 恢复与快照零改动生效；
@@ -50,17 +50,23 @@ def board_owner(st: TaskState) -> TaskState:
 
 
 def reopen_with_conclusion(panel: dict[str, Any], conclusion: str) -> dict[str, Any]:
-    """安全事实覆盖结论并把面板拉回「进行中」（恢复未执行/被拦截 ≠ 定界闭环）。
+    """安全事实覆盖结论并把面板拉回「进行中」（恢复未执行/被拦截 ≠ 诊断闭环）。
 
     只改 status 会留下「五步全 done + in_progress」的矛盾形状——steps/phaseLabel 必须与
     status 一起重派生（已收尾的面板回到「第5步·结论」进行中）；revision 自增，避免与末次
-    面板更新同号被前端幂等去重丢弃。
+    面板更新同号被前端幂等去重丢弃。步骤小结显式回传 derive_steps，防 reopen 后 steps 丢 summary。
     """
     step, completed = _progress_of(panel.get("steps"))
     if completed:
         step, completed = 5, False
+    summaries = panel.get("step_summaries") if isinstance(panel.get("step_summaries"), dict) else None
+    if not summaries:
+        # demo 面板（rca_demo 产）没有 step_summaries 载体、小结只内嵌在 steps[].summary——
+        # 从现有 steps 反推，防 reopen 一次审批拒绝就把五步小结整体抹掉
+        summaries = {str(item["num"]): item["summary"] for item in panel.get("steps") or []
+                     if isinstance(item, dict) and item.get("num") and item.get("summary")}
     return {**panel, "conclusion": conclusion, "status": "in_progress",
-            "steps": derive_steps(step, completed),
+            "steps": derive_steps(step, completed, summaries),
             "phaseLabel": derive_phase_label(step, completed),
             "revision": int(panel.get("revision") or 0) + 1}
 
@@ -94,6 +100,14 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
         if key in args:
             merged[key] = args[key]
 
+    # 步骤小结逐键累积（键=提交步号 str）：不进 _MERGE_KEYS——列表整体替换语义不适用，历史步
+    # 小结要一直保留；demo 丢弃分支天然清零（prev=None 即从空表起步）。钳制回退时小结仍按
+    # 提交的步号落位（模型补交历史步小结合理，不能被钳到当前步上）
+    summaries: dict[str, str] = dict(prev.get("step_summaries") or {}) if prev else {}
+    if "step_summary" in args:
+        summaries[str(args["step"])] = args["step_summary"]
+    merged["step_summaries"] = summaries
+
     # 步骤单调钳制（宽松）：(step, completed) 只前进不回退；允许跳步（证据充分快进合理）
     step, completed = args["step"], args["step_completed"]
     clamped = False
@@ -105,9 +119,9 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
 
     concluded = step >= 5 and completed
     if concluded and not merged["conclusion"]:
-        # step=5 收尾必须带定界结论——缺失时给模型明确的补交指引（不落任何状态变更）
+        # step=5 收尾必须带诊断结论——缺失时给模型明确的补交指引（不落任何状态变更）
         raise RcaBoardContractError(
-            "step=5 且 step_completed=true 表示定界结束，必须提供 conclusion"
+            "step=5 且 step_completed=true 表示诊断结束，必须提供 conclusion"
             "（影响边界、最可能根因方向、建议下一步）")
 
     # revision 基数取 owner 与调用方两处现值的 max（含 demo）：demo 剧本可能把面板写在
@@ -122,15 +136,15 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
     # 子 Agent 与主任务兜底交替发事件时前端不能拿 envelope task_id 当 revision 分段键，
     # 否则跨归属切换被误判「新任务」重置守卫、旧 revision 重新落地闪回
     merged["board_task_id"] = owner.task_id
-    merged["steps"] = derive_steps(step, completed)
+    merged["steps"] = derive_steps(step, completed, summaries)
     merged["phaseLabel"] = derive_phase_label(step, completed)
     merged["status"] = "concluded" if concluded else "in_progress"
 
     owner.rca = merged
     owner.rca_source = "model"
 
-    message = (f"定界完成：{merged['title'] or '定界结论已提交'}" if concluded
-               else f"定界进度：{merged['phaseLabel']}" + (f" · {merged['title']}" if merged["title"] else ""))
+    message = (f"诊断完成：{merged['title'] or '诊断结论已提交'}" if concluded
+               else f"诊断进度：{merged['phaseLabel']}" + (f" · {merged['title']}" if merged["title"] else ""))
     # 事件用调用方 st 发（活动栏归组到子 Agent 角色），payload 用 owner.rca（run 级单例面板）
     await emit(st, run, "openops.rca.updated", message=message, payload=owner.rca)
     # 子 Agent 路径：emit 只给主任务落 sre_task_state（leader 守卫），这里显式补 owner 快照

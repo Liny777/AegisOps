@@ -172,9 +172,10 @@ def test_rca_updated_payload_keeps_status_and_steps_strips_unknown_and_redacts()
         "revision": 4,
         "title": "支付下单 P99 突增",
         "status": "concluded",
-        "phaseLabel": "已定界",
+        "phaseLabel": "诊断完成",
         "board_task_id": "tsk_leader",
-        "steps": [{"num": 5, "label": "结论", "state": "done", "evil": "<script>alert(1)</script>"}],
+        "steps": [{"num": 5, "label": "结论", "state": "done", "summary": "已确认 H1 连接泄漏",
+                   "evil": "<script>alert(1)</script>"}],
         "conclusion": "根因 H1；token=super-secret-value",
         "facts": [{"text": "P99 1.4s", "password": "hunter2-value"}],
         "internal_note": "must-not-leak",
@@ -182,10 +183,10 @@ def test_rca_updated_payload_keeps_status_and_steps_strips_unknown_and_redacts()
     }
     out = sanitize_activity_payload("openops.rca.updated", payload)
 
-    assert out["status"] == "concluded" and out["revision"] == 4 and out["phaseLabel"] == "已定界"
+    assert out["status"] == "concluded" and out["revision"] == 4 and out["phaseLabel"] == "诊断完成"
     assert out["board_task_id"] == "tsk_leader"  # 前端 revision 分段键（owner 身份）必须透传
-    # 列表项按字段白名单裁剪：未知键（含可执行内容）不落地
-    assert out["steps"] == [{"num": 5, "label": "结论", "state": "done"}]
+    # 列表项按字段白名单裁剪：summary（步骤收起态摘要）透传，未知键（含可执行内容）不落地
+    assert out["steps"] == [{"num": 5, "label": "结论", "state": "done", "summary": "已确认 H1 连接泄漏"}]
     assert out["facts"] == [{"text": "P99 1.4s"}]
     encoded = json.dumps(out, ensure_ascii=False)
     for leaked in ("internal_note", "must-not-leak", "rca_source", "hunter2-value",

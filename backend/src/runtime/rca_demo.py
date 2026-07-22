@@ -21,12 +21,20 @@ def rca(revision: int, phase: str, extra: dict[str, Any] | None = None) -> dict[
             {"label": "影响面", "value": "APP-A 支付下单 · 0.6% 错误"},
             {"label": "当前阶段", "value": phase},
         ],
+        # summary 与真流程 derive_steps 同形：已推进的步才有一句话小结、waiting 步不带 summary 键
         "steps": [
-            {"num": 1, "label": "范围", "state": "done"},
-            {"num": 2, "label": "证据", "state": "done" if revision >= 2 else "active"},
-            {"num": 3, "label": "假设", "state": "done" if revision >= 2 else "waiting"},
-            {"num": 4, "label": "验证", "state": "done" if revision >= 3 else ("active" if revision >= 2 else "waiting")},
-            {"num": 5, "label": "结论", "state": "done" if revision >= 3 else "waiting"},
+            {"num": 1, "label": "范围", "state": "done",
+             "summary": "范围锁定：APP-A 支付下单链路，10:02 起 P99 180ms→1.4s"},
+            {"num": 2, "label": "证据", "state": "done" if revision >= 2 else "active",
+             "summary": "证据确认：svc-payment-api → Redis active 连接打满（1000/1000）" if revision >= 2
+             else "证据收集中：Prometheus / oModel 拓扑已取回，Loki 日志采集中"},
+            {"num": 3, "label": "假设", "state": "done" if revision >= 2 else "waiting",
+             **({"summary": "假设排行：H1 连接泄漏领先（conf 0.72），H2 慢查询部分支持"} if revision >= 2 else {})},
+            {"num": 4, "label": "验证", "state": "done" if revision >= 3 else ("active" if revision >= 2 else "waiting"),
+             **({"summary": "验证完成：重启 svc-a 后连接回落、P99 恢复 210ms"} if revision >= 3
+                else ({"summary": "验证 H1：重启 svc-a 观察连接数是否回落"} if revision >= 2 else {}))},
+            {"num": 5, "label": "结论", "state": "done" if revision >= 3 else "waiting",
+             **({"summary": "已确认 H1 连接泄漏：恢复动作已执行，事件闭环"} if revision >= 3 else {})},
         ],
         "currentQ": "Redis 连接饱和是慢查询导致，还是连接泄漏导致？",
         "why": "两者恢复动作不同：慢查询→限流/优化，连接泄漏→重启释放。",

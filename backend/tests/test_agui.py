@@ -125,7 +125,7 @@ def test_agui_stub_board_full_chain_emits_monotonic_rca_until_concluded(client, 
     assert [s["num"] for s in last["steps"]] == [1, 2, 3, 4, 5]
     assert all(s["state"] == "done" for s in last["steps"])
     assert {s["label"] for s in last["steps"]} == {"范围", "证据", "假设", "验证", "结论"}
-    # 工具提交的定界结论原样保留（不被 _final_text 覆盖）；demo 剧本内容已被丢弃
+    # 工具提交的诊断结论原样保留（不被 _final_text 覆盖）；demo 剧本内容已被丢弃
     assert last["conclusion"].startswith("已确认 H1（Redis 连接泄漏）")
     assert last["title"] == "支付下单 P99 突增"
 

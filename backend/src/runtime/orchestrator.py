@@ -1,4 +1,4 @@
-"""Mock 编排器：把一次 Task 按「巡检→定界→RCA→ASK→恢复→结论」脚本化推进。
+"""Mock 编排器：把一次 Task 按「巡检→诊断→RCA→ASK→恢复→结论」脚本化推进。
 
 真实 AgentScope 2.0.3 runtime（B1 块，见 runtime/agentscope_runtime.py）与本模块**同签名并存**，
 由环境变量 OPENOPS_RUNTIME 选择；本模块保留为 mock **test-double**（pytest/demo 可回退）。
@@ -39,15 +39,15 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         await tool_gateway.invoke(st, run, "query_resource", {"appid": "APP-A"},
                                   started_msg="巡检 · 指标查询",
                                   succeeded_msg="P99 / 错误率 / Redis 连接数已取回")
-        st.rca = _rca(1, "定界中")
+        st.rca = _rca(1, "诊断中")
         st.rca_source = "demo"  # A4：mock 剧本面板显式标 demo（与真流程 model 面板双向隔离）
-        await _emit(st, run, "openops.rca.updated", message="RCA 面板更新（定界中）", payload=st.rca)
+        await _emit(st, run, "openops.rca.updated", message="RCA 面板更新（诊断中）", payload=st.rca)
         if not await _sleep(st):
             return await _finish_cancel(st, run)
 
-        # 定界：拓扑依赖
+        # 诊断：拓扑依赖
         await tool_gateway.invoke(st, run, "query_resource", {"appid": "APP-A"},
-                                  started_msg="定界 · 拓扑依赖",
+                                  started_msg="诊断 · 拓扑依赖",
                                   succeeded_msg="svc-payment-api → Redis / MySQL 依赖图")
         st.rca = _rca(2, "验证 H1")
         await _emit(st, run, "openops.rca.updated", message="假设排行更新（H1 领先）", payload=st.rca)
