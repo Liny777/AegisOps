@@ -16,6 +16,7 @@ const SettingsPage = lazy(() => import("./settings/SettingsPage").then((m) => ({
 const SettingsHome = lazy(() => import("./settings/SettingsHome").then((m) => ({ default: m.SettingsHome })));
 const AdminConsole = lazy(() => import("./admin/AdminConsole").then((m) => ({ default: m.AdminConsole })));
 const InitWizard = lazy(() => import("./init/InitWizard").then((m) => ({ default: m.InitWizard })));
+const ProductIntro = lazy(() => import("./pages/intro/ProductIntro").then((m) => ({ default: m.ProductIntro })));
 
 /** 首页分流：按 me 落到最近实例对话 / 初始化 / 白名单拦截。
  *  外链 ?q= 三态：无权限→引导页（问题保留）；未初始化→向导（完成后自动发送）；
@@ -90,6 +91,8 @@ export default function App() {
           <Routes>
             <Route path="/" element={<HomeRedirect />} />
             <Route path="/not-whitelisted" element={<NotWhitelisted />} />
+            {/* 产品介绍页：守卫外全屏（无需白名单/初始化；未登录仍走全局 SSO） */}
+            <Route path="/intro" element={<ProductIntro />} />
             <Route path="/init" element={<InitGuard><InitWizard /></InitGuard>} />
             {/* 编辑向导（清单页「编辑」入口）：复用 InitWizard 的编辑态，全屏壳外；
                 只需白名单（编辑者必然已有实例，套 InitGuard 会被弹走） */}
