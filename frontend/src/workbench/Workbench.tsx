@@ -148,7 +148,7 @@ export function Workbench({
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
-  const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 定界面板（右栏「定界」tab）
+  const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
   const [pendingSend, setPendingSend] = useState<PendingSend | null>(null); // 卡片按钮 → copilot 程序化发送桥
   const [railWidth, setRailWidth] = useState<number | null>(() => loadRailWidth());
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
@@ -191,7 +191,7 @@ export function Workbench({
     transitionStatus: transition.status,
   });
   const seen = useRef(new Set<string>());
-  // 定界面板 revision 守卫：task 分段单调（双通道重复投递/resync 旧快照都不闪回）。
+  // 诊断面板 revision 守卫：task 分段单调（双通道重复投递/resync 旧快照都不闪回）。
   const rcaGuardRef = useRef<RcaGuard>(initialRcaGuard());
   const activeRunRef = useRef<string | null>(null);
   const activeInstanceRef = useRef<string>("");
@@ -345,7 +345,7 @@ export function Workbench({
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.rca.updated": {
-        // 定界面板：双通道同 event_id 各投递一次，仅首达应用（各通道自身有序 → 首达序即
+        // 诊断面板：双通道同 event_id 各投递一次，仅首达应用（各通道自身有序 → 首达序即
         // 全序，迟到副本不会跨段重置守卫）→ zod 校验（版本漂移 payload 静默丢弃该 revision）
         // → 面板身份分段 revision 守卫。分段键用 payload.board_task_id（owner 主任务）：
         // envelope 的 task_id 是调用方（子 Agent 更新带子 task_id、主任务兜底带主 task_id），
@@ -414,7 +414,7 @@ export function Workbench({
     else if (replaceSession) setHitl(undefined);
     else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
 
-    // 定界面板恢复：`/state` 顶层 rca 与 rca.updated payload 同形。切换会话（replaceSession）
+    // 诊断面板恢复：`/state` 顶层 rca 与 rca.updated payload 同形。切换会话（replaceSession）
     // 无条件恢复并重置守卫；同 Run resync/refresh 仅 revision 守卫通过才覆盖，且
     // d.rca==null **不清空**——重连内存 miss 不闪卡。分段键与 live 事件同源：
     // 优先 rca.board_task_id（owner 主任务身份），缺失回退 active_task.task_id。
@@ -639,7 +639,7 @@ export function Workbench({
     }
     if (API_MODE !== "real") {
       setTaskStatus("running");  // mock 也走按钮两态，便于演示
-      // 定界两段式推进：发送即回到进行中变体，900ms 后 mockRcaFinal() 定格闭环
+      // 诊断两段式推进：发送即回到进行中变体，900ms 后 mockRcaFinal() 定格闭环
       // ——mock/e2e 可完整演示「实时步骤 → 五步全绿定格」全程。
       if (demo.rca) setRca(demo.rca);
       setTimeout(() => {
@@ -728,7 +728,7 @@ export function Workbench({
 
   const running = taskStatus === "running";
 
-  /** 定界卡片按钮 → 以用户身份发消息（可见可审计，用户拍板）。copilot 路径经 pendingSend
+  /** 诊断时间线按钮 → 以用户身份发消息（可见可审计，用户拍板）。copilot 路径经 pendingSend
    *  状态桥（右栏在 CopilotKit Provider 外，必须经 CopilotProgrammaticSend 转发）；
    *  自建/mock 路径直接 send()。按钮层已有禁用态，这里再兜一层守卫防竞态双发。 */
   const requestAgentSend = (message: string) => {
@@ -804,7 +804,7 @@ export function Workbench({
           {messages.length === 0 && !running ? (
             <div style={{ textAlign: "center", color: color.textSubtle, fontSize: 13, padding: "40px 0" }}>
               <Icon name="message-2" size={22} color={color.brand} />
-              <div style={{ marginTop: 10 }}>描述你的排障任务，Agent 会按「巡检 → 定界 → 恢复」推进，恢复动作需你确认。</div>
+              <div style={{ marginTop: 10 }}>描述你的排障任务，Agent 会按「巡检 → 诊断 → 恢复」推进，恢复动作需你确认。</div>
             </div>
           ) : null}
           {messages.map((message) => (message.role === "user"
@@ -942,7 +942,6 @@ export function Workbench({
           <ActivityRail
             key={runId ?? explicitRunId ?? "demo"}
             groups={API_MODE === "real" ? [] : groupNodes(nodes, running)}
-            generalEvents={hasUnifiedActivity ? railModel.events : undefined}
             rounds={hasUnifiedActivity ? railModel.rounds : undefined}
             hasMore={hasUnifiedActivity && railModel.hasMore}
             loadingMore={loadingEarlier}

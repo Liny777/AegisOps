@@ -131,7 +131,7 @@ def _build_stub_model() -> Any:
             # A6：env 门控插入两次 update_diagnosis_board（恢复动作前 step=2、恢复后 step=5+completed），
             # 默认关不改现有序列——专供 test_agui 全链路断言「模型自报 → rca_board → rca.updated」真链路。
             board_on = os.getenv("OPENOPS_DEMO_BOARD_STEP") == "1"
-            if self._step in (1, 2):  # 巡检 + 定界
+            if self._step in (1, 2):  # 巡检 + 诊断
                 blocks: list[Any] = []
                 if self._step == 1:  # 首步附一段思考：演示 reasoning 折叠卡（真模型经 reasoning_content 天然产生）
                     blocks.append(ThinkingBlock(thinking=(
@@ -151,7 +151,7 @@ def _build_stub_model() -> Any:
                     type="tool_call", id="cmd", name="run_container_command",
                     input=json.dumps({"command": "ls -la"}))])
             base = 5 if sbx_on else 3  # 无 board 门控时恢复动作所在步
-            if board_on and self._step == base:  # 定界中自报进度（step=2 证据）
+            if board_on and self._step == base:  # 诊断中自报进度（step=2 证据）
                 return self._stream_response([ToolCallBlock(
                     type="tool_call", id="bd1", name="update_diagnosis_board",
                     input=json.dumps({
@@ -166,7 +166,7 @@ def _build_stub_model() -> Any:
                 return self._stream_response([ToolCallBlock(
                     type="tool_call", id="rec", name="recover_execute",
                     input=json.dumps({"appid": "APP-A", "action": "restart"}))])
-            if board_on and self._step == base + 2:  # 定界收尾（step=5 完成 + conclusion）
+            if board_on and self._step == base + 2:  # 诊断收尾（step=5 完成 + conclusion）
                 return self._stream_response([ToolCallBlock(
                     type="tool_call", id="bd2", name="update_diagnosis_board",
                     input=json.dumps({
@@ -486,7 +486,7 @@ def _render_skill_catalog(available_skills: dict[str, dict[str, Any]]) -> str:
 
 
 # 主 Agent 人设兜底（模板 main.role 必填，通常不会走到；仅防御 role 缺失/空）
-_DEFAULT_MAIN_ROLE = "你是资深 SRE 诊断 Agent：理解用户任务，调度平台巡检/定界/恢复能力完成诊断与恢复。"
+_DEFAULT_MAIN_ROLE = "你是资深 SRE 诊断 Agent：理解用户任务，调度平台巡检/诊断/恢复能力完成诊断与恢复。"
 # 平台层固定规则：始终附在角色人设之后。安全项声明优先级高于角色设定，用户人设无法绕过。
 # **按受众拆块**（原为单块常量，主 Agent 独享）：子 Agent 曾只拿到 role + 汇报纪律，既没有
 # 「优先用 Skill」引导、又被纪律里的「禁止无差别调用工具」反向抑制，导致概率性不调 Skill
@@ -498,13 +498,13 @@ _SKILL_PREFERENCE_RULE = (
     "- 当某个可用 Skill 的用途与当前任务匹配时，必须优先调用该 Skill（run_platform_skill）并严格按其步骤/流程执行，"
     "不要自行发挥；只有在没有任何匹配 Skill 时，才用通用工具（查询/命令/Read/Grep）自己诊断。\n"
 )
-# 主/子共享：诊断定界面板上报——update_diagnosis_board 主/子都注册（run 级单例面板，见 _build_toolkit），
+# 主/子共享：诊断面板上报——update_diagnosis_board 主/子都注册（run 级单例面板，见 _build_toolkit），
 # 这是「模型漏调」的四层兜底之二（之一是工具 docstring，之三/四见 sandbox_skill 手册指引与 seed 角色 prompt）
 _BOARD_RULE = (
-    "- 执行诊断/定界类任务（含按 Skill 手册的五步法流程执行）时，必须调用 update_diagnosis_board 把进度"
+    "- 执行诊断类任务（含按 Skill 手册的五步法流程执行）时，必须调用 update_diagnosis_board 把进度"
     "同步到用户界面：每进入一个新步骤调用一次（step=新步骤号），并把该步已取得的事实/假设/证据源等一并"
-    "增量提交；定界完成时以 step=5、step_completed=true 提交 conclusion。内容必须来自本轮真实取得的数据，"
-    "不得虚构。\n"
+    "增量提交，同时用 step_summary 附上该步的一句话小结；诊断完成时以 step=5、step_completed=true 提交"
+    " conclusion。内容必须来自本轮真实取得的数据，不得虚构。\n"
 )
 # 主/子共享：安全护栏（子 Agent 可绑 recover_execute，同样需要知道审批要求——纵深防御）
 _SAFETY_RULES = (
@@ -581,7 +581,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     counter = {"query": 0}
 
     async def query_resource(appid: str) -> Any:
-        """查询指定应用的可观测数据（指标 P99/错误率、Redis 连接数、服务依赖拓扑），用于巡检与定界。
+        """查询指定应用的可观测数据（指标 P99/错误率、Redis 连接数、服务依赖拓扑），用于巡检与诊断。
 
         Args:
             appid: 目标应用 ID，例如 APP-A。
@@ -591,7 +591,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         try:
             r = await tool_gateway.invoke(
                 st, run, "query_resource", {"appid": appid},
-                started_msg="巡检 · 指标查询" if n == 1 else "定界 · 拓扑依赖",
+                started_msg="巡检 · 指标查询" if n == 1 else "诊断 · 拓扑依赖",
                 succeeded_msg="P99 / 错误率 / Redis 连接数已取回" if n == 1 else "svc-payment-api 依赖图已取回",
             )
         except ToolBlocked as e:  # tool.blocked 已发；把失败回给模型收口
@@ -599,10 +599,10 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：{e.reason_code} {e.message}")])
         # A4 守卫：模型已接管面板（update_diagnosis_board，owner=主任务）后 demo 剧本不得覆写/倒灌
         if st.rca_source != "model" and board_owner(st).rca_source != "model":
-            st.rca = rca(1 if n == 1 else 2, "定界中" if n == 1 else "验证 H1")
+            st.rca = rca(1 if n == 1 else 2, "诊断中" if n == 1 else "验证 H1")
             st.rca_source = "demo"
             await emit(st, run, "openops.rca.updated",
-                       message="RCA 面板更新（定界中）" if n == 1 else "假设排行更新（H1 领先）", payload=st.rca)
+                       message="RCA 面板更新（诊断中）" if n == 1 else "假设排行更新（H1 领先）", payload=st.rca)
         return ToolResponse(content=[TextBlock(type="text", text=r.get("result_summary", "ok"))])
 
     async def recover_execute(appid: str, action: str) -> Any:
@@ -672,6 +672,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     async def update_diagnosis_board(
         step: int,
         step_completed: bool = False,
+        step_summary: str = "",
         title: str = "",
         tiles: list[dict[str, Any]] | None = None,
         current_question: str = "",
@@ -683,18 +684,19 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         actions: list[dict[str, Any]] | None = None,
         conclusion: str = "",
     ) -> Any:
-        """把「诊断定界五步法」（1范围→2证据→3假设→4验证→5结论）的进度与阶段产出同步到用户界面的定界面板。这是纯展示工具：不查询数据、不执行变更、不触发审批。
+        """把「诊断五步法」（1范围→2证据→3假设→4验证→5结论）的进度与阶段产出同步到用户界面的诊断面板。这是纯展示工具：不查询数据、不执行变更、不触发审批。
 
         调用时机（必须遵守）：
-        - 执行诊断/定界类任务（含按 Skill 手册的五步法流程执行）时必须使用本工具；
+        - 执行诊断类任务（含按 Skill 手册的五步法流程执行）时必须使用本工具；
         - 每进入一个新步骤调用一次（step=新步骤号），并把已取得的事实/假设等产出一并带上；
-        - 定界完成时最后调用一次：step=5、step_completed=true，并填写 conclusion（定界结论）。
+        - 诊断完成时最后调用一次：step=5、step_completed=true，并填写 conclusion（诊断结论）。
         - 增量合并：未传的字段保留上次的值，传了的字段整体替换；每次只需提交新增或变化的内容。
         - 步骤只能前进不能回退；内容必须来自本轮真实取得的数据，不得虚构。
 
         Args:
             step: 当前所处步骤号，1..5（1=范围 2=证据 3=假设 4=验证 5=结论）。
-            step_completed: 当前步骤是否已完成；step=5 且为 true 表示整个定界结束。
+            step_completed: 当前步骤是否已完成；step=5 且为 true 表示整个诊断结束。
+            step_summary: 当前步骤的一句话小结（≤120 字），每次推进或完成一步时提交；界面在步骤收起时展示。
             title: 事件/问题短标题（如「支付下单 P99 突增」），首次调用必填。
             tiles: 概览信息块，最多 6 个，形如 [{"label": "症状", "value": "P99 180ms→1.4s"}]。
             current_question: 当前正在回答的关键问题（一句话）。
@@ -704,11 +706,12 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             sources: 证据源状态，形如 [{"name": "Prometheus", "status": "done", "tone": "good"}]；tone 只能是 good、warning、danger 或 neutral。
             hypotheses: 假设排行，形如 [{"text": "H1 Redis 连接泄漏", "tag": "支持", "tagTone": "good", "conf": 0.72}]；conf 是 0..1 的置信度。
             actions: 建议动作，形如 [{"tier": "立即", "text": "重启 svc-a", "confirm": true, "impact": "3 实例", "status": "待确认", "statusTone": "warning"}]，最多 8 条。
-            conclusion: 定界结论（step=5 时必填）：影响边界、最可能根因方向、建议下一步。
+            conclusion: 诊断结论（step=5 时必填）：影响边界、最可能根因方向、建议下一步。
         """
         try:
             text = await apply_board_update(st, run, {
-                "step": step, "step_completed": step_completed, "title": title, "tiles": tiles,
+                "step": step, "step_completed": step_completed, "step_summary": step_summary,
+                "title": title, "tiles": tiles,
                 "current_question": current_question, "why": why, "facts": facts, "unknowns": unknowns,
                 "sources": sources, "hypotheses": hypotheses, "actions": actions, "conclusion": conclusion,
             })
@@ -717,7 +720,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             # （面板更新失败不应压制诊断结论）
             return ToolResponse(content=[TextBlock(
                 type="text",
-                text=f"定界面板参数未通过校验：{exc}。请按工具说明修正后重新调用，且不要提交 HTML 或未列出的字段。",
+                text=f"诊断面板参数未通过校验：{exc}。请按工具说明修正后重新调用，且不要提交 HTML 或未列出的字段。",
             )])
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
@@ -815,7 +818,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     if isinstance(st.template_tools, set):
         st.template_tools.add("list_scope_apps")
     tools.append(FunctionTool(list_scope_apps, name="list_scope_apps", is_read_only=True))
-    # 诊断定界面板（A1）：主/子都注册、不加 agent_key 条件——面板是 run 级单例（owner=主任务，
+    # 诊断面板（A1）：主/子都注册、不加 agent_key 条件——面板是 run 级单例（owner=主任务，
     # 见 rca_board.board_owner），无 render_chart 的对话轮次交错问题。不走 tool_gateway、
     # 不发 tool.call.* 事件：面板更新本身经 rca.updated 落审计+活动线，再发工具卡是对话噪音。
     st.tool_annotations["update_diagnosis_board"] = {"is_approval_required": False, "is_secret_required": False,
@@ -1164,7 +1167,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             else:
                 # 已执行恢复（或本就无需 ASK）：采纳模型生成的结论（GLM 真实结论 / stub 脚本结论）。
                 # A4：仅 demo 面板或面板尚无 conclusion 时才覆盖——模型经 update_diagnosis_board 提交的
-                # 定界结论是结构化事实，不得被最终对话文本顶掉
+                # 诊断结论是结构化事实，不得被最终对话文本顶掉
                 conclusion = _final_text(agent)
                 if conclusion and st.rca and (st.rca_source == "demo"
                                               or not str(st.rca.get("conclusion") or "").strip()):

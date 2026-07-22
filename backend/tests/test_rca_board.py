@@ -16,7 +16,7 @@ RUN = {"audit_trace_id": "trace-board", "agent_team_instance_id": "inst"}
 
 def _st(task_id: str = "tsk_board", run_id: str = "run_board") -> TaskState:
     return TaskState(task_id=task_id, run_id=run_id, user_id="0026demo01",
-                     instance_id="inst", input_text="定界测试")
+                     instance_id="inst", input_text="诊断测试")
 
 
 @pytest.fixture()
@@ -99,7 +99,7 @@ def test_step5_completed_concludes_and_requires_conclusion(board_env) -> None:
     board_env
     st = _st()
     _apply(st, step=4, title="支付下单 P99 突增")
-    # 收尾必须带定界结论（本次或此前已提交）——缺失即契约错误、状态不动
+    # 收尾必须带诊断结论（本次或此前已提交）——缺失即契约错误、状态不动
     with pytest.raises(RcaBoardContractError, match="conclusion"):
         _apply(st, step=5, step_completed=True)
     assert st.rca["status"] == "in_progress" and st.rca["revision"] == 1
@@ -107,7 +107,7 @@ def test_step5_completed_concludes_and_requires_conclusion(board_env) -> None:
     text = _apply(st, step=5, step_completed=True,
                   conclusion="已确认 H1：重启 svc-a 后连接回落，建议补连接回收配置。")
     assert st.rca["status"] == "concluded"
-    assert st.rca["phaseLabel"] == "已定界"
+    assert st.rca["phaseLabel"] == "诊断完成"
     assert all(s["state"] == "done" for s in st.rca["steps"])
     assert "已收尾" in text
 
@@ -120,9 +120,9 @@ def test_child_updates_merge_into_leader_and_snapshot_main_task(board_env) -> No
     child.agent_key, child.leader_task_id = "diagnose", "tsk_leader"
     task_registry.register_subtask(child)
 
-    _apply(child, step=2, title="子 Agent 定界", facts=[{"text": "拓扑证据"}])
+    _apply(child, step=2, title="子 Agent 诊断", facts=[{"text": "拓扑证据"}])
     # 面板落在 leader（get_state 恢复与快照零改动生效）；子自身不持有面板
-    assert leader.rca is not None and leader.rca["title"] == "子 Agent 定界"
+    assert leader.rca is not None and leader.rca["title"] == "子 Agent 诊断"
     assert leader.rca_source == "model" and child.rca is None
     # 事件用调用方（子）st 发——活动栏归组到子 Agent 角色；payload 是 owner 面板
     assert emitted[-1]["st"] is child and emitted[-1]["payload"] is leader.rca
@@ -164,7 +164,7 @@ def test_revision_base_covers_demo_left_on_caller_child(board_env) -> None:
     child.rca = demo_rca(2, "验证 H1")  # demo 工具落在子 st（query_resource 第 2 次）
     child.rca_source = "demo"
 
-    _apply(child, step=1, title="真实定界")
+    _apply(child, step=1, title="真实诊断")
     assert leader.rca["revision"] == 3  # max(owner=0, caller demo=2) + 1
     assert emitted[-1]["payload"]["revision"] == 3
 
@@ -207,6 +207,57 @@ def test_reopen_with_conclusion_rederives_steps_and_bumps_revision(board_env) ->
     assert [s["state"] for s in reopened2["steps"]] == ["done", "done", "active", "waiting", "waiting"]
 
 
+def test_step_summaries_accumulate_across_steps(board_env) -> None:
+    """步骤小结逐键累积：历史步小结一直保留；未提交小结的步不输出 summary 键。"""
+    board_env
+    st = _st(task_id="tsk_sum")
+    _apply(st, step=1, title="支付下单 P99 突增", step_summary="范围锁定：APP-A 支付链路")
+    _apply(st, step=2, step_summary="证据确认：Redis 连接打满")
+    _apply(st, step=3)  # 本次未提交小结
+    by_num = {s["num"]: s for s in st.rca["steps"]}
+    assert by_num[1]["summary"] == "范围锁定：APP-A 支付链路"
+    assert by_num[2]["summary"] == "证据确认：Redis 连接打满"
+    assert "summary" not in by_num[3] and "summary" not in by_num[4]
+    # 内部累积载体随面板保留（快照恢复后不丢）；同步骤重复提交覆盖旧小结
+    assert st.rca["step_summaries"] == {"1": "范围锁定：APP-A 支付链路", "2": "证据确认：Redis 连接打满"}
+    _apply(st, step=3, step_summary="H1 连接泄漏领先")
+    assert {s["num"]: s.get("summary") for s in st.rca["steps"]}[3] == "H1 连接泄漏领先"
+
+
+def test_step_summaries_cleared_when_demo_board_discarded(board_env) -> None:
+    """demo 剧本 steps 自带 summary：模型首调接管时与其他内容一起整体丢弃、从空表起步。"""
+    board_env
+    st = _st(task_id="tsk_sum_demo")
+    st.rca = demo_rca(2, "验证 H1")
+    st.rca_source = "demo"
+    _apply(st, step=1, title="真实事件", step_summary="真实范围小结")
+    assert st.rca["step_summaries"] == {"1": "真实范围小结"}
+    assert [s.get("summary") for s in st.rca["steps"]] == ["真实范围小结", None, None, None, None]
+
+
+def test_reopen_keeps_step_summaries(board_env) -> None:
+    """reopen 重派生 steps 时必须回传小结映射，否则安全兜底一次就把全部步骤摘要清空。"""
+    board_env
+    st = _st(task_id="tsk_sum_reopen")
+    _apply(st, step=5, step_completed=True, title="闭环", step_summary="结论：H1 确认",
+           conclusion="根因已定位，建议重启释放连接")
+    reopened = rb.reopen_with_conclusion(st.rca, "恢复动作被拒绝：保持观察。")
+    assert reopened["step_summaries"] == {"5": "结论：H1 确认"}
+    assert {s["num"]: s.get("summary") for s in reopened["steps"]}[5] == "结论：H1 确认"
+
+
+def test_clamped_regression_still_lands_summary_at_submitted_step(board_env) -> None:
+    """钳制回退时小结仍按提交步号落位：补交历史步小结合理，不能被钳到当前步上。"""
+    board_env
+    st = _st(task_id="tsk_sum_clamp")
+    _apply(st, step=3, title="支付下单 P99 突增")
+    text = _apply(st, step=2, step_summary="证据补充：Loki 日志比对完成")  # 回退：步骤钳在第3步
+    assert "只能前进不能回退" in text
+    by_num = {s["num"]: s for s in st.rca["steps"]}
+    assert by_num[2]["summary"] == "证据补充：Loki 日志比对完成"
+    assert by_num[3]["state"] == "active" and "summary" not in by_num[3]
+
+
 def test_demo_payload_shape_is_internally_consistent() -> None:
     """demo 与真流程（rca_board 派生）同形约定：concluded 时不得存在 active 步。"""
     for revision in (1, 2, 3):
@@ -216,3 +267,16 @@ def test_demo_payload_shape_is_internally_consistent() -> None:
             assert "active" not in states and set(states) == {"done"}
         else:
             assert "active" in states
+
+
+def test_reopen_preserves_demo_inline_step_summaries() -> None:
+    """demo 面板（rca_demo 产）小结只内嵌在 steps[].summary、无 step_summaries 载体：
+    reopen 必须从现有 steps 反推小结，否则一次审批拒绝就把五步小结整体抹掉。"""
+    panel = demo_rca(3, "已闭环")
+    demo_summaries = {s["num"]: s["summary"] for s in panel["steps"] if s.get("summary")}
+    assert demo_summaries  # 前置：demo 剧本确实带小结
+
+    reopened = rb.reopen_with_conclusion(panel, "恢复动作被拒绝：保持观察。")
+    assert reopened["status"] == "in_progress"
+    reopened_summaries = {s["num"]: s.get("summary") for s in reopened["steps"] if s.get("summary")}
+    assert reopened_summaries == demo_summaries

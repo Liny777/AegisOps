@@ -15,7 +15,7 @@ def _detail(client, template_id: str) -> dict:
     return unwrap(client.get(f"/api/openops/v1/admin/templates/{template_id}", headers=ADMIN_HEADERS))
 
 
-def _content(default_tools: list[str], role: str = "理解用户任务，调度巡检/定界/恢复能力。") -> dict:
+def _content(default_tools: list[str], role: str = "理解用户任务，调度巡检/诊断/恢复能力。") -> dict:
     return {
         "main": {"role": role, "default_tools": default_tools},
         "sub_agents": [{"key": "inspect", "label": "巡检", "role": "巡检"}],

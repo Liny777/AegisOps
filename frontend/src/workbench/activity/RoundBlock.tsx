@@ -2,23 +2,17 @@ import { useState } from "react";
 import type { DispatchRound } from "../../lib/api/types";
 import { color, radius } from "../../theme/tokens";
 import { Icon } from "../../ui";
-import { BusinessTimeline } from "./BusinessTimeline";
 import { OrchestrationGraph } from "./OrchestrationGraph";
 import { TechnicalTrack } from "./TechnicalTrack";
 import { formatClock, roleVisual, roundDisplay, STATUS_VISUALS, trackStatus } from "./visuals";
 
-export type WorkerViewMode = "business" | "technical";
-
+/** 单轮派发块：恒为技术视图（编排图 + 各子 Agent 技术轨；业务视角已随内网反馈下线）。 */
 export function RoundBlock({
   round,
   defaultExpanded,
-  viewMode,
-  onViewModeChange,
 }: {
   round: DispatchRound;
   defaultExpanded: boolean;
-  viewMode: WorkerViewMode;
-  onViewModeChange: (mode: WorkerViewMode) => void;
 }) {
   const [open, setOpen] = useState<boolean | null>(null);
   const expanded = open ?? defaultExpanded;
@@ -68,31 +62,19 @@ export function RoundBlock({
               {round.counts.total} 位专家 · {settled} 已结束
               {round.counts.waitingApproval ? ` · ${round.counts.waitingApproval} 待审批` : ""}
             </span>
-            <span className="oa-view-switch" role="group" aria-label="活动视图切换">
-              <button type="button" className={viewMode === "business" ? "is-active" : ""} onClick={() => onViewModeChange("business")} aria-pressed={viewMode === "business"}>
-                业务
-              </button>
-              <button type="button" className={viewMode === "technical" ? "is-active" : ""} onClick={() => onViewModeChange("technical")} aria-pressed={viewMode === "technical"}>
-                技术
-              </button>
-            </span>
           </div>
-          {viewMode === "business" ? (
-            <BusinessTimeline round={round} />
-          ) : (
-            <div className="oa-technical-view">
-              <OrchestrationGraph round={round} />
-              {round.tracks.map((track) => (
-                <TechnicalTrack key={track.delegation.delegationId} round={round} track={track} />
-              ))}
-              {round.unassignedEvents.length ? (
-                <div className="oa-unassigned-note" style={{ borderRadius: radius.sm }}>
-                  <Icon name="info-circle" size={13} color={color.textMuted} />
-                  {round.unassignedEvents.length} 条历史事件无法无歧义归属到具体派发，未强行并轨。
-                </div>
-              ) : null}
-            </div>
-          )}
+          <div className="oa-technical-view">
+            <OrchestrationGraph round={round} />
+            {round.tracks.map((track) => (
+              <TechnicalTrack key={track.delegation.delegationId} round={round} track={track} />
+            ))}
+            {round.unassignedEvents.length ? (
+              <div className="oa-unassigned-note" style={{ borderRadius: radius.sm }}>
+                <Icon name="info-circle" size={13} color={color.textMuted} />
+                {round.unassignedEvents.length} 条历史事件无法无歧义归属到具体派发，未强行并轨。
+              </div>
+            ) : null}
+          </div>
         </div>
       ) : null}
     </section>

@@ -4,7 +4,7 @@ import type { RcaCardData } from "../api/types";
 /**
  * openops.rca.updated payload 的 zod 镜像（仿 rich-ui/schema.ts 的「渲染前校验」纪律）。
  *
- * 与图表契约不同，这里刻意**宽容**：定界面板是增量合并出来的快照，早期步骤大量字段
+ * 与图表契约不同，这里刻意**宽容**：诊断面板是增量合并出来的快照，早期步骤大量字段
  * 缺失（demo/旧后端也可能整块缺字段），除 steps 外多数字段 optional 给默认值；
  * 未知键静默剥离（emit 注入的 agent_key 等不进渲染模型）。校验失败静默丢弃该
  * revision（防后端版本漂移崩 UI），不弹错——下一条合法事件自然覆盖。
@@ -16,6 +16,8 @@ const stepSchema = z.object({
   num: z.number().int().min(1),
   label: z.string().min(1),
   state: z.enum(["done", "active", "waiting"]),
+  /** 模型每步上报的一句小结（step_summary 聚合）；旧快照/旧后端缺失 → 前端 fallbackSummary 兜底。 */
+  summary: z.string().optional(),
 });
 
 const factSchema = z.object({ text: z.string() });

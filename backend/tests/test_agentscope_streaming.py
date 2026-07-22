@@ -43,7 +43,7 @@ async def test_stub_first_step_emits_thinking_block_before_tool_call():
     tool = next((b for b in content if isinstance(b, ToolCallBlock)), None)
     assert tool is not None and tool.name == "query_resource"  # 思考不取代工具调用
 
-    # step 2（定界）：只有工具调用，不再附思考。
+    # step 2（诊断）：只有工具调用，不再附思考。
     step2 = [c async for c in await model._call_api(model.model, [])]
     assert all(not isinstance(b, ThinkingBlock) for b in step2[0].content)
 

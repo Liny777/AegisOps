@@ -1,0 +1,116 @@
+/* 诊断五步法垂直时间线的布局样式（配色/间距细节走 tokens.ts inline style，此处只放
+ * 需要选择器/容器查询/sticky 的部分）。
+ * 列数按**容器**（活动面板声明 container-type: inline-size）而非视口自适应：
+ * 宽面板 4 列 tiles / 双列 facts，窄拖（<520px）降 2 列 / 1 列。
+ * .oa-rca-tiles / .oa-rca-facts 类名保留——smoke 容器查询断言依赖。 */
+
+.oa-rca-tiles {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.oa-rca-facts {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+@container (max-width: 519px) {
+  .oa-rca-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .oa-rca-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* header 常驻：面板滚动时标题 + 进度行不离屏（卡片根不能 overflow:hidden，否则 sticky 失效）。 */
+.oa-diag-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #fff;
+}
+
+/* 垂直时间线：左 rail（圆点 + 竖连线）+ 右步卡 */
+.oa-diag-timeline {
+  margin: 0;
+  padding: 14px 16px 15px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.oa-diag-step {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.oa-diag-step + .oa-diag-step {
+  margin-top: 0;
+}
+
+.oa-diag-step-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.oa-diag-step-dot {
+  width: 22px;
+  height: 22px;
+  display: flex;
+  flex: 0 0 22px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.oa-diag-step-line {
+  width: 2px;
+  flex: 1;
+  min-height: 14px;
+  margin: 4px 0;
+  border-radius: 1px;
+}
+
+.oa-diag-step-card {
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.oa-diag-step:last-child .oa-diag-step-card {
+  margin-bottom: 0;
+}
+
+/* 步卡标题行：done/active 是可展开按钮，waiting 是纯 div（不可点） */
+.oa-diag-step-head {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 12px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.oa-diag-step-head.is-waiting {
+  cursor: default;
+}
+
+.oa-diag-step-head:focus-visible {
+  outline: 2px solid #1683ff;
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+/* 空态骨架：整体压淡（不造假进度，只给结构预期） */
+.oa-diag-skeleton {
+  width: 100%;
+  padding: 0 0 4px;
+  opacity: 0.85;
+}

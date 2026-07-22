@@ -10,7 +10,7 @@ import {
   prependActivityPage,
   projectRailModel,
 } from "./model";
-import { isOpsDiagnosticEvent, showInBusinessTimeline, technicalMeta } from "../../workbench/activity/eventPresentation";
+import { isOpsDiagnosticEvent, technicalMeta } from "../../workbench/activity/eventPresentation";
 
 const auditEvent = (
   id: string,
@@ -285,35 +285,21 @@ test("切换 Run 的 replace_snapshot 不保留上一 Run 的事件、派发或�
   assert.equal(secondRun.hasMore, false);
 });
 
-test("业务时间线只展示派发、工具或 Skill、审批与汇报里程碑", () => {
-  const events = mergeActivityEvents([], [
-    auditEvent("model", "openops.model.call.started", "2026-07-14T04:00:00Z"),
-    auditEvent("sandbox", "openops.sandbox.command.executed", "2026-07-14T04:00:01Z"),
-    auditEvent("tool", "openops.tool.call.started", "2026-07-14T04:00:02Z"),
-    auditEvent("approval", "openops.approval.required", "2026-07-14T04:00:03Z"),
-    auditEvent("report", "openops.subagent.reported", "2026-07-14T04:00:04Z"),
-  ], "state");
-  assert.deepEqual(events.filter(showInBusinessTimeline).map((event) => event.eventId), [
-    "tool", "approval", "report",
-  ]);
-});
-
-test("装配缺口诊断事件不进业务时间线（只进技术轨）", () => {
-  // BUSINESS_MILESTONE 里 `tool(?:\.call)?\.` 的 `.call` 可选、`skill\.` 更是直接匹配 ⇒ 两条
-  // skipped 天然命中，曾把「74 个 MCP 工具未装配」这类运维信号糊进用户对话栏。
-  // TECHNICAL_ONLY 显式排除，同时不得误伤真正的里程碑（tool.call.started / skill.completed 仍须展示）。
+test("装配缺口诊断事件的判定：skipped 命中、真正的里程碑不误伤", () => {
+  // tool.skipped / skill.skipped 是给管理员看的装配缺口信号，曾把「74 个 MCP 工具未装配」
+  // 这类运维内容糊进用户可见的活动栏。isOpsDiagnosticEvent 显式圈定这两类，
+  // 同时不得误伤真正的里程碑（tool.call.started / skill.completed 仍须展示）。
   const events = mergeActivityEvents([], [
     auditEvent("toolSkipped", "openops.tool.skipped", "2026-07-14T04:00:00Z"),
     auditEvent("skillSkipped", "openops.skill.skipped", "2026-07-14T04:00:01Z"),
     auditEvent("tool", "openops.tool.call.started", "2026-07-14T04:00:02Z"),
     auditEvent("skill", "openops.skill.completed", "2026-07-14T04:00:03Z"),
   ], "state");
-  assert.deepEqual(events.filter(showInBusinessTimeline).map((event) => event.eventId), ["tool", "skill"]);
-  // 「全部动态」（ActivityRail.GeneralActivityEvents）走 isOpsDiagnosticEvent 反向过滤——
-  // 主 Agent 发的 tool.skipped 不进子 Agent 轮次、只出现在 generalEvents，业务时间线的
-  // 过滤器管不到它；此判定必须与上面保持同一事件集，否则又从「全部动态」漏出去。
   assert.deepEqual(events.filter((event) => !isOpsDiagnosticEvent(event)).map((event) => event.eventId), [
     "tool", "skill",
+  ]);
+  assert.deepEqual(events.filter(isOpsDiagnosticEvent).map((event) => event.eventId), [
+    "toolSkipped", "skillSkipped",
   ]);
 });
 
@@ -385,7 +371,7 @@ test("空批次进入历史派发，历史页 prepend 后保留游标与去重",
   assert.equal(merged.hasMore, false);
 });
 
-test("rca.updated 正常进活动线（回归保护：定界面板事件不得被可见性/诊断过滤误伤）", () => {
+test("rca.updated 正常进活动线（回归保护：诊断面板事件不得被可见性/诊断过滤误伤）", () => {
   const events = mergeActivityEvents([], [{
     event_id: "rca-1",
     event_type: "openops.rca.updated",
@@ -393,14 +379,14 @@ test("rca.updated 正常进活动线（回归保护：定界面板事件不得�
     task_id: "task-1",
     sequence: 6,
     occurred_at: "2026-07-14T02:02:00Z",
-    message: "定界面板已更新（第 2 步 · 证据）",
+    message: "诊断面板已更新（第 2 步 · 证据）",
     payload_redacted_json: { revision: 2, status: "in_progress", agent_key: "main" },
   }], "live");
 
   assert.equal(events.length, 1);
   assert.equal(events[0].eventType, "openops.rca.updated");
-  assert.equal(events[0].message, "定界面板已更新（第 2 步 · 证据）");
-  // 不属于装配缺口诊断事件：「全部动态」不得过滤掉
+  assert.equal(events[0].message, "诊断面板已更新（第 2 步 · 证据）");
+  // 不属于装配缺口诊断事件：活动投影不得过滤掉
   assert.equal(isOpsDiagnosticEvent(events[0]), false);
   // 主 Agent 事件：不进子 Agent 轨，留在主控/全局动态里
   const rail = projectRailModel({ events, delegations: [], nextCursor: null, hasMore: false });
