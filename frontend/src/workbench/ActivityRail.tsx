@@ -25,7 +25,7 @@ export interface ActivityRailProps {
   rcaActionsEnabled?: boolean;
   /** 时间线按钮回调（以用户身份发消息）；缺省（run closed）时 footer 不渲染。 */
   onRcaAction?: (action: RcaCardAction) => void;
-  /** 用户拖拽后的面板宽度（px）；null/缺省 = CSS 默认 clamp(420px, 42vw, 760px)。 */
+  /** 用户拖拽后的面板宽度（px）；null/缺省 = CSS 默认 clamp(420px, 33.333%, 760px)（内容区 1/3）。 */
   width?: number | null;
   /** 左缘拖拽手柄回调；缺省不渲染手柄。 */
   onResize?: (width: number) => void;
