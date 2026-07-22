@@ -33,8 +33,14 @@ python -m venv .venv                 # 不要拷 mac 的 .venv，必须在 Windo
 pip install -e ".[test]"             # 默认 mock 运行时，不装 agentscope / redis
 uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18082
 ```
+> **连测试库开发更省事**：本机连不上 IAM、但能连测试环境库时，用启动脚本的 `local` 档——
+> `cp config/openops.local.env.example config/openops.local.env` 填好测试库连接后，Git Bash/WSL 里
+> `bash run-backend.sh local`。`local` 口径 = 连测试库 + 关 IAM（走 mock 头）+ 外部系统全 mock +
+> 无文根前缀，与 `test`/`prod` 同一套 `config/openops.<env>.env` 机制（见 §2.5）。
+
 启动时会连 PG 并**幂等灌种子**（demo 用户 / 白名单 / 模板 / 审批好的工具 / 模型 / 沙箱配置）。
 验证：浏览器打开 `http://localhost:18082/health` → `{"status":"ok"}`。
+⚠ 连**测试库**时：`run.py` 只幂等灌种子、不 TRUNCATE，起服务安全；但 **`pytest` 会 TRUNCATE 全表**，别对 `local` 配置跑 pytest，多人共用测试库各自用独立 `OPENOPS_PG_SCHEMA` 隔离。
 
 ### 1.3 起前端
 ```powershell
@@ -90,11 +96,13 @@ docker compose up -d        # 重新首启 → 重建表 + 重新 seed
 后端**没有 dotenv/pydantic-settings，不加载任何 `.env` 文件**——把 `.env.example` 改名成 `.env` 放哪都**不会生效**（`.env.example` 仅是变量名参考清单）。配置 = 把变量设成**真进程环境变量**，两种方式：
 
 - **临时**：起后端前 `$env:OPENOPS_PG_HOST="..."`（及 `PG_PORT/PG_DB/PG_USER/PG_PASSWORD/PG_SCHEMA`；或整串 `$env:OPENOPS_DATABASE_URL="..."`）。`infra/db.py` 在 import 时即读，须先设再起 uvicorn。
-- **推荐（免每次手敲）**：用启动脚本。仓库已带模板：
-  - **Windows 用 Git Bash / WSL 跑 `.sh`**（`.ps1` 双击/在 cmd 里会弹「用什么打开」而非执行——.ps1 默认不双击运行）：
-  - 后端 `backend/run-backend.sh.example` → **复制为 `backend/run-backend.sh`，填入真连接串**，然后 `cd backend && bash run-backend.sh`（设 env + 起 uvicorn 18082；脚本自动识别 venv 是 `Scripts/python.exe`(Git Bash) 还是 `bin/python`(WSL/mac)）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
+- **推荐（免每次手敲）**：用启动脚本（Windows 在 **Git Bash / WSL** 跑 `.sh`；`.ps1` 双击/cmd 里只会弹「用什么打开」而非执行）：
+  - **后端多环境入口 `backend/run-backend.sh local|test|prod`**（仓库已带，入库无凭证）：各读 `config/openops.<env>.env`。首次 `cp config/openops.local.env.example config/openops.local.env` 填测试库连接，然后 `cd backend && bash run-backend.sh local`（source env + 起 `run.py` 18082；脚本自动识别 venv 是 `Scripts/python.exe`(Git Bash) 还是 `bin/python`(WSL/mac)）。含凭证的 `config/openops.*.env` **已 gitignore**，`.example` 入库。
+    - `local` = 连测试库 + 关 IAM（`OPENOPS_IAM_ENABLED` 不设，走 `X-OpenOps-Mock-*` 头）+ 外部全 mock + `OPENOPS_ROOT_PATH` 留空。
+    - `test`/`prod` = 真环境（含 IAM / omodel / GLM 等），env 文件按 `openops.{test,prod}.env.example` 填。
+  - 旧法 `backend/run-backend.sh.example`（把连接串写死进脚本本体的单文件模板）：**复制为 `run-backend.sh` 会覆盖上面的多环境入口**，仅在不想用 env 文件时用；同样含明文密码、勿提交。
   - 前端 `frontend/run-frontend.sh`（无密钥、可直接跑）→ `cd frontend && bash run-frontend.sh`（起 vite dev 5175，代理 `/api`→18082）。
-  - 没有 Git Bash？临时法：在 **PowerShell**（非 cmd、非双击）里 `$env:OPENOPS_PG_HOST="..."; ...; .venv\Scripts\python.exe -m uvicorn main:app --app-dir src --port 18082`。
+  - 没有 Git Bash？临时法：在 **PowerShell**（非 cmd、非双击）里 `$env:OPENOPS_PG_HOST="..."; ...; .venv\Scripts\python.exe run.py`。
 
 ## 3. 本地鉴权（无真 IAM）
 
