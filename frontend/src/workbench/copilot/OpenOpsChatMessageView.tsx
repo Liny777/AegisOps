@@ -19,7 +19,6 @@ const TABLE_STYLE: React.CSSProperties = {
 const TH_TD_STYLE: React.CSSProperties = {
   padding: "8px 12px",
   border: "1px solid #e6e8ec",
-  textAlign: "center",
 };
  
 const TH_STYLE: React.CSSProperties = {
