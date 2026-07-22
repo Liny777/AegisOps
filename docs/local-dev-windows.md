@@ -33,8 +33,14 @@ python -m venv .venv                 # 不要拷 mac 的 .venv，必须在 Windo
 pip install -e ".[test]"             # 默认 mock 运行时，不装 agentscope / redis
 uvicorn main:app --app-dir src --reload --host 0.0.0.0 --port 18082
 ```
+> **连测试库开发更省事**：本机连不上 IAM、但能连测试环境库时，用启动脚本的 `local` 档——
+> `cp config/openops.local.env.example config/openops.local.env` 填好测试库连接后，Git Bash/WSL 里
+> `bash run-backend.sh local`。`local` 口径 = 连测试库 + 关 IAM（走 mock 头）+ 外部系统全 mock +
+> 无文根前缀，与 `test`/`prod` 同一套 `config/openops.<env>.env` 机制（见 §2.5）。
+
 启动时会连 PG 并**幂等灌种子**（demo 用户 / 白名单 / 模板 / 审批好的工具 / 模型 / 沙箱配置）。
 验证：浏览器打开 `http://localhost:18082/health` → `{"status":"ok"}`。
+⚠ 连**测试库**时：`run.py` 只幂等灌种子、不 TRUNCATE，起服务安全；但 **`pytest` 会 TRUNCATE 全表**，别对 `local` 配置跑 pytest，多人共用测试库各自用独立 `OPENOPS_PG_SCHEMA` 隔离。
 
 ### 1.3 起前端
 ```powershell
@@ -90,11 +96,13 @@ docker compose up -d        # 重新首启 → 重建表 + 重新 seed
 后端**没有 dotenv/pydantic-settings，不加载任何 `.env` 文件**——把 `.env.example` 改名成 `.env` 放哪都**不会生效**（`.env.example` 仅是变量名参考清单）。配置 = 把变量设成**真进程环境变量**，两种方式：
 
 - **临时**：起后端前 `$env:OPENOPS_PG_HOST="..."`（及 `PG_PORT/PG_DB/PG_USER/PG_PASSWORD/PG_SCHEMA`；或整串 `$env:OPENOPS_DATABASE_URL="..."`）。`infra/db.py` 在 import 时即读，须先设再起 uvicorn。
-- **推荐（免每次手敲）**：用启动脚本。仓库已带模板：
-  - **Windows 用 Git Bash / WSL 跑 `.sh`**（`.ps1` 双击/在 cmd 里会弹「用什么打开」而非执行——.ps1 默认不双击运行）：
-  - 后端 `backend/run-backend.sh.example` → **复制为 `backend/run-backend.sh`，填入真连接串**，然后 `cd backend && bash run-backend.sh`（设 env + 起 uvicorn 18082；脚本自动识别 venv 是 `Scripts/python.exe`(Git Bash) 还是 `bin/python`(WSL/mac)）。⚠含明文密码，**已在 `.gitignore`，勿提交**。
+- **推荐（免每次手敲）**：用启动脚本（Windows 在 **Git Bash / WSL** 跑 `.sh`；`.ps1` 双击/cmd 里只会弹「用什么打开」而非执行）：
+  - **后端多环境入口 `backend/run-backend.sh local|test|prod`**（仓库已带，入库无凭证）：各读 `config/openops.<env>.env`。首次 `cp config/openops.local.env.example config/openops.local.env` 填测试库连接，然后 `cd backend && bash run-backend.sh local`（source env + 起 `run.py` 18082；脚本自动识别 venv 是 `Scripts/python.exe`(Git Bash) 还是 `bin/python`(WSL/mac)）。含凭证的 `config/openops.*.env` **已 gitignore**，`.example` 入库。
+    - `local` = 连测试库 + 关 IAM（`OPENOPS_IAM_ENABLED` 不设，走 `X-OpenOps-Mock-*` 头）+ 外部全 mock + `OPENOPS_ROOT_PATH` 留空。
+    - `test`/`prod` = 真环境（含 IAM / omodel / GLM 等），env 文件按 `openops.{test,prod}.env.example` 填。
+  - 旧法 `backend/run-backend.sh.example`（把连接串写死进脚本本体的单文件模板）：**复制为 `run-backend.sh` 会覆盖上面的多环境入口**，仅在不想用 env 文件时用；同样含明文密码、勿提交。
   - 前端 `frontend/run-frontend.sh`（无密钥、可直接跑）→ `cd frontend && bash run-frontend.sh`（起 vite dev 5175，代理 `/api`→18082）。
-  - 没有 Git Bash？临时法：在 **PowerShell**（非 cmd、非双击）里 `$env:OPENOPS_PG_HOST="..."; ...; .venv\Scripts\python.exe -m uvicorn main:app --app-dir src --port 18082`。
+  - 没有 Git Bash？临时法：在 **PowerShell**（非 cmd、非双击）里 `$env:OPENOPS_PG_HOST="..."; ...; .venv\Scripts\python.exe run.py`。
 
 ## 3. 本地鉴权（无真 IAM）
 
@@ -153,6 +161,25 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 
 ### 5.1 oModel（real 已对齐 29.5）
 `omodel_client.py` 是分发器（`_impl()` 模式，其他依赖同款）。mock 验证全链路：初始化建 workspace、Scope resolve、空范围 fail-closed、平台 MCP 按 `effective_appids` 过滤（`31` EXT-001/002、SCOPE-*）。**real 已按 29.5 对齐**（`omodel_real`：resolve=端点4、get/list/create=WorkspaceMetadata 映射），切 `OPENOPS_OMODEL=real`+`OPENOPS_OMODEL_BASE_URL` 即联真；**剩 per-user 过滤 + Cookie 鉴权待 umodel P0**（29.6，见 EXTERNAL-INTEGRATION.md 安全口径）。
+
+### 5.2 本地 omodel 读/写行为与实例复用（连测试库时必读）
+
+omodel 端点分**读**和**写**，本地行为完全不同：
+
+| 操作 | 端点 | 鉴权 | 本地 `omodel=real` 能否过 |
+|---|---|---|---|
+| 读（resolve / get / list workspace） | `GET /{ws}/projects`、`GET /{ws}` | 匿名可用（未登录=system，「发现≠授权」29.6 P0-1） | ✅ 只配 `OPENOPS_OMODEL_BASE_URL` 即可，**不需 cookie** |
+| 写（create / update workspace） | `POST/PUT /workspaces` | 强制鉴权 + **华为 IAM 会话绑客户端 IP** | ❌ 本地必 401，见下 |
+
+**写为什么本地必 401**：`omodel_real._client_kwargs` 出站带 `IAM-Client-Ip`（取 `X-Forwarded-For` 首跳，见 `api/deps.py:_client_ip`）。华为 IAM 把会话绑在铸 cookie 时的浏览器办公网 IP 上；本地 `浏览器→vite→后端` 全走 loopback，后端只能呈现 `127.0.0.1`，与 cookie 的 IP 对不上 → omodel 判「未登录」→ `OMODEL_AUTH_FAILED (upstream 401)`。**没有 env 能覆盖这个出站 IP**，cookie 再新鲜也没用。
+
+**本地 omodel 铁律**：
+- **real omodel 只用来"只读复用已有实例"**——`OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`，打开测试环境里**已有**的实例（resolve/get 匿名过）。
+- **"建实例 / 任何写"一律用 mock**——`OPENOPS_OMODEL=mock` 时初始化向导的 `create_workspace` 打到 `omodel_mock`（内存桩，无鉴权、秒成 `ready`），建成的实例本地可跑通。⚠ mock workspace 是内存态，**后端重启即丢**（实例重启后 `/status` 404），纯本地调 UI/流程够用。
+
+**两个连带坑**（连测试库最常见）：
+1. **实例归属**：`run_state_service` 校验 `inst["owner_user_id"] != uid` 直接拒。要打开测试库里某实例发起对话，本地登录用户须 == 该实例 owner（八成是建它的工号）。前端默认只认 `0026demo01`/`admin`（`?as=`），要以真工号登录得改 `frontend/src/lib/api/client.ts` 的 `DEMO_DEFAULT`，且该工号须在 `sre_user_whitelist`。
+2. **workspace 认不出**：测试库实例绑真 workspace（如 `l30035197-ws-…`），本地 `omodel=mock` 只认 3 个内存演示 ws（`ws_pay_abc`/`ws_syncing`/`ws_failed`）→ 进对话页 `/status` 404 + Run `SCOPE_RESOLVE_FAILED`。要么切 real 只读复用，要么用向导在 mock 下新建。`OPENOPS_SCOPE_OVERRIDE_APPIDS=<appids>` 只能救 Run 的 scope、**救不了 `/status` 404**。
 
 ## 6. 为什么没有 Redis
 
