@@ -1,51 +1,13 @@
-import {  type JSX, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   CopilotChatMessageView,
   CopilotChatToolCallsView,
   type CopilotChatMessageViewProps,
   type CopilotChatToolCallsViewProps,
 } from "@copilotkit/react-core/v2";
-import { Streamdown } from "streamdown";
+
 import { CopilotPresetQuestions } from "./CopilotPresetQuestions";
 import { groupToolCallsByUserTurn } from "./toolGrouping";
-
-const TABLE_STYLE: React.CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: "12px",
-  border: "1px solid #dfe5ee",
-};
- 
-const TH_TD_STYLE: React.CSSProperties = {
-  padding: "8px 12px",
-  border: "1px solid #e6e8ec",
-};
- 
-const TH_STYLE: React.CSSProperties = {
-  ...TH_TD_STYLE,
-  fontWeight: 600,
-  background: "#f8fafc",
-};
- 
-const CENTERED_TABLE_COMPONENTS = {
-  table: ({ children, ...props }: JSX.IntrinsicElements["table"] & { node?: unknown }) => (
-    <table {...props} style={TABLE_STYLE}>{children}</table>
-  ),
-  th: ({ children, ...props }: JSX.IntrinsicElements["th"] & { node?: unknown }) => (
-    <th {...props} style={TH_STYLE}>{children}</th>
-  ),
-  td: ({ children, ...props }: JSX.IntrinsicElements["td"] & { node?: unknown }) => (
-    <td {...props} style={TH_TD_STYLE}>{children}</td>
-  ),
-};
- 
-function OaMarkdownRenderer({ content, className, ...props }: { content?: string; className?: string } & Record<string, unknown>) {
-  return (
-    <Streamdown className={`oa-chat-markdown${className ? ` ${className}` : ""}`} components={CENTERED_TABLE_COMPONENTS} {...props}>
-      {content ?? ""}
-    </Streamdown>
-  );
-}
 
 function GroupedToolCallsView({ message, messages = [] }: CopilotChatToolCallsViewProps) {
   const toolCalls = message.toolCalls ?? [];
@@ -93,7 +55,7 @@ function GroupedToolCallsView({ message, messages = [] }: CopilotChatToolCallsVi
 
 const ASSISTANT_MESSAGE_SLOT = {
   className: "oa-chat-message oa-chat-assistant-message",
-  markdownRenderer: OaMarkdownRenderer,
+  markdownRenderer: { className: "oa-chat-markdown" },
   toolbar: { className: "oa-chat-toolbar oa-chat-assistant-toolbar" },
   copyButton: { className: "oa-chat-copy-button" },
   toolCallsView: GroupedToolCallsView,
