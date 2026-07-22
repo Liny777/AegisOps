@@ -162,6 +162,25 @@ curl -H "X-OpenOps-Mock-User: admin" http://localhost:18082/api/openops/v1/me
 ### 5.1 oModel（real 已对齐 29.5）
 `omodel_client.py` 是分发器（`_impl()` 模式，其他依赖同款）。mock 验证全链路：初始化建 workspace、Scope resolve、空范围 fail-closed、平台 MCP 按 `effective_appids` 过滤（`31` EXT-001/002、SCOPE-*）。**real 已按 29.5 对齐**（`omodel_real`：resolve=端点4、get/list/create=WorkspaceMetadata 映射），切 `OPENOPS_OMODEL=real`+`OPENOPS_OMODEL_BASE_URL` 即联真；**剩 per-user 过滤 + Cookie 鉴权待 umodel P0**（29.6，见 EXTERNAL-INTEGRATION.md 安全口径）。
 
+### 5.2 本地 omodel 读/写行为与实例复用（连测试库时必读）
+
+omodel 端点分**读**和**写**，本地行为完全不同：
+
+| 操作 | 端点 | 鉴权 | 本地 `omodel=real` 能否过 |
+|---|---|---|---|
+| 读（resolve / get / list workspace） | `GET /{ws}/projects`、`GET /{ws}` | 匿名可用（未登录=system，「发现≠授权」29.6 P0-1） | ✅ 只配 `OPENOPS_OMODEL_BASE_URL` 即可，**不需 cookie** |
+| 写（create / update workspace） | `POST/PUT /workspaces` | 强制鉴权 + **华为 IAM 会话绑客户端 IP** | ❌ 本地必 401，见下 |
+
+**写为什么本地必 401**：`omodel_real._client_kwargs` 出站带 `IAM-Client-Ip`（取 `X-Forwarded-For` 首跳，见 `api/deps.py:_client_ip`）。华为 IAM 把会话绑在铸 cookie 时的浏览器办公网 IP 上；本地 `浏览器→vite→后端` 全走 loopback，后端只能呈现 `127.0.0.1`，与 cookie 的 IP 对不上 → omodel 判「未登录」→ `OMODEL_AUTH_FAILED (upstream 401)`。**没有 env 能覆盖这个出站 IP**，cookie 再新鲜也没用。
+
+**本地 omodel 铁律**：
+- **real omodel 只用来"只读复用已有实例"**——`OPENOPS_OMODEL=real` + `OPENOPS_OMODEL_BASE_URL`，打开测试环境里**已有**的实例（resolve/get 匿名过）。
+- **"建实例 / 任何写"一律用 mock**——`OPENOPS_OMODEL=mock` 时初始化向导的 `create_workspace` 打到 `omodel_mock`（内存桩，无鉴权、秒成 `ready`），建成的实例本地可跑通。⚠ mock workspace 是内存态，**后端重启即丢**（实例重启后 `/status` 404），纯本地调 UI/流程够用。
+
+**两个连带坑**（连测试库最常见）：
+1. **实例归属**：`run_state_service` 校验 `inst["owner_user_id"] != uid` 直接拒。要打开测试库里某实例发起对话，本地登录用户须 == 该实例 owner（八成是建它的工号）。前端默认只认 `0026demo01`/`admin`（`?as=`），要以真工号登录得改 `frontend/src/lib/api/client.ts` 的 `DEMO_DEFAULT`，且该工号须在 `sre_user_whitelist`。
+2. **workspace 认不出**：测试库实例绑真 workspace（如 `l30035197-ws-…`），本地 `omodel=mock` 只认 3 个内存演示 ws（`ws_pay_abc`/`ws_syncing`/`ws_failed`）→ 进对话页 `/status` 404 + Run `SCOPE_RESOLVE_FAILED`。要么切 real 只读复用，要么用向导在 mock 下新建。`OPENOPS_SCOPE_OVERRIDE_APPIDS=<appids>` 只能救 Run 的 scope、**救不了 `/status` 404**。
+
 ## 6. 为什么没有 Redis
 
 - 主依赖（`pyproject.toml`）无 redis 无 agentscope；`docker-compose.yml` 只有 postgres。
