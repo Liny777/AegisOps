@@ -46,6 +46,7 @@ const assetQs = (p?: AssetQuery): string => {
   if (p?.sourceType) s.set("source_type", p.sourceType);
   const q = p?.q?.trim();
   if (q) s.set("q", q);
+  if (p?.tag) s.set("tag", p.tag);
   return `?${s.toString()}`;
 };
 
@@ -206,7 +207,7 @@ export interface OpenOpsApi {
   reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
   /** 管理台表格；分页/搜索参数由 Skill 基线（key="skills"）与用户表（key="users"）消费（服务端过滤 + 分页）。 */
-  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string }): Promise<AdminTableData>;
+  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string; tag?: string }): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
@@ -236,6 +237,8 @@ export interface OpenOpsApi {
   getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
   adminSaveAnnotation(toolCatalogId: string, payload: Record<string, unknown>): Promise<void>;
   adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
+  /** 标签下拉候选：所有未删用户已用的领域标签（去重、排序）——「用户与白名单」页头筛选用。 */
+  adminListUserTags(): Promise<string[]>;
   // admin Agent Studio（管理员回溯复盘）：按用户看 run 列表 → run 详情（span 原文 + 交接账本）
   adminStudioRuns(userId: string, params?: { page?: number; pageSize?: number }): Promise<StudioRunsPage>;
   adminStudioRunDetail(runId: string): Promise<StudioRunDetail>;
@@ -869,6 +872,9 @@ const realApi: OpenOpsApi = {
     }
     return out;
   },
+  async adminListUserTags() {
+    return apiFetch<string[]>("/openops/v1/admin/users/tags");
+  },
   async adminAddWhitelist(userId, displayName, tags) {
     await apiFetch("/openops/v1/admin/users/whitelist", {
       method: "POST",
@@ -1225,6 +1231,7 @@ const mockApi: OpenOpsApi = {
   },
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
+  adminListUserTags: () => delay(["财经", "研发", "供应"]),
   adminStudioRuns: (userId) => delay(M.mockStudioRuns(userId)),
   adminStudioRunDetail: (runId) => delay(M.mockStudioRunDetail(runId)),
   adminStudioRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
