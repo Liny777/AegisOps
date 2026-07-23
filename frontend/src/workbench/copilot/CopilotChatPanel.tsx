@@ -12,7 +12,7 @@ import "@copilotkit/react-core/v2/styles.css";
 import "./CopilotChatPanel.css";
 
 import { Icon } from "../../ui";
-import { color, radius } from "../../theme/tokens";
+import { color, radius, shadow } from "../../theme/tokens";
 import { demoIdentity } from "../../lib/api";
 import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend, CopilotProgrammaticSend } from "./CopilotAutoSend";
@@ -29,6 +29,13 @@ import {
 } from "./threadBinding";
 
 const AGENT_ID = "sre-agent";
+
+/** 回放追平信号(契约:与 server/persistent-runner.ts 的 REPLAY_CAUGHT_UP_EVENT 同名)。
+ *  刻意不用 openops.* 前缀——合成事件无后端 envelope,不得进活动线桥。 */
+const REPLAY_CAUGHT_UP_EVENT = "oa.replay.caught_up";
+
+/** 「正在同步对话」提示的兜底超时:旧版 sidecar 无追平信号/信号丢失时不卡提示。 */
+const SYNCING_FALLBACK_MS = 5_000;
 
 function identityHeaders(): Record<string, string> {
   return {
@@ -81,6 +88,17 @@ export function CopilotChatPanel({
     [],
   );
 
+  // 「正在同步对话」:重连回放期间(gate ready 后、追平信号到达前)的轻提示。
+  // 组件随 Provider key(runId:generation)重挂,每次连接自然重置;sidecar 已把
+  // 回放段合并秒到,该提示通常不可见,慢网/超长会话时兜底。
+  const [syncing, setSyncing] = useState(true);
+  const handleCaughtUp = useCallback(() => setSyncing(false), []);
+  useEffect(() => {
+    if (!syncing) return;
+    const timer = window.setTimeout(() => setSyncing(false), SYNCING_FALLBACK_MS);
+    return () => window.clearTimeout(timer);
+  }, [syncing]);
+
   // 活动态输入槽：稳定类名 + 在免责行只读展示当前模型（modelLabel 变才重建，避免流式时反复解析）。
   const activeInputSlot = useMemo(() => ({
     className: "oa-chat-input",
@@ -107,8 +125,18 @@ export function CopilotChatPanel({
       onRetryConnection={onRetryConnection}
     >
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
+      <ReplayCaughtUpBridge onCaughtUp={handleCaughtUp} />
       {/* 先于 CopilotChat 订阅 connect 首帧/终态，恢复开始前 composer 始终不可用。 */}
       <CopilotConnectMonitor onConnected={handleConnected} />
+      {syncing && connectionStatus === "ready" ? (
+        <div
+          data-testid="chat-syncing"
+          role="status"
+          style={{ position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)", zIndex: 20, display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: color.textNav, background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.pill, padding: "4px 12px", boxShadow: shadow.card, whiteSpace: "nowrap" }}
+        >
+          <Icon name="loader-2" size={12} color={color.brand} spin />正在同步对话…
+        </div>
+      ) : null}
       <MermaidFullscreenBoundary>
         {/* 模型只在初始化向导配置，会话内不再提供切换（去掉原右上角浮层选择器） */}
         {/* 预设问题挂在 messageView 的空消息分支里，故 provider 需包住 CopilotChat。
@@ -341,6 +369,23 @@ function OpenOpsCustomEventBridge({ onOpenOps }: { onOpenOps: (event: OpenOpsEve
     });
     return () => subscription.unsubscribe();
   }, [agent, onOpenOps]);
+
+  return null;
+}
+
+/** 回放追平信号桥:sidecar 在回放段(合并后)与 live 段交界注入 oa.replay.caught_up,
+ *  收到即熄灭「正在同步对话」提示。合成事件无后端 envelope,不进 openops.* 桥/活动线。 */
+function ReplayCaughtUpBridge({ onCaughtUp }: { onCaughtUp: () => void }) {
+  const { agent } = useAgent({ agentId: AGENT_ID });
+
+  useEffect(() => {
+    const subscription = agent.subscribe({
+      onCustomEvent({ event }) {
+        if (event.name === REPLAY_CAUGHT_UP_EVENT) onCaughtUp();
+      },
+    });
+    return () => subscription.unsubscribe();
+  }, [agent, onCaughtUp]);
 
   return null;
 }

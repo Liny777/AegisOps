@@ -8,9 +8,10 @@ import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
 import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes, projectRca } from "../lib/api/projection";
 import { activityReducer, createActivityState, projectRailModel } from "../lib/activity";
 import { API_BASE } from "../lib/api/client";
-import { mockRcaFinal } from "../lib/api/mockData";
+import { mockRcaFinal, mockRecoveryClosureEvents } from "../lib/api/mockData";
 import { parseRcaCard } from "../lib/rca/schema";
 import { initialRcaGuard, nextRcaGuard, shouldApplyRca, type RcaGuard } from "../lib/rca/model";
+import { deriveRecoveryState } from "../lib/rca/recovery";
 import type {
   ActivityNode,
   ChatMessage,
@@ -149,6 +150,11 @@ export function Workbench({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
+  // rcaGuard 分段键（board_task_id ?? task_id）的可渲染镜像：ref 不触发重渲染，恢复节点
+  // 的段过滤需要它进 useMemo 依赖。与 rcaGuardRef 在同四处赋值点同步 set。
+  const [rcaBoardId, setRcaBoardId] = useState<string | null>(null);
+  // /state.pending_approvals 原始行：恢复节点推导的种子（防 recent_events 窗口挤出 required）。
+  const [pendingApprovalRows, setPendingApprovalRows] = useState<Record<string, unknown>[]>([]);
   const [pendingSend, setPendingSend] = useState<PendingSend | null>(null); // 卡片按钮 → copilot 程序化发送桥
   const [railWidth, setRailWidth] = useState<number | null>(() => loadRailWidth());
   const [skills, setSkills] = useState<Skill[]>(demo.skills); // real：拉与执行门禁同源的装配集，失败回退 demo
@@ -357,6 +363,7 @@ export function Workbench({
         const boardId = p.board_task_id ? String(p.board_task_id) : e.task_id ?? null;
         if (!shouldApplyRca(rcaGuardRef.current, boardId, parsed.revision ?? null)) break;
         rcaGuardRef.current = nextRcaGuard(rcaGuardRef.current, boardId, parsed.revision ?? null);
+        setRcaBoardId(boardId);
         setRca(projectRca(parsed as unknown as Record<string, unknown>, e.occurred_at));
         break;
       }
@@ -410,6 +417,8 @@ export function Workbench({
     }
 
     const pending = (d.pending_approvals ?? []) as Record<string, unknown>[];
+    // 恢复节点种子整体替换：/state 是待审批集合的权威快照（已决/超时行不在其中）。
+    setPendingApprovalRows(pending);
     if (pending.length) setHitl(approvalToHitl(pending[0]));
     else if (replaceSession) setHitl(undefined);
     else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
@@ -425,10 +434,12 @@ export function Workbench({
       rcaGuardRef.current = restoredRca
         ? nextRcaGuard(initialRcaGuard(), snapshotBoardId, restoredRca.revision ?? null)
         : initialRcaGuard();
+      setRcaBoardId(rcaGuardRef.current.taskId);
       setRca(restoredRca ? projectRca(restoredRca as unknown as Record<string, unknown>) : undefined);
       setPendingSend(null); // 旧会话挂起的程序化发送不得落到新 thread
     } else if (restoredRca && shouldApplyRca(rcaGuardRef.current, snapshotBoardId, restoredRca.revision ?? null)) {
       rcaGuardRef.current = nextRcaGuard(rcaGuardRef.current, snapshotBoardId, restoredRca.revision ?? null);
+      setRcaBoardId(rcaGuardRef.current.taskId);
       setRca(projectRca(restoredRca as unknown as Record<string, unknown>));
     }
 
@@ -506,6 +517,9 @@ export function Workbench({
       setHitl(demo.hitl);
       setRca(demo.rca);
       rcaGuardRef.current = initialRcaGuard();
+      // 镜像同步：demo 板无任务归属（boardTaskId=null → 恢复推导不过滤，吃下 demo 快照全部事件）
+      setRcaBoardId(null);
+      setPendingApprovalRows([]);
       setPendingSend(null);
       setNodes(demo.activity.flatMap((group) => group.items));
       if (demo.activitySnapshot) dispatchActivity({ type: "hydrate", snapshot: demo.activitySnapshot });
@@ -596,6 +610,15 @@ export function Workbench({
   }, []);
 
   const railModel = useMemo(() => projectRailModel(activityState), [activityState]);
+  // 第六节点「恢复执行」：从活动事件投影（去重/时序/切会话清理全部复用活动流语义），
+  // 不改 handleOpenOpsEvent 既有分支。
+  const recovery = useMemo(
+    () => deriveRecoveryState(activityState.events, {
+      boardTaskId: rcaBoardId,
+      pendingApprovals: pendingApprovalRows,
+    }),
+    [activityState.events, rcaBoardId, pendingApprovalRows],
+  );
   const hasUnifiedActivity = railModel.events.length > 0 || railModel.rounds.length > 0;
   useEffect(() => {
     activityRequestRef.current = resetActivityPageRequest(
@@ -646,6 +669,9 @@ export function Workbench({
         setMessages((m) => [...m, { id: `b${m.length}`, role: "bot", text: "（mock 演示）任务已受理。", showCopy: true }]);
         setTaskStatus("completed");
         if (demo.rca) setRca(mockRcaFinal());
+        // 恢复闭环合成事件：demo 待审批 appr_1 → 已批准 → 工具执行成功，第六节点全程演示
+        // 「待审批 → 已执行」（事件 id 固定，活动流按 event_id 去重，重复发送幂等）。
+        dispatchActivity({ type: "merge_events", events: mockRecoveryClosureEvents(), source: "live" });
       }, 900);
       return;
     }
@@ -950,6 +976,7 @@ export function Workbench({
             rcaLive={running && rca?.status !== "concluded"}
             rcaActionsEnabled={!running && !pendingSend && !workbenchInputBlocked}
             onRcaAction={runStatus === "closed" ? undefined : (action) => requestAgentSend(action.message)}
+            recovery={recovery}
             width={railWidth}
             onResize={handleRailResize}
           />

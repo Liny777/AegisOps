@@ -141,6 +141,26 @@ export const mockActivitySnapshot = {
   events_has_more: true,
 };
 
+/** mock 恢复闭环合成事件：mock send 900ms 回调把 demo 快照里的待审批 appr_1
+ *  （evt-b2-r-ask，tool=recover_execute）推到 已批准 → 工具执行成功，时间线第六节点
+ *  「恢复执行」全程演示 待审批 → 已执行。approved 对齐真实后端 payload（无 tool 字段，
+ *  只按 approval_request_id 关联）；事件 id 固定，活动流按 event_id 去重天然幂等。 */
+export const mockRecoveryClosureEvents = () => {
+  const base = Date.now();
+  const iso = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+  return [
+    mockActivityEvent("evt-appr1-approved", "openops.approval.approved", iso(0), "审批已通过：重启 svc-a", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, approval_request_id: "appr_1",
+    }),
+    mockActivityEvent("evt-appr1-tool-ok", "openops.tool.call.succeeded", iso(400), "恢复动作执行成功：svc-a 已重启", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, tool: "recover_execute",
+      display_label: "重启实例", result_summary: "svc-a 重启完成，active 连接回落 210/1000",
+    }),
+  ];
+};
+
 export const mockWorkbenchState = (): WorkbenchState => ({
   chatTitle: "支付延迟突增诊断",
   agentName: "支付域感知快恢",

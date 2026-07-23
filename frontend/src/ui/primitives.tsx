@@ -151,6 +151,10 @@ export function StatusBadge({
         border: `1px solid ${color.border}`,
         padding: "5px 10px",
         borderRadius: radius.md,
+        // 长无空格 label（超长服务名/URL）不得把单 chip 撑出宿主卡片：共享原语自洽，
+        // 不依赖宿主继承 overflow-wrap。
+        maxWidth: "100%",
+        overflowWrap: "anywhere",
       }}
     >
       <Dot tone={tone} running={running} />
