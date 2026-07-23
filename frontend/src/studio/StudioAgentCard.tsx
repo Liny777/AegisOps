@@ -109,7 +109,8 @@ function CallRow({ call }: { call: StudioCall }) {
                 <Chip icon="clock">{fmtMs(llm.latency_ms)}</Chip>
                 {llm.finish_reason ? <Chip icon="flag">{llm.finish_reason}</Chip> : null}
               </div>
-              <Labeled label="输入 messages" text={llm.input} />
+              {/* 输入 messages 有值才渲染：用户回放端点会置空（平台提示词不外露），管理员版全量 */}
+              {llm.input ? <Labeled label="输入 messages" text={llm.input} /> : null}
               <Labeled label="模型输出" text={llm.output} />
             </>
           ) : (
