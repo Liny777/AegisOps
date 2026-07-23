@@ -76,7 +76,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             # latest_version=SkillHub 原串）。description 优先取列表自带（§2.2 latest_description），
             # 列表没给才回退下载解包——见 _skill_description
             manifest = {"synced_from": "skill_hub", "latest_version": s.get("latest_version"),
-                        "category": s.get("category")}
+                        "category": s.get("category"), "updated_date": s.get("updated_date")}
             row = await assets.get_skill_by_key(s["source_type"], s["skill_key"])
             if row is None:
                 manifest["description"] = await _skill_description(s)
@@ -105,12 +105,14 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 need_desc = ("description" not in cur
                              or skill_hub_client._looks_like_block_scalar_indicator(cur.get("description")))
                 if (cur.get("latest_version") != s.get("latest_version")
-                        or cur.get("category") != s.get("category") or need_desc):
+                        or cur.get("category") != s.get("category")
+                        or cur.get("updated_date") != s.get("updated_date") or need_desc):
                     desc = (await _skill_description(s) if need_desc else cur.get("description"))
                     await assets.update_skill_version_manifest(
                         str(latest["skill_version_id"]),
                         {**cur, "latest_version": s.get("latest_version"),
-                         "category": s.get("category"), "description": desc},
+                         "category": s.get("category"), "updated_date": s.get("updated_date"),
+                         "description": desc},
                     )
                     summary["skill_manifests_refreshed"] += 1
 

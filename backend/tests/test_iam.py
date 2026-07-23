@@ -74,6 +74,46 @@ def test_iam_whitelist_grant_revoke_cycle(client):
     assert r.status_code == 400
 
 
+def test_iam_user_tags_set_and_survive_login(client):
+    """领域标签：加白带 tags → 列表透出（规整 strip/去空/去重）；登录 upsert 与重复加白不冲已有标签；
+    :set-tags 整体替换 / [] 清空；不存在用户 404。"""
+    import time as _time
+
+    def _row(uid):
+        rows = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS))["items"]
+        return next(r for r in rows if r["user_id"] == uid)
+
+    # 加白带标签（原料含空白/重复 → 规整后落库）
+    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"wt_{_time.time_ns()}", "user_id": "tagged01",
+                             "display_name": "标签用户", "tags": [" 财经 ", "研发", "财经", ""]}))
+    assert _row("tagged01")["tags_json"] == ["财经", "研发"]
+
+    # 登录（resolve_user 的 upsert）不冲标签——upsert 冲突分支不列 tags_json
+    hdr = {"X-OpenOps-Mock-User": "tagged01", "X-OpenOps-Mock-Name": "Tagged"}
+    unwrap(client.get("/api/openops/v1/me", headers=hdr))
+    assert _row("tagged01")["tags_json"] == ["财经", "研发"]
+
+    # 重复加白不带 tags（None）→ 不动已有标签
+    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"wt2_{_time.time_ns()}", "user_id": "tagged01"}))
+    assert _row("tagged01")["tags_json"] == ["财经", "研发"]
+
+    # :set-tags 整体替换 → 再用 [] 清空
+    out = unwrap(client.post("/api/openops/v1/admin/users/tagged01:set-tags", headers=ADMIN_HEADERS,
+                             json={"client_request_id": f"st_{_time.time_ns()}", "tags": ["供应"]}))
+    assert out["tags"] == ["供应"] and out["changed"] is True
+    assert _row("tagged01")["tags_json"] == ["供应"]
+    unwrap(client.post("/api/openops/v1/admin/users/tagged01:set-tags", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"st2_{_time.time_ns()}", "tags": []}))
+    assert _row("tagged01")["tags_json"] == []
+
+    # 不存在的用户 → 404
+    r = client.post("/api/openops/v1/admin/users/ghost99:set-tags", headers=ADMIN_HEADERS,
+                    json={"client_request_id": f"st3_{_time.time_ns()}", "tags": ["财经"]})
+    assert r.status_code == 404
+
+
 # ---- B9：真 IAM 双步握手（OPENOPS_IAM_ENABLED=1 + 假上游） ----
 
 class _FakeResp:

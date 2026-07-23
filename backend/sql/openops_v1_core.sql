@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS sre_openops_user (
   display_name text,
   email text,
   department_id text,
+  tags_json jsonb,
   status text NOT NULL DEFAULT 'active',
   last_login_at timestamptz,
   creation_date timestamptz NOT NULL DEFAULT now(),
@@ -631,6 +632,7 @@ COMMENT ON COLUMN sre_openops_user.user_role IS '角色：user / platform_admin�
 COMMENT ON COLUMN sre_openops_user.display_name IS '用户展示名';
 COMMENT ON COLUMN sre_openops_user.email IS '邮箱';
 COMMENT ON COLUMN sre_openops_user.department_id IS '部门 ID，可空';
+COMMENT ON COLUMN sre_openops_user.tags_json IS '领域标签数组（如 ["财经","研发"]）；管理台维护，登录链路不写';
 COMMENT ON COLUMN sre_openops_user.status IS '状态：active / disabled / deleted';
 COMMENT ON COLUMN sre_openops_user.last_login_at IS '最近登录时间';
 COMMENT ON COLUMN sre_openops_user.creation_date IS '创建时间';

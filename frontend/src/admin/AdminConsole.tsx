@@ -132,6 +132,17 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteUser(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "user-tags") {
+      // 行内编辑领域标签（prompt 交互与「销毁容器 reason」同风格）：当前值从「标签」列单元格取（「设标签」=空）
+      const ti = table?.cols.findIndex((c) => c.label === "标签") ?? -1;
+      const cellText = ti >= 0 ? String(table?.rows.find((r) => r.id === rowId)?.cells[ti]?.text ?? "") : "";
+      const cur = cellText === "设标签" ? "" : cellText.split("、").join(",");
+      const input = window.prompt(`设置用户 ${rowId} 的领域标签（多个用逗号分隔，如 财经,研发；留空清除全部）：`, cur);
+      if (input === null) return; // 取消不动
+      const tags = input.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean);
+      setActionErr("");
+      void api.adminSetTags(rowId, tags).then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
   };
 
   /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
@@ -320,12 +331,15 @@ export function AdminConsole() {
 function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [userId, setUserId] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [tagsText, setTagsText] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = () => {
     if (!userId.trim()) { setErr("user_id 必填（工号，如 0026xxxx）"); return; }
     setBusy(true);
-    api.adminAddWhitelist(userId.trim(), displayName.trim())
+    // 留空传 undefined（后端不动已有标签）——重复加白不冲已设标签；填了才整体设置
+    const tags = tagsText.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean);
+    api.adminAddWhitelist(userId.trim(), displayName.trim(), tags.length ? tags : undefined)
       .then(onSaved)
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false));
@@ -337,6 +351,8 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
         <input placeholder="user_id（工号，必填）" value={userId} onChange={(e) => setUserId(e.target.value)}
           style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5, fontFamily: "ui-monospace, monospace" }} />
         <input placeholder="展示名（选填，缺省用 user_id）" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+          style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5 }} />
+        <input placeholder="标签（选填，逗号分隔，如 财经,研发）" value={tagsText} onChange={(e) => setTagsText(e.target.value)}
           style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5 }} />
         {err ? <div style={{ fontSize: 12, color: color.dangerText }}>{err}</div> : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>

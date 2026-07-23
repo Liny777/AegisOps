@@ -8,7 +8,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from infra.db import exec1, q_all, q_one
+from infra.db import exec1, jsonb, q_all, q_one
 
 
 async def get_user(user_id: str) -> dict[str, Any] | None:
@@ -49,6 +49,15 @@ async def set_role(user_id: str, role: str, by: str) -> int:
     return await exec1(
         "update sre_openops_user set user_role=%(r)s, last_updated_by=%(b)s, last_update_date=now() where user_id=%(u)s",
         {"u": user_id, "r": role, "b": by},
+    )
+
+
+async def set_user_tags(user_id: str, tags: list[str], by: str) -> int:
+    """领域标签整体替换（管理台维护；[] 即清空）。登录链路的 upsert_user 不触碰本列，不会被冲掉。"""
+    return await exec1(
+        "update sre_openops_user set tags_json=%(t)s, last_updated_by=%(b)s, last_update_date=now() "
+        "where user_id=%(u)s and deleted_at is null",
+        {"u": user_id, "t": jsonb(tags), "b": by},
     )
 
 
@@ -125,7 +134,7 @@ async def list_users_with_whitelist(
     total = int(((await q_one(f"select count(*) as n{_USERS_FROM}", p)) or {}).get("n") or 0)
     rows = await q_all(
         f"""
-        select u.user_id, u.display_name, u.user_role as role, u.last_login_at,
+        select u.user_id, u.display_name, u.user_role as role, u.tags_json, u.last_login_at,
                coalesce(w.status, 'none') whitelist_status
         {_USERS_FROM}
         order by u.user_id limit %(lim)s offset %(off)s

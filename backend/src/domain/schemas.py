@@ -210,9 +210,16 @@ class WhitelistRequest(BaseModel):
     user_id: str = Field(min_length=1)
     display_name: str = ""
     role: str = "user"
+    tags: list[str] | None = None  # 领域标签（如 ["财经","研发"]）；None=不动，数组=设置
 
 
 class SetRoleRequest(BaseModel):
     """管理台改角色（B7·三补链）：升/降级已有用户。role 只收两枚举值。"""
     client_request_id: str = Field(min_length=1)
     role: Literal["user", "platform_admin"]
+
+
+class SetTagsRequest(BaseModel):
+    """管理台改用户领域标签：整体替换语义，[] 清空。"""
+    client_request_id: str = Field(min_length=1)
+    tags: list[str]

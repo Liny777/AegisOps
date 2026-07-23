@@ -102,6 +102,7 @@ def test_asset_reconcile_source_openops_and_versions(client):
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in skills if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # _MOCK_LIST 的 latest_version 原串
+    assert insp["updated_date"] == "2026-07-20 10:30:00"  # §2.2 updated_date 原串（管理台「更新时间」列）
     assert "manifest_json" not in insp  # 内部 manifest 不透给前端
 
 
@@ -129,6 +130,7 @@ def test_asset_reconcile_backfills_missing_semver_without_new_version(client):
     after = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in after if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # semver 已回填
+    assert insp["updated_date"] == "2026-07-20 10:30:00"  # updated_date 同轮原地回填（存量行零迁移）
     assert str(insp["version_no"]) == old_vno  # 版本号不变（非新版本）
 
 
