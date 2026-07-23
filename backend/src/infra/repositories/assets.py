@@ -222,6 +222,9 @@ async def create_mcp(
     owner: str | None, source_type: str, display_name: str, transport: str,
     endpoint_config: dict[str, Any], manifest_json: dict[str, Any],
 ) -> dict[str, Any]:
+    from domain import tool_key
+
+    display_name = tool_key.sanitize_server_name(display_name)  # "::" 会让复合键歧义，入库即归一
     mid, vid = str(uuid.uuid4()), str(uuid.uuid4())
     by = owner or "system"
     await exec1(

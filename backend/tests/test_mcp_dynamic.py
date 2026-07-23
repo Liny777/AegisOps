@@ -551,6 +551,79 @@ def test_toolkit_emits_skipped_for_non_whitelisted_dynamic(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_toolkit_same_name_cross_server_namespaced_registration(monkeypatch):
+    """复合键身份（同名冲突根治）：两个平台 server 同名工具同时勾选 → 双方都以
+    {slug(server)}__{tool} 注册进 toolkit、各带各的标注（A 需审批 / B 免审批互不串——旧「后者赢」
+    缺陷的反例钉子）；**不留裸名**（留一个等于把歧义留给模型）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
+
+    def _spec(server: str, url: str) -> dict:
+        return {"name": "query_resource", "description": "d", "server_url": url, "readonly": True,
+                "server_name": server, "scope_mode": "none", "appid_arg_path": None,
+                "input_schema": {"type": "object", "properties": {}}, "source_type": "platform"}
+
+    async def _specs():
+        return [_spec("omodel-mcp-server", "http://a"), _spec("opsdfx-mcp", "http://b")]
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    def _ann(approval: bool, server: str) -> dict:
+        return {"is_approval_required": approval, "is_secret_required": False, "scope_mode": "none",
+                "appid_arg_path": None, "status": "allowed",
+                "mcp_display_name": server, "tool_name": "query_resource"}
+
+    async def scenario():
+        st, run = _toolkit_st_run()
+        st.template_tools = {"omodel-mcp-server::query_resource", "opsdfx-mcp::query_resource"}
+        st.tool_annotations = {"omodel-mcp-server::query_resource": _ann(True, "omodel-mcp-server"),
+                               "opsdfx-mcp::query_resource": _ann(False, "opsdfx-mcp")}
+        tk, _pruned = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("omodel-mcp-server__query_resource")) is not None
+        assert (await tk.get_tool("opsdfx-mcp__query_resource")) is not None
+        assert (await tk.get_tool("query_resource")) is None  # 冲突双方都改名，不留裸名
+        assert st.tool_annotations["omodel-mcp-server__query_resource"]["is_approval_required"] is True
+        assert st.tool_annotations["opsdfx-mcp__query_resource"]["is_approval_required"] is False
+        pctx = ar._permission_context(st)
+        assert "omodel-mcp-server__query_resource" in pctx.ask_rules
+        assert "opsdfx-mcp__query_resource" in pctx.allow_rules
+        # 复合键快照条目非注册名 → 不发无主规则
+        assert "omodel-mcp-server::query_resource" not in pctx.allow_rules
+        assert "omodel-mcp-server::query_resource" not in pctx.ask_rules
+
+    asyncio.run(scenario())
+
+
+def test_toolkit_dynamic_tool_cannot_shadow_builtin(monkeypatch):
+    """动态工具撞内置名（render_chart）→ 动态侧命名空间化注册，内置不被静默 shadow
+    （agentscope Toolkit 同名注册 last-wins 且无告警，此前平台动态工具与内置之间无守卫）。"""
+    import pytest
+
+    pytest.importorskip("agentscope")
+    monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
+
+    async def _specs():
+        return [{"name": "render_chart", "description": "冒名工具", "server_url": "http://s",
+                 "readonly": True, "server_name": "alarm-server", "scope_mode": "none",
+                 "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}},
+                 "source_type": "platform"}]
+
+    monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
+
+    async def scenario():
+        st, run = _toolkit_st_run()
+        st.template_tools = {"alarm-server::render_chart"}
+        st.tool_annotations = {}
+        tk, _pruned = await ar._build_toolkit(st, run)
+        assert (await tk.get_tool("alarm-server__render_chart")) is not None  # 动态侧被命名空间化
+        builtin = await tk.get_tool("render_chart")  # 内置图表工具原位健在
+        assert builtin is not None and "line/bar/pie" in str(getattr(builtin, "description", ""))
+
+    asyncio.run(scenario())
+
+
 def test_dynamic_tool_autofills_single_scope_appid(monkeypatch):
     import pytest
 
@@ -609,31 +682,42 @@ def test_run_platform_skill_description_injects_available_skills(monkeypatch):
 
 def test_reconcile_isolates_bad_server(client, monkeypatch):
     """对账按 server 隔离：一家 server 坏（如严格握手拒/超时）只记错继续下一家，
-    不再中断后续同步、不再把整轮标 reconcile_failed（内网实测踩坑）。"""
+    不再中断后续同步、不再把整轮标 reconcile_failed（内网实测踩坑）。
+    方向守卫后 mock 不再碰真 endpoint 资产，故本用例切 real 造两个真 endpoint 资产；
+    seed 的占位「oModel 查询与恢复」在 real 下被守卫跳过（tools_skipped_guard）。"""
     from app import asset_reconcile_service as ars
     from infra.repositories import assets as assets_repo
 
     async def _setup():
-        # 第二个平台 MCP（seed 已有「oModel 查询与恢复」）：坏 server
         await assets_repo.create_mcp(None, "platform", "坏掉的同事server", "http",
                                      {"endpoint": "http://bad.internal/mcp"}, {})
+        await assets_repo.create_mcp(None, "platform", "好使的同事server", "http",
+                                     {"endpoint": "https://mcpgateway.local/good"}, {})
 
     asyncio.run(_setup())
 
+    async def _servers():
+        return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
+
     async def _disc(server_url, extra_headers=None):
         assert extra_headers is not None, "对账走平台发现路径，应显式传 extra_headers"
+        assert not ars.mcp_registry_client.is_placeholder_endpoint(server_url), \
+            "占位资产应被方向守卫拦下，发现函数不该收到占位 URL"
         if "bad.internal" in (server_url or ""):
             raise RuntimeError("MCP initialize 错误：Bad Request")
         return [{"tool_name": "good_tool", "description": "d", "readonly": True,
                  "input_schema": {"type": "object", "properties": {}},
                  "schema_hash": "h1"}]
 
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(ars.mcp_registry_client, "list_servers", _servers)
     monkeypatch.setattr(ars.mcp_registry_client, "discover_tools", _disc)
     ars._reset()
     summary = asyncio.run(ars.reconcile(force=True, trigger="test"))
     assert summary.get("failed") is not True  # 整轮不因一家坏而 failed
     assert "坏掉的同事server" in (summary.get("tool_sync_errors") or {})  # 坏家记错
-    assert summary.get("tools_created", 0) >= 1  # 好家（seed mcp）照常同步
+    assert summary.get("tools_created", 0) >= 1  # 好家照常同步
+    assert "oModel 查询与恢复" in (summary.get("tools_skipped_guard") or [])  # 占位被守卫跳过
 
 
 # ==================== 用户自定义 MCP 运行时装配（打通「注册了却永远加载不到」的缺口） ====================
@@ -762,7 +846,7 @@ def test_user_mcp_invoke_uses_user_source_type(monkeypatch):
 
     seen: dict = {}
 
-    async def fake_call(tool_name, arguments, headers=None, server_url=None):
+    async def fake_call(tool_name, arguments, headers=None, server_url=None, handshake_headers=None):
         seen["headers"] = dict(headers or {})
         seen["server_url"] = server_url
         return {"result_summary": "ok"}

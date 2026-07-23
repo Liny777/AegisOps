@@ -349,15 +349,17 @@ export const adminTables: Record<string, AdminTableData> = {
   templates: {
     title: "模板管理",
     primary: { label: "新建模板", icon: "plus", actionKey: "new-template" },
-    cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "88px" }],
+    cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "148px" }],
     rows: [
       { id: "tpl_sre_fast_recovery", cells: [
         { text: "感知快恢 Agent" }, { text: "sensai_fast_recovery", mono: true },
         { text: "active", kind: "badge", tone: "good" }, { text: "v3" },
+        { text: "资产治理", kind: "action", onClickKey: "open-template" },
         { text: "编辑", kind: "action", onClickKey: "edit-template" } ] },
       { id: "tpl_draft", cells: [
         { text: "网络诊断 Agent" }, { text: "net_diag", mono: true },
         { text: "draft", kind: "badge", tone: "neutral" }, { text: "—" },
+        { text: "资产治理", kind: "action", onClickKey: "open-template" },
         { text: "编辑", kind: "action", onClickKey: "edit-template" } ] },
     ],
   },
@@ -415,6 +417,45 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "active", kind: "badge", tone: "good" }, { text: "09:30" } ] },
     ],
   },
+};
+
+/** getAdminMcpTools().raw 的 mock 数据源（同名冲突根治场景）：两家 server（omodel-mcp-server /
+ * opsdfx-mcp）各有 allowed 的同名 query_resource + recover_execute（复现内网事故），外加各一个
+ * 独有工具与一条未标注行。前端按「server::tool」复合键分组，勾 A 家不再联动 B 家。
+ * adminTables["mcp-tools"] 亦由此派生，避免两份数据漂移。 */
+export const adminMcpToolsRaw: Record<string, unknown>[] = [
+  { tool_catalog_id: "tc_omodel_qr", tool_name: "query_resource", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_qr", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_omodel_re", tool_name: "recover_execute", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_re", annotation_status: "allowed", is_approval_required: true },
+  { tool_catalog_id: "tc_omodel_topo", tool_name: "query_topology", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_topo", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_opsdfx_qr", tool_name: "query_resource", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: "an_opsdfx_qr", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_opsdfx_re", tool_name: "recover_execute", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: "an_opsdfx_re", annotation_status: "allowed", is_approval_required: true },
+  { tool_catalog_id: "tc_opsdfx_shell", tool_name: "raw_shell", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: null, annotation_status: "unreviewed", is_approval_required: false },
+];
+
+/** getAdminTemplateDetail() 的 mock：main.default_tools 混入①唯一归属裸名(query_topology→升级为
+ * omodel 复合键，令 omodel 起始为「部分」)、②目录外残留名(ghost_tool)——覆盖读时归一化的升级/
+ * 残留分支，且让 omodel 起始未满、opsdfx 起始未选，使「勾 omodel 不联动 opsdfx」的核心回归可断言。 */
+export const mockTemplateDetail = {
+  template: { template_id: "tpl_sre_fast_recovery", display_name: "感知快恢 Agent" },
+  active_version: {
+    template_version_id: "tv_active", version_no: 2, status: "active",
+    content_json: {
+      main: {
+        role: "理解用户任务，调度巡检/诊断/恢复能力。",
+        default_tools: ["query_topology", "ghost_tool"],
+        skills: [],
+      },
+      sub_agents: [{ key: "inspect", label: "巡检", role: "巡检", skills: [], mcp_tools: ["query_resource"] }],
+      default_llm: { provider: "platform", model: "qwen3.5-instruct" },
+    },
+  },
+  draft_version: null as Record<string, unknown> | null,
 };
 
 export const sandboxCfg: SandboxCfg[] = [

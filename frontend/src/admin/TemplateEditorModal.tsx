@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { color, radius } from "../theme/tokens";
 import { Modal, Icon, Pill } from "../ui";
 import { api } from "../lib/api";
+import { groupCatalog, normalizeSelection, parseToolKey, type ServerGroups } from "./toolBinding";
 
 /** 模板编辑器（B7·二真化 + 编排对称化）：main role + default_tools 勾选（仅 allowed 平台 tool
  *  可绑，**含动态注册表工具**，空=零工具纯编排派发）+ main skills 白名单（空=不限）、
@@ -18,8 +19,10 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
   const [draftVer, setDraftVer] = useState<Record<string, unknown> | null>(null);
   const [role, setRole] = useState("");
   const [tools, setTools] = useState<Set<string>>(new Set());
-  // MCP 目录按 server 分组（allowed 行 mcp_display_name → 工具名列表）：main/sub 的 MCP 绑定按 server 勾选
-  const [serverTools, setServerTools] = useState<Record<string, string[]>>({});
+  // MCP 目录按 server 分组（allowed 行）：元素带「server::tool」复合键（勾选身份，同名工具跨 server
+  // 不互踩）与裸名（展示）。main/sub 的 MCP 绑定按 server 勾选。
+  const [serverTools, setServerTools] = useState<ServerGroups>({});
+  const [migrated, setMigrated] = useState(false); // 存量裸名绑定被读时换算为复合键（保存后落库完成迁移）
   const [skillKeys, setSkillKeys] = useState<string[]>([]); // 技能目录（active 行的 skill_key）：main/sub skills 勾选源
   const [content, setContent] = useState<Record<string, unknown>>({});
   const [msg, setMsg] = useState("");
@@ -38,16 +41,13 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
     setContent(c);
     const main = (c.main ?? {}) as Record<string, unknown>;
     setRole(String(main.role ?? ""));
-    setTools(new Set(((main.default_tools ?? []) as string[])));
     const toolsData = await api.getAdminMcpTools(null);
-    const grouped: Record<string, string[]> = {};
-    for (const r of toolsData.raw) {
-      if (r.annotation_id != null && r.annotation_status === "allowed") {
-        const s = String(r.mcp_display_name);
-        (grouped[s] ??= []).push(String(r.tool_name));
-      }
-    }
+    const grouped = groupCatalog(toolsData.raw);
     setServerTools(grouped);
+    // 读时归一（与后端保存时同规则）：存量裸名 → 复合键（唯一升级/同名多家展开）；目录外原样保留
+    const norm = normalizeSelection(((main.default_tools ?? []) as string[]), grouped);
+    setTools(new Set(norm.keys));
+    setMigrated(norm.migrated);
     // 技能目录（SkillHub 对账后的资产）：skills 白名单从这里勾选，键=skill_key（运行时同键）
     // 用 getAllSkills（内部翻页取全）——白名单必须能勾到每一个 skill，取单页会静默漏掉超一页的
     const skills = await api.getAllSkills().catch(() => []);
@@ -167,18 +167,21 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
         <Box title="main 平台 MCP tool 绑定（按 server 勾选=绑定其当前全部 allowed 工具；空=零工具纯编排派发，模板外工具运行时 fail-closed）">
           <ServerPicker groups={serverTools} selected={[...tools]} onChange={(next) => setTools(new Set(next))}
             emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注 把工具标为 allowed（动态注册表工具需先经 MCP 对账进目录），标注后这里即可按 server 勾选绑定。" />
-          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>勾选=绑定该 server <b>当前</b>全部 allowed 工具（此后新标注的工具需重开编辑器补勾）；main 未绑的工具运行时被剪，由子 Agent 承接。发布后版本不可原地改；再次修改须另存新草稿。</div>
+          {migrated ? <div style={{ fontSize: 11.5, color: "#b7791f", marginTop: 8 }}>存量绑定已按当前目录换算为「server::工具」复合键（同名工具已展开到各所属 server）；保存草稿后完成迁移。</div> : null}
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>勾选=绑定该 server <b>当前</b>全部 allowed 工具（此后新标注的工具需重开编辑器补勾）；同名工具按「server::工具」区分归属，勾选互不联动。main 未绑的工具运行时被剪，由子 Agent 承接。发布后版本不可原地改；再次修改须另存新草稿。</div>
         </Box>
         <Box title="活动栏工具名称（可选，仅影响展示文案）">
           {(() => {
             const activityLabels = (content.activity_labels ?? {}) as Record<string, unknown>;
             const labels = (activityLabels.tools ?? {}) as Record<string, unknown>;
             const configured = Object.keys(labels);
+            // 绑定集里的复合键取内层裸名作映射键：运行时按「完整注册名 → MCP 内层名」回退匹配，
+            // 裸名键对普通与命名空间注册名（server__tool）都能命中；复合键作键则永不匹配。
             const referenced = [
               ...tools,
               ...((content.sub_agents ?? []) as Record<string, unknown>[])
                 .flatMap((sub) => Array.isArray(sub.mcp_tools) ? sub.mcp_tools as string[] : []),
-            ];
+            ].map((t) => parseToolKey(t).tool);
             const names = [...new Set([...referenced, ...configured])].sort();
             if (!names.length) {
               return <div style={{ fontSize: 12, color: color.textSubtle }}>先为 main 或 sub Agent 绑定工具；也可以保留已有映射，工具加入模板后自动生效。</div>;
@@ -255,7 +258,8 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
                     </div>
                     <div style={{ fontSize: 11.5, color: color.textSubtle }}>mcp_tools（按 server 勾选=绑定其当前全部 allowed 工具）
                       <div style={{ marginTop: 4 }}>
-                        <ServerPicker groups={serverTools} selected={(s.mcp_tools ?? []) as string[]}
+                        <ServerPicker groups={serverTools}
+                          selected={normalizeSelection((s.mcp_tools ?? []) as string[], serverTools).keys}
                           onChange={(next) => patch("mcp_tools", next)}
                           emptyHint="目录暂无 allowed 标注工具——先到 资产治理 → Tool 标注。" />
                       </div>
@@ -320,15 +324,16 @@ function ChipPicker({ options, selected, onChange, emptyHint }: {
   );
 }
 
-/** MCP 按 server 勾选器：一家 server 一个勾选框（勾=把该家当前全部 allowed 工具写进白名单，
- * 去勾=全删；落库仍是工具名，运行时 per-agent 工具级隔离与 fail-closed 不变）。
+/** MCP 按 server 勾选器：一家 server 一个勾选框（勾=把该家当前全部 allowed 工具的**复合键**写进
+ * 白名单，去勾=全删；落库为「server::tool」，运行时 per-agent 工具级隔离与 fail-closed 不变）。
+ * 勾选身份是复合键 ⇒ 同名工具跨 server 互不联动（勾 A 家不再被动点亮 B 家）。
  * 旧数据部分选中显「部分」徽标，点击归一为全选；不属于任何已知 server 的存量值
  * 显示为可取消残留 chip，不静默丢数据。 */
 function ServerPicker({ groups, selected, onChange, emptyHint }: {
-  groups: Record<string, string[]>; selected: string[]; onChange: (next: string[]) => void; emptyHint: string;
+  groups: ServerGroups; selected: string[]; onChange: (next: string[]) => void; emptyHint: string;
 }) {
   const servers = Object.keys(groups);
-  const known = new Set(servers.flatMap((s) => groups[s]));
+  const known = new Set(servers.flatMap((s) => groups[s].map((t) => t.key)));
   const residual = selected.filter((t) => !known.has(t));
   if (!servers.length && !residual.length) {
     return <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.7 }}>{emptyHint}</div>;
@@ -337,22 +342,23 @@ function ServerPicker({ groups, selected, onChange, emptyHint }: {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       {servers.map((s) => {
         const tls = groups[s];
-        const picked = tls.filter((t) => selected.includes(t));
-        const full = tls.length > 0 && picked.length === tls.length;
+        const keys = tls.map((t) => t.key);
+        const picked = keys.filter((k) => selected.includes(k));
+        const full = keys.length > 0 && picked.length === keys.length;
         const partial = picked.length > 0 && !full;
         return (
           <label key={s} style={{ display: "flex", alignItems: "flex-start", gap: 8, border: `1px solid ${full ? color.brand : color.border}`, background: full ? color.brandTintBg : "#fff", borderRadius: radius.md, padding: "8px 10px", cursor: "pointer" }}>
             <input type="checkbox" checked={full} style={{ marginTop: 2 }}
               onChange={(e) => {
-                const rest = selected.filter((t) => !tls.includes(t));
-                onChange(e.target.checked ? [...rest, ...tls] : rest);
+                const rest = selected.filter((t) => !keys.includes(t));
+                onChange(e.target.checked ? [...rest, ...keys] : rest);
               }} />
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 12.5, fontWeight: 600 }}>
                 {s}（{tls.length} 个工具）
-                {partial ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "#b7791f", background: "#fdf3e2", padding: "1px 6px", borderRadius: 4 }}>部分 {picked.length}/{tls.length} · 勾选归一为全选</span> : null}
+                {partial ? <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "#b7791f", background: "#fdf3e2", padding: "1px 6px", borderRadius: 4 }}>部分 {picked.length}/{keys.length} · 勾选归一为全选</span> : null}
               </div>
-              <div style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace", marginTop: 2, lineHeight: 1.6, wordBreak: "break-all" }}>{tls.join("、")}</div>
+              <div style={{ fontSize: 11, color: color.textSubtle, fontFamily: "ui-monospace, monospace", marginTop: 2, lineHeight: 1.6, wordBreak: "break-all" }}>{tls.map((t) => t.name).join("、")}</div>
             </div>
           </label>
         );
