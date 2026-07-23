@@ -132,6 +132,9 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
     child = _child_state(st, sub, agent_key, text, did,
                          dispatch_batch_id=dispatch_batch_id, dispatch_batch_no=dispatch_batch_no)
     task_registry.register_subtask(child)  # E1：decide_approval 按子 task_id 路由到 child.approval_ev
+    # Agent Studio：子 span 归属（_run_one 在 create_task 私有 context 快照里跑，set 不泄漏回主）
+    from runtime.studio_context import reset_studio_task_context, set_studio_task_context
+    _studio_toks = set_studio_task_context(child.user_id, child.run_id, child.task_id, agent_key)
     try:
         await _emit_skill_gaps(child, run, sub)
         toolkit, _pruned = await rt._build_toolkit(child, run)
@@ -144,6 +147,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                              permission_context=rt._permission_context(child)),
             react_config=ReActConfig(max_iters=int(sub.get("max_iters", 20))),
             context_config=ContextConfig(tool_result_limit=int(sub.get("tool_result_limit", 24000))),
+            middlewares=rt._studio_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
         )
         await emit(child, run, "openops.subagent.started", action=agent_key,
                    message=f"子 Agent「{sub.get('label', agent_key)}」开始执行",
@@ -191,6 +195,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                             "report_summary": redact_text(report, max_length=300)})
         return report
     finally:
+        reset_studio_task_context(_studio_toks)
         task_registry.unregister_subtask(child.task_id)
         try:  # DEF-1 级联收口：子任务任何终止路径都把自己的 pending 审批置 cancelled——
             # 否则遗留 pending 卡片的迟到 decide 无人认领（旧 fallback 时代会污染主任务握手）

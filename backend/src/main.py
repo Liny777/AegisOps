@@ -64,6 +64,20 @@ async def lifespan(_app: FastAPI):
             _agentscope = f" (agentscope {getattr(agentscope, '__version__', '?')} 已装)"
         except ModuleNotFoundError:
             _agentscope = " (⚠ agentscope 未安装：提交任务会报错)"
+
+    # Agent Studio（管理员回溯复盘）：agentscope runtime 下装 OTel 捕获 + span 落库 drain。
+    # 惰性 import——mock/未装 agentscope 时进程内零 otel 依赖；失败只降级不阻断启动。
+    studio_drain = None
+    from runtime.studio_context import studio_enabled as _studio_enabled
+    if _rt == "agentscope" and _studio_enabled():
+        try:
+            from infra.repositories import studio_spans as _studio_spans
+            from runtime import studio_tracing as _studio_tracing
+
+            await _studio_spans.purge_expired()
+            studio_drain = _studio_tracing.install_and_start()
+        except Exception as e:  # noqa: BLE001 —— 可观测性组件缺失不拖垮服务
+            logging.getLogger("openops.startup").warning("[startup] agent studio 捕获未启用：%s", e)
     def _cookie_disp(specific: str) -> str:
         """cookie 显示：专属 SET(len) > 共享 shared(len) > unset。含 `;` 引号不当会截断——长度识破。"""
         v = os.environ.get(specific, "")
@@ -97,7 +111,8 @@ async def lifespan(_app: FastAPI):
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"skillhub_cookie={_cookie_disp('OPENOPS_SKILLHUB_COOKIE')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}  "
-        f"sandbox_sweep={os.environ.get('OPENOPS_SANDBOX_SWEEP_INTERVAL_S', '60')}s"
+        f"sandbox_sweep={os.environ.get('OPENOPS_SANDBOX_SWEEP_INTERVAL_S', '60')}s  "
+        f"studio={'on' if studio_drain is not None else 'off'}"
     )
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)
     print(f"[OpenOps][startup] {_banner}", flush=True)
@@ -128,6 +143,8 @@ async def lifespan(_app: FastAPI):
         reconciler.cancel()
     if sweeper:
         sweeper.cancel()
+    if studio_drain:
+        studio_drain.cancel()  # 须在 close_pool() 之前（drain 落库走同一个池）
     # 先收口 runtime 任务（取消 + 短等审计写完），再关池——避免关闭期 PoolClosed 噪声（B5-BE-001）
     from runtime import task_registry
 

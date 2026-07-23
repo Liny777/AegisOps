@@ -1029,6 +1029,15 @@ async def _finish_cancel(st: TaskState, run: dict[str, Any]) -> None:
                message="任务已取消（Run 保持 active，可继续新任务）", action="task")
 
 
+def _studio_middlewares() -> list[Any]:
+    """Agent Studio 捕获中间件（惰性 import：mock/未装 agentscope 不触碰 otel 依赖）。"""
+    try:
+        from runtime.studio_middleware import studio_middlewares
+        return studio_middlewares()
+    except Exception:  # noqa: BLE001 —— 依赖缺失/版本漂移：降级为不捕获，绝不阻断 run
+        return []
+
+
 async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     """真 AgentScope 驱动一次 Task：Agent(stub)+Toolkit+Permission；事件桥回 openops.*。"""
     _require_agentscope()
@@ -1045,7 +1054,37 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     from agentscope.message import Msg, TextBlock
     from agentscope.state import AgentState
 
-    agent = None  # P3：finally 回写引用；toolkit 构建抛错时保持 None
+    from runtime.studio_context import reset_studio_task_context, set_studio_task_context
+
+    # Agent Studio：本 task 的 span 归属（studio_tracing.on_start 从 contextvar 读）
+    _studio_toks = set_studio_task_context(st.user_id, st.run_id, st.task_id, "main")
+    agent = None  # P3：终态回写引用；toolkit 构建抛错时保持 None
+    state_persisted = False
+
+    async def _persist_state() -> None:
+        """P3：AgentState 回写（幂等，成功一次即止）。
+
+        必须在 openops.task.completed/failed **事件可见之前**完成——事件驱动方（前端
+        紧接着的下一个 task、测试轮询）以完成事件为同步点，晚于事件的回写会让下一轮
+        恢复到旧记忆（同 run 失忆竞态；reply 链上每多一层 middleware/generator 包装，
+        「事件已发、状态未落」的窗口就更容易被调度器放大）。finally 仍兜底取消等路径。
+        """
+        nonlocal state_persisted
+        if agent is None or state_persisted:
+            return
+        try:
+            import json as _json
+
+            dump = agent.state.model_dump(mode="json")
+            if len(_json.dumps(dump, ensure_ascii=False)) > 2_000_000:
+                log.warning("[OpenOps][session-state] state_json 超 2MB（考虑 offload/压缩）session=%s",
+                            run["framework_session_id"])
+            await agent_session_states.upsert_state_json(
+                str(run["framework_session_id"]), dump, "main", st.user_id)
+            state_persisted = True
+        except Exception:  # noqa: BLE001 —— 旧库未迁移/序列化异常不阻断终态收口
+            log.warning("[OpenOps][session-state] AgentState 回写失败 session=%s", run["framework_session_id"])
+
     try:
         toolkit, pruned = await _build_toolkit(st, run)
         for name, reason in pruned:  # 裁剪审计对齐 mock（B6-RT-001③）：未标注/blocked 工具运行前即留痕
@@ -1079,6 +1118,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             model=await _build_model(st),
             toolkit=toolkit,
             state=agent_state,
+            middlewares=_studio_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
             # E4 治理（limits-and-budgets）：max_iters 防失控狂转；tool_result_limit 必须 < 模型窗口
             # （D7 事故：160000>128000 单条工具结果撑爆窗口→压缩 fallback 删掉用户问题）。
             # 2.0.3 默认 20/50000；主 agent 对齐老经验 ≤1/4 窗口取 24000。
@@ -1148,6 +1188,10 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 confirm_results=[ConfirmResult(confirmed=confirmed, tool_call=tc) for tc in require_ev.tool_calls],
             )
 
+        # P3：记忆落库必须先于任何「完成」信号可见——包括下面的内存态 st.status 翻转
+        # （/state 轮询读的就是内存 TaskState）与 task.completed 事件。晚于信号的回写会让
+        # 紧接着的下一个 task 恢复到旧记忆（同 run 失忆竞态）。
+        await _persist_state()
         if st.status == "running":
             st.status = "completed"
             if recovery_denied:
@@ -1180,6 +1224,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                        if st.rca and st.rca_source == "demo" else "任务完成")
             payload = ({"conclusion": st.rca.get("conclusion")} if st.rca
                        else {"conclusion": fallback_conclusion} if fallback_conclusion else None)
+            await _persist_state()  # 先持久化再发完成事件（事件可见 ⇒ 记忆已落库）
             await emit(st, run, "openops.task.completed", action="task", message=msg, payload=payload)
     except asyncio.CancelledError:
         await _finish_cancel(st, run)
@@ -1193,20 +1238,11 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
         await emit(st, run, "openops.model.call.failed", severity="error", action="model_call",
                    message=f"模型调用失败：{reason[:160]}", reason_code="MODEL_CALL_FAILED",
                    payload={"error": reason})
+        await _persist_state()  # 同 completed：task.failed 可见前记忆已落库
         await emit(st, run, "openops.task.failed", severity="error", action="task",
                    message=f"任务失败：{reason[:160]}", reason_code="MODEL_CALL_FAILED",
                    payload={"error": reason})
     finally:
-        # P3：终态回写 AgentState（completed/failed/cancelled 均落）——同 run 下一个 task 恢复记忆
-        if agent is not None:
-            try:
-                import json as _json
-
-                dump = agent.state.model_dump(mode="json")
-                if len(_json.dumps(dump, ensure_ascii=False)) > 2_000_000:
-                    log.warning("[OpenOps][session-state] state_json 超 2MB（考虑 offload/压缩）session=%s",
-                                run["framework_session_id"])
-                await agent_session_states.upsert_state_json(
-                    str(run["framework_session_id"]), dump, "main", st.user_id)
-            except Exception:  # noqa: BLE001 —— 旧库未迁移/序列化异常不阻断终态收口
-                log.warning("[OpenOps][session-state] AgentState 回写失败 session=%s", run["framework_session_id"])
+        reset_studio_task_context(_studio_toks)
+        # P3：终态回写兜底（取消/completed 分支未走到等路径；已持久化则幂等跳过）
+        await _persist_state()

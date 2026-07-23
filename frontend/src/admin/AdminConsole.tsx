@@ -8,6 +8,7 @@ import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "..
 import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
+import { AgentStudioPage } from "./AgentStudioPage";
 
 /** 管理台表格每页条数（服务端分页；后端上限 100，对齐 29.3 §2.2）。 */
 const ADMIN_PAGE_SIZE = 20;
@@ -19,6 +20,7 @@ const TITLES: Record<string, string> = {
   users: "用户与白名单",
   sandbox: "沙箱与容量",
   audit: "审计与 Trace 回放",
+  studio: "Agent Studio",
 };
 
 /** 管理台（30.6 2026-07-09 IA）：5 一级页；模板管理内 drill（资产治理 → Tool 标注，标注全局一份）。 */
@@ -256,6 +258,8 @@ export function AdminConsole() {
           ) : null}
 
           {page === "sandbox" ? <SandboxPanel /> : null}
+
+          {page === "studio" ? <AgentStudioPage /> : null}
 
           {page === "audit" ? (
             <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
