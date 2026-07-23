@@ -137,8 +137,20 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # ---- MCP Registry：平台 MCP tools/list → schema_hash 对账（ASSET-005） ----
         # 按 server 隔离异常（对齐上方 ingest 块口径）：一家 server 坏（握手拒/超时/不规范）
         # 只记错继续下一家——此前一家抛错会中断后续所有家的工具同步并把整轮标 failed（内网实测踩坑）
+        # 方向守卫（2026-07-23 内网污染防呆）：mock 模式 discover_tools 无视 URL 恒回内置 _TOOLS
+        # （设计内行为，勿当 bug 修——本地端到端依赖它），但把 _TOOLS 写进**真 endpoint 资产**的
+        # catalog 就是污染（内网实锤：每个真 server 名下都多出 query_resource/recover_execute，
+        # 引发标注同名冲突与模板编辑勾选联动）。口径：mock 只同步占位/种子资产（demo 目录的唯一
+        # 合法宿主）；real 跳过占位资产（seed 已写过目录+标注，且真机三层口径本就把占位排除在
+        # 展示/运行时之外）。占位判定与 discover_tools / 上方 ingest 防呆同一函数。
+        mock_mode = os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real"
         for m in await assets.list_platform_mcps():
             server_url = (m.get("endpoint_config_json") or {}).get("endpoint", "")  # 29.3 proxy 必填 url（mock 忽略）
+            if mcp_registry_client.is_placeholder_endpoint(server_url) != mock_mode:
+                # mock×真 endpoint：防污染跳过；real×占位（含 endpoint 为空的错配行，意味着该
+                # server 目录永不更新）：跳过并记 summary，让配置异味持续暴露在 asset.reconciled 审计里
+                summary.setdefault("tools_skipped_guard", []).append(str(m.get("display_name")))
+                continue
             try:
                 # 平台支路（上面 list_platform_mcps 已按 source_type='platform' 过滤）：带 x-ec2-ip
                 for t in await mcp_registry_client.discover_tools(server_url, host_ip.ec2_ip_headers()):

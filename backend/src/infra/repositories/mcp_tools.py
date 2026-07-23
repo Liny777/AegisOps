@@ -44,9 +44,9 @@ _EXCLUDE_PLACEHOLDER = (
 
 
 async def list_catalog_with_annotation(*, exclude_placeholder: bool = False) -> list[dict[str, Any]]:
-    """catalog + 标注全量。exclude_placeholder=True（真机运行时口径）排除占位平台 MCP 的行——
-    它们自带 seed 标注，会在按 tool_name 收敛时盖掉真 server 同名工具的管理员标注（见
-    mcp_tool_annotation_service.runtime_annotations）。管理台列表仍用默认 False（全量可见、可管理）。"""
+    """catalog + 标注全量（不含已删 server/版本的行——已删资产的工具不该再被标注/解析，删 server
+    级联自愈也靠这里「解析不到」判摘除）。exclude_placeholder=True（真机运行时口径）排除占位平台
+    MCP 的行（seed 自带标注的 demo 工具）。管理台列表仍用默认 False（全量可见、可管理）。"""
     return await q_all(
         f"""
         select c.tool_catalog_id, c.tool_name, c.description, c.schema_hash, c.mcp_version_id,
@@ -54,8 +54,8 @@ async def list_catalog_with_annotation(*, exclude_placeholder: bool = False) -> 
                a.annotation_id, a.is_approval_required, a.is_secret_required,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
         from sre_mcp_tool_catalog c
-        join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id
-        join sre_mcp_asset m on m.mcp_id = v.mcp_id
+        join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id and v.deleted_at is null
+        join sre_mcp_asset m on m.mcp_id = v.mcp_id and m.deleted_at is null
         left join sre_mcp_tool_annotation a
           on a.tool_catalog_id = c.tool_catalog_id and a.deleted_at is null
         where c.deleted_at is null{_EXCLUDE_PLACEHOLDER}
@@ -65,43 +65,33 @@ async def list_catalog_with_annotation(*, exclude_placeholder: bool = False) -> 
     )
 
 
-async def get_annotation_by_tool_name(tool_name: str) -> dict[str, Any] | None:
-    return await q_one(
-        """
-        select a.*, c.tool_name from sre_mcp_tool_annotation a
-        join sre_mcp_tool_catalog c on c.tool_catalog_id = a.tool_catalog_id
-        where c.tool_name=%(n)s and a.deleted_at is null and c.deleted_at is null
-        limit 1
-        """,
-        {"n": tool_name},
-    )
-
-
-async def get_runtime_annotation(tool_name: str, *, exclude_placeholder: bool = False) -> dict[str, Any] | None:
+async def get_runtime_annotation(
+    tool_name: str, *, server: str | None = None, exclude_placeholder: bool = False
+) -> dict[str, Any] | None:
     """运行时事实（28.7 热更新）：**最新**未删 catalog 行 + 其标注（可能无标注）。
 
     schema 变化后新行未标注 → annotation_id 为 NULL → Gateway 按 TOOL_NOT_ANNOTATED fail-closed；
     旧行（已 superseded 软删）的历史标注不再生效（标注不继承）。
 
-    exclude_placeholder=True（真机）排除占位平台 MCP 的行：本查询按 tool_name 全局取「最新一条」、
-    不区分来自哪个 MCP 资产，占位资产（endpoint=http://mock）的 catalog 行可能比真 server 的更新而
-    被选中，于是 gateway 用占位的标注裁决真工具。须与 runtime_annotations 的快照口径一致——两层
-    取到不同标注正是「管理台设了不生效」这类缺陷的根源。
+    server（mcp display_name）= 复合键身份的 server 维度：给了就只取该 server 名下的行——同名工具
+    跨 server 各取各的标注，不再全局「最新一条」互串。None 保留全局语义（demo/无 server 上下文兜底）。
+    exclude_placeholder=True（真机）排除占位平台 MCP 的行，与 runtime_annotations 快照口径一致。
     """
     return await q_one(
         f"""
-        select c.tool_catalog_id, c.tool_name, c.schema_hash,
+        select c.tool_catalog_id, c.tool_name, c.schema_hash, m.display_name mcp_display_name,
                a.annotation_id, a.is_approval_required, a.is_secret_required,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
         from sre_mcp_tool_catalog c
-        join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id
-        join sre_mcp_asset m on m.mcp_id = v.mcp_id
+        join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id and v.deleted_at is null
+        join sre_mcp_asset m on m.mcp_id = v.mcp_id and m.deleted_at is null
         left join sre_mcp_tool_annotation a
           on a.tool_catalog_id = c.tool_catalog_id and a.deleted_at is null
-        where c.tool_name=%(n)s and c.deleted_at is null{_EXCLUDE_PLACEHOLDER}
+        where c.tool_name=%(n)s and (%(srv)s::text is null or m.display_name=%(srv)s)
+          and c.deleted_at is null{_EXCLUDE_PLACEHOLDER}
         order by c.discovered_at desc limit 1
         """,
-        {"n": tool_name, "no_ph": exclude_placeholder},
+        {"n": tool_name, "srv": server, "no_ph": exclude_placeholder},
     )
 
 
@@ -151,12 +141,6 @@ async def sync_catalog_tool(
         {"t": row["tool_catalog_id"]},
     )
     return "schema_changed"
-
-
-async def get_tool_by_name(tool_name: str) -> dict[str, Any] | None:
-    return await q_one(
-        "select * from sre_mcp_tool_catalog where tool_name=%(n)s and deleted_at is null limit 1", {"n": tool_name}
-    )
 
 
 async def save_annotation(

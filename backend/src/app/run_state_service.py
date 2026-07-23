@@ -7,6 +7,7 @@ import uuid
 from typing import Any
 
 from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, scope_service
+from domain import tool_key
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
@@ -243,18 +244,38 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     tpl_ver = await templates.get_version(str(inst["template_version_id"]))
     _content = (tpl_ver or {}).get("content_json") or {}
     _main = _content.get("main", {})
-    st.template_tools = set(_main.get("default_tools", []))
+    anns = await mcp_tool_annotation_service.runtime_annotations()
+
+    def _expand(names: Any) -> set[str]:
+        # 工具引用双向展开（复合键身份的读侧兼容层，与 template_service._normalize_and_scrub 同判据）：
+        # 裸名 → 追加全部同名 allowed 复合键（存量裸名模板照旧放行各家同名工具，不静默砍能力）；
+        # 复合键 → 追加唯一裸名别名（runtime_annotations 仅全局唯一时给出——mock demo 编排器与
+        # _build_toolkit 的裸名检查零改动的关键）。原始条目保留：白名单是并集语义，只扩不收。
+        out = {n for n in (names or []) if isinstance(n, str)}
+        for t in list(out):
+            srv, bare = tool_key.parse_key(t)
+            if srv is None:
+                out.update(k for k, v in anns.items()
+                           if tool_key.is_composite(k) and v.get("tool_name") == t)
+            elif bare in anns and anns.get(bare) is anns.get(t):
+                out.add(bare)
+        return out
+
+    st.template_tools = _expand(_main.get("default_tools", []))
     # 主 Agent 人设：模板 main.role + 实例 overlay main_role_append → run_task 装配进 system_prompt
     # （对齐子 Agent 的 sub['role']，修「主 Agent 人设运行时被丢弃、自行发挥」）
     st.main_role = _main.get("role")
     st.main_role_append = _overlay.get("main_role_append")
     st.activity_tool_labels = dict((_content.get("activity_labels") or {}).get("tools") or {})
-    # D 块：sub_agents 画像装配到 main task（子 task 恒 None=禁二层派发）；派发预算随模板
+    # D 块：sub_agents 画像装配到 main task（子 task 恒 None=禁二层派发）；派发预算随模板。
+    # 画像 mcp_tools 同做双向展开（_child_state 直接以它切白名单与标注）。
     _subs = _content.get("sub_agents") or []
+    for s in _subs:
+        if isinstance(s, dict):
+            s["mcp_tools"] = sorted(_expand(s.get("mcp_tools") or []))
     st.sub_agents = [s for s in _subs if isinstance(s, dict) and s.get("key")] or None
     st.dispatch_cfg = {"max_children": _main.get("max_children", 3),
                        "delegation_max_spawns": _main.get("delegation_max_spawns", 10)}
-    anns = await mcp_tool_annotation_service.runtime_annotations()
     # E1：标注快照按 main ∪ 全部 sub 白名单过滤——子角色可绑 main 集之外的平台工具（如恢复
     # 工具只绑恢复 Agent），否则子 toolkit 构建时拿不到标注被 fail-closed 裁剪。
     # main 自身的 toolkit 边界仍只按 st.template_tools（不扩大）。

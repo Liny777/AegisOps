@@ -1052,6 +1052,8 @@ const realApi: OpenOpsApi = {
 /* -------------------------------- mock -------------------------------- */
 // 编辑向导 mock 态：per-instance overlay（updateAgentTeam 写入，getAgentTeam 读回，支撑再编辑预填）
 const mockOverlays = new Map<string, Record<string, unknown>>();
+// 模板编辑器 mock：saveTemplateDraft 写入的草稿内容，getAdminTemplateDetail 读回（e2e 断言保存后 payload）
+let mockTemplateDraft: Record<string, unknown> | null = null;
 
 const mockApi: OpenOpsApi = {
   getMe: () => {
@@ -1155,8 +1157,17 @@ const mockApi: OpenOpsApi = {
   destroySandboxContainer: (userId) =>
     delay({ destroyed: true, target_user_id: userId, cancelled_task_ids: [] }),
   getAuditTimeline: () => delay(M.auditTimeline),
-  getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
-  saveTemplateDraft: () => delay({}),
+  getAdminTemplateDetail: () => delay({
+    ...M.mockTemplateDetail,
+    draft_version: mockTemplateDraft
+      ? { template_version_id: "tv_draft", version_no: 3, status: "draft", content_json: mockTemplateDraft }
+      : null,
+  }),
+  saveTemplateDraft: (_id, content) => {
+    mockTemplateDraft = content;  // 回存供再打开断言（镜像后端草稿 upsert）
+    return delay({ template_version_id: "tv_draft", version_no: 3, status: "draft",
+                   content_json: content, dropped_tools: [] });
+  },
   publishTemplateVersion: () => delay(undefined as unknown as void),
   disableTemplateVersion: () => delay(undefined as unknown as void),
   adminAddWhitelist: () => delay(undefined as unknown as void),
@@ -1164,8 +1175,38 @@ const mockApi: OpenOpsApi = {
   adminSetRole: () => delay(undefined as unknown as void),
   adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),
-  getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
-  getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
+  getAdminTemplateAssets: () => delay({
+    title: "资产治理",
+    cols: [{ label: "名称" }, { label: "类型" }, { label: "最新版本" }, { label: "状态" }, { label: "操作", width: "96px" }],
+    // id = mcp_display_name（与 raw 的分组键、绑定列判定一致）
+    rows: [...new Set(M.adminMcpToolsRaw.map((r) => String(r.mcp_display_name)))].map((name) => ({
+      id: name,
+      cells: [
+        { text: name }, { text: "HTTP MCP" }, { text: "v1" },
+        { text: "active", kind: "badge" as const, tone: "good" as const },
+        { text: "Tool 标注", kind: "action" as const, onClickKey: "open-mcp" },
+      ],
+    })),
+  }),
+  getAdminMcpTools: (mcpName) => {
+    const rows = mcpName ? M.adminMcpToolsRaw.filter((r) => String(r.mcp_display_name) === mcpName) : M.adminMcpToolsRaw;
+    return delay({
+      title: "Tool 标注",
+      cols: [{ label: "tool_name" }, { label: "所属 MCP" }, { label: "标注状态" }, { label: "操作", width: "88px" }],
+      raw: rows,
+      rows: rows.map((r) => ({
+        id: String(r.tool_catalog_id),
+        cells: [
+          { text: String(r.tool_name), mono: true },
+          { text: String(r.mcp_display_name ?? "") },
+          r.annotation_id == null
+            ? { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const }
+            : { text: r.is_approval_required ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: r.is_approval_required ? "warning" as const : "good" as const },
+          { text: r.annotation_id != null ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
+        ],
+      })),
+    });
+  },
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
   adminStudioRuns: (userId) => delay(M.mockStudioRuns(userId)),

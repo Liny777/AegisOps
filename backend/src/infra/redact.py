@@ -218,7 +218,8 @@ def sanitize_activity_payload(
         _copy_scalar(source, out, "name", limit=200)
 
     if event.startswith("tool.") or event == "tool.blocked" or event == "runtime_plan.updated":
-        for key in ("tool", "source_type", "status", "execution_id"):
+        # server_name = 工具所属 MCP server（复合键身份下同名工具靠它区分；管理台明文标识符，不涉敏）
+        for key in ("tool", "source_type", "status", "execution_id", "server_name"):
             _copy_scalar(source, out, key, limit=200)
         if event == "tool.skipped" and isinstance(source.get("tools"), list):
             # 「注册表已发现、但未进模板白名单」的工具名清单：本事件的**全部诊断价值**都在这儿。
@@ -264,7 +265,7 @@ def sanitize_activity_payload(
                 out["error_summary"] = error_summary
 
     if event.startswith("approval."):
-        for key in ("approval_request_id", "tool", "decision"):
+        for key in ("approval_request_id", "tool", "decision", "server_name"):
             _copy_scalar(source, out, key, limit=200)
         if event == "approval.required":
             args_source = source.get("args")

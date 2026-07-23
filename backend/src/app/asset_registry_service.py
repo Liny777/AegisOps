@@ -8,11 +8,11 @@ import time
 import uuid
 from typing import Any
 
-from app import agent_team_service
+from app import agent_team_service, template_service
 from domain.errors import ApiError, Err
 from infra import egress
 from infra.db import row_json
-from infra.repositories import agent_teams, assets, audit, templates
+from infra.repositories import agent_teams, assets, audit
 
 log = logging.getLogger("openops.user_skill_sync")
 
@@ -250,10 +250,12 @@ async def delete_mcp(user: dict[str, Any], mcp_id: str) -> None:
         raise ApiError(Err.FORBIDDEN, "无权删除该 MCP")
     if await agent_teams.asset_in_use("mcp", mcp_id):
         raise ApiError(Err.ASSET_IN_USE, "该资产仍被 active 配置引用，请先解绑")
-    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 删前取工具名（catalog 随 asset 保留）
+    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 审计留痕用（catalog 随 asset 保留）
     await assets.delete_mcp(mcp_id, user["user_id"])
-    # 级联清理：把该 server 的工具从模板 draft 绑定里摘掉，防成幽灵绑定卡编辑（published 不可变，编辑时自愈）
-    scrubbed = await templates.scrub_tools_from_versions(tool_names)
+    # 级联清理：删后对全部 draft 重跑归一化——被删 server 的引用（复合键失配/裸名解析不到）被摘，
+    # 幸存 server 上仍 allowed 的同名裸名保留并升级为幸存家复合键（published 不可变，编辑时自愈）。
+    # 解析基于 runtime_annotations，其 catalog 查询已排除已删资产的行，故删除即刻生效。
+    scrubbed = await template_service.renormalize_drafts()
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="mcp.deleted", user_id=user["user_id"], action="delete",
         payload_redacted={"mcp_id": mcp_id, "tool_names": tool_names, "templates_scrubbed": scrubbed},

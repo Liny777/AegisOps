@@ -9,6 +9,7 @@ import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } f
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 import { AgentStudioPage } from "./AgentStudioPage";
+import { groupCatalog, normalizeSelection } from "./toolBinding";
 
 /** 管理台表格每页条数（服务端分页；后端上限 100，对齐 29.3 §2.2）。 */
 const ADMIN_PAGE_SIZE = 20;
@@ -61,20 +62,16 @@ export function AdminConsole() {
           api.getAdminMcpTools(null),
         ]);
         const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
-        const bound = new Set((((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[]);
-        const allowedByMcp = new Map<string, string[]>();
-        for (const r of toolsData.raw) {
-          if (r.annotation_id != null && r.annotation_status === "allowed") {
-            const k = String(r.mcp_display_name);
-            allowedByMcp.set(k, [...(allowedByMcp.get(k) ?? []), String(r.tool_name)]);
-          }
-        }
+        // 绑定判定按「server::tool」复合键（读时归一存量裸名）：同名工具跨 server 不再互相点亮绑定列
+        const groups = groupCatalog(toolsData.raw);
+        const boundRaw = (((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[];
+        const bound = new Set(normalizeSelection(boundRaw, groups).keys);
         setTable({
           ...assets,
           cols: [...assets.cols, { label: "模板绑定", width: "72px" }],
           rows: assets.rows.map((r) => {
-            const tools = allowedByMcp.get(r.id) ?? [];
-            const isBound = tools.length > 0 && tools.every((t) => bound.has(t));
+            const keys = (groups[r.id] ?? []).map((t) => t.key);
+            const isBound = keys.length > 0 && keys.every((k) => bound.has(k));
             return { ...r, cells: [...r.cells, { text: isBound ? "解绑" : "绑定", kind: "action" as const, onClickKey: "toggle-bind" }] };
           }),
         });
@@ -134,7 +131,8 @@ export function AdminConsole() {
     }
   };
 
-  /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
+  /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 以「server::tool」复合键加入/移出模板草稿
+   * default_tools（发布后生效）。存量裸名先读时归一——增删只命中本 server 的键，同名工具不串家。 */
   const toggleBind = async (mcpName: string) => {
     if (!tplDrill) return;
     const [detail, toolsData] = await Promise.all([
@@ -144,12 +142,11 @@ export function AdminConsole() {
     const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
     const content = { ...((base?.content_json ?? {}) as Record<string, unknown>) };
     const main = { ...((content.main ?? {}) as Record<string, unknown>) };
-    const cur = new Set(((main.default_tools ?? []) as string[]));
-    const mcpTools = toolsData.raw
-      .filter((r) => String(r.mcp_display_name) === mcpName && r.annotation_id != null && r.annotation_status === "allowed")
-      .map((r) => String(r.tool_name));
-    const isBound = mcpTools.length > 0 && mcpTools.every((t) => cur.has(t));
-    mcpTools.forEach((t) => (isBound ? cur.delete(t) : cur.add(t)));
+    const groups = groupCatalog(toolsData.raw);
+    const cur = new Set(normalizeSelection(((main.default_tools ?? []) as string[]), groups).keys);
+    const mcpKeys = (groups[mcpName] ?? []).map((t) => t.key);
+    const isBound = mcpKeys.length > 0 && mcpKeys.every((k) => cur.has(k));
+    mcpKeys.forEach((k) => (isBound ? cur.delete(k) : cur.add(k)));
     content.main = { ...main, default_tools: [...cur] };
     try {
       const v = await api.saveTemplateDraft(tplDrill.id, content);

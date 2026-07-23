@@ -18,6 +18,7 @@ import os
 import uuid
 from typing import Any
 
+from domain import tool_key
 from infra import host_ip
 from infra.external import http_mcp_client
 from infra.external.mcp_registry_client import _BROWSER_UA
@@ -104,19 +105,29 @@ async def _blocked(st: TaskState, run: dict[str, Any], tool_name: str, reason_co
     return ToolBlocked(reason_code, msg)
 
 
-async def _effective_annotation(st: TaskState, run: dict[str, Any], tool_name: str) -> dict[str, Any] | None:
+async def _effective_annotation(
+    st: TaskState, run: dict[str, Any], tool_name: str, server_name: str | None = None
+) -> dict[str, Any] | None:
     """运行时事实标注（28.7 热更新）：优先取 DB 最新（每次工具边界），读取失败回退任务启动快照。
 
     最新 catalog 行未标注（schema 变化后不继承）→ 返回 None → TOOL_NOT_ANNOTATED fail-closed。
     与快照不同 → 发 openops.runtime_plan.updated（每 task 每工具一次）。
+
+    server 维度（复合键身份）：tool_name 是 toolkit 注册名（冲突时为 {slug}__{tool} 命名空间形），
+    DB 回读用快照元数据里的裸 tool_name + server（调用点显式传的 server_name 优先，快照
+    mcp_display_name 兜底）——同名工具跨 server 各取各的标注，不再全局「最新一条」互串
+    （旧缺陷：占位资产的 catalog 行更新时间靠后即盖掉真 server 标注，「管理台设了不生效」）。
+    server 取不到（demo/手搓快照）→ None = 旧全局语义。
     """
     snap = (st.tool_annotations or {}).get(tool_name)
+    srv = server_name or (snap or {}).get("mcp_display_name")
+    bare = str((snap or {}).get("tool_name") or tool_name)
     try:
-        # 真机排除占位平台 MCP，与 runtime_annotations 的快照口径**保持一致**：本查询按 tool_name
-        # 全局取最新一条，占位资产（endpoint=http://mock）的 catalog 行可能比真 server 的更新而被选中，
-        # 两层取到不同标注就会重演「管理台设了不生效」。判定见 mcp_tools._EXCLUDE_PLACEHOLDER。
+        # 真机排除占位平台 MCP，与 runtime_annotations 的快照口径**保持一致**（判定见
+        # mcp_tools._EXCLUDE_PLACEHOLDER）。
         row = await mcp_tools.get_runtime_annotation(
-            tool_name, exclude_placeholder=os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real")
+            bare, server=str(srv) if srv else None,
+            exclude_placeholder=os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real")
     except Exception:
         return snap  # ASSET-006：读取失败按缓存继续
     if row is None:
@@ -174,18 +185,30 @@ async def invoke(
     started_msg: str | None = None,
     succeeded_msg: str | None = None,
     server_url: str | None = None,
+    server_name: str | None = None,
 ) -> dict[str, Any]:
-    """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。"""
+    """受控执行一次 HTTP MCP tool 调用；返回 MCP 结果。fail-closed 抛 ToolBlocked。
+
+    server_name（复合键身份的 server 维度，动态工具经 _make_dynamic_tool 闭包传入）：
+    白名单校验与标注热读按「server::tool」区分同名工具；不传（demo/手搓测试）按裸名旧语义。"""
     # 同一次调用的 started/succeeded/failed 必须共享稳定 ID。不能再让 AG-UI 根据事件到达
     # 顺序猜配对关系：并发子 Agent 的完成顺序与启动顺序通常不同，LIFO 会把结果挂错卡片。
     tool_call_id = str(uuid.uuid4())
     headers: dict[str, str] = {}
+    _snap = (st.tool_annotations or {}).get(tool_name) or {}
     if source_type == "platform":
-        if st.template_tools is not None and tool_name not in st.template_tools:
+        if st.template_tools is not None:
             # B7·二：模板未绑定的平台工具不进 RuntimePlan（即使全局标注 allowed 也拦）。
             # 空集也拦（B7-SEC-001：模板显式零工具 ≠ 无限制；None 才是未装配模板信息）。
-            raise await _blocked(st, run, tool_name, "TOOL_BLOCKED", f"工具 {tool_name} 未绑定到当前模板，运行时 fail-closed")
-        ann = await _effective_annotation(st, run, tool_name)  # 热更新：每次边界取最新标注（28.7）
+            # 命中口径三通：注册名（demo/存量）、裸 tool_name（存量裸名模板）、复合键（已迁移模板）
+            # ——tool_name 可能是命名空间注册名（{slug}__{tool}），裸名/归属从快照元数据取。
+            _bare = str(_snap.get("tool_name") or tool_name)
+            _srv = server_name or _snap.get("mcp_display_name")
+            _key = tool_key.make_key(str(_srv), _bare) if _srv else None
+            if (tool_name not in st.template_tools and _bare not in st.template_tools
+                    and (_key is None or _key not in st.template_tools)):
+                raise await _blocked(st, run, tool_name, "TOOL_BLOCKED", f"工具 {tool_name} 未绑定到当前模板，运行时 fail-closed")
+        ann = await _effective_annotation(st, run, tool_name, server_name)  # 热更新：每次边界取最新标注（28.7）
         reason = _validate_platform(ann, st, arguments)
         if reason == "TOOL_NOT_ANNOTATED":
             raise await _blocked(st, run, tool_name, reason, f"平台工具 {tool_name} 未标注，禁止调用")
@@ -213,6 +236,8 @@ async def invoke(
     await emit(st, run, "openops.tool.call.started", action=tool_name,
                message=started_msg or f"调用工具 {tool_name}",
                payload={"tool": tool_name, "source_type": source_type,
+                        # 所属 server（复合键身份）：同名/命名空间注册名的工具卡靠它标归属
+                        "server_name": server_name or _snap.get("mcp_display_name"),
                         "tool_call_id": tool_call_id,
                         "agent_key": st.agent_key,  # D 块：前端活动栏按 agent 分组
                         # 入参进事件（前端工具卡展示；内网实测缺口：agent 真带参但界面显示空）。
