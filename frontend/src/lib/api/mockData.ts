@@ -393,23 +393,25 @@ export const adminTables: Record<string, AdminTableData> = {
   },
   skills: {
     title: "Skill 基线",
-    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
+    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }],
     rows: [
       { id: "skill_inspection", cells: [
         { text: "巡检 inspection" }, { text: "inspection", mono: true }, { text: "2.0.0" },
-        { text: "运维" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "2026-07-20 10:30" }, { text: "active", kind: "badge", tone: "good" } ] },
     ],
   },
   users: {
     title: "用户与白名单",
     primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-    cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }],
+    cols: [{ label: "user_id" }, { label: "展示名" }, { label: "标签" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }],
     rows: [
       { id: "0026demo01", cells: [
-        { text: "0026demo01", mono: true }, { text: "林一" }, { text: "user" },
+        { text: "0026demo01", mono: true }, { text: "林一" },
+        { text: "研发", kind: "action", onClickKey: "user-tags" }, { text: "user" },
         { text: "active", kind: "badge", tone: "good" }, { text: "10:00" } ] },
       { id: "admin", cells: [
-        { text: "admin", mono: true }, { text: "李四" }, { text: "platform_admin" },
+        { text: "admin", mono: true }, { text: "李四" },
+        { text: "设标签", kind: "action", onClickKey: "user-tags" }, { text: "platform_admin" },
         { text: "active", kind: "badge", tone: "good" }, { text: "09:30" } ] },
     ],
   },

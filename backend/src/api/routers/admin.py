@@ -24,6 +24,7 @@ from domain.schemas import (
     SandboxDestroyRequest,
     SaveTemplateVersionRequest,
     SetRoleRequest,
+    SetTagsRequest,
     TemplateVersionActionRequest,
     UpdateModelAssetRequest,
     UpdateRuntimeConfigRequest,
@@ -91,7 +92,7 @@ async def delete_user(user_id: str, admin: Admin):
 
 @router.post("/users/whitelist")
 async def add_whitelist(req: WhitelistRequest, admin: Admin):
-    await identity_service.add_whitelist(req.user_id, req.display_name, req.role, admin["user_id"])
+    await identity_service.add_whitelist(req.user_id, req.display_name, req.role, admin["user_id"], tags=req.tags)
     return ok({"added": True})
 
 
@@ -105,6 +106,12 @@ async def revoke_whitelist(req: WhitelistRequest, admin: Admin):
 async def set_role(user_id: str, req: SetRoleRequest, admin: Admin):
     """升/降级已有用户（B7·三补链）：role ∈ user|platform_admin；不能改自己；写 role.changed 审计。"""
     return ok(await identity_service.set_role(user_id, req.role, admin["user_id"]))
+
+
+@router.post("/users/{user_id}:set-tags")
+async def set_tags(user_id: str, req: SetTagsRequest, admin: Admin):
+    """改领域标签（整体替换，[] 清空）；写 user.tags_changed 审计。"""
+    return ok(await identity_service.set_tags(user_id, req.tags, admin["user_id"]))
 
 
 @router.get("/sandbox")

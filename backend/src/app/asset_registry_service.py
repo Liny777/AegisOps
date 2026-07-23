@@ -47,7 +47,7 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
             if s.get("source") != "openops" or s.get("source_type") != "user":
                 continue  # 只收个人 skill；平台 skill 走全局 reconcile
             manifest = {"synced_from": "skill_hub_user", "latest_version": s.get("latest_version"),
-                        "category": s.get("category")}
+                        "category": s.get("category"), "updated_date": s.get("updated_date")}
             existing = await assets.get_user_skill_by_key(uid, s["skill_key"])
             if existing is None:
                 await assets.create_skill(uid, "user", s["display_name"], s["skill_key"],
@@ -60,10 +60,13 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
                     manifest, s["checksum_sha256"], uid)
             else:
                 cur = latest.get("manifest_json") or {}
-                if cur.get("latest_version") != s.get("latest_version") or cur.get("category") != s.get("category"):
+                if (cur.get("latest_version") != s.get("latest_version")
+                        or cur.get("category") != s.get("category")
+                        or cur.get("updated_date") != s.get("updated_date")):
                     await assets.update_skill_version_manifest(
                         str(latest["skill_version_id"]),
-                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category")})
+                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category"),
+                         "updated_date": s.get("updated_date")})
     except Exception as e:  # noqa: BLE001 —— SkillHub 挂/cookie 失效不阻断列表读
         log.warning("user skill sync failed (%s): %s", uid, str(e)[:200])
 
@@ -87,6 +90,7 @@ async def list_skills(user: dict[str, Any], *, page: int = 1, page_size: int = 2
         if isinstance(manifest, dict):
             d["latest_version"] = manifest.get("latest_version")  # None → 前端回退 v{version_no}
             d["category"] = manifest.get("category")
+            d["updated_date"] = manifest.get("updated_date")  # SkillHub §2.2 更新时间（管理台「更新时间」列；未同步到 → 前端回退「—」）
             d["description"] = manifest.get("description")  # 插件页「说明」的真描述（此前被 pop 一并丢弃）
         items.append(d)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
