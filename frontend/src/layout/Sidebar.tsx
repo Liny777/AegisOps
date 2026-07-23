@@ -99,6 +99,7 @@ export function Sidebar() {
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
+    { key: "replay", label: "回放", icon: "history", to: "/replay" },  // 回看自己会话的执行过程（仅本人）
     { key: "ontology",  label: "OModel", icon: "sitemap", to: "/settings" },
   ];
 
@@ -125,6 +126,7 @@ export function Sidebar() {
 
   const activeKey = (() => {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
+    if (loc.pathname.startsWith("/replay")) return "replay";
     if (loc.pathname.startsWith("/settings")) return "ontology";
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";

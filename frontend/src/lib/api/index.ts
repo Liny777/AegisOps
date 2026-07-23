@@ -239,6 +239,9 @@ export interface OpenOpsApi {
   adminStudioRunDetail(runId: string): Promise<StudioRunDetail>;
   /** run 对话记录（用户↔助手全文；含软删 run）。mock runtime 不落对话 → 空数组。 */
   adminStudioRunMessages(runId: string): Promise<StudioMessage[]>;
+  // 用户回放（侧栏「回放」）：owner-only；LLM 输入 messages 服务端置空（平台提示词不外露）
+  replayRunDetail(runId: string): Promise<StudioRunDetail>;
+  replayRunMessages(runId: string): Promise<StudioMessage[]>;
   adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
   adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
@@ -891,6 +894,12 @@ const realApi: OpenOpsApi = {
   async adminStudioRunMessages(runId) {
     return apiFetch<StudioMessage[]>(`/openops/v1/admin/studio/runs/${encodeURIComponent(runId)}/messages`);
   },
+  async replayRunDetail(runId) {
+    return apiFetch<StudioRunDetail>(`/openops/v1/agent-runs/${encodeURIComponent(runId)}/replay`);
+  },
+  async replayRunMessages(runId) {
+    return apiFetch<StudioMessage[]>(`/openops/v1/agent-runs/${encodeURIComponent(runId)}/messages`);
+  },
   async adminGetModelGrants(modelAssetId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
       `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
@@ -1162,6 +1171,13 @@ const mockApi: OpenOpsApi = {
   adminStudioRuns: (userId) => delay(M.mockStudioRuns(userId)),
   adminStudioRunDetail: (runId) => delay(M.mockStudioRunDetail(runId)),
   adminStudioRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
+  // 镜像后端语义：用户回放不下发 LLM 输入
+  replayRunDetail: (runId) => {
+    const d = M.mockStudioRunDetail(runId);
+    for (const a of d.agents) for (const c of a.calls) if (c.kind === "llm") c.input = "";
+    return delay(d);
+  },
+  replayRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
   adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
   adminSaveModelGrants: () => delay(undefined as unknown as void),
   adminRegisterModel: () => delay(undefined as unknown as void),

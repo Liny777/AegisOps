@@ -50,6 +50,28 @@ async def run_messages(run_id: str) -> list[dict[str, str]]:
     return agui_service.project_transcript(state, run_id)
 
 
+async def run_replay(user: dict[str, Any], run_id: str) -> dict[str, Any]:
+    """用户自查回放（对话界面侧栏「回放」）：owner-only，软删 404（同 /messages 口径）。
+
+    与管理员版 run_detail 共用 _group_spans，仅两点差异在此收口（不靠前端隐藏，防 API
+    直连绕过）：① 归属校验；② LLM 调用的输入 messages 置空——内含平台系统提示词/人设/
+    skill 提示，不对普通用户外露。输出/token/工具入参结果/主↔子交接全量可见。
+    """
+    run = await runs.get_run(run_id)  # 不含软删
+    if run is None:
+        raise ApiError(Err.NOT_FOUND, "Run 不存在")
+    if run["user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "无权查看该 Run")  # IAM-005
+    spans = await studio_spans.list_spans_by_run(run_id)
+    dels = await delegations.list_by_run(run_id)
+    detail = _group_spans(run, spans, dels)
+    for a in detail["agents"]:
+        for c in a["calls"]:
+            if c.get("kind") == "llm":
+                c["input"] = ""
+    return detail
+
+
 async def run_detail(run_id: str) -> dict[str, Any]:
     run = await runs.get_run(run_id, include_deleted=True)  # 管理员复盘不受用户软删影响
     if run is None:
