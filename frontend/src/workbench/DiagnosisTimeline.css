@@ -4,6 +4,15 @@
  * 宽面板 4 列 tiles / 双列 facts，窄拖（<520px）降 2 列 / 1 列。
  * .oa-rca-tiles / .oa-rca-facts 类名保留——smoke 容器查询断言依赖。 */
 
+/* 溢出继承性收口：长无空格 token（URL/指标串/工具名）在任意叶子文本处可断。
+ * overflow-wrap 可继承且参与 min-content 计算，配合既有 minmax(0,1fr)/min-width:0
+ * 一条规则覆盖展开态全部叶子（summary/currentQ/why/conclusion/tiles/facts/unknowns
+ * 及第六恢复节点）；nowrap chip（进行中/tier/tag）天然不受影响。来源唯一化：
+ * 收起态摘要的 inline overflowWrap 已删，统一走这里。 */
+.oa-diag-card {
+  overflow-wrap: anywhere;
+}
+
 .oa-rca-tiles {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -113,4 +122,23 @@
   width: 100%;
   padding: 0 0 4px;
   opacity: 0.85;
+}
+
+/* 新线索过渡提示：整个生命周期（6s，JS 定时卸载）内淡入→驻留→淡出。
+ * 动画只做透明度，卸载由组件定时器负责——reduced-motion 下关动画直接常显。 */
+.oa-diag-renewal {
+  animation: oaDiagRenewal 6s ease both;
+}
+
+@keyframes oaDiagRenewal {
+  0% { opacity: 0; }
+  6% { opacity: 1; }
+  92% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .oa-diag-renewal {
+    animation: none;
+  }
 }

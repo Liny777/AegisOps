@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import type { ActivityGroup, ActivityNode, DispatchRound, RcaCardData } from "../lib/api/types";
+import type { RecoveryState } from "../lib/rca/recovery";
 import { color, toneColor } from "../theme/tokens";
 import { Icon } from "../ui";
 import { DiagnosisTimeline, DiagnosisTimelineSkeleton, type RcaCardAction } from "./DiagnosisTimeline";
@@ -25,6 +26,8 @@ export interface ActivityRailProps {
   rcaActionsEnabled?: boolean;
   /** 时间线按钮回调（以用户身份发消息）；缺省（run closed）时 footer 不渲染。 */
   onRcaAction?: (action: RcaCardAction) => void;
+  /** 第六节点「恢复执行」状态（Workbench 用 deriveRecoveryState 从活动事件推导）。 */
+  recovery?: RecoveryState;
   /** 用户拖拽后的面板宽度（px）；null/缺省 = CSS 默认 clamp(420px, 33.333%, 760px)（内容区 1/3）。 */
   width?: number | null;
   /** 左缘拖拽手柄回调；缺省不渲染手柄。 */
@@ -153,6 +156,7 @@ export function ActivityRail({
   rcaLive = false,
   rcaActionsEnabled = true,
   onRcaAction,
+  recovery,
   width = null,
   onResize,
 }: ActivityRailProps) {
@@ -263,7 +267,7 @@ export function ActivityRail({
       <div className="oa-activity-scroll" role="tabpanel">
         {tab === "rca" ? (
           rca
-            ? <DiagnosisTimeline rca={rca} live={rcaLive} actionsEnabled={rcaActionsEnabled} onAction={onRcaAction} />
+            ? <DiagnosisTimeline rca={rca} live={rcaLive} actionsEnabled={rcaActionsEnabled} onAction={onRcaAction} recovery={recovery} />
             : <RcaEmptyState />
         ) : ordered.length ? (
           <div className="oa-round-list">
