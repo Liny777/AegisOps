@@ -296,6 +296,15 @@ export function Sidebar() {
 
       {/* footer */}
       <div style={{ borderTop: `1px solid ${color.border}`, padding: "8px 10px" }}>
+        <Interactive
+          title="产品介绍"
+          onClick={() => nav("/intro")}
+          baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", fontSize: 13.5, color: color.textNav, fontWeight: 500 }}
+          hoverStyle={{ background: "#e9ecf1" }}
+        >
+          <Icon name="sparkles" size={18} />
+          {showText ? <span style={{ flex: 1 }}>产品介绍</span> : null}
+        </Interactive>
         {isPlatformAdmin ? (
           <Interactive
             title={isAdmin ? "返回工作台" : "进入管理台"}

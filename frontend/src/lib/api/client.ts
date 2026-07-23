@@ -12,7 +12,10 @@ const BASE = API_BASE;
  * 生产真身份由后端 IAM 决定，前端不再有「切身份」按钮。dev/mock/e2e 用**身份种子**声明我是谁：
  * `?as=admin|user`（会镜像进 localStorage 以跨整页刷新持久）或直接 `localStorage['openops.demo.user']`。
  * 沿用既有 `openops.mock.*` 缝风格（index.ts）。默认普通用户，不带缝完全无感。 */
-const DEMO_DEFAULT = { user: "0026demo01", name: "林一" };
+const DEMO_DEFAULT = {
+  user: import.meta.env.VITE_OPENOPS_DEMO_USER_ID || "0026demo01",
+  name: import.meta.env.VITE_OPENOPS_DEMO_USER_NAME || "林一",
+};
 const DEMO_ADMIN = { user: "admin", name: "李四（管理员）" };
 
 function bootDemoIdentity(): { user: string; name: string } {

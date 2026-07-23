@@ -54,7 +54,7 @@ type ConnState = "connecting" | "open" | "reconnecting" | "error";
 // 审批卡结果驻留时长：批准/拒绝后原地显「已批准/已拒绝」这么久再自动淡出（用户拍板"显示结果后自动消失"）
 const HITL_RESULT_LINGER_MS = 2200;
 
-// 右侧宽面板宽度：默认 CSS clamp(420px, 42vw, 760px)；拖拽后 clamp 同区间并持久化
+// 右侧宽面板宽度：默认 CSS clamp(420px, 33.333%, 760px)（右栏占内容区 1/3、对话区 2/3）；拖拽后 clamp 同区间并持久化
 // （与用户无关的全局偏好，一个 key 即可）。
 const RAIL_WIDTH_KEY = "openops.activityRail.width";
 const RAIL_WIDTH_MIN = 420;
