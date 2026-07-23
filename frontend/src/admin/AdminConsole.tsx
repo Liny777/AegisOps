@@ -44,6 +44,9 @@ export function AdminConsole() {
   const [traceFilter, setTraceFilter] = useState("");
   // 用户表关键字搜索（服务端 q 过滤 user_id/display_name，与审计过滤同做法：输入即查）
   const [userQ, setUserQ] = useState("");
+  // 用户表标签筛选（服务端 tag 过滤，与 q 为 AND）：tagFilter=""=全部；userTags=下拉候选（标签全集）
+  const [tagFilter, setTagFilter] = useState("");
+  const [userTags, setUserTags] = useState<string[]>([]);
 
   const isTable = ["templates", "model-assets", "skills", "users"].includes(page);
 
@@ -85,14 +88,21 @@ export function AdminConsole() {
       setTable(await api.getAdminTable(page, {
         page: tablePage, pageSize: ADMIN_PAGE_SIZE,
         q: page === "users" ? userQ.trim() || undefined : undefined,
+        tag: page === "users" ? tagFilter || undefined : undefined,
       }));
     } else if (page === "audit") {
       setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); }, [page]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ]);  // 换页签/钻取/改搜索词回第 1 页，免停在越界页看空表
+  // 进用户页拉标签下拉候选（标签全集）；离开或失败置空，不阻断列表
+  useEffect(() => {
+    if (page !== "users") { setUserTags([]); return; }
+    api.adminListUserTags().then(setUserTags).catch(() => setUserTags([]));
+  }, [page]);
+
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); }, [page]);
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
@@ -206,6 +216,19 @@ export function AdminConsole() {
             onChange={(e) => setUserQ(e.target.value)}
             style={{ width: 220, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
           />
+        ) : null}
+        {page === "users" ? (
+          <div style={{ position: "relative" }}>
+            <select
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              style={{ appearance: "none", WebkitAppearance: "none", border: `1px solid ${color.border}`, borderRadius: radius.md, background: "#fff", padding: "6px 28px 6px 10px", fontSize: 12, color: tagFilter ? color.textStrong : color.textSubtle, cursor: "pointer", outline: "none" }}
+            >
+              <option value="">全部标签</option>
+              {userTags.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <Icon name="chevron-down" size={13} color={color.textSubtle} style={{ position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} />
+          </div>
         ) : null}
         {page === "users" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setWlAddOpen(true)}>{table.primary.label}</Button>

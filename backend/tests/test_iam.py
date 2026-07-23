@@ -114,6 +114,35 @@ def test_iam_user_tags_set_and_survive_login(client):
     assert r.status_code == 404
 
 
+def test_iam_user_tags_filter(client):
+    """标签筛选：GET /admin/users?tag= 精确过滤（与 q 为 AND）；GET /admin/users/tags 返回去重全集。"""
+    import time as _time
+
+    def _add(uid, tags):
+        unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
+                           json={"client_request_id": f"tf_{uid}_{_time.time_ns()}", "user_id": uid,
+                                 "display_name": uid, "tags": tags}))
+
+    _add("fintag01", ["财经"])
+    _add("fintag02", ["研发", "财经"])
+    _add("fintag03", [])  # 空标签：不进任何 tag 过滤、不产标签
+
+    def _ids(params):
+        items = unwrap(client.get("/api/openops/v1/admin/users", headers=ADMIN_HEADERS, params=params))["items"]
+        return {r["user_id"] for r in items}
+
+    # tag 精确过滤（seed 的 0026demo01/admin 无标签，不混入）
+    assert _ids({"tag": "财经"}) == {"fintag01", "fintag02"}
+    assert _ids({"tag": "研发"}) == {"fintag02"}
+    assert _ids({"tag": "不存在"}) == set()
+    # tag 与 q 为 AND
+    assert _ids({"tag": "财经", "q": "fintag01"}) == {"fintag01"}
+
+    # 标签全集：去重（财经出现两次仍一枚 → len==2）、空数组/无标签用户不产标签；顺序 collation 相关，不断言
+    tags = unwrap(client.get("/api/openops/v1/admin/users/tags", headers=ADMIN_HEADERS))
+    assert set(tags) == {"研发", "财经"} and len(tags) == 2
+
+
 # ---- B9：真 IAM 双步握手（OPENOPS_IAM_ENABLED=1 + 假上游） ----
 
 class _FakeResp:

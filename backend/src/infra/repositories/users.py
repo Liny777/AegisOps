@@ -117,20 +117,25 @@ async def revoke_whitelist(user_id: str, by: str) -> int:
 
 
 # 管理台用户列表 FROM/WHERE 片段：count 与分页页共用，避免两处漂移（同 assets 仓储做法）。
+# tag 过滤用标准函数 jsonb_array_elements_text + EXISTS（GaussDB 安全；不用 @>/? 操作符，
+# 后者与参数占位符冲突）；空数组/NULL 行产出 0 元素，自然不匹配。
 _USERS_FROM = """
         from sre_openops_user u
         left join sre_user_whitelist w
           on w.user_id = u.user_id and w.deleted_at is null
         where u.deleted_at is null
           and (%(qlike)s::text is null or u.user_id ilike %(qlike)s or u.display_name ilike %(qlike)s)
+          and (%(tag)s::text is null or exists (
+                select 1 from jsonb_array_elements_text(u.tags_json) e where e = %(tag)s))
 """
 
 
 async def list_users_with_whitelist(
-    *, q: str | None = None, limit: int = 20, offset: int = 0,
+    *, q: str | None = None, tag: str | None = None, limit: int = 20, offset: int = 0,
 ) -> tuple[list[dict[str, Any]], int]:
-    """管理台分页列表 → (rows, total)：q 按 user_id/display_name 模糊搜（服务端过滤，29.3 口径）。"""
-    p: dict[str, Any] = {"qlike": f"%{q}%" if q else None}
+    """管理台分页列表 → (rows, total)：q 按 user_id/display_name 模糊搜、tag 按领域标签精确过滤
+    （均服务端过滤，29.3 口径；tag 与 q 为 AND 组合）。"""
+    p: dict[str, Any] = {"qlike": f"%{q}%" if q else None, "tag": tag}
     total = int(((await q_one(f"select count(*) as n{_USERS_FROM}", p)) or {}).get("n") or 0)
     rows = await q_all(
         f"""
@@ -142,6 +147,20 @@ async def list_users_with_whitelist(
         {**p, "lim": limit, "off": offset},
     )
     return rows, total
+
+
+async def list_all_tags() -> list[str]:
+    """所有未删用户已用的领域标签（去重、排序）——管理台标签下拉候选。
+    作用域与用户列表一致（deleted_at is null）；空数组/NULL 行不产标签。"""
+    rows = await q_all(
+        """
+        select distinct e as tag
+        from sre_openops_user u, jsonb_array_elements_text(u.tags_json) e
+        where u.deleted_at is null and u.tags_json is not null
+        order by tag
+        """
+    )
+    return [str(r["tag"]) for r in rows]
 
 
 async def soft_delete_user(user_id: str, by: str) -> int:

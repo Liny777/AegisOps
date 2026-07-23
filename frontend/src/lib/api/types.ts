@@ -337,6 +337,7 @@ export interface AssetQuery {
   pageSize?: number;
   sourceType?: "platform" | "user";
   q?: string;
+  tag?: string; // 管理台用户列表：按领域标签精确过滤（与 q 为 AND）
 }
 export interface AssetRow {
   id: string;

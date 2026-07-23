@@ -51,12 +51,20 @@ async def me(user: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---- 管理台：用户与白名单（router 不直连 users repo，走本服务） ----
-async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None) -> dict[str, Any]:
-    """分页 + 关键字搜索（q 按 user_id/display_name 模糊，服务端过滤）→ {items,total,page,page_size}。"""
+async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None,
+                     tag: str | None = None) -> dict[str, Any]:
+    """分页 + 关键字搜索（q 按 user_id/display_name 模糊）+ 标签过滤（tag 精确，与 q 为 AND）
+    → {items,total,page,page_size}。均服务端过滤。"""
     rows, total = await users.list_users_with_whitelist(
-        q=(q.strip() or None) if q else None, limit=page_size, offset=(page - 1) * page_size,
+        q=(q.strip() or None) if q else None, tag=(tag.strip() or None) if tag else None,
+        limit=page_size, offset=(page - 1) * page_size,
     )
     return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+
+
+async def list_user_tags() -> list[str]:
+    """管理台标签下拉候选：所有未删用户已用的领域标签（去重、排序）。"""
+    return await users.list_all_tags()
 
 
 # ---- 开放查询面（免鉴权 GET /whitelist，老项目 1cd7ef0 口径）：外部系统判断
