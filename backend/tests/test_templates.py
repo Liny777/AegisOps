@@ -38,22 +38,28 @@ def _publish(client, version_id: str):
 
 
 def test_template_draft_scrubs_stale_tools(client):
-    """ADMIN-002（自愈翻案）：保存时解析不到 allowed 标注的平台 tool（已删 MCP server / 失效存量绑定）
-    被自动摘除、不再硬报错；被摘名字回传 dropped_tools；allowed 工具保留。main.default_tools 与
-    sub.mcp_tools 两处都摘。草稿 upsert 不涨版本号。"""
+    """ADMIN-002（自愈翻案）+ 复合键迁移：保存时解析不到 allowed 标注的平台 tool（已删 MCP server /
+    失效存量绑定）被自动摘除、不再硬报错；被摘名字回传 dropped_tools；allowed 的裸名**升级为
+    「server::tool」复合键**（存量模板保存一次即迁移）。main.default_tools 与 sub.mcp_tools 两处
+    同规则。草稿 upsert 不涨版本号。"""
     tid = _template_id(client)
     content = _content(["query_resource", "no_such_tool"])
     content["sub_agents"][0]["mcp_tools"] = ["recover_execute", "ghost_tool"]
     d1 = unwrap(_save_draft(client, tid, content))
     assert d1["status"] == "draft" and d1["version_no"] == 2
-    assert d1["content_json"]["main"]["default_tools"] == ["query_resource"]  # 幽灵摘除、allowed 保留
-    assert d1["content_json"]["sub_agents"][0]["mcp_tools"] == ["recover_execute"]
+    # 幽灵摘除；allowed 裸名升级为 seed 占位 server 的复合键
+    assert d1["content_json"]["main"]["default_tools"] == ["oModel 查询与恢复::query_resource"]
+    assert d1["content_json"]["sub_agents"][0]["mcp_tools"] == ["oModel 查询与恢复::recover_execute"]
     assert set(d1["dropped_tools"]) == {"no_such_tool", "ghost_tool"}
 
     d2 = unwrap(_save_draft(client, tid, _content(["query_resource"])))
     assert d2["version_no"] == 2  # upsert 语义：同一草稿反复改
     assert str(d2["template_version_id"]) == str(d1["template_version_id"])
     assert d2["dropped_tools"] == []  # 纯 allowed 无失效工具
+    # 复合键条目再保存幂等（不重复展开/不再改写）
+    d3 = unwrap(_save_draft(client, tid, _content(["oModel 查询与恢复::query_resource"])))
+    assert d3["content_json"]["main"]["default_tools"] == ["oModel 查询与恢复::query_resource"]
+    assert d3["dropped_tools"] == []
 
 
 def test_template_activity_tool_labels_are_optional_string_mapping(client):
@@ -184,8 +190,9 @@ def test_template_publish_scrubs_now_blocked_tool(client):
     ))
     pub = unwrap(_publish(client, str(draft["template_version_id"])))
     assert pub["status"] == "active"
-    assert "recover_execute" in pub["dropped_tools"]
-    assert pub["content_json"]["main"]["default_tools"] == ["query_resource"]  # 发布版已摘 blocked 工具
+    # 草稿保存时裸名已升级为复合键，故 dropped 里是复合键形态
+    assert "oModel 查询与恢复::recover_execute" in pub["dropped_tools"]
+    assert pub["content_json"]["main"]["default_tools"] == ["oModel 查询与恢复::query_resource"]  # 发布版已摘 blocked 工具
 
 
 def test_delete_mcp_cascades_scrub_template_draft(client):
@@ -198,7 +205,7 @@ def test_delete_mcp_cascades_scrub_template_draft(client):
     tid = _template_id(client)
     draft = unwrap(_save_draft(client, tid, _content(["query_resource"])))
     dvid = str(draft["template_version_id"])
-    assert draft["content_json"]["main"]["default_tools"] == ["query_resource"]
+    assert draft["content_json"]["main"]["default_tools"] == ["oModel 查询与恢复::query_resource"]  # 保存即迁移
 
     async def scenario() -> list[str]:
         mcp_id = None
@@ -211,7 +218,7 @@ def test_delete_mcp_cascades_scrub_template_draft(client):
         v = await templates.get_version(dvid)
         return v["content_json"]["main"]["default_tools"]
 
-    assert asyncio.run(scenario()) == []  # query_resource 随 server 删除被级联摘掉
+    assert asyncio.run(scenario()) == []  # 该 server 的复合键绑定随 server 删除被级联摘掉
 
 
 def test_template_write_endpoints_forbidden_for_user(client):

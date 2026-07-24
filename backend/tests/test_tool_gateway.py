@@ -282,3 +282,54 @@ async def test_tool_008_dynamic_unannotated_catalog_row_keeps_injection(quiet_em
     with pytest.raises(ToolBlocked) as e:
         await tool_gateway.invoke(st2, _RUN, "query_alarm_list", {"alarm_code": "1"})
     assert e.value.reason_code == "TOOL_NOT_ANNOTATED"
+
+
+async def test_tool_011_gateway_hot_read_carries_server_dimension(quiet_emit, monkeypatch):
+    """复合键身份：注册名可能是 {slug}__{tool} 命名空间形——热读 DB 用快照元数据里的裸
+    tool_name + server（调用点 server_name 优先），同名工具跨 server 各取各的标注不互串；
+    模板白名单命中口径三通（注册名/裸名/复合键），此处钉「模板只存复合键」也放行。"""
+    from infra.repositories import mcp_tools
+
+    cap: dict = {}
+
+    async def spy(name, **kw):
+        cap["name"], cap["server"] = name, kw.get("server")
+        return {"annotation_id": "a1", "is_approval_required": False, "is_secret_required": False,
+                "scope_mode": "none", "appid_arg_path": None, "annotation_status": "allowed",
+                "blocked_reason": None}
+
+    monkeypatch.setattr(mcp_tools, "get_runtime_annotation", spy)
+    ann = {"is_approval_required": False, "is_secret_required": False, "scope_mode": "none",
+           "appid_arg_path": None, "status": "allowed", "origin": "dynamic",
+           "mcp_display_name": "opsdfx-mcp", "tool_name": "query_resource"}
+    st = _st(annotations={"opsdfx-mcp__query_resource": ann})
+    st.template_tools = {"opsdfx-mcp::query_resource"}
+    await tool_gateway.invoke(st, _RUN, "opsdfx-mcp__query_resource", {}, server_name="opsdfx-mcp")
+    assert cap["name"] == "query_resource" and cap["server"] == "opsdfx-mcp"
+
+
+def test_tool_012_runtime_annotation_repo_server_scoped(client):
+    """仓储层按 server 维度取运行时标注：同名工具两家 server 各自标注，server= 各取各的
+    （A 需审批 / B 免审批互不串）；不传 server 保留全局旧语义（demo/无上下文兜底）。"""
+    import asyncio
+
+    from infra.repositories import assets as assets_repo
+    from infra.repositories import mcp_tools
+
+    async def scenario():
+        a = await assets_repo.create_mcp(None, "platform", "srv-A", "http", {"endpoint": "https://a.local/mcp"}, {})
+        b = await assets_repo.create_mcp(None, "platform", "srv-B", "http", {"endpoint": "https://b.local/mcp"}, {})
+        ta = await mcp_tools.upsert_catalog_tool(a["mcp_version_id"], "foo", "dA",
+                                                 {"type": "object", "properties": {}}, "hA")
+        tb = await mcp_tools.upsert_catalog_tool(b["mcp_version_id"], "foo", "dB",
+                                                 {"type": "object", "properties": {}}, "hB")
+        await mcp_tools.save_annotation(ta, True, False, "none", None, "allowed", None, "admin")
+        await mcp_tools.save_annotation(tb, False, False, "none", None, "allowed", None, "admin")
+        return (await mcp_tools.get_runtime_annotation("foo", server="srv-A"),
+                await mcp_tools.get_runtime_annotation("foo", server="srv-B"),
+                await mcp_tools.get_runtime_annotation("foo"))
+
+    ra, rb, rglobal = asyncio.run(scenario())
+    assert ra["is_approval_required"] is True and ra["mcp_display_name"] == "srv-A"
+    assert rb["is_approval_required"] is False and rb["mcp_display_name"] == "srv-B"
+    assert rglobal is not None  # 全局旧语义仍可用（取最新一条）

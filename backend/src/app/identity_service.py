@@ -51,12 +51,20 @@ async def me(user: dict[str, Any]) -> dict[str, Any]:
 
 
 # ---- 管理台：用户与白名单（router 不直连 users repo，走本服务） ----
-async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None) -> dict[str, Any]:
-    """分页 + 关键字搜索（q 按 user_id/display_name 模糊，服务端过滤）→ {items,total,page,page_size}。"""
+async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None,
+                     tag: str | None = None) -> dict[str, Any]:
+    """分页 + 关键字搜索（q 按 user_id/display_name 模糊）+ 标签过滤（tag 精确，与 q 为 AND）
+    → {items,total,page,page_size}。均服务端过滤。"""
     rows, total = await users.list_users_with_whitelist(
-        q=(q.strip() or None) if q else None, limit=page_size, offset=(page - 1) * page_size,
+        q=(q.strip() or None) if q else None, tag=(tag.strip() or None) if tag else None,
+        limit=page_size, offset=(page - 1) * page_size,
     )
     return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+
+
+async def list_user_tags() -> list[str]:
+    """管理台标签下拉候选：所有未删用户已用的领域标签（去重、排序）。"""
+    return await users.list_all_tags()
 
 
 # ---- 开放查询面（免鉴权 GET /whitelist，老项目 1cd7ef0 口径）：外部系统判断
@@ -90,13 +98,44 @@ async def set_role(user_id: str, role: str, by: str) -> dict[str, Any]:
     return {"user_id": user_id, "role": role, "changed": old_role != role}
 
 
-async def add_whitelist(user_id: str, display_name: str, role: str, by: str) -> None:
+def _norm_tags(tags: list[str]) -> list[str]:
+    """标签规整：strip、去空、按序去重（管理台输入逗号分隔切出来的原料）。"""
+    out: list[str] = []
+    for t in tags:
+        t = t.strip()
+        if t and t not in out:
+            out.append(t)
+    return out
+
+
+async def add_whitelist(user_id: str, display_name: str, role: str, by: str,
+                        tags: list[str] | None = None) -> None:
     await users.upsert_user(user_id, display_name or user_id, role)
     await users.add_whitelist(user_id, by)
+    if tags is not None:  # None=不动（老调用方/重复加白不冲已有标签）；[] 即清空
+        await users.set_user_tags(user_id, _norm_tags(tags), by)
     await audit.insert_event(  # 管理面动作必审计（B7·三）
         audit_trace_id=str(uuid.uuid4()), event_type="whitelist.granted", user_id=by,
-        action="grant", actor_type="user", payload_redacted={"target_user_id": user_id},
+        action="grant", actor_type="user",
+        payload_redacted={"target_user_id": user_id, **({"tags": _norm_tags(tags)} if tags is not None else {})},
     )
+
+
+async def set_tags(user_id: str, tags: list[str], by: str) -> dict[str, Any]:
+    """改领域标签（整体替换，[] 清空）。标签无权限含义，改自己不设防（与 set_role 相反）。"""
+    row = await users.get_user(user_id)
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, f"用户不存在：{user_id}（先加入白名单会自动建行）")
+    new = _norm_tags(tags)
+    old = row.get("tags_json") or []
+    if old != new:
+        await users.set_user_tags(user_id, new, by)
+        await audit.insert_event(  # 管理面动作必审计（对齐 role.changed）
+            audit_trace_id=str(uuid.uuid4()), event_type="user.tags_changed", user_id=by,
+            action="set_tags", actor_type="user",
+            payload_redacted={"target_user_id": user_id, "from": old, "to": new},
+        )
+    return {"user_id": user_id, "tags": new, "changed": old != new}
 
 
 async def revoke_whitelist(user_id: str, by: str) -> None:

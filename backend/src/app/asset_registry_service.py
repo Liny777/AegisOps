@@ -8,11 +8,11 @@ import time
 import uuid
 from typing import Any
 
-from app import agent_team_service
+from app import agent_team_service, template_service
 from domain.errors import ApiError, Err
 from infra import egress
 from infra.db import row_json
-from infra.repositories import agent_teams, assets, audit, templates
+from infra.repositories import agent_teams, assets, audit
 
 log = logging.getLogger("openops.user_skill_sync")
 
@@ -47,7 +47,7 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
             if s.get("source") != "openops" or s.get("source_type") != "user":
                 continue  # 只收个人 skill；平台 skill 走全局 reconcile
             manifest = {"synced_from": "skill_hub_user", "latest_version": s.get("latest_version"),
-                        "category": s.get("category")}
+                        "category": s.get("category"), "updated_date": s.get("updated_date")}
             existing = await assets.get_user_skill_by_key(uid, s["skill_key"])
             if existing is None:
                 await assets.create_skill(uid, "user", s["display_name"], s["skill_key"],
@@ -60,10 +60,13 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
                     manifest, s["checksum_sha256"], uid)
             else:
                 cur = latest.get("manifest_json") or {}
-                if cur.get("latest_version") != s.get("latest_version") or cur.get("category") != s.get("category"):
+                if (cur.get("latest_version") != s.get("latest_version")
+                        or cur.get("category") != s.get("category")
+                        or cur.get("updated_date") != s.get("updated_date")):
                     await assets.update_skill_version_manifest(
                         str(latest["skill_version_id"]),
-                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category")})
+                        {**cur, "latest_version": s.get("latest_version"), "category": s.get("category"),
+                         "updated_date": s.get("updated_date")})
     except Exception as e:  # noqa: BLE001 —— SkillHub 挂/cookie 失效不阻断列表读
         log.warning("user skill sync failed (%s): %s", uid, str(e)[:200])
 
@@ -87,6 +90,7 @@ async def list_skills(user: dict[str, Any], *, page: int = 1, page_size: int = 2
         if isinstance(manifest, dict):
             d["latest_version"] = manifest.get("latest_version")  # None → 前端回退 v{version_no}
             d["category"] = manifest.get("category")
+            d["updated_date"] = manifest.get("updated_date")  # SkillHub §2.2 更新时间（管理台「更新时间」列；未同步到 → 前端回退「—」）
             d["description"] = manifest.get("description")  # 插件页「说明」的真描述（此前被 pop 一并丢弃）
         items.append(d)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
@@ -250,10 +254,12 @@ async def delete_mcp(user: dict[str, Any], mcp_id: str) -> None:
         raise ApiError(Err.FORBIDDEN, "无权删除该 MCP")
     if await agent_teams.asset_in_use("mcp", mcp_id):
         raise ApiError(Err.ASSET_IN_USE, "该资产仍被 active 配置引用，请先解绑")
-    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 删前取工具名（catalog 随 asset 保留）
+    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 审计留痕用（catalog 随 asset 保留）
     await assets.delete_mcp(mcp_id, user["user_id"])
-    # 级联清理：把该 server 的工具从模板 draft 绑定里摘掉，防成幽灵绑定卡编辑（published 不可变，编辑时自愈）
-    scrubbed = await templates.scrub_tools_from_versions(tool_names)
+    # 级联清理：删后对全部 draft 重跑归一化——被删 server 的引用（复合键失配/裸名解析不到）被摘，
+    # 幸存 server 上仍 allowed 的同名裸名保留并升级为幸存家复合键（published 不可变，编辑时自愈）。
+    # 解析基于 runtime_annotations，其 catalog 查询已排除已删资产的行，故删除即刻生效。
+    scrubbed = await template_service.renormalize_drafts()
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="mcp.deleted", user_id=user["user_id"], action="delete",
         payload_redacted={"mcp_id": mcp_id, "tool_names": tool_names, "templates_scrubbed": scrubbed},

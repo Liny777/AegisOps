@@ -24,6 +24,7 @@ import re
 import uuid
 from typing import Any
 
+from domain import tool_key
 from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
 from infra.rca_contract import RcaBoardContractError
 import studio  # Agent Studio 垂直切片：只经 facade（src/studio/__init__.py），不碰其内部结构
@@ -301,6 +302,9 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
             specs.append({
                 "name": t["tool_name"], "description": t.get("description", ""),
                 "input_schema": schema, "server_url": surl, "readonly": bool(t.get("readonly")),
+                # server 身份（复合键 "{server_name}::{tool}" 的左半）：白名单/标注解析按它区分同名工具。
+                # 与资产入库锚一致（reconcile create-if-missing 按 server_name 作 display_name）。
+                "server_name": tool_key.sanitize_server_name(str(srv.get("server_name") or srv.get("server_id") or "")),
                 "scope_mode": "required" if appid_prop else "none",
                 "appid_arg_path": f"$.{appid_prop}" if appid_prop else None,
                 "source_type": "platform",  # 自证：随 spec 下传给 tool_gateway.invoke（对照 _user_mcp_specs）
@@ -376,15 +380,21 @@ async def _user_mcp_specs(st: TaskState) -> list[dict[str, Any]]:
     return [s for r in got if isinstance(r, list) for s in r]
 
 
-def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any]) -> Any:
+def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any],
+                       reg_name: str | None = None) -> Any:
     """发现到的 MCP 工具 → agentscope FunctionTool：调用穿过 Tool Gateway（scope/审批/审计/28.2 头），
-    按 server_url 经 console proxy 路由。用 __signature__ 让 agentscope 从中抽出参数 schema。"""
+    按 server_url 经 console proxy 路由。用 __signature__ 让 agentscope 从中抽出参数 schema。
+
+    reg_name = toolkit 注册名（LLM 面）：同名跨 server 冲突时由 _build_toolkit 分配器给出
+    `{slug(server)}__{tool}` 命名空间名，默认（无冲突）就是裸 spec["name"]。invoke 另带
+    server_name（复合键身份的 server 维度）——白名单与标注按它区分同名工具，不解析注册名。"""
     import inspect
 
     from agentscope.message import TextBlock
     from agentscope.tool import FunctionTool, ToolResponse
 
-    name, server_url = spec["name"], spec["server_url"]
+    name, server_url = reg_name or spec["name"], spec["server_url"]
+    server_name = spec.get("server_name") or spec.get("display_name")
     schema = spec.get("input_schema") or {}
     props: dict[str, Any] = schema.get("properties") or {}
     required = set(schema.get("required") or [])
@@ -410,6 +420,7 @@ def _make_dynamic_tool(st: TaskState, run: dict[str, Any], spec: dict[str, Any])
                 return ToolResponse(content=[TextBlock(type="text", text=f"工具被拦截：EGRESS_BLOCKED {e}")])
         try:
             r = await tool_gateway.invoke(st, run, name, args, server_url=server_url, source_type=source_type,
+                                          server_name=str(server_name) if server_name else None,
                                           started_msg=f"调用 {name}", succeeded_msg=f"{name} 返回")
         except ToolBlocked as e:
             # 只读查询被拦（如查询出 scope 的 APPID_OUT_OF_SCOPE）不算「恢复被拦」：没有恢复动作可抑制，
@@ -870,42 +881,84 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         if isinstance(st.template_tools, set):
             st.template_tools.add("dispatch_subagents")
     # 动态 MCP 工具（OPENOPS_MCPREGISTRY=real）：注册表发现的真 server 工具（如 alarm-server），穿 Tool Gateway
-    # 路由到各 server_url。注入标注：只读→免审批、写类→ASK；有 project_id/appid → scope 受限（拍板 i）。
-    _skipped_dynamic: list[str] = []  # 发现到、但因不在白名单未装配的动态工具名（可见性：见循环后 emit）
+    # 路由到各 server_url。身份 = 「server::tool」复合键（tool_key，白名单/标注解析用，跨 server 同名
+    # 不互踩）；注册名 = LLM 面（见下方分配器）。注入标注：只读→免审批、写类→ASK；有 project_id/appid
+    # → scope 受限（拍板 i）。
+    _skipped_dynamic: list[str] = []  # 发现到、但因不在白名单未装配的动态工具（复合键；可见性：见循环后 emit）
+    _assembled: list[tuple[dict[str, Any], dict[str, Any]]] = []  # (spec, 标注) —— 过完白名单/标注闸的装配集
     for spec in dynamic_specs:
+        # server 名缺失（老 spec/测试手搓）→ 身份退化为裸名（旧语义），不造 "::tool" 畸形键
+        _srv = str(spec.get("server_name") or "")
+        key = tool_key.make_key(_srv, str(spec["name"])) if _srv else str(spec["name"])
         # per-agent 隔离（D/E 块，编排对称化）：动态工具对 main/sub 统一按白名单裁剪——
         # main 按模板 main.default_tools，子 Agent 按画像 mcp_tools（否则每个 Agent 都看到
         # 注册表全部真工具，角色隔离被击穿）。空白名单=纯编排者（main 被迫派发，老 D6 效果）；
         # main 需要直连的动态工具须在模板编辑器勾进 default_tools（先 allowed 标注）。
-        if st.template_tools is None or spec["name"] not in st.template_tools:
+        # 复合键或裸名任一命中即放行（已迁移复合键模板 / 存量裸名模板双通）。
+        if st.template_tools is None or (key not in st.template_tools and spec["name"] not in st.template_tools):
             # 可见性修复：此处曾静默 continue（不发事件/不打日志）——真机上「注册表已发现某 MCP 工具、
             # 却因不在模板 default_tools 白名单而没装配到 Agent」全程无痕，用户只见模型据实说「没注册/没加载」。
-            # 收集工具名 + 打 info 日志（main/sub 都打，带 agent_key）；循环后仅对 main 发一条观测事件。
-            _skipped_dynamic.append(str(spec["name"]))
+            # 收集复合键 + 打 info 日志（main/sub 都打，带 agent_key）；循环后仅对 main 发一条观测事件。
+            _skipped_dynamic.append(key)
             log.info("动态 MCP 工具未装配（不在%s白名单）：tool=%s agent=%s",
                      "模板 default_tools" if st.agent_key == "main" else "子 Agent 画像 mcp_tools",
-                     spec["name"], st.agent_key)
+                     key, st.agent_key)
             continue
         # 管理员在管理台显式标注即事实来源（runtime_annotations 已按 annotation_id 非空装进快照）：
         # is_approval_required（勿审批/需审批）/scope/secret/status 全以标注为准；server 的 readOnlyHint
         # 仅作**未标注**时的审批默认。修「管理员『勿审批』被 readOnlyHint 静默覆盖、非只读动态工具永远弹
         # 审批」——旧代码在此无条件用 not readonly 顶掉了快照里的管理员标注。origin=dynamic 恒补写：供
         # tool_gateway._effective_annotation 在标注被抹除（schema 变更软删）后仍能回退续用（tool_gateway.py:121）。
-        admin_ann = st.tool_annotations.get(spec["name"])
+        # 解析顺序：复合键条目优先；裸名条目仅当其无 server 归属（测试手搓快照）或与本 spec 同家时才
+        # 回退采用——防跨 server 同名标注互串（正是本次根治的缺陷形态）。
+        admin_ann = st.tool_annotations.get(key)
+        if admin_ann is None:
+            cand = st.tool_annotations.get(spec["name"])
+            if cand is not None and cand.get("mcp_display_name") in (None, spec.get("server_name")):
+                admin_ann = cand
         if admin_ann is not None:
-            st.tool_annotations[spec["name"]] = {**admin_ann, "origin": "dynamic"}
+            entry = {**admin_ann, "origin": "dynamic"}
         else:
-            st.tool_annotations[spec["name"]] = {
+            entry = {
                 "is_approval_required": not spec["readonly"], "is_secret_required": False,
                 "scope_mode": spec["scope_mode"], "appid_arg_path": spec["appid_arg_path"],
                 "status": "allowed", "origin": "dynamic",
             }
+        entry.setdefault("mcp_display_name", spec.get("server_name"))
+        entry.setdefault("tool_name", spec["name"])
         # 管理员禁用（status!=allowed）→ 不装配（对齐平台工具：blocked 不进 toolkit、_permission_context
         # 不给规则），记 pruned 供审计（B6-RT-001③）；标注保留占名 + gateway 兜底。
-        if st.tool_annotations[spec["name"]].get("status") != "allowed":
+        if entry.get("status") != "allowed":
+            st.tool_annotations[spec["name"]] = entry
             pruned.append((spec["name"], "TOOL_BLOCKED"))
             continue
-        tools.append(_make_dynamic_tool(st, run, spec))
+        _assembled.append((spec, entry))
+    # 注册名分配（LLM 面）：裸名在「本次装配集 + 已注册内置/demo 名」内唯一 → 注册名=裸名（零行为
+    # 变化）；冲突（同名跨 server 同时选中，或撞内置名）→ 冲突方**全部**改 `{slug(server)}__{tool}`
+    # （不留裸名——留一个等于把歧义留给模型），内置工具从此不可被动态工具静默 shadow（agentscope
+    # Toolkit 同名注册 last-wins 且无告警，此前平台动态工具与内置之间无守卫）。分配确定性：装配集
+    # 按 specs 原序（注册表顺序），slug 撞车按序号递增——仅真冲突才改名，存量会话恢复后注册名漂移最小。
+    _reserved = {t.name for t in tools if getattr(t, "name", None)} | set(fns)
+    _name_counts: dict[str, int] = {}
+    for spec, _e in _assembled:
+        _name_counts[str(spec["name"])] = _name_counts.get(str(spec["name"]), 0) + 1
+    _used_reg = set(_reserved)
+    for spec, entry in _assembled:
+        name = str(spec["name"])
+        if _name_counts[name] == 1 and name not in _reserved:
+            reg_name = name
+        else:
+            slug = re.sub(r"[^A-Za-z0-9_-]", "_", str(spec.get("server_name") or "srv")) or "srv"
+            reg_name = f"{slug}__{name}"[:64]
+            n = 2
+            while reg_name in _used_reg:
+                reg_name = f"{slug}__{name}"[: 64 - len(str(n)) - 1] + f"_{n}"
+                n += 1
+        _used_reg.add(reg_name)
+        # st.tool_annotations 的运行面形态：key=注册名、值内携带 server 身份元数据——
+        # _permission_context / _handle_ask / gateway 快照回退全按注册名工作，无需解析。
+        st.tool_annotations[reg_name] = entry
+        tools.append(_make_dynamic_tool(st, run, spec, reg_name=reg_name))
     # 可见性（白名单闸）：注册表已发现、却因不在模板白名单未装配的动态工具——仅对 main 发一条 tool.skipped
     # 观测事件（子 Agent 的白名单收窄是刻意角色隔离，噪声大，只落日志）。**不置 st.tool_blocked**：
     # 「未启用」不是「被拦截」，不该压制本轮「已闭环」结论；故用独立事件类型（非 tool.blocked 的红色阻断）。
@@ -962,6 +1015,8 @@ def _permission_context(st: TaskState) -> Any:
     allow: dict[str, list[Any]] = {}
     ask: dict[str, list[Any]] = {}
     for name, ann in (st.tool_annotations or {}).items():
+        if tool_key.is_composite(name):
+            continue  # 复合键身份条目（启动快照）非注册名——规则只发给真实注册名，免生无主规则噪音
         if ann.get("status") != "allowed":
             continue
         if ann.get("is_approval_required"):
@@ -1009,10 +1064,13 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
     st.approval_ev.clear()  # 复用同一 asyncio.Event：等待前清位+清旧结果，避免上一次 ASK（如容器 Bash 审批）的
     st.approval_result = None  # set 未清 → 本次 wait() 立即返回并读到陈旧决策（与 sandbox_bash 同规矩）
     st.approval_id = str(appr["approval_request_id"])
-    # payload 带 args（脱敏入参字典）供审批卡逐项展示；保留 target/impact 兼容旧前端
+    # payload 带 args（脱敏入参字典）供审批卡逐项展示；保留 target/impact 兼容旧前端。
+    # server_name：注册名可能是命名空间形（如 alarm_server__restart），审批卡靠它标注工具归属。
+    _snap = (st.tool_annotations or {}).get(tool_name) or {}
     await emit(st, run, "openops.approval.required", severity="warning",
                message=ask_msg,
                payload={"approval_request_id": st.approval_id, "tool": tool_name, "args": args,
+                        "server_name": _snap.get("mcp_display_name"),
                         "target": target, "impact": impact})
     try:
         await asyncio.wait_for(st.approval_ev.wait(), timeout=ASK_TIMEOUT_S)

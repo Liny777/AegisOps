@@ -63,6 +63,7 @@ _MOCK_LIST = [
         "description": "巡检 Skill",
         "checksum_sha256": MOCK_INSPECTION_CHECKSUM,
         "status": "active",
+        "updated_date": "2026-07-20 10:30:00",  # §2.2 updated_date 原串（管理台「更新时间」列）
     }
 ]
 
@@ -104,6 +105,7 @@ def _map_skill(it: dict[str, Any]) -> dict[str, Any]:
         "version_no": _semver_to_int(it.get("latest_version")),
         "latest_version": it.get("latest_version"),  # §2.2 semver 原串（展示口径）
         "category": it.get("category"),
+        "updated_date": it.get("updated_date"),  # §2.2 更新时间原串 YYYY-MM-DD HH:MM:SS（管理台「更新时间」列）
         # §2.2 列表项本就带 latest_description → 直接拿描述，无需为此下载整包（见 reconcile 的按需回退）
         "description": it.get("latest_description"),
         "checksum_sha256": it.get("checksum_sha256"),

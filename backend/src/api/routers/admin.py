@@ -23,6 +23,7 @@ from domain.schemas import (
     SandboxDestroyRequest,
     SaveTemplateVersionRequest,
     SetRoleRequest,
+    SetTagsRequest,
     TemplateVersionActionRequest,
     UpdateModelAssetRequest,
     UpdateRuntimeConfigRequest,
@@ -76,9 +77,16 @@ async def list_users(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),  # 上限对齐 29.3 §2.2
     q: str | None = Query(default=None, max_length=200),  # 按 user_id/display_name 模糊搜（服务端过滤）
+    tag: str | None = Query(default=None, max_length=100),  # 按领域标签精确过滤（与 q 为 AND）
 ):
-    """分页 + 搜索 → {items,total,page,page_size}。"""
-    return ok(await identity_service.list_users(page=page, page_size=page_size, q=q))
+    """分页 + 搜索 + 标签过滤 → {items,total,page,page_size}。"""
+    return ok(await identity_service.list_users(page=page, page_size=page_size, q=q, tag=tag))
+
+
+@router.get("/users/tags")
+async def list_user_tags(_admin: Admin):
+    """标签下拉候选：所有未删用户已用的领域标签（去重、排序）。"""
+    return ok(await identity_service.list_user_tags())
 
 
 @router.delete("/users/{user_id}")
@@ -90,7 +98,7 @@ async def delete_user(user_id: str, admin: Admin):
 
 @router.post("/users/whitelist")
 async def add_whitelist(req: WhitelistRequest, admin: Admin):
-    await identity_service.add_whitelist(req.user_id, req.display_name, req.role, admin["user_id"])
+    await identity_service.add_whitelist(req.user_id, req.display_name, req.role, admin["user_id"], tags=req.tags)
     return ok({"added": True})
 
 
@@ -104,6 +112,12 @@ async def revoke_whitelist(req: WhitelistRequest, admin: Admin):
 async def set_role(user_id: str, req: SetRoleRequest, admin: Admin):
     """升/降级已有用户（B7·三补链）：role ∈ user|platform_admin；不能改自己；写 role.changed 审计。"""
     return ok(await identity_service.set_role(user_id, req.role, admin["user_id"]))
+
+
+@router.post("/users/{user_id}:set-tags")
+async def set_tags(user_id: str, req: SetTagsRequest, admin: Admin):
+    """改领域标签（整体替换，[] 清空）；写 user.tags_changed 审计。"""
+    return ok(await identity_service.set_tags(user_id, req.tags, admin["user_id"]))
 
 
 @router.get("/sandbox")

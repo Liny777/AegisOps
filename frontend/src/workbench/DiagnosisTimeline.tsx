@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { color, radius, shadow, toneColor } from "../theme/tokens";
 import { Icon, StatusBadge, Button } from "../ui";
 import type { RcaCardData, RcaStep } from "../lib/api/types";
+import type { RecoveryAction, RecoveryActionPhase, RecoveryState } from "../lib/rca/recovery";
 import "./DiagnosisTimeline.css";
 
 /** 时间线按钮点击后要以用户身份发出的消息（可见可审计，B4 用户拍板）。 */
@@ -22,7 +23,35 @@ const STEP_META: Record<number, { title: string; en: string; icon: string }> = {
   3: { title: "假设生成", en: "HYPOTHESIS", icon: "bulb" },
   4: { title: "验证", en: "TEST", icon: "flask" },
   5: { title: "根因报告", en: "REPORT", icon: "report" },
+  // 第六节点：恢复执行（审批/工具事件驱动，不属于五步法——进度口径仍是 N/5）
+  6: { title: "恢复执行", en: "RECOVER", icon: "first-aid-kit" },
 };
+
+/** 恢复相位 → 展示文案与配色（approved/executing 走品牌蓝 + live 脉冲）。 */
+const RECOVERY_PHASE_META: Record<RecoveryActionPhase, {
+  label: string;
+  dot: string;
+  text: string;
+  bg: string;
+  /** 进行中相位：圆点脉冲。 */
+  live?: boolean;
+}> = {
+  pending: { label: "待审批", dot: color.warning, text: color.warningText, bg: color.warningChipBg },
+  approved: { label: "已批准", dot: color.brand, text: color.brandStrong, bg: color.brandTintBg, live: true },
+  executing: { label: "执行中", dot: color.brand, text: color.brandStrong, bg: color.brandTintBg, live: true },
+  executed: { label: "已执行", dot: color.good, text: color.goodText, bg: color.goodBg },
+  rejected: { label: "已拒绝", dot: color.danger, text: color.dangerText, bg: toneColor.danger.bg },
+  timeout: { label: "审批超时", dot: color.warning, text: color.warningText, bg: color.warningChipBg },
+  failed: { label: "执行失败", dot: color.danger, text: color.dangerText, bg: toneColor.danger.bg },
+};
+
+/** ISO 时间 → HH:MM（审批明细行展示用）；无效输入返回空串不渲染。 */
+function formatClock(iso?: string): string {
+  if (!iso) return "";
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return "";
+  return `${String(parsed.getHours()).padStart(2, "0")}:${String(parsed.getMinutes()).padStart(2, "0")}`;
+}
 
 /** 收起态一行摘要的兜底：step.summary 缺失（旧快照/后端未上报）时从面板既有字段推导。
  *  仅对 done/active 步调用——currentQ/conclusion/假设是跨步全局字段，waiting 步展示它们
@@ -61,6 +90,7 @@ export function DiagnosisTimeline({
   live = false,
   actionsEnabled = true,
   onAction,
+  recovery,
 }: {
   rca: RcaCardData;
   /** 任务运行中且未闭环：active 步圆点与相位 chip 脉冲。 */
@@ -69,6 +99,8 @@ export function DiagnosisTimeline({
   actionsEnabled?: boolean;
   /** 缺省（如 run closed）时整个 footer 不渲染。 */
   onAction?: (action: RcaCardAction) => void;
+  /** 第六节点「恢复执行」状态（审批/工具事件推导）；缺省或 idle 时节点灰显不可点。 */
+  recovery?: RecoveryState;
 }) {
   const concluded = rca.status === "concluded";
   const activeStep = rca.steps.find((step) => step.state === "active");
@@ -77,17 +109,32 @@ export function DiagnosisTimeline({
   // 靠 revision 回退（新板从 1 重计，Workbench 守卫保证段内只前进）识别换板并清覆盖，
   // 否则旧板的展开选择会误套到新板。waiting 步永不展开（无内容），忽略 stale 覆盖。
   const [overrides, setOverrides] = useState<Record<number, boolean>>({});
+  // 新线索过渡提示：复用同一 revision 回退信号（换板 = 用户补充线索开启新一轮诊断）。
+  // ephemeral（刷新/重挂即无）；盲区：旧板只更新过 ≤1 次（revision 未超过新板起点）时
+  // 检测不到回退，提示不出现——可接受，不为此加轮次计数。
+  const [renewalNotice, setRenewalNotice] = useState(false);
   const lastRevisionRef = useRef<number>(rca.revision ?? 0);
   useEffect(() => {
     const revision = rca.revision ?? 0;
-    if (revision < lastRevisionRef.current) setOverrides({});
+    if (revision < lastRevisionRef.current) {
+      setOverrides({});
+      setRenewalNotice(true);
+    }
     lastRevisionRef.current = revision;
   }, [rca.revision]);
+  useEffect(() => {
+    if (!renewalNotice) return;
+    const timer = window.setTimeout(() => setRenewalNotice(false), 6_000);
+    return () => window.clearTimeout(timer);
+  }, [renewalNotice]);
   const isExpanded = (step: RcaStep): boolean =>
     step.state !== "waiting"
     && (overrides[step.num] ?? (concluded ? step.num === 5 : step.state === "active"));
   const toggleStep = (num: number, expanded: boolean) =>
     setOverrides((prev) => ({ ...prev, [num]: !expanded }));
+  // 第六节点复用 overrides[6]（步 num 只有 1-5 不冲突；revision 回退换板时随 overrides 一并重置）。
+  // 默认收起（收起态有一行摘要）；idle 无内容不可展开，忽略 stale 覆盖。
+  const recoveryExpanded = Boolean(recovery && recovery.phase !== "idle" && (overrides[6] ?? false));
 
   const topHypothesis = rca.hypotheses.length
     ? [...rca.hypotheses].sort((a, b) => b.conf - a.conf)[0]
@@ -141,10 +188,16 @@ export function DiagnosisTimeline({
             borderRadius: `${radius.xxl} ${radius.xxl} 0 0`,
           }}
         >
-          <div style={{ width: 28, height: 28, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ width: 28, height: 28, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 28px" }}>
             <Icon name="report-search" size={17} color={color.brand} />
           </div>
-          <div style={{ fontSize: 14, fontWeight: 700 }}>诊断{rca.title ? ` · ${rca.title}` : ""}</div>
+          {/* 超长标题单行省略 + title 补全（对齐 Workbench 会话标题惯例），不把相位 chip/time 顶出卡外 */}
+          <div
+            title={`诊断${rca.title ? ` · ${rca.title}` : ""}`}
+            style={{ fontSize: 14, fontWeight: 700, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+          >
+            诊断{rca.title ? ` · ${rca.title}` : ""}
+          </div>
           {rca.phaseLabel ? (
             <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 600, color: color.brandStrong, background: color.brandTintBg, padding: "3px 9px", borderRadius: radius.pill, whiteSpace: "nowrap" }}>
               <span style={{ width: 6, height: 6, borderRadius: "50%", background: concluded ? color.good : color.brand, animation: live ? "omPulse 1.2s ease-in-out infinite" : undefined }} />
@@ -152,7 +205,7 @@ export function DiagnosisTimeline({
             </span>
           ) : null}
           <div style={{ flex: 1 }} />
-          <span style={{ fontSize: 11.5, color: color.textSubtle }}>{rca.time}</span>
+          <span style={{ fontSize: 11.5, color: color.textSubtle, whiteSpace: "nowrap", flex: "0 0 auto" }}>{rca.time}</span>
         </div>
         {/* 进度行：读屏用 role=status 通报当前处于五步法哪一步 */}
         <div
@@ -179,6 +232,29 @@ export function DiagnosisTimeline({
         </div>
       </div>
 
+      {/* 新线索过渡提示：revision 回退（换板）后 6s 内展示，缓和「富板瞬间变稀疏板」的突兀感 */}
+      {renewalNotice ? (
+        <div
+          role="status"
+          data-testid="diagnosis-renewal-notice"
+          className="oa-diag-renewal"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            padding: "8px 16px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: color.brandStrong,
+            background: color.brandTintBg,
+            borderBottom: `1px solid ${color.borderInner}`,
+          }}
+        >
+          <Icon name="refresh" size={14} color={color.brand} />
+          已基于新线索开启新一轮诊断
+        </div>
+      ) : null}
+
       {/* incident tiles：概览常驻 header 下（容器查询降列见 DiagnosisTimeline.css） */}
       {rca.tiles.length ? (
         <div className="oa-rca-tiles" style={{ display: "grid", gap: 1, background: color.borderInner, borderBottom: `1px solid ${color.borderInner}` }}>
@@ -191,19 +267,25 @@ export function DiagnosisTimeline({
         </div>
       ) : null}
 
-      {/* 垂直时间线：每步一块 */}
+      {/* 垂直时间线：五步 + 常驻第六节点「恢复执行」（连线自步 5 接入，last 恒 false） */}
       <ol className="oa-diag-timeline">
-        {rca.steps.map((step, index) => (
+        {rca.steps.map((step) => (
           <StepNode
             key={step.num}
             rca={rca}
             step={step}
-            last={index === rca.steps.length - 1}
+            last={false}
             live={live}
             expanded={isExpanded(step)}
             onToggle={() => toggleStep(step.num, isExpanded(step))}
           />
         ))}
+        <RecoveryStepNode
+          rca={rca}
+          recovery={recovery}
+          expanded={recoveryExpanded}
+          onToggle={() => toggleStep(6, recoveryExpanded)}
+        />
       </ol>
 
       {/* footer 操作条：独立于步卡（折叠结论步时按钮不消失）；run closed（onAction 缺省）
@@ -324,7 +406,7 @@ function StepNode({
           </button>
         )}
         {!expanded && summaryLine ? (
-          <div style={{ padding: "0 12px 9px", fontSize: 11.5, color: waiting ? color.textSubtle : color.textMuted, lineHeight: 1.5, overflowWrap: "anywhere" }}>
+          <div style={{ padding: "0 12px 9px", fontSize: 11.5, color: waiting ? color.textSubtle : color.textMuted, lineHeight: 1.5 }}>
             {summaryLine}
           </div>
         ) : null}
@@ -379,7 +461,8 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
               </div>
               {rca.facts.map((f, i) => (
                 <div key={i} style={{ fontSize: 12, color: color.textBody, lineHeight: 1.5, padding: "2px 0", display: "flex", gap: 6 }}>
-                  <span style={{ color: color.good }}>·</span>{f.text}
+                  {/* 文本必须包 span：匿名 flex 子项无法定 min-width，长 token 会撑破卡框 */}
+                  <span style={{ color: color.good }}>·</span><span style={{ minWidth: 0, flex: 1 }}>{f.text}</span>
                 </div>
               ))}
             </div>
@@ -391,7 +474,7 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
               </div>
               {rca.unknowns.map((u, i) => (
                 <div key={i} style={{ fontSize: 12, color: color.textBody, lineHeight: 1.5, padding: "2px 0", display: "flex", gap: 6 }}>
-                  <span style={{ color: color.warning }}>·</span>{u.text}
+                  <span style={{ color: color.warning }}>·</span><span style={{ minWidth: 0, flex: 1 }}>{u.text}</span>
                 </div>
               ))}
             </div>
@@ -421,7 +504,7 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
               const tc = toneColor[h.tagTone];
               return (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: "9px 12px", background: "#fff" }}>
-                  <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, flex: 1 }}>{h.text}</span>
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, flex: 1, minWidth: 0 }}>{h.text}</span>
                   {h.tag ? (
                     <span style={{ fontSize: 10.5, fontWeight: 600, color: tc.text, background: tc.bg, border: `1px solid ${tc.border}`, padding: "2px 7px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>{h.tag}</span>
                   ) : null}
@@ -461,29 +544,7 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
           </div>
         </div>
       ) : null);
-      sections.push(rca.actions.length ? (
-        <div>
-          <div style={{ fontSize: 11.5, fontWeight: 700, color: color.textNav, marginBottom: 7 }}>下一步行动</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {rca.actions.map((a, i) => {
-              const tc = toneColor[a.statusTone];
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: "10px 12px", background: "#fff" }}>
-                  <span style={{ fontSize: 10.5, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>{a.tier}</span>
-                  <span style={{ flex: 1, fontSize: 12.5, color: color.textStrong }}>{a.text}</span>
-                  {a.confirm ? (
-                    <span style={{ fontSize: 10.5, fontWeight: 600, color: color.warningText, background: color.warningChipBg, padding: "2px 7px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>需确认</span>
-                  ) : null}
-                  {a.impact ? (
-                    <span style={{ fontSize: 11, color: color.textSubtle, whiteSpace: "nowrap" }}>影响：{a.impact}</span>
-                  ) : null}
-                  <span style={{ fontSize: 11, fontWeight: 600, color: tc.text }}>{a.status}</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ) : null);
+      sections.push(rca.actions.length ? <ActionRows rca={rca} /> : null);
       break;
     }
     default:
@@ -501,18 +562,173 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
   );
 }
 
-/** 空态骨架：五个 waiting 节点（双语标题），供 ActivityRail 的诊断空态复用。
+/** 「下一步行动」清单：步 5 展开态与第六恢复节点展开态共用（同一数据源 rca.actions）。 */
+function ActionRows({ rca }: { rca: RcaCardData }) {
+  if (!rca.actions.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 11.5, fontWeight: 700, color: color.textNav, marginBottom: 7 }}>下一步行动</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rca.actions.map((a, i) => {
+          const tc = toneColor[a.statusTone];
+          return (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: "10px 12px", background: "#fff" }}>
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: color.brandStrong, background: color.brandTintBg, padding: "2px 8px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>{a.tier}</span>
+              <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: color.textStrong }}>{a.text}</span>
+              {a.confirm ? (
+                <span style={{ fontSize: 10.5, fontWeight: 600, color: color.warningText, background: color.warningChipBg, padding: "2px 7px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>需确认</span>
+              ) : null}
+              {/* impact 是模型自由文本（≤120 字），nowrap 下长串会撑破卡片——单行省略 + title 补全 */}
+              {a.impact ? (
+                <span
+                  title={`影响：${a.impact}`}
+                  style={{ fontSize: 11, color: color.textSubtle, whiteSpace: "nowrap", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis" }}
+                >影响：{a.impact}</span>
+              ) : null}
+              <span style={{ fontSize: 11, fontWeight: 600, color: tc.text }}>{a.status}</span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** 第六节点「恢复执行 RECOVER」：常驻时间线尾部，由审批/工具事件驱动（deriveRecoveryState）。
+ *  DOM 契约与五步隔离：不设 data-step-state（e2e 断言 done 恒 5 步），改用
+ *  data-testid="diagnosis-step-recover" + li[data-recovery-phase]；「诊断进度 N/5」口径不变。
+ *  与 reopen 并存：被拒时板回 step5 active（后端行为）+ 本节点「已拒绝」——信号源正交，
+ *  构成「结论待修订」叙事。 */
+function RecoveryStepNode({
+  rca,
+  recovery,
+  expanded,
+  onToggle,
+}: {
+  rca: RcaCardData;
+  recovery?: RecoveryState;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const meta = STEP_META[6];
+  const phase = recovery?.phase ?? "idle";
+  const idle = phase === "idle";
+  const phaseMeta = idle ? undefined : RECOVERY_PHASE_META[phase];
+  const executed = phase === "executed";
+  const summaryLine = !idle && recovery
+    ? `恢复动作 ${recovery.counts.total} 项 · ${phaseMeta!.label}`
+    : undefined;
+
+  const headInner = (
+    <>
+      <Icon name={meta.icon} size={15} color={idle ? color.textFaint : phaseMeta!.dot} />
+      <span style={{ fontSize: 12.5, fontWeight: idle ? 600 : 700, color: idle ? color.textSubtle : color.textStrong }}>
+        {meta.title}
+      </span>
+      <span style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: 0.6, color: color.textFaint }}>{meta.en}</span>
+      {phaseMeta ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 700, color: phaseMeta.text, background: phaseMeta.bg, padding: "1px 7px", borderRadius: radius.pill, whiteSpace: "nowrap" }}>
+          <span style={{ width: 5, height: 5, borderRadius: "50%", background: phaseMeta.dot, animation: phaseMeta.live ? "omPulse 1.2s ease-in-out infinite" : undefined }} />
+          {phaseMeta.label}
+        </span>
+      ) : null}
+      <span style={{ flex: 1 }} />
+      {!idle ? (
+        <Icon name={expanded ? "chevron-up" : "chevron-down"} size={13} color={color.textSubtle} />
+      ) : null}
+    </>
+  );
+
+  return (
+    <li className="oa-diag-step" data-recovery-phase={phase}>
+      <span className="oa-diag-step-rail" aria-hidden>
+        <span
+          className="oa-diag-step-dot"
+          style={{
+            background: idle ? "#e6e8ec" : phaseMeta!.dot,
+            color: idle ? color.textSubtle : "#fff",
+            animation: phaseMeta?.live ? "omPulse 1.2s ease-in-out infinite" : undefined,
+          }}
+        >
+          {executed ? <Icon name="check" size={12} color="#fff" /> : 6}
+        </span>
+        {/* 尾节点无下行连线 */}
+      </span>
+
+      <div
+        className="oa-diag-step-card"
+        style={{
+          border: `1px solid ${phaseMeta?.live ? color.brandTintBorder : color.border}`,
+          borderRadius: radius.lg,
+          background: phaseMeta?.live ? "#fdfeff" : "#fff",
+        }}
+      >
+        {idle ? (
+          <div className="oa-diag-step-head is-waiting" data-testid="diagnosis-step-recover">
+            {headInner}
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="oa-diag-step-head"
+            aria-expanded={expanded}
+            data-testid="diagnosis-step-recover"
+            onClick={onToggle}
+          >
+            {headInner}
+          </button>
+        )}
+        {!expanded && summaryLine ? (
+          <div style={{ padding: "0 12px 9px", fontSize: 11.5, color: color.textMuted, lineHeight: 1.5 }}>
+            {summaryLine}
+          </div>
+        ) : null}
+        {expanded && recovery && !idle ? (
+          <div style={{ padding: "0 12px 12px", display: "flex", flexDirection: "column", gap: 12 }}>
+            <ActionRows rca={rca} />
+            <div>
+              <div style={{ fontSize: 11.5, fontWeight: 700, color: color.textNav, marginBottom: 7 }}>审批与执行明细</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {recovery.actions.map((action: RecoveryAction) => {
+                  const st = RECOVERY_PHASE_META[action.phase];
+                  const time = formatClock(action.updatedAt ?? action.requiredAt);
+                  return (
+                    <div key={action.approvalRequestId} style={{ display: "flex", alignItems: "center", gap: 10, border: `1px solid ${color.border}`, borderRadius: radius.lg, padding: "9px 12px", background: "#fff" }}>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span style={{ display: "block", fontSize: 12, color: color.textStrong }}>{action.label ?? action.tool}</span>
+                        <code style={{ display: "block", maxWidth: "100%", marginTop: 2, fontSize: 10.5, color: color.textMuted, fontFamily: "ui-monospace, 'SF Mono', Menlo, monospace" }}>{action.tool}</code>
+                      </span>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 600, color: st.text, background: st.bg, padding: "2px 8px", borderRadius: radius.sm, whiteSpace: "nowrap" }}>
+                        <span style={{ width: 5, height: 5, borderRadius: "50%", background: st.dot, animation: st.live ? "omPulse 1.2s ease-in-out infinite" : undefined }} />
+                        {st.label}
+                      </span>
+                      {time ? (
+                        <span style={{ fontSize: 11, color: color.textSubtle, whiteSpace: "nowrap", flex: "0 0 auto" }}>{time}</span>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+/** 空态骨架：五个 waiting 节点 + 第六灰节点（双语标题），供 ActivityRail 的诊断空态复用。
  *  模型漏调上报工具时就停在这里——不做任何服务端/前端伪造。 */
 export function DiagnosisTimelineSkeleton() {
   return (
     <ol className="oa-diag-timeline oa-diag-skeleton" aria-hidden>
-      {[1, 2, 3, 4, 5].map((num) => {
+      {[1, 2, 3, 4, 5, 6].map((num) => {
         const meta = STEP_META[num];
         return (
-          <li key={num} className="oa-diag-step" data-step-state="waiting">
+          <li key={num} className="oa-diag-step" data-step-state={num === 6 ? undefined : "waiting"}>
             <span className="oa-diag-step-rail">
               <span className="oa-diag-step-dot" style={{ background: "#e6e8ec", color: color.textSubtle }}>{num}</span>
-              {num < 5 ? <span className="oa-diag-step-line" style={{ background: "#e6e8ec" }} /> : null}
+              {num < 6 ? <span className="oa-diag-step-line" style={{ background: "#e6e8ec" }} /> : null}
             </span>
             <div className="oa-diag-step-card" style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, background: "#fff" }}>
               <div className="oa-diag-step-head is-waiting">

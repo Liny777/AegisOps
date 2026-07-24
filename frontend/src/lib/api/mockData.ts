@@ -138,6 +138,26 @@ export const mockActivitySnapshot = {
   events_has_more: true,
 };
 
+/** mock 恢复闭环合成事件：mock send 900ms 回调把 demo 快照里的待审批 appr_1
+ *  （evt-b2-r-ask，tool=recover_execute）推到 已批准 → 工具执行成功，时间线第六节点
+ *  「恢复执行」全程演示 待审批 → 已执行。approved 对齐真实后端 payload（无 tool 字段，
+ *  只按 approval_request_id 关联）；事件 id 固定，活动流按 event_id 去重天然幂等。 */
+export const mockRecoveryClosureEvents = () => {
+  const base = Date.now();
+  const iso = (offsetMs: number) => new Date(base + offsetMs).toISOString();
+  return [
+    mockActivityEvent("evt-appr1-approved", "openops.approval.approved", iso(0), "审批已通过：重启 svc-a", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, approval_request_id: "appr_1",
+    }),
+    mockActivityEvent("evt-appr1-tool-ok", "openops.tool.call.succeeded", iso(400), "恢复动作执行成功：svc-a 已重启", {
+      agent_key: "recover", agent_label: "恢复 Agent", delegation_id: "dlg-recover-a1",
+      dispatch_batch_id: "batch-demo-2", dispatch_batch_no: 2, tool: "recover_execute",
+      display_label: "重启实例", result_summary: "svc-a 重启完成，active 连接回落 210/1000",
+    }),
+  ];
+};
+
 export const mockWorkbenchState = (): WorkbenchState => ({
   chatTitle: "支付延迟突增诊断",
   agentName: "支付域感知快恢",
@@ -326,15 +346,17 @@ export const adminTables: Record<string, AdminTableData> = {
   templates: {
     title: "模板管理",
     primary: { label: "新建模板", icon: "plus", actionKey: "new-template" },
-    cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "88px" }],
+    cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "148px" }],
     rows: [
       { id: "tpl_sre_fast_recovery", cells: [
         { text: "感知快恢 Agent" }, { text: "sensai_fast_recovery", mono: true },
         { text: "active", kind: "badge", tone: "good" }, { text: "v3" },
+        { text: "资产治理", kind: "action", onClickKey: "open-template" },
         { text: "编辑", kind: "action", onClickKey: "edit-template" } ] },
       { id: "tpl_draft", cells: [
         { text: "网络诊断 Agent" }, { text: "net_diag", mono: true },
         { text: "draft", kind: "badge", tone: "neutral" }, { text: "—" },
+        { text: "资产治理", kind: "action", onClickKey: "open-template" },
         { text: "编辑", kind: "action", onClickKey: "edit-template" } ] },
     ],
   },
@@ -370,26 +392,67 @@ export const adminTables: Record<string, AdminTableData> = {
   },
   skills: {
     title: "Skill 基线",
-    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
+    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }],
     rows: [
       { id: "skill_inspection", cells: [
         { text: "巡检 inspection" }, { text: "inspection", mono: true }, { text: "2.0.0" },
-        { text: "运维" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "2026-07-20 10:30" }, { text: "active", kind: "badge", tone: "good" } ] },
     ],
   },
   users: {
     title: "用户与白名单",
     primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-    cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }],
+    cols: [{ label: "user_id" }, { label: "展示名" }, { label: "标签" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }],
     rows: [
       { id: "0026demo01", cells: [
-        { text: "0026demo01", mono: true }, { text: "林一" }, { text: "user" },
+        { text: "0026demo01", mono: true }, { text: "林一" },
+        { text: "研发", kind: "action", onClickKey: "user-tags" }, { text: "user" },
         { text: "active", kind: "badge", tone: "good" }, { text: "10:00" } ] },
       { id: "admin", cells: [
-        { text: "admin", mono: true }, { text: "李四" }, { text: "platform_admin" },
+        { text: "admin", mono: true }, { text: "李四" },
+        { text: "设标签", kind: "action", onClickKey: "user-tags" }, { text: "platform_admin" },
         { text: "active", kind: "badge", tone: "good" }, { text: "09:30" } ] },
     ],
   },
+};
+
+/** getAdminMcpTools().raw 的 mock 数据源（同名冲突根治场景）：两家 server（omodel-mcp-server /
+ * opsdfx-mcp）各有 allowed 的同名 query_resource + recover_execute（复现内网事故），外加各一个
+ * 独有工具与一条未标注行。前端按「server::tool」复合键分组，勾 A 家不再联动 B 家。
+ * adminTables["mcp-tools"] 亦由此派生，避免两份数据漂移。 */
+export const adminMcpToolsRaw: Record<string, unknown>[] = [
+  { tool_catalog_id: "tc_omodel_qr", tool_name: "query_resource", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_qr", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_omodel_re", tool_name: "recover_execute", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_re", annotation_status: "allowed", is_approval_required: true },
+  { tool_catalog_id: "tc_omodel_topo", tool_name: "query_topology", mcp_display_name: "omodel-mcp-server",
+    mcp_version_id: "v_omodel", annotation_id: "an_omodel_topo", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_opsdfx_qr", tool_name: "query_resource", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: "an_opsdfx_qr", annotation_status: "allowed", is_approval_required: false },
+  { tool_catalog_id: "tc_opsdfx_re", tool_name: "recover_execute", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: "an_opsdfx_re", annotation_status: "allowed", is_approval_required: true },
+  { tool_catalog_id: "tc_opsdfx_shell", tool_name: "raw_shell", mcp_display_name: "opsdfx-mcp",
+    mcp_version_id: "v_opsdfx", annotation_id: null, annotation_status: "unreviewed", is_approval_required: false },
+];
+
+/** getAdminTemplateDetail() 的 mock：main.default_tools 混入①唯一归属裸名(query_topology→升级为
+ * omodel 复合键，令 omodel 起始为「部分」)、②目录外残留名(ghost_tool)——覆盖读时归一化的升级/
+ * 残留分支，且让 omodel 起始未满、opsdfx 起始未选，使「勾 omodel 不联动 opsdfx」的核心回归可断言。 */
+export const mockTemplateDetail = {
+  template: { template_id: "tpl_sre_fast_recovery", display_name: "感知快恢 Agent" },
+  active_version: {
+    template_version_id: "tv_active", version_no: 2, status: "active",
+    content_json: {
+      main: {
+        role: "理解用户任务，调度巡检/诊断/恢复能力。",
+        default_tools: ["query_topology", "ghost_tool"],
+        skills: [],
+      },
+      sub_agents: [{ key: "inspect", label: "巡检", role: "巡检", skills: [], mcp_tools: ["query_resource"] }],
+      default_llm: { provider: "platform", model: "qwen3.5-instruct" },
+    },
+  },
+  draft_version: null as Record<string, unknown> | null,
 };
 
 export const sandboxCfg: SandboxCfg[] = [

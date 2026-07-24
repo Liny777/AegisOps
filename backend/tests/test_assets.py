@@ -102,6 +102,7 @@ def test_asset_reconcile_source_openops_and_versions(client):
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in skills if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # _MOCK_LIST 的 latest_version 原串
+    assert insp["updated_date"] == "2026-07-20 10:30:00"  # §2.2 updated_date 原串（管理台「更新时间」列）
     assert "manifest_json" not in insp  # 内部 manifest 不透给前端
 
 
@@ -129,6 +130,7 @@ def test_asset_reconcile_backfills_missing_semver_without_new_version(client):
     after = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
     insp = next(s for s in after if s["skill_key"] == "inspection")
     assert insp["latest_version"] == "2.0.0"  # semver 已回填
+    assert insp["updated_date"] == "2026-07-20 10:30:00"  # updated_date 同轮原地回填（存量行零迁移）
     assert str(insp["version_no"]) == old_vno  # 版本号不变（非新版本）
 
 
@@ -404,6 +406,82 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     assert "skills_created" in third and "failed" not in third  # 注册表不可达不炸整轮
 
 
+def test_reconcile_mock_mode_does_not_pollute_real_endpoint_assets(client, monkeypatch):
+    """方向守卫（内网污染防呆·路径 a）：mock 模式 discover_tools 无视 URL 恒回内置 _TOOLS
+    （设计内行为，勿当 bug 修），但只许写进占位/种子资产——真 endpoint 资产被守卫跳过，
+    catalog 零行、发现函数零调用。复现内网事故最小场景：真 server 资产在库 + mock 实例跑对账
+    （事故形态：每个真 server 名下都多出 query_resource/recover_execute）。"""
+    import asyncio
+
+    from app import asset_reconcile_service as ars
+    from infra.repositories import assets as assets_repo
+
+    asyncio.run(assets_repo.create_mcp(None, "platform", "alarm-server", "http",
+                                       {"endpoint": "https://mcpgateway.local/alarm"}, {}))
+
+    seen_urls: list[str] = []
+    real_disc = mcp_registry_client.discover_tools
+
+    async def _spy(server_url, extra_headers=None):
+        seen_urls.append(server_url)
+        return await real_disc(server_url, extra_headers)
+
+    monkeypatch.setattr(ars.mcp_registry_client, "discover_tools", _spy)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+
+    assert "failed" not in summary
+    assert "alarm-server" in (summary.get("tools_skipped_guard") or [])
+    assert seen_urls and all(mcp_registry_client.is_placeholder_endpoint(u) for u in seen_urls)  # 只碰占位
+    assert summary["tools_unchanged"] == 2  # 种子占位资产照常同步（mock 本地端到端不受影响）
+    rows = _sql(
+        """select count(*) from sre_mcp_tool_catalog c
+             join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id
+             join sre_mcp_asset m on m.mcp_id = v.mcp_id
+            where m.display_name = %(n)s""",
+        {"n": "alarm-server"},
+    )
+    assert rows[0][0] == 0  # 真 server 名下 catalog 零行（污染防住）
+
+
+def test_reconcile_real_mode_skips_placeholder_and_empty_endpoint_assets(client, monkeypatch):
+    """方向守卫（内网污染防呆·路径 b）：real 模式下占位种子资产与 endpoint 为空的错配资产都被
+    跳过（记 tools_skipped_guard，不出网不抛错、整轮不 failed）——此前 real 会对占位 endpoint
+    走 discover_tools 的占位短路拿到 _TOOLS 写库。真 endpoint 资产照常同步（防守卫条件写反）。"""
+    import asyncio
+
+    from app import asset_reconcile_service as ars
+    from infra.repositories import assets as assets_repo
+
+    async def _setup():
+        # endpoint 为空的错配行（内网路径 b 形态）：注册接口会校验 URL，直接走 repo 造
+        await assets_repo.create_mcp(None, "platform", "空endpoint-server", "http", {"endpoint": ""}, {})
+        await assets_repo.create_mcp(None, "platform", "真endpoint-server", "http",
+                                     {"endpoint": "https://mcpgateway.local/real"}, {})
+
+    asyncio.run(_setup())
+
+    async def _servers():
+        return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
+
+    async def _disc(server_url, extra_headers=None):
+        assert not mcp_registry_client.is_placeholder_endpoint(server_url), \
+            "real 模式下发现函数不该收到占位/空 URL"
+        return [{"tool_name": "real_tool", "description": "d", "readonly": True,
+                 "input_schema": {"type": "object", "properties": {}}, "schema_hash": "h-real"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(ars.mcp_registry_client, "list_servers", _servers)
+    monkeypatch.setattr(ars.mcp_registry_client, "discover_tools", _disc)
+    ars._reset()
+    summary = asyncio.run(ars.reconcile(force=True, trigger="test"))
+
+    assert summary.get("failed") is not True
+    skipped = set(summary.get("tools_skipped_guard") or [])
+    assert {"oModel 查询与恢复", "空endpoint-server"} <= skipped
+    assert "真endpoint-server" not in skipped
+    assert summary.get("tools_created", 0) >= 1  # 真 endpoint 照常同步
+
+
 def test_real_mode_hides_placeholder_platform_mcp(client, monkeypatch):
     """真机（OPENOPS_MCPREGISTRY=real）从插件页列表滤掉 endpoint host=mock 的占位平台 MCP
     （seed 的「oModel 查询与恢复」）；mock/默认模式照常展示，真 endpoint 平台 MCP 不受影响，
@@ -435,14 +513,14 @@ def test_real_mode_hides_placeholder_platform_mcp(client, monkeypatch):
     assert total2 == total1 - 1
 
 
-def test_real_mode_placeholder_annotation_does_not_shadow_real_tool(client, monkeypatch):
-    """真机：占位平台 MCP（seed 的「oModel 查询与恢复」，endpoint=http://mock）**自带标注**，
-    不得盖掉真 server 上同名工具的管理员标注。
+def test_same_name_annotations_coexist_by_composite_key(client, monkeypatch):
+    """复合键身份（同名冲突根治）：占位平台 MCP（seed 的「oModel 查询与恢复」）与真 server 同名工具
+    的标注**按「server::tool」各留各条、互不覆盖**——不再有「后者赢」（旧缺陷：SQL 按 display_name
+    排序、中文名靠后，占位的 recover_execute=需审批盖掉管理员在真 server 上标的免审批，表现为
+    「管理台设了不生效、照样弹审批卡」）。
 
-    runtime_annotations() 按 tool_name 扁平收敛、底层 SQL 按 display_name 排序 ⇒「后者赢」；
-    中文名排在 `alarm-server` 这类 ASCII 名之后，故修复前占位那条（seed: recover_execute=需审批）
-    会盖掉管理员在真 server 上标的「免审批」——用户视角就是「管理台设了不生效、照样弹审批卡」。
-    mock/默认模式不变：占位标注仍是 demo 工具（query_resource/recover_execute）的唯一来源。"""
+    裸名别名只在全局唯一时给：mock 下两家同名 → 裸名缺席（fail-closed 引导用复合键）；
+    real 下占位资产被排除 → 裸名别名恢复指向真 server。"""
     import asyncio
 
     from app import mcp_tool_annotation_service as svc
@@ -460,14 +538,19 @@ def test_real_mode_placeholder_annotation_does_not_shadow_real_tool(client, monk
 
     asyncio.run(_setup())
 
-    # 默认 mock：占位那条排序在后 → 赢（这正是修复前真机上的错误行为，此处作为对照钉住）
+    # 默认 mock：两家同名标注共存、各按各的复合键取值；裸名不再指向任何一条
     anns = asyncio.run(svc.runtime_annotations())
-    assert anns["recover_execute"]["is_approval_required"] is True
+    assert anns["oModel 查询与恢复::recover_execute"]["is_approval_required"] is True
+    assert anns["alarm-server::recover_execute"]["is_approval_required"] is False
+    assert "recover_execute" not in anns  # 同名多家 → 裸名别名缺席（不猜、不互踩）
+    assert anns["query_resource"]["mcp_display_name"] == "oModel 查询与恢复"  # 全局唯一的裸名别名仍在
 
-    # 真机：占位资产整体被排除 → 管理员在真 server 上的免审批终于生效
+    # 真机：占位资产整体被排除 → 裸名别名恢复指向真 server，管理员的免审批生效
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
     anns2 = asyncio.run(svc.runtime_annotations())
+    assert "oModel 查询与恢复::recover_execute" not in anns2
     assert anns2["recover_execute"]["is_approval_required"] is False
+    assert anns2["recover_execute"]["mcp_display_name"] == "alarm-server"
     # 仅存在于占位资产上的工具，真机下不再进运行时标注视图（真机的平台 MCP 应由注册表对账入库）
     assert "query_resource" not in anns2
 

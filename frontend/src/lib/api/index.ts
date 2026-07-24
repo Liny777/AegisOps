@@ -43,6 +43,7 @@ const assetQs = (p?: AssetQuery): string => {
   if (p?.sourceType) s.set("source_type", p.sourceType);
   const q = p?.q?.trim();
   if (q) s.set("q", q);
+  if (p?.tag) s.set("tag", p.tag);
   return `?${s.toString()}`;
 };
 
@@ -203,7 +204,7 @@ export interface OpenOpsApi {
   reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
   /** 管理台表格；分页/搜索参数由 Skill 基线（key="skills"）与用户表（key="users"）消费（服务端过滤 + 分页）。 */
-  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string }): Promise<AdminTableData>;
+  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string; tag?: string }): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
@@ -220,9 +221,11 @@ export interface OpenOpsApi {
   publishTemplateVersion(versionId: string): Promise<void>;
   disableTemplateVersion(versionId: string): Promise<void>;
   // admin B7·三：白名单管理动作 + 审计 Trace 串联
-  adminAddWhitelist(userId: string, displayName: string): Promise<void>;
+  adminAddWhitelist(userId: string, displayName: string, tags?: string[]): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
+  /** 改领域标签（整体替换，[] 清空）——「标签」单元格行内编辑用。 */
+  adminSetTags(userId: string, tags: string[]): Promise<void>;
   /** 删除用户（软删 + 连带撤白名单）：该用户重新被加白名单前不再出现在列表。 */
   adminDeleteUser(userId: string): Promise<void>;
   getAuditTrace(traceId: string): Promise<AuditNode[]>;
@@ -231,6 +234,9 @@ export interface OpenOpsApi {
   getAdminMcpTools(mcpName: string | null): Promise<AdminTableData & { raw: Record<string, unknown>[] }>;
   adminSaveAnnotation(toolCatalogId: string, payload: Record<string, unknown>): Promise<void>;
   adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
+  /** 标签下拉候选：所有未删用户已用的领域标签（去重、排序）——「用户与白名单」页头筛选用。 */
+  adminListUserTags(): Promise<string[]>;
+  // Agent Studio 的 api 已随垂直切片外移到 src/studio/api.ts（core 门面不再承载切片方法）
   adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
   adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
@@ -701,26 +707,31 @@ const realApi: OpenOpsApi = {
       return {
         title: "用户与白名单",
         primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }, { label: "删除", width: "56px" }],
-        rows: d.items.map((r) => ({
-          id: String(r.user_id),
-          cells: [
-            { text: String(r.user_id), mono: true },
-            { text: String(r.display_name ?? "") },
-            { text: String(r.role) },
-            { text: String(r.whitelist_status), kind: "badge" as const, tone: r.whitelist_status === "active" ? "good" as const : "neutral" as const },
-            { text: fmtLocalTime(r.last_login_at) || "—" },
-            r.whitelist_status === "active"
-              ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
-              : { text: "加入", kind: "action" as const, onClickKey: "wl-add" },
-            // 角色升/降（set-role 补链）：改自己会被后端 400 拦（防锁死），错误显示在动作横幅
-            r.role === "platform_admin"
-              ? { text: "撤销管理员", kind: "action" as const, onClickKey: "role-user" }
-              : { text: "设为管理员", kind: "action" as const, onClickKey: "role-admin" },
-            // 删除（软删 + 连带撤白）：删自己后端 400 拦（防锁死）；确认弹窗在 AdminConsole
-            { text: "删除", kind: "action" as const, onClickKey: "user-delete" },
-          ],
-        })),
+        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "标签" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }, { label: "删除", width: "56px" }],
+        rows: d.items.map((r) => {
+          const tags = Array.isArray(r.tags_json) ? r.tags_json.map(String) : [];
+          return {
+            id: String(r.user_id),
+            cells: [
+              { text: String(r.user_id), mono: true },
+              { text: String(r.display_name ?? "") },
+              // 领域标签（多标签）：单元格即入口，点击行内编辑（prompt），不再单加一列操作
+              { text: tags.length ? tags.join("、") : "设标签", kind: "action" as const, onClickKey: "user-tags" },
+              { text: String(r.role) },
+              { text: String(r.whitelist_status), kind: "badge" as const, tone: r.whitelist_status === "active" ? "good" as const : "neutral" as const },
+              { text: fmtLocalTime(r.last_login_at) || "—" },
+              r.whitelist_status === "active"
+                ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
+                : { text: "加入", kind: "action" as const, onClickKey: "wl-add" },
+              // 角色升/降（set-role 补链）：改自己会被后端 400 拦（防锁死），错误显示在动作横幅
+              r.role === "platform_admin"
+                ? { text: "撤销管理员", kind: "action" as const, onClickKey: "role-user" }
+                : { text: "设为管理员", kind: "action" as const, onClickKey: "role-admin" },
+              // 删除（软删 + 连带撤白）：删自己后端 400 拦（防锁死）；确认弹窗在 AdminConsole
+              { text: "删除", kind: "action" as const, onClickKey: "user-delete" },
+            ],
+          };
+        }),
         total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
@@ -731,14 +742,15 @@ const realApi: OpenOpsApi = {
         `/openops/v1/assets/skills${assetQs({ ...params, sourceType: "platform" })}`);
       return {
         title: "Skill 基线",
-        cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "分类" }, { label: "状态", width: "88px" }],
+        cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }],
         rows: d.items.map((r) => ({
           id: String(r.skill_id),
           cells: [
             { text: String(r.display_name) },
             { text: String(r.skill_key ?? ""), mono: true },
             { text: r.latest_version ? String(r.latest_version) : `v${r.version_no ?? 1}` },
-            { text: String(r.category ?? "—") },
+            // SkillHub §2.2 updated_date（manifest 同步落库）；对账回填前为空 → 「—」
+            { text: fmtLocal(r.updated_date) || "—" },
             { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
           ],
         })),
@@ -850,10 +862,14 @@ const realApi: OpenOpsApi = {
     }
     return out;
   },
-  async adminAddWhitelist(userId, displayName) {
+  async adminListUserTags() {
+    return apiFetch<string[]>("/openops/v1/admin/users/tags");
+  },
+  async adminAddWhitelist(userId, displayName, tags) {
     await apiFetch("/openops/v1/admin/users/whitelist", {
       method: "POST",
-      body: { client_request_id: crid(), user_id: userId, display_name: displayName },
+      // tags 省略时不带键（后端 None=不动已有标签），与传 [] 清空语义区分
+      body: { client_request_id: crid(), user_id: userId, display_name: displayName, ...(tags ? { tags } : {}) },
     });
   },
   async adminRevokeWhitelist(userId) {
@@ -866,6 +882,12 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}:set-role`, {
       method: "POST",
       body: { client_request_id: crid(), role },
+    });
+  },
+  async adminSetTags(userId, tags) {
+    await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}:set-tags`, {
+      method: "POST",
+      body: { client_request_id: crid(), tags },
     });
   },
   async adminDeleteUser(userId) {
@@ -1023,6 +1045,8 @@ const realApi: OpenOpsApi = {
 /* -------------------------------- mock -------------------------------- */
 // 编辑向导 mock 态：per-instance overlay（updateAgentTeam 写入，getAgentTeam 读回，支撑再编辑预填）
 const mockOverlays = new Map<string, Record<string, unknown>>();
+// 模板编辑器 mock：saveTemplateDraft 写入的草稿内容，getAdminTemplateDetail 读回（e2e 断言保存后 payload）
+let mockTemplateDraft: Record<string, unknown> | null = null;
 
 const mockApi: OpenOpsApi = {
   getMe: () => {
@@ -1126,19 +1150,60 @@ const mockApi: OpenOpsApi = {
   destroySandboxContainer: (userId) =>
     delay({ destroyed: true, target_user_id: userId, cancelled_task_ids: [] }),
   getAuditTimeline: () => delay(M.auditTimeline),
-  getAdminTemplateDetail: () => delay({ template: {}, active_version: null, draft_version: null }),
-  saveTemplateDraft: () => delay({}),
+  getAdminTemplateDetail: () => delay({
+    ...M.mockTemplateDetail,
+    draft_version: mockTemplateDraft
+      ? { template_version_id: "tv_draft", version_no: 3, status: "draft", content_json: mockTemplateDraft }
+      : null,
+  }),
+  saveTemplateDraft: (_id, content) => {
+    mockTemplateDraft = content;  // 回存供再打开断言（镜像后端草稿 upsert）
+    return delay({ template_version_id: "tv_draft", version_no: 3, status: "draft",
+                   content_json: content, dropped_tools: [] });
+  },
   publishTemplateVersion: () => delay(undefined as unknown as void),
   disableTemplateVersion: () => delay(undefined as unknown as void),
   adminAddWhitelist: () => delay(undefined as unknown as void),
+  adminSetTags: () => delay(undefined as unknown as void),
   adminRevokeWhitelist: () => delay(undefined as unknown as void),
   adminSetRole: () => delay(undefined as unknown as void),
   adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),
-  getAdminTemplateAssets: () => delay(M.adminTables.assets ?? M.adminTables.templates),
-  getAdminMcpTools: () => delay({ ...(M.adminTables["mcp-tools"] ?? M.adminTables.templates), raw: [] }),
+  getAdminTemplateAssets: () => delay({
+    title: "资产治理",
+    cols: [{ label: "名称" }, { label: "类型" }, { label: "最新版本" }, { label: "状态" }, { label: "操作", width: "96px" }],
+    // id = mcp_display_name（与 raw 的分组键、绑定列判定一致）
+    rows: [...new Set(M.adminMcpToolsRaw.map((r) => String(r.mcp_display_name)))].map((name) => ({
+      id: name,
+      cells: [
+        { text: name }, { text: "HTTP MCP" }, { text: "v1" },
+        { text: "active", kind: "badge" as const, tone: "good" as const },
+        { text: "Tool 标注", kind: "action" as const, onClickKey: "open-mcp" },
+      ],
+    })),
+  }),
+  getAdminMcpTools: (mcpName) => {
+    const rows = mcpName ? M.adminMcpToolsRaw.filter((r) => String(r.mcp_display_name) === mcpName) : M.adminMcpToolsRaw;
+    return delay({
+      title: "Tool 标注",
+      cols: [{ label: "tool_name" }, { label: "所属 MCP" }, { label: "标注状态" }, { label: "操作", width: "88px" }],
+      raw: rows,
+      rows: rows.map((r) => ({
+        id: String(r.tool_catalog_id),
+        cells: [
+          { text: String(r.tool_name), mono: true },
+          { text: String(r.mcp_display_name ?? "") },
+          r.annotation_id == null
+            ? { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const }
+            : { text: r.is_approval_required ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: r.is_approval_required ? "warning" as const : "good" as const },
+          { text: r.annotation_id != null ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
+        ],
+      })),
+    });
+  },
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
+  adminListUserTags: () => delay(["财经", "研发", "供应"]),
   adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
   adminSaveModelGrants: () => delay(undefined as unknown as void),
   adminRegisterModel: () => delay(undefined as unknown as void),

@@ -67,10 +67,12 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - `GET /api/openops/v1/admin/templates`
 - `GET /api/openops/v1/admin/mcp-tools`
 - `PUT /api/openops/v1/admin/mcp-tools/{tool_catalog_id}/annotation`
-- `GET /api/openops/v1/admin/users` — 分页 + 搜索：`?page=&page_size=`（上限 100）`&q=`（按 user_id/display_name 模糊，服务端过滤）→ `{items,total,page,page_size}`
-- `POST /api/openops/v1/admin/users/whitelist`
+- `GET /api/openops/v1/admin/users` — 分页 + 搜索 + 标签过滤：`?page=&page_size=`（上限 100）`&q=`（按 user_id/display_name 模糊）`&tag=`（按领域标签精确，与 q 为 AND，均服务端过滤）→ `{items,total,page,page_size}`
+- `GET /api/openops/v1/admin/users/tags` — 标签下拉候选：所有未删用户已用领域标签（去重、排序）→ `["财经","研发",…]`
+- `POST /api/openops/v1/admin/users/whitelist` — 可选 `tags`（领域标签数组；不传=不动已有标签）
 - `POST /api/openops/v1/admin/users/whitelist:revoke`
 - `POST /api/openops/v1/admin/users/{user_id}:set-role`
+- `POST /api/openops/v1/admin/users/{user_id}:set-tags` — 改领域标签（整体替换，`[]` 清空；写 `user.tags_changed` 审计）
 - `DELETE /api/openops/v1/admin/users/{user_id}` — 删除用户（软删 + 连带撤白名单，写 `user.deleted` 审计；不能删自己；被删用户重新加白名单才复活）
 - `GET /api/openops/v1/admin/sandbox`
 - `PUT /api/openops/v1/admin/sandbox`

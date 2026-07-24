@@ -9,6 +9,7 @@ import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } f
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 import { STUDIO_ADMIN_PAGE } from "../studio/entry";
+import { groupCatalog, normalizeSelection } from "./toolBinding";
 
 /** 管理台表格每页条数（服务端分页；后端上限 100，对齐 29.3 §2.2）。 */
 const ADMIN_PAGE_SIZE = 20;
@@ -44,6 +45,9 @@ export function AdminConsole() {
   const [traceFilter, setTraceFilter] = useState("");
   // 用户表关键字搜索（服务端 q 过滤 user_id/display_name，与审计过滤同做法：输入即查）
   const [userQ, setUserQ] = useState("");
+  // 用户表标签筛选（服务端 tag 过滤，与 q 为 AND）：tagFilter=""=全部；userTags=下拉候选（标签全集）
+  const [tagFilter, setTagFilter] = useState("");
+  const [userTags, setUserTags] = useState<string[]>([]);
 
   const isTable = ["templates", "model-assets", "skills", "users"].includes(page);
 
@@ -61,20 +65,16 @@ export function AdminConsole() {
           api.getAdminMcpTools(null),
         ]);
         const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
-        const bound = new Set((((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[]);
-        const allowedByMcp = new Map<string, string[]>();
-        for (const r of toolsData.raw) {
-          if (r.annotation_id != null && r.annotation_status === "allowed") {
-            const k = String(r.mcp_display_name);
-            allowedByMcp.set(k, [...(allowedByMcp.get(k) ?? []), String(r.tool_name)]);
-          }
-        }
+        // 绑定判定按「server::tool」复合键（读时归一存量裸名）：同名工具跨 server 不再互相点亮绑定列
+        const groups = groupCatalog(toolsData.raw);
+        const boundRaw = (((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[];
+        const bound = new Set(normalizeSelection(boundRaw, groups).keys);
         setTable({
           ...assets,
           cols: [...assets.cols, { label: "模板绑定", width: "72px" }],
           rows: assets.rows.map((r) => {
-            const tools = allowedByMcp.get(r.id) ?? [];
-            const isBound = tools.length > 0 && tools.every((t) => bound.has(t));
+            const keys = (groups[r.id] ?? []).map((t) => t.key);
+            const isBound = keys.length > 0 && keys.every((k) => bound.has(k));
             return { ...r, cells: [...r.cells, { text: isBound ? "解绑" : "绑定", kind: "action" as const, onClickKey: "toggle-bind" }] };
           }),
         });
@@ -85,14 +85,21 @@ export function AdminConsole() {
       setTable(await api.getAdminTable(page, {
         page: tablePage, pageSize: ADMIN_PAGE_SIZE,
         q: page === "users" ? userQ.trim() || undefined : undefined,
+        tag: page === "users" ? tagFilter || undefined : undefined,
       }));
     } else if (page === "audit") {
       setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); }, [page]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ]);  // 换页签/钻取/改搜索词回第 1 页，免停在越界页看空表
+  // 进用户页拉标签下拉候选（标签全集）；离开或失败置空，不阻断列表
+  useEffect(() => {
+    if (page !== "users") { setUserTags([]); return; }
+    api.adminListUserTags().then(setUserTags).catch(() => setUserTags([]));
+  }, [page]);
+
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); }, [page]);
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
@@ -132,9 +139,21 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteUser(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "user-tags") {
+      // 行内编辑领域标签（prompt 交互与「销毁容器 reason」同风格）：当前值从「标签」列单元格取（「设标签」=空）
+      const ti = table?.cols.findIndex((c) => c.label === "标签") ?? -1;
+      const cellText = ti >= 0 ? String(table?.rows.find((r) => r.id === rowId)?.cells[ti]?.text ?? "") : "";
+      const cur = cellText === "设标签" ? "" : cellText.split("、").join(",");
+      const input = window.prompt(`设置用户 ${rowId} 的领域标签（多个用逗号分隔，如 财经,研发；留空清除全部）：`, cur);
+      if (input === null) return; // 取消不动
+      const tags = input.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean);
+      setActionErr("");
+      void api.adminSetTags(rowId, tags).then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
   };
 
-  /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 加入/移出模板草稿 default_tools（发布后生效）。 */
+  /** 资产治理「绑定/解绑」：该 MCP 的全部 allowed tools 以「server::tool」复合键加入/移出模板草稿
+   * default_tools（发布后生效）。存量裸名先读时归一——增删只命中本 server 的键，同名工具不串家。 */
   const toggleBind = async (mcpName: string) => {
     if (!tplDrill) return;
     const [detail, toolsData] = await Promise.all([
@@ -144,12 +163,11 @@ export function AdminConsole() {
     const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
     const content = { ...((base?.content_json ?? {}) as Record<string, unknown>) };
     const main = { ...((content.main ?? {}) as Record<string, unknown>) };
-    const cur = new Set(((main.default_tools ?? []) as string[]));
-    const mcpTools = toolsData.raw
-      .filter((r) => String(r.mcp_display_name) === mcpName && r.annotation_id != null && r.annotation_status === "allowed")
-      .map((r) => String(r.tool_name));
-    const isBound = mcpTools.length > 0 && mcpTools.every((t) => cur.has(t));
-    mcpTools.forEach((t) => (isBound ? cur.delete(t) : cur.add(t)));
+    const groups = groupCatalog(toolsData.raw);
+    const cur = new Set(normalizeSelection(((main.default_tools ?? []) as string[]), groups).keys);
+    const mcpKeys = (groups[mcpName] ?? []).map((t) => t.key);
+    const isBound = mcpKeys.length > 0 && mcpKeys.every((k) => cur.has(k));
+    mcpKeys.forEach((k) => (isBound ? cur.delete(k) : cur.add(k)));
     content.main = { ...main, default_tools: [...cur] };
     try {
       const v = await api.saveTemplateDraft(tplDrill.id, content);
@@ -195,6 +213,19 @@ export function AdminConsole() {
             onChange={(e) => setUserQ(e.target.value)}
             style={{ width: 220, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
           />
+        ) : null}
+        {page === "users" ? (
+          <div style={{ position: "relative" }}>
+            <select
+              value={tagFilter}
+              onChange={(e) => setTagFilter(e.target.value)}
+              style={{ appearance: "none", WebkitAppearance: "none", border: `1px solid ${color.border}`, borderRadius: radius.md, background: "#fff", padding: "6px 28px 6px 10px", fontSize: 12, color: tagFilter ? color.textStrong : color.textSubtle, cursor: "pointer", outline: "none" }}
+            >
+              <option value="">全部标签</option>
+              {userTags.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+            <Icon name="chevron-down" size={13} color={color.textSubtle} style={{ position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }} />
+          </div>
         ) : null}
         {page === "users" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setWlAddOpen(true)}>{table.primary.label}</Button>
@@ -320,12 +351,15 @@ export function AdminConsole() {
 function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const [userId, setUserId] = useState("");
   const [displayName, setDisplayName] = useState("");
+  const [tagsText, setTagsText] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const submit = () => {
     if (!userId.trim()) { setErr("user_id 必填（工号，如 0026xxxx）"); return; }
     setBusy(true);
-    api.adminAddWhitelist(userId.trim(), displayName.trim())
+    // 留空传 undefined（后端不动已有标签）——重复加白不冲已设标签；填了才整体设置
+    const tags = tagsText.split(/[,，、\s]+/).map((t) => t.trim()).filter(Boolean);
+    api.adminAddWhitelist(userId.trim(), displayName.trim(), tags.length ? tags : undefined)
       .then(onSaved)
       .catch((e) => setErr((e as Error).message))
       .finally(() => setBusy(false));
@@ -337,6 +371,8 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
         <input placeholder="user_id（工号，必填）" value={userId} onChange={(e) => setUserId(e.target.value)}
           style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5, fontFamily: "ui-monospace, monospace" }} />
         <input placeholder="展示名（选填，缺省用 user_id）" value={displayName} onChange={(e) => setDisplayName(e.target.value)}
+          style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5 }} />
+        <input placeholder="标签（选填，逗号分隔，如 财经,研发）" value={tagsText} onChange={(e) => setTagsText(e.target.value)}
           style={{ border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "8px 10px", fontSize: 12.5 }} />
         {err ? <div style={{ fontSize: 12, color: color.dangerText }}>{err}</div> : null}
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>

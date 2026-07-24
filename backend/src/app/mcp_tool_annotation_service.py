@@ -5,6 +5,7 @@ import logging
 import os
 from typing import Any
 
+from domain import tool_key
 from domain.errors import ApiError, Err
 from infra.db import row_json
 from infra.repositories import mcp_tools
@@ -19,39 +20,45 @@ async def list_catalog() -> list[dict[str, Any]]:
 
 
 async def runtime_annotations() -> dict[str, dict[str, Any]]:
-    """运行时标注视图（by tool_name，task 启动时挂到 TaskState）：Gateway 校验与 ASK 判定用。
+    """运行时标注视图（task 启动时挂到 TaskState）：Gateway 校验与 ASK 判定用。
+
+    键 = 复合键 `"{mcp_display_name}::{tool_name}"`（tool_key），值内附 mcp_display_name/tool_name
+    元数据；同名工具跨 MCP 资产各留各条，不再「后者赢」互踩。裸 tool_name **仅在全局唯一时**给
+    别名条目（与复合键条目同对象）——存量模板绑定与 mock demo 编排器按裸名取用的兼容缝；同名
+    多家时裸名不指向任何一条（fail-closed，引导改用复合键），打 info 引导而非静默。
 
     未标注的工具不入 dict → Gateway 按 TOOL_NOT_ANNOTATED fail-closed（28.2 标注裁剪）。
 
-    真机排除占位平台 MCP：seed 的「oModel 查询与恢复」(endpoint=http://mock) **自带标注**
-    （`recover_execute` 还是需审批），而本函数按 tool_name 扁平收敛、SQL 按 display_name 排序即
-    「后者赢」——中文名排在 `alarm-server` 这类 ASCII 名之后，于是真 server 上同名工具的管理员标注
-    会被占位那条静默盖掉，表现为「管理台设了不生效」。与 38f7fb0（真机不种）/ eb695b3（真机不展示）
-    同一开关、同一判定，是这条线的第三步：门控挡新库、隐藏挡展示、这条挡运行时取值。
-    mock/默认模式行为不变——占位 MCP 正是 demo 工具标注的唯一来源，本地端到端与用例都依赖它。
+    真机排除占位平台 MCP：seed 的「oModel 查询与恢复」(endpoint=http://mock) **自带标注**，
+    复合键下虽已不会盖真 server 同名标注，但真机的运行时视图仍不该出现占位资产的 demo 工具
+    （其裸名别名会抢占真 server 同名工具的唯一性）。与 38f7fb0（真机不种）/ eb695b3（真机不展示）
+    同一开关、同一判定。mock/默认模式行为不变——占位 MCP 是 demo 工具标注的唯一来源。
     """
     exclude_ph = os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"
     out: dict[str, dict[str, Any]] = {}
-    seen: dict[str, str] = {}  # tool_name → 已收下那条所属 MCP（仅用于冲突告警）
+    by_tool: dict[str, list[str]] = {}  # tool_name → [复合键...]（裸名别名判定）
     for r in await mcp_tools.list_catalog_with_annotation(exclude_placeholder=exclude_ph):
         if r.get("annotation_id") is None:
             continue
-        name = str(r["tool_name"])
-        # 同名工具跨 MCP 资产是合法的（唯一约束只到 (mcp_version_id, tool_name)），但本视图是扁平
-        # name→标注 映射，只能留一条。取值口径保持不变（后者赢），但**不再静默**：打出冲突让
-        # 「我明明标了却不生效」可诊断。真要区分需按 server 维度解析标注（更大的改动，另议）。
-        if name in seen:
-            log.warning("MCP 工具标注同名冲突：tool=%s 同时来自「%s」与「%s」，运行时取后者；"
-                        "如需区分请重命名工具或下线其中一个 MCP", name, seen[name], r.get("mcp_display_name"))
-        seen[name] = str(r.get("mcp_display_name") or "")
-        out[name] = {
+        srv, name = str(r.get("mcp_display_name") or ""), str(r["tool_name"])
+        key = tool_key.make_key(srv, name)
+        out[key] = {
             "is_approval_required": bool(r["is_approval_required"]),
             "is_secret_required": bool(r["is_secret_required"]),
             "scope_mode": r["scope_mode"],
             "appid_arg_path": r["appid_arg_path"],
             "status": r["annotation_status"],
             "blocked_reason": r["blocked_reason"],
+            "mcp_display_name": srv,
+            "tool_name": name,
         }
+        by_tool.setdefault(name, []).append(key)
+    for name, keys in by_tool.items():
+        if len(keys) == 1:
+            out[name] = out[keys[0]]  # 裸名别名（同对象）：全局唯一才给
+        else:
+            log.info("MCP 工具同名跨 server 共存：tool=%s → %s；裸名引用对该工具不再可用，"
+                     "模板绑定与标注解析请用「server::tool」复合键", name, keys)
     return out
 
 
