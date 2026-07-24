@@ -2,15 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { color, radius, font } from "../theme/tokens";
 import { Icon, Dot, Pill, Pagination } from "../ui";
 import { api } from "../lib/api";
-import type { AdminTableData, StudioRunsPage } from "../lib/api/types";
-import { fmtMs, fmtTokens } from "../studio/StudioAgentCard";
-import { RUN_TONE, RunDetailView, fmtTime } from "../studio/RunDetailView";
+import type { AdminTableData } from "../lib/api/types";
+import type { StudioRunsPage } from "./types";
+import { studioApi } from "./api";
+import { fmtMs, fmtTokens } from "./StudioAgentCard";
+import { RUN_TONE, RunDetailView, fmtTime } from "./RunDetailView";
 
 const PAGE_SIZE = 20;
 
 // 模块级常量：给 RunDetailView 的注入 fetch 必须引用稳定（进 useCallback 依赖）
-const fetchAdminDetail = (runId: string) => api.adminStudioRunDetail(runId);
-const fetchAdminMessages = (runId: string) => api.adminStudioRunMessages(runId);
+const fetchAdminDetail = (runId: string) => studioApi.adminStudioRunDetail(runId);
+const fetchAdminMessages = (runId: string) => studioApi.adminStudioRunMessages(runId);
 
 /** Agent Studio（管理员回溯复盘）：用户 → run → 调用明细 三级钻取，drill 状态自含（照模板管理 tplDrill）。 */
 export function AgentStudioPage() {
@@ -124,7 +126,7 @@ function RunList({ userId, onPick, onErr }: {
 
   useEffect(() => {
     onErr("");
-    api.adminStudioRuns(userId, { page, pageSize: PAGE_SIZE })
+    studioApi.adminStudioRuns(userId, { page, pageSize: PAGE_SIZE })
       .then(setData)
       .catch((e) => { setData(null); onErr((e as Error).message || "加载失败"); });
   }, [userId, page, onErr]);

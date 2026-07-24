@@ -34,7 +34,7 @@ from typing import Any
 from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
 
-from runtime.studio_context import (
+from studio.context import (
     studio_agent_role,
     studio_run_id,
     studio_task_id,
@@ -241,7 +241,7 @@ class OpenOpsSpanProcessor(SpanProcessor):
 
 async def run_studio_span_drain_loop(processor: OpenOpsSpanProcessor) -> None:
     """循环内常驻 task：把队列里的 span 行落库。永不因单行失败而退出；每小时顺带清过期行。"""
-    from infra.repositories import studio_spans
+    from studio import repository as studio_spans
 
     processor.attach_loop(asyncio.get_running_loop())
     logger.info("[agent-studio] span drain loop started")

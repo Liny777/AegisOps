@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 
 from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
-from test_admin_studio_api import _fsid, _insert_delegation, _insert_span
+from _helpers import _fsid, _insert_delegation, _insert_span
 
 
 def _seed_run_with_spans(client) -> tuple[str, str]:

@@ -13,8 +13,8 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from runtime import studio_tracing as tr
-from runtime.studio_middleware import StudioTracingMiddleware, _serialize_messages
+from studio import tracing as tr
+from studio.middleware import StudioTracingMiddleware, _serialize_messages
 
 
 class StubChatModel(ChatModelBase):

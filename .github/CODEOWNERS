@@ -1,0 +1,11 @@
+# 代码归属（GitHub 按最后匹配的规则生效）。
+#
+# Agent Studio 是垂直切片：下面四个目录由切片 owner 独立维护，core 只经 facade 调用。
+# 边界铁律与协调清单见 backend/src/studio/README.md。
+# ⚠ 切片改动若触及 core 接缝（main.py / runtime 两文件 / 前端 App·Sidebar·AdminConsole）
+#   或表数基线（tests/test_ddl.py、scripts/release_check.sh），仍需 core 侧 review。
+
+/backend/src/studio/                 @REPLACE_WITH_COLLEAGUE
+/backend/tests/studio/               @REPLACE_WITH_COLLEAGUE
+/backend/sql/slices/                 @REPLACE_WITH_COLLEAGUE
+/frontend/src/studio/                @REPLACE_WITH_COLLEAGUE

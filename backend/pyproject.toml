@@ -37,12 +37,17 @@ py-modules = ["main"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["api*", "app*", "domain*", "infra*", "runtime*", "sandbox*"]
+# ⚠ include 是**白名单**：新增顶层包必须登记，否则 `pip install .`（构 wheel）静默漏包。
+# 本地跑 / pytest / run.py 全靠 sys.path 直挂 src，**都逮不到这个错**——唯一抓手是
+# `pip wheel --no-deps` 后查包内容（已加进 scripts/release_check.sh）。
+include = ["api*", "app*", "domain*", "infra*", "runtime*", "sandbox*", "studio*"]
 
 [tool.setuptools.package-dir]
 "" = "src"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+# tests 也上路径：tests/studio/*.py 要 `from conftest import ...`（模块级 import）。
+# 不加的话「跑全量绿、单独跑 pytest tests/studio 报 ImportError」——最费时间的一类问题。
+pythonpath = ["src", "tests"]
 testpaths = ["tests"]
 asyncio_mode = "auto"

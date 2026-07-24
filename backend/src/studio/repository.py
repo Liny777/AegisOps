@@ -1,14 +1,18 @@
-"""sre_agent_studio_span 仓储（Agent Studio 管理员回溯复盘）。
+"""Agent Studio 切片的数据访问层。
 
-存 agent/llm/tool span **原文**（每字段已在采集层按 OPENOPS_STUDIO_TEXT_CAP 截断），
-仅 /admin/studio/* 端点可读；到期硬删（expire_at，OPENOPS_STUDIO_RETENTION_DAYS 默认 30 天）。
+两类查询：
+- **切片自有表** `sre_agent_studio_span`：存 agent/llm/tool span **原文**（每字段已在采集层
+  按 OPENOPS_STUDIO_TEXT_CAP 截断），仅 studio 的 admin/replay 端点可读；到期硬删
+  （expire_at，OPENOPS_STUDIO_RETENTION_DAYS 默认 30 天）。写入方只有本切片。
+- **core 表只读**：`list_runs_by_user_paged` 读 `sre_agent_run`。Studio 的产品定义就是
+  「把 core 的运行记录重新组织给管理员看」，只读 core 表不可避免；但**绝不写 core 表**。
 """
 from __future__ import annotations
 
 import os
 from typing import Any
 
-from infra.db import exec1, q_all
+from infra.db import exec1, q_all, q_one
 
 
 def _retention_days() -> int:
@@ -107,3 +111,27 @@ async def stats_by_run_ids(run_ids: list[str]) -> dict[str, dict[str, Any]]:
 
 async def purge_expired() -> int:
     return await exec1("delete from sre_agent_studio_span where expire_at <= now()")
+
+
+async def list_runs_by_user_paged(
+    user_id: str, *, limit: int, offset: int,
+) -> tuple[list[dict[str, Any]], int]:
+    """某用户的 run 分页列表（**含软删**）—— Agent Studio 管理员回溯专用。
+
+    ⚠ 与 core 的 `infra.repositories.runs.list_runs_by_user`（滤 `deleted_at is null`）
+    刻意不同：管理员复盘**不受用户删会话影响**，所以这里不滤软删，`deleted_at` 原样
+    输出给上层打标记。当初这个函数放在 core 的 runs.py 里，紧挨着那个滤软删的同名兄弟——
+    迟早被「一致性清理」补上 `and deleted_at is null`，届时 studio 静默失效而 core 测试全绿。
+    故随切片一起搬到这里：语义归谁，函数就归谁。
+
+    读的是 core 表 `sre_agent_run`（只读；分页 + total 双查询，样板同 users.list_users_with_whitelist）。
+    """
+    rows = await q_all(
+        """
+        select * from sre_agent_run where user_id=%(u)s
+        order by started_at desc limit %(l)s offset %(o)s
+        """,
+        {"u": user_id, "l": limit, "o": offset},
+    )
+    cnt = await q_one("select count(*) as n from sre_agent_run where user_id=%(u)s", {"u": user_id})
+    return rows, int(cnt["n"]) if cnt else 0

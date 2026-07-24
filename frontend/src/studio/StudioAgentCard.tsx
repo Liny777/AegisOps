@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { color, radius, font } from "../theme/tokens";
 import { Icon, Pill } from "../ui";
-import type { StudioAgentCardData, StudioCall, StudioLlmCall, StudioToolCall } from "../lib/api/types";
+import type { StudioAgentCardData, StudioCall, StudioLlmCall, StudioToolCall } from "./types";
 import { roleVisual } from "../workbench/activity/visuals";
 
 export function fmtTokens(n: number): string {

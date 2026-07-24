@@ -3,13 +3,14 @@ import { useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { Icon, Dot } from "../ui";
 import { api } from "../lib/api";
+import { studioApi } from "./api";
 import { useApp } from "../lib/appState";
 import { RUN_TONE, RunDetailView } from "./RunDetailView";
 
 // 模块级常量：给 RunDetailView 的注入 fetch 必须引用稳定（进 useCallback 依赖）。
 // 用户回放端点 owner-only（后端校验），LLM 输入 messages 服务端置空（平台提示词不外露）。
-const fetchReplayDetail = (runId: string) => api.replayRunDetail(runId);
-const fetchReplayMessages = (runId: string) => api.replayRunMessages(runId);
+const fetchReplayDetail = (runId: string) => studioApi.replayRunDetail(runId);
+const fetchReplayMessages = (runId: string) => studioApi.replayRunMessages(runId);
 
 /** 回放（对话界面侧栏入口）：用户回看**自己的**会话执行过程。
  *  左列 = 自己的会话列表（listConversations 已按登录身份过滤），右侧 = 与管理员

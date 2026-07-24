@@ -8,8 +8,8 @@ import pytest
 
 pytest.importorskip("opentelemetry.sdk")  # otel 随 agentscope 可选组安装；未装则整文件 skip
 
-from runtime import studio_tracing as tr
-from runtime.studio_context import reset_studio_task_context, set_studio_task_context
+from studio import tracing as tr
+from studio.context import reset_studio_task_context, set_studio_task_context
 
 
 def _fake_span(attributes: dict, *, start_ns: int = 1_000_000_000, end_ns: int = 3_500_000_000):

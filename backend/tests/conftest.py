@@ -33,42 +33,27 @@ ADMIN_HEADERS = {"X-OpenOps-Mock-User": "admin", "X-OpenOps-Mock-Name": "Admin"}
 OTHER_HEADERS = {"X-OpenOps-Mock-User": "0099other", "X-OpenOps-Mock-Name": "Other"}
 
 ROOT = Path(__file__).resolve().parents[1]
-DDL = ROOT / "sql" / "openops_v1_core.sql"
-TABLES = [
-    "sre_agent_studio_span",
-    "sre_agent_delegation",
-    "sre_idempotency_key",
-    "sre_task_state",
-    "sre_agent_session_state",
-    "sre_model_access_grant",
-    "sre_model_asset",
-    "sre_audit_event",
-    "sre_approval_request",
-    "sre_scope_snapshot",
-    "sre_agent_run",
-    "sre_user_llm_config",
-    "sre_user_secret",
-    "sre_mcp_tool_annotation",
-    "sre_mcp_tool_catalog",
-    "sre_mcp_asset_version",
-    "sre_mcp_asset",
-    "sre_skill_asset_version",
-    "sre_skill_asset",
-    "sre_instance_asset_binding",
-    "sre_agent_team_config_version",
-    "sre_agent_team_instance",
-    "sre_agent_team_tpl_version",
-    "sre_agent_team_template",
-    "sre_platform_runtime_config",
-    "sre_user_whitelist",
-    "sre_openops_user",
-]
+# DDL 事实源 = core + 各垂直切片自带（切片新增 sql/slices/*.sql 时这里零改动）。
+# 部署侧的对应关系见 docs/deploy-intranet.md 与 docker-compose.yml 的 initdb 挂载。
+DDL_FILES = [ROOT / "sql" / "openops_v1_core.sql",
+             *sorted((ROOT / "sql" / "slices").glob("*.sql"))]
 
 
 def reset_database() -> None:
+    """重放全部 DDL（幂等）+ 清空所有表。
+
+    表清单**从库里读**而不是手排：本 schema 无外键（test_ddl_002 守着），TRUNCATE 无顺序
+    要求；而手排列表漏一项 = 跨用例数据污染，是最难定位的一类失败（且新增切片表时
+    还得记得回来改这里）。
+    """
     with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute(DDL.read_text(encoding="utf-8"))
-        conn.execute("TRUNCATE TABLE " + ", ".join(TABLES))
+        for f in DDL_FILES:
+            conn.execute(f.read_text(encoding="utf-8"))
+        tables = [r[0] for r in conn.execute(
+            "select tablename from pg_tables where schemaname = current_schema()").fetchall()]
+        if tables:
+            conn.execute("TRUNCATE TABLE " + ", ".join(f'"{t}"' for t in tables))
+
 
 
 @pytest.fixture()

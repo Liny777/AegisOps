@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 
 from api.deps import User
 from api.responses import ok
-from app import agent_studio_service, agui_service, event_stream_service, run_state_service
+from app import agui_service, event_stream_service, run_state_service
 from domain.schemas import CreateRunRequest, RenameRunRequest, SelectModelRequest, StartTaskRequest
 from runtime import events
 
@@ -37,12 +37,6 @@ async def messages(run_id: str, user: User):
     """
     await run_state_service.owned_run(user["user_id"], run_id)
     return ok(await agui_service._load_transcript(run_id))
-
-
-@router.get("/agent-runs/{run_id}/replay")
-async def run_replay(run_id: str, user: User):
-    """回放（owner-only）：span 按 agent 实例分组 + 主↔子交接 + rollup；LLM 输入不下发。"""
-    return ok(await agent_studio_service.run_replay(user, run_id))
 
 
 @router.get("/agent-runs/{run_id}/events")

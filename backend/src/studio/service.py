@@ -1,6 +1,6 @@
 """Agent Studio（管理员回溯复盘）：按用户查 run 列表 + run 详情按 agent 实例分组。
 
-数据源 = sre_agent_studio_span（span 原文，采集见 runtime/studio_tracing）联合
+数据源 = sre_agent_studio_span（span 原文，采集见 studio/tracing.py）联合
 sre_agent_delegation（主↔子交接账本）。**仅 /admin/studio/* 路由调用**（Admin 依赖已把
 非 platform_admin 挡在 403）——本层不再做归属校验，管理员对全部用户可见是功能定位。
 """
@@ -11,14 +11,15 @@ from typing import Any
 from app import agui_service
 from domain.errors import ApiError, Err
 from infra.db import row_json
-from infra.repositories import agent_session_states, delegations, runs, studio_spans
+from infra.repositories import agent_session_states, delegations, runs
+from studio import repository as studio_spans
 
 _EMPTY_STATS = {"agents": 0, "llm_calls": 0, "tool_calls": 0, "total_tokens": 0, "latency_ms": 0.0}
 
 
 async def list_user_runs(user_id: str, page: int, page_size: int) -> dict[str, Any]:
     offset = (page - 1) * page_size
-    rows, total = await runs.list_runs_by_user_paged(user_id, limit=page_size, offset=offset)
+    rows, total = await studio_spans.list_runs_by_user_paged(user_id, limit=page_size, offset=offset)
     stats = await studio_spans.stats_by_run_ids([str(r["agent_run_id"]) for r in rows])
     items = []
     for r in rows:
@@ -96,13 +97,21 @@ def _handover_of(d: dict[str, Any]) -> dict[str, Any]:
 
 
 def _match_handover(session_id: str, handovers: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """子 Agent 卡 ↔ 派发账本：session_id = `{fsid}:{agent_key}-{delegation_id 前 8 位}`
-    （见 subagent_dispatch._run_one 的 AgentState 构造）。解析失败 → None，不抛。"""
-    try:
-        _, suffix = session_id.split(":", 1)
-        agent_key, did8 = suffix.rsplit("-", 1)
-    except ValueError:
+    """子 Agent 卡 ↔ 派发账本：按子 session_id 反解出 (agent_key, delegation_id 前 8 位) 匹配。
+
+    ⚠ 格式是 core 与本切片之间的**跨模块字符串契约**，生产方是
+    `runtime.subagent_dispatch.sub_session_id`。这里刻意复用它的**配对反解函数**而不是
+    自己 split——core 改格式时 tests/studio/test_session_id_contract.py 会红，
+    否则本函数只会静默返回 None（表现为交接内容空着、其余全对，无任何信号）。
+
+    解析不出 → None（主 Agent 卡走这条路径，属正常）。
+    """
+    from runtime.subagent_dispatch import parse_sub_session_id
+
+    parsed = parse_sub_session_id(session_id)
+    if parsed is None:
         return None
+    agent_key, did8 = parsed
     for h in handovers:
         if h["agent_key"] == agent_key and str(h["delegation_id"])[:8] == did8:
             return h

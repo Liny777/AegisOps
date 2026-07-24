@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { color, radius, font } from "../theme/tokens";
 import { Dot, Pill, SegRadio } from "../ui";
-import type { StudioMessage, StudioRunDetail } from "../lib/api/types";
+import type { StudioMessage, StudioRunDetail } from "./types";
 import { StudioAgentCard, fmtMs, fmtTokens } from "./StudioAgentCard";
 import { StudioTranscript } from "./StudioTranscript";
 

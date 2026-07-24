@@ -8,7 +8,7 @@ import psycopg
 
 from conftest import reset_database
 from infra import db
-from infra.repositories import studio_spans
+from studio import repository as studio_spans
 
 RUN_A = str(uuid.uuid4())
 RUN_B = str(uuid.uuid4())

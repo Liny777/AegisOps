@@ -27,6 +27,8 @@ from api.routers import (
 from infra import seed
 from infra.db import close_pool, open_pool
 
+import studio  # Agent Studio 垂直切片：只经 facade（src/studio/__init__.py）
+
 
 def _build_id(info_file: Path | None = None) -> str:
     """发布包 BUILD_INFO 的稳定标识；本地源码运行显示 dev。"""
@@ -65,19 +67,9 @@ async def lifespan(_app: FastAPI):
         except ModuleNotFoundError:
             _agentscope = " (⚠ agentscope 未安装：提交任务会报错)"
 
-    # Agent Studio（管理员回溯复盘）：agentscope runtime 下装 OTel 捕获 + span 落库 drain。
-    # 惰性 import——mock/未装 agentscope 时进程内零 otel 依赖；失败只降级不阻断启动。
-    studio_drain = None
-    from runtime.studio_context import studio_enabled as _studio_enabled
-    if _rt == "agentscope" and _studio_enabled():
-        try:
-            from infra.repositories import studio_spans as _studio_spans
-            from runtime import studio_tracing as _studio_tracing
-
-            await _studio_spans.purge_expired()
-            studio_drain = _studio_tracing.install_and_start()
-        except Exception as e:  # noqa: BLE001 —— 可观测性组件缺失不拖垮服务
-            logging.getLogger("openops.startup").warning("[startup] agent studio 捕获未启用：%s", e)
+    # Agent Studio（垂直切片 src/studio）：span 捕获 + 落库 drain。只经 facade——core 不认识
+    # 它的内部结构；启用条件与失败降级都在 studio.start() 内收口（永不抛）。
+    studio_handle = await studio.start(_rt)
     def _cookie_disp(specific: str) -> str:
         """cookie 显示：专属 SET(len) > 共享 shared(len) > unset。含 `;` 引号不当会截断——长度识破。"""
         v = os.environ.get(specific, "")
@@ -112,7 +104,7 @@ async def lifespan(_app: FastAPI):
         f"skillhub_cookie={_cookie_disp('OPENOPS_SKILLHUB_COOKIE')}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}  "
         f"sandbox_sweep={os.environ.get('OPENOPS_SANDBOX_SWEEP_INTERVAL_S', '60')}s  "
-        f"studio={'on' if studio_drain is not None else 'off'}"
+        f"studio={studio.status_label(studio_handle)}"
     )
     logging.getLogger("openops.startup").warning("[startup] %s", _banner)
     print(f"[OpenOps][startup] {_banner}", flush=True)
@@ -143,8 +135,7 @@ async def lifespan(_app: FastAPI):
         reconciler.cancel()
     if sweeper:
         sweeper.cancel()
-    if studio_drain:
-        studio_drain.cancel()  # 须在 close_pool() 之前（drain 落库走同一个池）
+    await studio.stop(studio_handle)  # 须在 close_pool() 之前（drain 落库走同一个池）
     # 先收口 runtime 任务（取消 + 短等审计写完），再关池——避免关闭期 PoolClosed 噪声（B5-BE-001）
     from runtime import task_registry
 
@@ -207,3 +198,7 @@ async def health():
 
 for r in (identity, templates, agent_teams, assets, secrets, runs, approvals, audit, admin):
     app.include_router(r.router)
+
+# 垂直切片自带路由（Agent Studio：/admin/studio/* 与 /agent-runs/{id}/replay）
+for _slice_router in studio.routers():
+    app.include_router(_slice_router)

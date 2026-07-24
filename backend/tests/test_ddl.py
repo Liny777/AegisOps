@@ -8,6 +8,10 @@ from pathlib import Path
 import psycopg
 
 DDL = Path(__file__).resolve().parents[1] / "sql" / "openops_v1_core.sql"
+# 平台表数基线统计的是 core + 各垂直切片自带 DDL 之和（切片见 sql/slices/，如 Agent Studio）。
+# 单独留 DDL 指向 core.sql：下面的「无外键/无 trigger/对象名长度」等断言仍以 core 为准，
+# 切片自己的同类断言在 tests/studio/test_ddl.py。
+from conftest import DDL_FILES  # noqa: E402 —— DDL 事实源单一定义在 conftest
 
 COMMENTED_RUNTIME_TABLES = (
     "sre_idempotency_key",
@@ -54,9 +58,15 @@ def _commented_columns(ddl: str, table: str) -> set[str]:
 
 
 def test_ddl_001_has_core_tables_plus_runtime_config():
-    ddl = DDL.read_text(encoding="utf-8")
+    """平台表数基线（**刻意保留人工门禁**）。
+
+    建表是平台级事件（备份/保留期/脱敏定级/容量都要跟着评估），所以这条基线不做自动发现：
+    任何人加表都必须显式改这个数字，从而被 review 看见。
+    统计口径 = core.sql + sql/slices/*.sql（垂直切片自带 DDL）。
+    """
+    ddl = "\n".join(f.read_text(encoding="utf-8") for f in DDL_FILES)
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 27  # 21 业务核心 + runtime_config + P 块三表 + D 块 delegation + studio span
+    assert len(tables) == 27  # 21 业务核心 + runtime_config + P 块三表 + D 块 delegation + studio span（切片）
     assert "sre_platform_runtime_config" in tables
     assert "sre_agent_studio_span" in tables
     assert "sre_agent_team_tpl_version" in tables

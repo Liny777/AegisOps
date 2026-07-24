@@ -11,6 +11,8 @@ services:
     volumes:
       # 首次启动自动建表（权威 DDL 由 Obsidian 19 号生成）
       - ./backend/sql/openops_v1_core.sql:/docker-entrypoint-initdb.d/01_core.sql:ro
+      # 垂直切片自带 DDL（initdb.d 不递归子目录，新增切片须在此显式加一行）
+      - ./backend/sql/slices/studio_span.sql:/docker-entrypoint-initdb.d/02_studio.sql:ro
       - openops_pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U openops -d openops"]
