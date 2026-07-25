@@ -1,68 +1,12 @@
 """/admin/studio/*：管理员回溯复盘端点（403 隔离 / run 列表 stats / 详情分组与交接联合）。"""
 from __future__ import annotations
 
-import os
 import uuid
-from typing import Any
-
-import psycopg
-
-from conftest import ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
 
 
-def _insert_span(**kw: Any) -> None:
-    """测试直插 span 行（TestClient 的池在 app 线程上，测试侧用同步 psycopg，同 reset_database）。"""
-    row = {
-        "user_id": "", "agent_run_id": "", "task_id": "", "session_id": "", "agent_role": "",
-        "agent_name": "", "kind": "", "model": "", "provider": "", "input_tokens": 0,
-        "output_tokens": 0, "cache_input_tokens": 0, "latency_ms": 0.0, "started_at": 1.0,
-        "ended_at": 2.0, "tool_name": "", "tool_args": "", "tool_result": "",
-        "input_messages": "", "output_messages": "", "finish_reason": "", "span_status": "",
-        "trace_id": "", "span_id": "", "parent_span_id": "",
-    }
-    row.update(kw)
-    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute(
-            """
-            insert into sre_agent_studio_span
-              (user_id, agent_run_id, task_id, session_id, agent_role, agent_name, kind,
-               model, provider, input_tokens, output_tokens, cache_input_tokens, latency_ms,
-               started_at, ended_at, tool_name, tool_args, tool_result,
-               input_messages, output_messages, finish_reason, span_status,
-               trace_id, span_id, parent_span_id, expire_at)
-            values (%(user_id)s, %(agent_run_id)s, %(task_id)s, %(session_id)s, %(agent_role)s,
-                    %(agent_name)s, %(kind)s, %(model)s, %(provider)s, %(input_tokens)s,
-                    %(output_tokens)s, %(cache_input_tokens)s, %(latency_ms)s,
-                    to_timestamp(%(started_at)s), to_timestamp(%(ended_at)s), %(tool_name)s,
-                    %(tool_args)s, %(tool_result)s, %(input_messages)s, %(output_messages)s,
-                    %(finish_reason)s, %(span_status)s, %(trace_id)s, %(span_id)s,
-                    %(parent_span_id)s, now() + interval '30 days')
-            """,
-            row,
-        )
-
-
-def _insert_delegation(run_id: str, delegation_id: str, agent_key: str,
-                       task_text: str, report_text: str) -> None:
-    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
-        conn.execute(
-            """
-            insert into sre_agent_delegation
-              (delegation_id, run_id, leader_task_id, dispatch_batch_no, agent_key, task_text,
-               delegation_status, had_final_report, report_text, created_by, last_updated_by)
-            values (%(d)s, %(r)s, 'tsk_main', 1, %(k)s, %(t)s,
-                    'completed', true, %(rp)s, '0026demo01', '0026demo01')
-            """,
-            {"d": delegation_id, "r": run_id, "k": agent_key, "t": task_text, "rp": report_text},
-        )
-
-
-def _fsid(client, run_id: str) -> str:
-    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
-        row = conn.execute(
-            "select framework_session_id from sre_agent_run where agent_run_id=%s", (run_id,)
-        ).fetchone()
-    return row[0]
+from _helpers import _fsid, _insert_delegation, _insert_span
+from conftest import (ADMIN_HEADERS, OTHER_HEADERS, USER_HEADERS, create_instance,
+                      create_run, unwrap)
 
 
 def test_studio_endpoints_admin_only(client):

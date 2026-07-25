@@ -27,6 +27,7 @@ from typing import Any
 from domain import tool_key
 from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
 from infra.rca_contract import RcaBoardContractError
+import studio  # Agent Studio 垂直切片：只经 facade（src/studio/__init__.py），不碰其内部结构
 from runtime import events, tool_gateway
 from infra.repositories import agent_session_states, runs
 from runtime.emit import emit
@@ -1087,15 +1088,6 @@ async def _finish_cancel(st: TaskState, run: dict[str, Any]) -> None:
                message="任务已取消（Run 保持 active，可继续新任务）", action="task")
 
 
-def _studio_middlewares() -> list[Any]:
-    """Agent Studio 捕获中间件（惰性 import：mock/未装 agentscope 不触碰 otel 依赖）。"""
-    try:
-        from runtime.studio_middleware import studio_middlewares
-        return studio_middlewares()
-    except Exception:  # noqa: BLE001 —— 依赖缺失/版本漂移：降级为不捕获，绝不阻断 run
-        return []
-
-
 async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     """真 AgentScope 驱动一次 Task：Agent(stub)+Toolkit+Permission；事件桥回 openops.*。"""
     _require_agentscope()
@@ -1112,10 +1104,8 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
     from agentscope.message import Msg, TextBlock
     from agentscope.state import AgentState
 
-    from runtime.studio_context import reset_studio_task_context, set_studio_task_context
-
-    # Agent Studio：本 task 的 span 归属（studio_tracing.on_start 从 contextvar 读）
-    _studio_toks = set_studio_task_context(st.user_id, st.run_id, st.task_id, "main")
+    # Agent Studio：本 task 的 span 归属（切片内部从 contextvar 读并盖成 span 属性）
+    _studio_tok = studio.set_task_context(st.user_id, st.run_id, st.task_id, "main")
     agent = None  # P3：终态回写引用；toolkit 构建抛错时保持 None
     state_persisted = False
 
@@ -1176,7 +1166,7 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             model=await _build_model(st),
             toolkit=toolkit,
             state=agent_state,
-            middlewares=_studio_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
+            middlewares=studio.agent_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
             # E4 治理（limits-and-budgets）：max_iters 防失控狂转；tool_result_limit 必须 < 模型窗口
             # （D7 事故：160000>128000 单条工具结果撑爆窗口→压缩 fallback 删掉用户问题）。
             # 2.0.3 默认 20/50000；主 agent 对齐老经验 ≤1/4 窗口取 24000。
@@ -1301,6 +1291,6 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                    message=f"任务失败：{reason[:160]}", reason_code="MODEL_CALL_FAILED",
                    payload={"error": reason})
     finally:
-        reset_studio_task_context(_studio_toks)
+        studio.reset_task_context(_studio_tok)
         # P3：终态回写兜底（取消/completed 分支未走到等路径；已持久化则幂等跳过）
         await _persist_state()

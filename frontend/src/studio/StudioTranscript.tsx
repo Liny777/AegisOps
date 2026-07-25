@@ -1,6 +1,6 @@
 import { color, radius } from "../theme/tokens";
 import { Icon } from "../ui";
-import type { StudioMessage } from "../lib/api/types";
+import type { StudioMessage } from "./types";
 
 /** 管理员只读对话记录（照 Workbench 的 UserBubble/BotBubble 样板，纯文本 pre-wrap，
  *  不接 CopilotKit）。全文无截断；源数据无时间戳，故不显示时间。 */

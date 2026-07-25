@@ -6,6 +6,7 @@ import { AppShell } from "./layout/AppShell";
 import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
 import { api } from "./lib/api";
 import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
+import { studioRoutes } from "./studio/entry";  // 垂直切片自注册路由（懒加载在切片内部）
 
 // 外链 ?q= 捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
 captureAutoQuestion();
@@ -16,7 +17,6 @@ const SettingsPage = lazy(() => import("./settings/SettingsPage").then((m) => ({
 const SettingsHome = lazy(() => import("./settings/SettingsHome").then((m) => ({ default: m.SettingsHome })));
 const AdminConsole = lazy(() => import("./admin/AdminConsole").then((m) => ({ default: m.AdminConsole })));
 const InitWizard = lazy(() => import("./init/InitWizard").then((m) => ({ default: m.InitWizard })));
-const ReplayPage = lazy(() => import("./studio/ReplayPage").then((m) => ({ default: m.ReplayPage })));
 const ProductIntro = lazy(() => import("./pages/intro/ProductIntro").then((m) => ({ default: m.ProductIntro })));
 
 /** 首页分流：按 me 落到最近实例对话 / 初始化 / 白名单拦截。
@@ -110,8 +110,8 @@ export default function App() {
               <Route path="/settings/:section?" element={<SettingsHome />} />
               {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
               <Route path="/agent-runs/:runId" element={null} />
-              {/* 回放（侧栏「回放」入口）：用户回看自己会话的执行过程（owner-only 端点） */}
-              <Route path="/replay/:runId?" element={<ReplayPage />} />
+              {/* Agent Studio 切片自注册路由（/replay/*）：路径与懒加载都由切片决定 */}
+              {studioRoutes}
               <Route path="/admin" element={<RoleGuard><Navigate to="/admin/templates" replace /></RoleGuard>} />
               <Route path="/admin/:page" element={<RoleGuard><AdminConsole /></RoleGuard>} />
             </Route>

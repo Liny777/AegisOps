@@ -5,17 +5,13 @@ import { Icon, Interactive } from "../ui";
 import { useApp } from "../lib/appState";
 import { api } from "../lib/api";
 import type { Conversation } from "../lib/api/types";
+import type { NavItem } from "./navTypes";
+import { STUDIO_ADMIN_NAV, STUDIO_USER_NAV, studioActiveKey } from "../studio/entry";
 
 const EXPANDED = 248;
 const COLLAPSED = 60;
 
-interface NavItem {
-  key: string;
-  label: string;
-  icon: string;
-  to?: string;
-  locked?: boolean;
-}
+
 
 function NavRow({
   item,
@@ -99,7 +95,7 @@ export function Sidebar() {
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
-    { key: "replay", label: "回放", icon: "history", to: "/replay" },  // 回看自己会话的执行过程（仅本人）
+    STUDIO_USER_NAV,                       // 回放（Agent Studio 切片自带；位置归 core，内容归切片）
     { key: "ontology",  label: "OModel", icon: "sitemap", to: "/settings" },
   ];
 
@@ -121,12 +117,13 @@ export function Sidebar() {
     { key: "users", label: "用户与白名单", icon: "users", to: "/admin/users" },
     { key: "sandbox", label: "沙箱与容量", icon: "box", to: "/admin/sandbox" },
     { key: "audit", label: "审计回放", icon: "history", to: "/admin/audit" },
-    { key: "studio", label: "Agent Studio", icon: "telescope", to: "/admin/studio" },
+    STUDIO_ADMIN_NAV,                      // Agent Studio（切片自带）
   ];
 
   const activeKey = (() => {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
-    if (loc.pathname.startsWith("/replay")) return "replay";
+    const studioKey = studioActiveKey(loc.pathname);   // 切片自己判定高亮
+    if (studioKey) return studioKey;
     if (loc.pathname.startsWith("/settings")) return "ontology";
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";

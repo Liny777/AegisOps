@@ -93,12 +93,15 @@ case "$DATABASE_MODE" in
     # 全部成功后才能发布新后端。
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-ddl-object-names.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-14-subagent-activity.sql"
-    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-07-23-agent-studio-span.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/studio_span.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
     ;;
   new)
-    # 全新库：只执行 core.sql；成功后再发布新后端。
+    # 全新库：core.sql + 各垂直切片自带 DDL（sql/slices/*.sql）；成功后再发布新后端。
+    # ⚠ 切片这条**不能漏**：漏了服务照常启动、Agent Studio 的 drain 落库异常被吞成 debug 日志、
+    #   管理台 Studio 页全空，排查成本极高。
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/studio_span.sql"
     ;;
   *)
     echo "DATABASE_MODE 必须显式设置为 existing 或 new" >&2

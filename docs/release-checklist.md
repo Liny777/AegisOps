@@ -6,8 +6,8 @@
 
 ## 1. 数据库
 
-- [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/migrate-2026-07-14-subagent-activity.sql` → `backend/sql/migrate-2026-07-23-agent-studio-span.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；迁移均可幂等重跑，任一步失败均停止发布
-- [ ] 全新库只执行 `backend/sql/openops_v1_core.sql`（幂等；27 表），成功后再发布/启动新后端
+- [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/migrate-2026-07-14-subagent-activity.sql` → `backend/sql/slices/studio_span.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；迁移均可幂等重跑，任一步失败均停止发布
+- [ ] 全新库执行 `backend/sql/openops_v1_core.sql` **+ `backend/sql/slices/*.sql`**（幂等；合计 27 表）——切片 DDL 不在 core.sql 里，漏跑会让 Agent Studio 静默失效
 - [ ] Agent Studio（管理员回溯）：`sre_agent_studio_span` 存 LLM/工具**原文**（仅 /admin/studio/* 可读，30 天硬删）；不需要此能力的环境设 `OPENOPS_AGENT_STUDIO_ENABLED=false`
 - [ ] GaussDB 环境确认：无 `role` 裸列名（已改 `user_role`）、无 ON CONFLICT 偏索引 target
 - [ ] 首次建库：启动一次后端触发 seed（模板/标注/沙箱配置/模型资产）；已播种库 seed 自动跳过

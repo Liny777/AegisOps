@@ -26,12 +26,9 @@ import type {
   ModelOption,
   ActivityNode,
   ActivityEventsPage,
-  StudioRunsPage,
-  StudioRunDetail,
-  StudioMessage,
 } from "./types";
 import * as M from "./mockData";
-import { apiFetch, crid, demoIdentity } from "./client";
+import { API_MODE, apiFetch, crid, demoIdentity } from "./client";
 import { auditToNode, projectInstance } from "./projection";
 import { normalizeActivityPage } from "../activity";
 
@@ -107,8 +104,8 @@ import type { RequestOptions } from "./singleFlight";
 export type { RequestOptions } from "./singleFlight";
 export { isAbortError } from "./singleFlight";
 
-export const API_MODE: "mock" | "real" =
-  (import.meta.env.VITE_OPENOPS_API_MODE as "mock" | "real" | undefined) ?? "real";
+// API_MODE 定义在 client.ts（传输层配置单一真源），此处再导出保持既有 import 面不变
+export { API_MODE } from "./client";
 
 /** 「测试连接」结果（用户自带 / 平台模型共用）：ok=true 才允许保存。 */
 export interface TestConnResult {
@@ -239,14 +236,7 @@ export interface OpenOpsApi {
   adminListUsers(): Promise<{ user_id: string; display_name: string }[]>;
   /** 标签下拉候选：所有未删用户已用的领域标签（去重、排序）——「用户与白名单」页头筛选用。 */
   adminListUserTags(): Promise<string[]>;
-  // admin Agent Studio（管理员回溯复盘）：按用户看 run 列表 → run 详情（span 原文 + 交接账本）
-  adminStudioRuns(userId: string, params?: { page?: number; pageSize?: number }): Promise<StudioRunsPage>;
-  adminStudioRunDetail(runId: string): Promise<StudioRunDetail>;
-  /** run 对话记录（用户↔助手全文；含软删 run）。mock runtime 不落对话 → 空数组。 */
-  adminStudioRunMessages(runId: string): Promise<StudioMessage[]>;
-  // 用户回放（侧栏「回放」）：owner-only；LLM 输入 messages 服务端置空（平台提示词不外露）
-  replayRunDetail(runId: string): Promise<StudioRunDetail>;
-  replayRunMessages(runId: string): Promise<StudioMessage[]>;
+  // Agent Studio 的 api 已随垂直切片外移到 src/studio/api.ts（core 门面不再承载切片方法）
   adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
   adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
@@ -903,24 +893,6 @@ const realApi: OpenOpsApi = {
   async adminDeleteUser(userId) {
     await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   },
-  async adminStudioRuns(userId, params) {
-    const s = new URLSearchParams({ user_id: userId });
-    s.set("page", String(params?.page ?? 1));
-    s.set("page_size", String(params?.pageSize ?? 20));
-    return apiFetch<StudioRunsPage>(`/openops/v1/admin/studio/runs?${s.toString()}`);
-  },
-  async adminStudioRunDetail(runId) {
-    return apiFetch<StudioRunDetail>(`/openops/v1/admin/studio/runs/${encodeURIComponent(runId)}`);
-  },
-  async adminStudioRunMessages(runId) {
-    return apiFetch<StudioMessage[]>(`/openops/v1/admin/studio/runs/${encodeURIComponent(runId)}/messages`);
-  },
-  async replayRunDetail(runId) {
-    return apiFetch<StudioRunDetail>(`/openops/v1/agent-runs/${encodeURIComponent(runId)}/replay`);
-  },
-  async replayRunMessages(runId) {
-    return apiFetch<StudioMessage[]>(`/openops/v1/agent-runs/${encodeURIComponent(runId)}/messages`);
-  },
   async adminGetModelGrants(modelAssetId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
       `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
@@ -1232,16 +1204,6 @@ const mockApi: OpenOpsApi = {
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
   adminListUserTags: () => delay(["财经", "研发", "供应"]),
-  adminStudioRuns: (userId) => delay(M.mockStudioRuns(userId)),
-  adminStudioRunDetail: (runId) => delay(M.mockStudioRunDetail(runId)),
-  adminStudioRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
-  // 镜像后端语义：用户回放不下发 LLM 输入
-  replayRunDetail: (runId) => {
-    const d = M.mockStudioRunDetail(runId);
-    for (const a of d.agents) for (const c of a.calls) if (c.kind === "llm") c.input = "";
-    return delay(d);
-  },
-  replayRunMessages: (runId) => delay(M.mockStudioRunMessages(runId)),
   adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
   adminSaveModelGrants: () => delay(undefined as unknown as void),
   adminRegisterModel: () => delay(undefined as unknown as void),

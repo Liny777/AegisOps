@@ -5,6 +5,13 @@
 // ⚠该默认值在生产是唯一不可路由的值（网关只认 /openops），故 build-artifacts.sh 有正向断言。
 // SSE 与 agui 两处绕过 request() 的调用点共用本值。
 export const API_BASE = import.meta.env.VITE_OPENOPS_API_BASE ?? "/api";
+
+/** 数据源开关：real=真打后端 / mock=纯 UI 演示。与 API_BASE 同属传输层配置，故同放本文件——
+ *  core 的 lib/api/index.ts 与各垂直切片（src/studio）共用这一份。
+ *  ⚠ 默认值 `?? "real"` 是**生产 fail-safe**：漏配环境变量时必须真打后端，而不是静默拿演示数据
+ *    给管理员看。默认值散成两处必然有一处漂成 "mock"，所以任何模块都不许自读这个 env。 */
+export const API_MODE: "mock" | "real" =
+  (import.meta.env.VITE_OPENOPS_API_MODE as "mock" | "real" | undefined) ?? "real";
 const BASE = API_BASE;
 
 /** demo 身份（角色/白名单事实在后端 PG；头只声明“我是谁”）。

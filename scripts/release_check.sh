@@ -118,12 +118,12 @@ if [ -n "$PRODUCTION_ENV" ]; then
   set +a
 fi
 
-echo "== ① DDL 表数核对（core.sql CREATE TABLE 计数 vs 基线 27） =="
-N=$(grep -ci "^create table if not exists" backend/sql/openops_v1_core.sql)
+echo "== ① DDL 表数核对（core.sql + sql/slices/*.sql 的 CREATE TABLE 计数 vs 基线 27） =="
+N=$(cat backend/sql/openops_v1_core.sql backend/sql/slices/*.sql | grep -ci "^create table if not exists")
 if [ "$N" -eq 27 ]; then
   echo "   OK：27 表"
 else
-  fail "表数=$N ≠ 27（新增表时须同步 conftest TABLES 与 test_ddl 基线）"
+  fail "表数=$N ≠ 27（新增表时须同步 test_ddl 基线；切片表放 backend/sql/slices/）"
 fi
 
 echo "== ② 敏感信息扫描（全部受版本控制文本） =="

@@ -22,6 +22,7 @@ import os
 import uuid
 from typing import Any
 
+import studio  # Agent Studio 垂直切片：只经 facade（src/studio/__init__.py），不碰其内部结构
 from infra.redact import redact_text
 from infra.repositories import delegations, runs as runs_repo
 from runtime import task_registry
@@ -39,6 +40,42 @@ def _sub_task_id(leader_task_id: str, agent_key: str, did: str) -> str:
     """子 task_id（DEF-2 修）：`{leader}.{key}-{delegation_id前8}` 全局唯一——旧 `{key}{seq}` 用批内
     下标，跨批同角色必碰撞（registry 覆盖写+第一批 finally 摘掉第二批+审批错路由）。"""
     return f"{leader_task_id}.{agent_key}-{did[:8]}"
+
+
+# ── 子 Agent session_id：跨模块字符串契约（**改动前先读这段**）────────────────────
+# 这个字符串是子 Agent 的 AgentState.session_id，会被 agentscope 当作
+# `gen_ai.conversation_id` 发进 OTel span，最终落到 Agent Studio 的
+# `sre_agent_studio_span.session_id` 列。Studio 靠**反解它**把 span 归组到对应的
+# 派发账本行（主↔子交接内容）。
+#
+# ⚠ 这是 core 与 studio 切片之间唯一的非类型化契约，且**解析失败是静默的**
+#   （studio 侧解析不出就返回 None，表现为「交接内容空着、其余一切正常」，
+#    无日志无告警）。所以：
+#   1) 生产与消费都必须走下面这对函数，不要再手写 f-string / split；
+#   2) 改格式必然让 tests/studio/test_session_id_contract.py 变红——那是**设计好的**信号，
+#      看到它红就说明 studio 侧也要同步改，别只改这里。
+_SESSION_SEP = ":"
+
+
+def sub_session_id(framework_session_id: str, agent_key: str, did: str) -> str:
+    """子 Agent 的 AgentState.session_id（唯一生产方）。"""
+    return f"{framework_session_id}{_SESSION_SEP}{agent_key}-{did[:8]}"
+
+
+def parse_sub_session_id(session_id: str) -> tuple[str, str] | None:
+    """反解 `sub_session_id` → (agent_key, delegation_id 前 8 位)；不是子 session 则 None。
+
+    供 Agent Studio 把 span 归组到派发账本用。解析失败返回 None（不抛）——
+    主 Agent 的 session_id 就是裸 framework_session_id，走这里必然返回 None，属正常。
+    """
+    try:
+        _, suffix = session_id.split(_SESSION_SEP, 1)
+        agent_key, did8 = suffix.rsplit("-", 1)
+    except ValueError:
+        return None
+    if not agent_key or not did8:
+        return None
+    return agent_key, did8
 
 
 def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, did: str, *,
@@ -133,8 +170,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                          dispatch_batch_id=dispatch_batch_id, dispatch_batch_no=dispatch_batch_no)
     task_registry.register_subtask(child)  # E1：decide_approval 按子 task_id 路由到 child.approval_ev
     # Agent Studio：子 span 归属（_run_one 在 create_task 私有 context 快照里跑，set 不泄漏回主）
-    from runtime.studio_context import reset_studio_task_context, set_studio_task_context
-    _studio_toks = set_studio_task_context(child.user_id, child.run_id, child.task_id, agent_key)
+    _studio_tok = studio.set_task_context(child.user_id, child.run_id, child.task_id, agent_key)
     try:
         await _emit_skill_gaps(child, run, sub)
         toolkit, _pruned = await rt._build_toolkit(child, run)
@@ -143,11 +179,11 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
             system_prompt=rt._build_sub_system_prompt(child, sub),
             model=await rt._build_model(child),
             toolkit=toolkit,
-            state=AgentState(session_id=f"{run['framework_session_id']}:{agent_key}-{did[:8]}",
+            state=AgentState(session_id=sub_session_id(str(run["framework_session_id"]), agent_key, did),
                              permission_context=rt._permission_context(child)),
             react_config=ReActConfig(max_iters=int(sub.get("max_iters", 20))),
             context_config=ContextConfig(tool_result_limit=int(sub.get("tool_result_limit", 24000))),
-            middlewares=rt._studio_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
+            middlewares=studio.agent_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
         )
         await emit(child, run, "openops.subagent.started", action=agent_key,
                    message=f"子 Agent「{sub.get('label', agent_key)}」开始执行",
@@ -195,7 +231,7 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                             "report_summary": redact_text(report, max_length=300)})
         return report
     finally:
-        reset_studio_task_context(_studio_toks)
+        studio.reset_task_context(_studio_tok)
         task_registry.unregister_subtask(child.task_id)
         try:  # DEF-1 级联收口：子任务任何终止路径都把自己的 pending 审批置 cancelled——
             # 否则遗留 pending 卡片的迟到 decide 无人认领（旧 fallback 时代会污染主任务握手）

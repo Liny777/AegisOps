@@ -7,7 +7,6 @@ from fastapi import APIRouter, Query
 from api.deps import Admin
 from api.responses import ok
 from app import (
-    agent_studio_service,
     audit_trace_service,
     identity_service,
     mcp_tool_annotation_service,
@@ -194,27 +193,3 @@ async def model_assets_save_grants(model_asset_id: str, req: ModelGrantsRequest,
 @router.get("/audit/recent")
 async def audit_recent(_admin: Admin):
     return ok(await audit_trace_service.admin_recent())
-
-
-# ---- Agent Studio（管理员回溯复盘）：span 原文按 用户→run→agent 钻取 ----
-@router.get("/studio/runs")
-async def studio_runs(
-    _admin: Admin,
-    user_id: str = Query(min_length=1, max_length=200),
-    page: int = Query(default=1, ge=1),
-    page_size: int = Query(default=20, ge=1, le=100),
-):
-    """某用户全部 run（**含软删**，管理员复盘不受用户删会话影响）+ span 聚合指标。"""
-    return ok(await agent_studio_service.list_user_runs(user_id, page, page_size))
-
-
-@router.get("/studio/runs/{run_id}")
-async def studio_run_detail(run_id: str, _admin: Admin):
-    """run 详情：span 按 agent 实例分组（main 卡最前）+ 交接账本 + rollup。"""
-    return ok(await agent_studio_service.run_detail(run_id))
-
-
-@router.get("/studio/runs/{run_id}/messages")
-async def studio_run_messages(run_id: str, _admin: Admin):
-    """run 对话记录（用户↔助手全文，与用户端 /messages 同投影；含软删 run，无脱敏）。"""
-    return ok(await agent_studio_service.run_messages(run_id))

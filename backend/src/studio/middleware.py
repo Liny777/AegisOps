@@ -15,8 +15,8 @@ from typing import Any, Awaitable, Callable
 from agentscope.middleware import TracingMiddleware
 from opentelemetry import trace as _otel_trace
 
-from runtime.studio_context import studio_enabled
-from runtime.studio_tracing import A_INPUT_MESSAGES
+from studio.context import studio_enabled
+from studio.tracing import A_INPUT_MESSAGES
 
 logger = logging.getLogger("openops.studio")
 
