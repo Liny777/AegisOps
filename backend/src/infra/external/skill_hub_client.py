@@ -25,6 +25,22 @@ from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三
 )
 
 
+class SkillHubError(RuntimeError):
+    """Skill Hub 的结构化失败（仿 OModelError），供 app 层按类别映射 HTTP 语义。
+
+    kind: "biz"=信封业务码错误（biz_code 有值，如 2003/2004 名称冲突）｜"http"=非 2xx 且无信封
+    （status_code 有值，404=对端接口未上线）｜"network"=传输层不可达/超时（重试语义）。
+    继承 RuntimeError：既有 `except RuntimeError` 兜底与测试断言不受影响。"""
+
+    def __init__(self, kind: str, message: str, *, biz_code: int | None = None,
+                 status_code: int | None = None):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.biz_code = biz_code
+        self.status_code = status_code
+
+
 def skillhub_base() -> str:
     """Skill Hub host 根：`OPENOPS_SKILLHUB_BASE_URL`，未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`——
     skills 与 mcps 是同一 console 网关（29.3 同文根），联调少配一个变量（与共享 cookie 同思路）。"""
@@ -73,9 +89,28 @@ def _unwrap_data(body: dict[str, Any]) -> dict[str, Any]:
 
     成功码收 0 和 200 两种：29.3 文档写 `code:0`，但内网实测（2026-07-11 check-net ⑤）skills 面
     成功返回 `code:200`——2026-07-13 起 console 网关 skills/mcps 两面已统一 200（此前 mcps 面是 0）；两收兼容旧版。"""
-    if int(body.get("code", -1)) not in (0, 200):
-        raise RuntimeError(f"Skill Hub 返回业务错误：code={body.get('code')} {body.get('message', '')}")
+    code = int(body.get("code", -1))
+    if code not in (0, 200):
+        raise SkillHubError("biz", f"Skill Hub 返回业务错误：code={body.get('code')} {body.get('message', '')}",
+                            biz_code=code)
     return body.get("data") or {}
+
+
+def _raise_biz_or_http(r: Any) -> None:
+    """非 2xx 收口（upload/delete 用；list/download 仍走 raise_with_body 保持既有文案）。
+
+    29.3 约定业务码随 HTTP 200 信封走，但对端形状常漂移（2003/2004 也可能随 4xx 返回）——
+    先试解 JSON 信封取业务码归入 "biz"，解不出（HTML 登录页/网关 5xx 裸文本）才归 "http"。"""
+    if r.status_code < 400:
+        return
+    try:
+        body = r.json()
+        code = int(body.get("code"))
+    except Exception:  # noqa: BLE001 —— 非 JSON / 无 code：登录页 HTML、网关裸错误
+        raise SkillHubError("http", f"console HTTP {r.status_code}：{r.text[:300]}",
+                            status_code=r.status_code) from None
+    raise SkillHubError("biz", str(body.get("message", "")) or f"Skill Hub HTTP {r.status_code}",
+                        biz_code=code, status_code=r.status_code)
 
 
 def _semver_to_int(semver: str | None) -> int:
@@ -293,14 +328,22 @@ def parse_skill_meta(zip_bytes: bytes) -> dict[str, Any]:
     name = (_parse_frontmatter(md).get("name") or "").strip()
     if not name:
         raise ValueError("SKILL.md frontmatter 缺少 name 字段")
+    # 29.9 §7 保留前缀本地预校验：上游会拒 1001，这里前置拦截给出可操作文案（mock/real 同拦）
+    if name.startswith(("system-", "user-")):
+        raise ValueError('SKILL.md 的 name 不能以 "system-" / "user-" 开头'
+                         "（该前缀由平台生成命名空间 skill_id），请改名后重新打包")
     return {"name": name, "skill_key": name, "entrypoint": _entrypoint_from(files),
             "description": _description_from(files)}
 
 
 async def upload_skill(filename: str, zip_bytes: bytes, category: str, tags: list[str],
-                       source: str = "openops", is_system: bool = False) -> dict[str, Any]:
+                       source: str = "openops", is_system: bool = False,
+                       uploader_id: str | None = None) -> dict[str, Any]:
     """上传 Skill ZIP（29.3 §2.1 multipart）。real 转发 console `/skills/upload`；mock 合成成功信封。
-    返回 29.3 §2.1 的 data：{skill_id, name, version, status, action}。"""
+    返回 29.3 §2.1 的 data：{skill_id, name, version, status, action}。
+
+    29.9 起 data.skill_id 是命名空间化 id（个人级 `user-{工号}-{name}`），调用方必须以它为本地键
+    （见 asset_registry_service.upload_skill_package），SKILL.md 裸 name 仅作缺失回退。"""
     if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
         base = skillhub_base()
         if not base:
@@ -317,18 +360,49 @@ async def upload_skill(filename: str, zip_bytes: bytes, category: str, tags: lis
             form["category"] = category
         if tags:
             form["tags"] = _json.dumps(tags, ensure_ascii=False)
-        async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE", timeout=60)) as cli:
-            r = await cli.post(
-                f"{base}{console_api_prefix()}/skills/upload",
-                files={"file": (filename, zip_bytes, "application/zip")},
-                data=form,
-            )
-            raise_with_body(r)  # 非 2xx 带响应体前 300 字（401 cookie 失效 / 2003 发布冲突等）
-            return _unwrap_data(r.json())
-    # mock：从包解析 skill_id/name，合成成功信封（供离线端到端可跑）
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE", timeout=60)) as cli:
+                r = await cli.post(
+                    f"{base}{console_api_prefix()}/skills/upload",
+                    files={"file": (filename, zip_bytes, "application/zip")},
+                    data=form,
+                )
+        except httpx.HTTPError as e:  # 传输层（连接拒/超时）不是 RuntimeError，不收口会漏成 500
+            raise SkillHubError("network", f"SkillHub 不可达：{type(e).__name__}: {e}") from None
+        _raise_biz_or_http(r)  # 非 2xx：优先解信封业务码（2003/2004 随 4xx 返回也能归类 biz）
+        return _unwrap_data(r.json())
+    # mock：从包解析 name，按 29.9 合成**命名空间化** skill_id 信封——让「本地键取响应 skill_id」
+    # 的新路径被离线端到端天然覆盖（uploader 未知时回退裸名 = 29.9 前旧网关形态）
     meta = parse_skill_meta(zip_bytes)
-    return {"skill_id": meta["skill_key"], "name": meta["name"], "version": "0.0.1",
+    if is_system:
+        sid = f"system-{meta['name']}"
+    else:
+        sid = f"user-{uploader_id}-{meta['name']}" if uploader_id else meta["skill_key"]
+    return {"skill_id": sid, "name": meta["name"], "version": "0.0.1",
             "status": "active", "action": "created"}
+
+
+async def delete_skill(skill_id: str) -> dict[str, Any]:
+    """删除个人级 Skill（29.9 §8.1 `POST /skills/delete`，需 viewer cookie）→ data {skill_id, action:"deleted"}。
+
+    上游语义：仅个人级可删（系统级回 1003）；主表删除 + 版本全下架。异常分类供调用方降级判定：
+    kind="http" 且 404 = 对端接口未上线（29.9 未部署）；"biz" = 上游明确拒绝；"network" = 不可达可重试。
+    mock：直接回成功（本地删照走，离线端到端闭环）。"""
+    if os.getenv("OPENOPS_SKILLHUB", "mock").lower() == "real":
+        base = skillhub_base()
+        if not base:
+            raise RuntimeError("OPENOPS_SKILLHUB=real 需配 OPENOPS_SKILLHUB_BASE_URL（或 OPENOPS_MCPREGISTRY_BASE_URL，同 console 网关）")
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE")) as cli:
+                r = await cli.post(f"{base}{console_api_prefix()}/skills/delete",
+                                   json={"skill_id": skill_id})
+        except httpx.HTTPError as e:
+            raise SkillHubError("network", f"SkillHub 不可达：{type(e).__name__}: {e}") from None
+        _raise_biz_or_http(r)
+        return _unwrap_data(r.json())
+    return {"skill_id": skill_id, "action": "deleted"}
 
 
 async def download_skill_package(skill_key: str, version_no: int) -> dict[str, Any]:

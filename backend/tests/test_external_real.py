@@ -993,6 +993,111 @@ async def test_ext_skillhub_upload_multipart_with_http_debug(monkeypatch):
     assert "multipart/form-data" in seen["ct"]
 
 
+# ============================ Skill Hub 29.9（命名空间化 / 错误分类 / delete） ============================
+
+
+def _skill_zip_299(name: str) -> bytes:
+    """29.9 系列用例的最小 Skill ZIP（SKILL.md frontmatter name=<name>）。"""
+    import io
+    import zipfile
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("SKILL.md", f"---\nname: {name}\nversion: 0.0.1\nentrypoint: python3 run.py\n---\n")
+        z.writestr("run.py", b"print(1)\n")
+    return buf.getvalue()
+
+
+def test_ext_skillhub_parse_meta_rejects_reserved_prefix():
+    """29.9 §7：SKILL.md name 以 system-/user- 开头 → 本地预校验拒（上游会拒 1001，前置给可操作文案）。"""
+    import pytest as _pytest
+
+    from infra.external import skill_hub_client
+
+    for bad in ("system-foo", "user-30001234-foo"):
+        with _pytest.raises(ValueError, match="保留|不能以"):
+            skill_hub_client.parse_skill_meta(_skill_zip_299(bad))
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_mock_upload_returns_namespaced_id():
+    """mock 上传按 29.9 合成命名空间化 skill_id：个人级 user-{uid}-{name}、系统级 system-{name}；
+    uploader 未知回退裸名（= 29.9 前旧网关形态，兼容回退路径也被锁定）。"""
+    from infra.external import skill_hub_client
+
+    out = await skill_hub_client.upload_skill("d.zip", _skill_zip_299("demo"), "", [], uploader_id="0026demo01")
+    assert out["skill_id"] == "user-0026demo01-demo" and out["name"] == "demo"
+    legacy = await skill_hub_client.upload_skill("d.zip", _skill_zip_299("demo"), "", [])
+    assert legacy["skill_id"] == "demo"
+    system = await skill_hub_client.upload_skill("d.zip", _skill_zip_299("demo"), "", [], is_system=True)
+    assert system["skill_id"] == "system-demo"
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_upload_error_classification(monkeypatch):
+    """upload 异常三分类：信封 2004（HTTP 200）→ biz；HTTP 4xx 带信封 2003 → 仍 biz（对端形状漂移兼容）；
+    传输层异常 → network（httpx 异常不是 RuntimeError，此前会漏出 502 收口）。"""
+    import httpx
+    import pytest as _pytest
+
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "https://console")
+
+    _install(monkeypatch, lambda m, u, k: _Resp(200, {"code": 2004, "message": "系统级已存在同名skill [x]"}))
+    with _pytest.raises(skill_hub_client.SkillHubError) as e1:
+        await skill_hub_client.upload_skill("d.zip", b"PK", "", [])
+    assert e1.value.kind == "biz" and e1.value.biz_code == 2004
+
+    _install(monkeypatch, lambda m, u, k: _Resp(400, {"code": 2003, "message": "已被他人发布"}))
+    with _pytest.raises(skill_hub_client.SkillHubError) as e2:
+        await skill_hub_client.upload_skill("d.zip", b"PK", "", [])
+    assert e2.value.kind == "biz" and e2.value.biz_code == 2003
+
+    def _boom(m, u, k):
+        raise httpx.ConnectError("conn refused")
+
+    _install(monkeypatch, _boom)
+    with _pytest.raises(skill_hub_client.SkillHubError) as e3:
+        await skill_hub_client.upload_skill("d.zip", b"PK", "", [])
+    assert e3.value.kind == "network"
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_delete_posts_and_classifies(monkeypatch):
+    """delete（29.9 §8.1）：POST /skills/delete + {"skill_id"} 解信封回 data；
+    HTTP 404（对端接口未上线）→ kind=http+404，供 app 层降级仅本地删。"""
+    import pytest as _pytest
+
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "https://console")
+
+    body = {"code": 200, "message": "success", "data": {"skill_id": "user-1-x", "action": "deleted"}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
+    out = await skill_hub_client.delete_skill("user-1-x")
+    method, url, kwargs = cap[0]
+    assert method == "POST" and url == "https://console/obsv/agent/management/skills/delete"
+    assert kwargs["json"] == {"skill_id": "user-1-x"}
+    assert out["action"] == "deleted"
+
+    _install(monkeypatch, lambda m, u, k: _Resp(404, None, text="Not Found"))
+    with _pytest.raises(skill_hub_client.SkillHubError) as ei:
+        await skill_hub_client.delete_skill("user-1-x")
+    assert ei.value.kind == "http" and ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_delete_mock_succeeds():
+    """mock：delete 直接回成功（本地删照走，离线端到端闭环）。"""
+    from infra.external import skill_hub_client
+
+    out = await skill_hub_client.delete_skill("user-1-x")
+    assert out == {"skill_id": "user-1-x", "action": "deleted"}
+
+
 @pytest.mark.asyncio
 async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
     """oModel 同时携带登录态、浏览器 UA，以及从 target base 派生的 CSRF 同源头。"""

@@ -166,6 +166,65 @@ def test_skill_010_unbound_skill_blocked(client):
     assert any(e["event_type"] == "openops.skill.call.blocked" for e in events)
 
 
+def test_skill_alias_display_name_executes_canonical_key(client):
+    """29.9 别名：run_platform_skill 传原始名（display_name）→ 解析回带前缀 canonical key 执行；
+    审计 payload / 返回文本一律用 key（与下载、LLM 目录同源）。"""
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_alias", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk-alias", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {"user-0026demo01-logscan": {  # 29.9 命名空间化键 + 原始展示名
+        "version_no": 1, "display_name": "logscan", "source_type": "user"}}
+    st.sandbox_cfg = _CFG  # run_skill 容器缺失自愈重建用
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "logscan")  # 原始名（模型抄了括号里的展示名）
+        assert "user-0026demo01-logscan" in txt  # 返回文本按 canonical key 记账
+        assert st.tool_blocked is False
+        await sandbox_executor.close_all()
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    done = next(e for e in events if e["event_type"] == "openops.skill.call.succeeded")
+    assert done["payload_redacted_json"]["skill"] == "user-0026demo01-logscan"
+
+
+def test_skill_alias_ambiguous_blocked_with_candidates(client):
+    """29.9 别名多义（存量裸名与新前缀同 display_name 并存等）：fail-closed 拒执行，
+    blocked 文案与审计 payload 附候选 key 清单（模型可自纠为完整 skill_key）。"""
+    from runtime.sandbox_skill import run_bound_skill
+    from runtime.task_registry import TaskState
+
+    instance = create_instance(client)
+    run_row = unwrap(client.post("/api/openops/v1/agent-runs", headers=USER_HEADERS,
+                                 json={"client_request_id": "sk_ambig", "agent_team_instance_id": instance["instance_id"]}))["run"]
+    st = TaskState(task_id="tk-ambig", run_id=str(run_row["agent_run_id"]), user_id="0026demo01",
+                   instance_id=instance["instance_id"], input_text="x")
+    st.available_skills = {
+        "user-0026demo01-logscan": {"version_no": 1, "display_name": "logscan", "source_type": "user"},
+        "system-logscan": {"version_no": 1, "display_name": "logscan", "source_type": "platform"},
+    }
+    run = {"agent_run_id": run_row["agent_run_id"], "audit_trace_id": run_row["audit_trace_id"],
+           "agent_team_instance_id": run_row["agent_team_instance_id"]}
+
+    async def scenario():
+        txt = await run_bound_skill(st, run, "logscan")
+        assert st.tool_blocked is True
+        assert "user-0026demo01-logscan" in txt and "system-logscan" in txt  # 候选清单在返回文本
+
+    asyncio.run(scenario())
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run_row['agent_run_id']}", headers=USER_HEADERS))
+    blocked = next(e for e in events if e["event_type"] == "openops.skill.call.blocked")
+    # 候选清单走审计白名单的 keys 列表（sanitize_activity_payload 只放行 keys）
+    assert set(blocked["payload_redacted_json"]["keys"]) == {"user-0026demo01-logscan", "system-logscan"}
+
+
 def test_skill_003_checksum_mismatch_rejected(client):
     """SKILL-003：包 checksum 不匹配 → SKILL_CHECKSUM_MISMATCH，不执行。"""
     from domain.errors import ApiError, Err

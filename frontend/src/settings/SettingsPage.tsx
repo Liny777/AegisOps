@@ -390,7 +390,7 @@ function PluginPane({ kind, instanceId }: { kind: "skill" | "mcp"; instanceId: s
           onClose={() => setDialog(false)}
           onSubmit={(p) => {
             const done = p.kind === "skill"
-              ? api.uploadSkill(p.file).then((r) => { setDialog(false); setMsg(`Skill 已上传：${r.skill_key}`); setTimeout(() => setMsg(""), 4000); })
+              ? api.uploadSkill(p.file).then((r) => { setDialog(false); setMsg(`Skill 已上传：${r.display_name ?? r.skill_key}（${r.skill_key}）`); setTimeout(() => setMsg(""), 4000); })
               : api.registerMcp(p.name, p.endpoint).then(() => { setDialog(false); setMsg("HTTP MCP 已注册"); setTimeout(() => setMsg(""), 4000); });
             run(done);
           }}
@@ -483,7 +483,7 @@ function AssetDialog({ kind, busy, onClose, onSubmit }: {
           </>
         )}
         <div style={{ marginTop: 12, fontSize: 11.5, color: color.textSubtle, lineHeight: 1.6 }}>
-          {kind === "skill" ? "ZIP 内须含 SKILL.md（其 name 字段即 skill_id）；上传经 SkillHub 校验并入库，绑定到 main 后在沙箱执行（B8）。" : "用户 MCP 不透传 Cookie、不注入平台 header，范围自担（28.2）。"}
+          {kind === "skill" ? "ZIP 内须含 SKILL.md（name 为技能原始名，平台按其生成命名空间化 skill_id；name 不得以 system-/user- 开头）；上传经 SkillHub 校验并入库，绑定到 main 后在沙箱执行（B8）。" : "用户 MCP 不透传 Cookie、不注入平台 header，范围自担（28.2）。"}
         </div>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose} disabled={busy}>取消</Button>

@@ -12,6 +12,7 @@ import uuid
 from typing import Any
 
 from domain.errors import ApiError, Err
+from domain.skill_alias import resolve_skill_alias
 from infra.external import skill_hub_client
 from runtime.emit import emit
 from runtime.task_registry import TaskState
@@ -26,12 +27,25 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
     """执行一个在装配集内的 Skill；返回给模型的文本结果。未绑定/未授权 → skill.call.blocked（fail-closed）。"""
     available = st.available_skills or {}
     meta = available.get(skill_name)
+    hits: list[str] = []
+    if meta is None:
+        # 29.9 命名空间化：模型/用户可能给原始名（display_name）——别名解析回 canonical key，
+        # 之后下载（skill_key=上游 skill_id）、审计 payload、返回文本一律用 key
+        resolved, hits = resolve_skill_alias(skill_name, available)
+        if resolved:
+            skill_name = resolved
+            meta = available[resolved]
     if meta is None:
         st.tool_blocked = True  # B6-RT-001：未装配 Skill 不得执行/不得宣称成功
+        payload: dict[str, Any] = {"skill": skill_name}
+        ambig = ""
+        if len(hits) > 1:  # display_name 多义（存量裸名与新前缀同名并存等）：候选列给模型自纠
+            payload["keys"] = hits  # 审计 payload 白名单只放行 keys 列表（sanitize_activity_payload）
+            ambig = f"；名称「{skill_name}」匹配到多个 Skill：{', '.join(hits)}，请改用完整 skill_key 重试"
         await emit(st, run, "openops.skill.call.blocked", severity="warning", action=skill_name,
                    message=f"Skill 「{skill_name}」未绑定到当前实例，拒绝执行", reason_code="TOOL_BLOCKED",
-                   payload={"skill": skill_name})
-        return f"Skill 「{skill_name}」未在当前实例装配集中，未执行"
+                   payload=payload)
+        return f"Skill 「{skill_name}」未在当前实例装配集中，未执行{ambig}"
 
     tool_call_id = "sk_" + uuid.uuid4().hex[:10]
     await emit(st, run, "openops.skill.call.started", action=skill_name,
