@@ -401,7 +401,9 @@ async def list_instance_bindings(user: dict[str, Any], instance_id: str) -> list
         else:
             d["display_name"] = d.get("mcp_display_name") or "HTTP MCP"
             d["version_no"] = d.get("mcp_version_no") or 1
-            d["asset_status"] = d.get("mcp_status") or "unknown"
+            # join-miss = 资产已软删（缺席墓碑/手动删）——标 deleted 而非 unknown（对齐 skill 分支）
+            ghost = d.get("mcp_id") and d.get("mcp_display_name") is None
+            d["asset_status"] = d.get("mcp_status") or ("deleted" if ghost else "unknown")
             d["source_type"] = d.get("mcp_source_type") or "user"
         out.append(d)
     return out

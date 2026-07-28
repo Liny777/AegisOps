@@ -381,11 +381,12 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     真 server 入库、占位 http://mock 不入、重复对账幂等、list_servers 挂了不炸 skill 分支。"""
     from infra.external import mcp_registry_client
 
-    async def fake_servers():
+    async def fake_servers(include_inactive=False):
         return [
-            {"server_id": "alarm-server", "server_name": "alarm-server",
+            {"server_id": "alarm-server", "server_name": "alarm-server", "status": "active",
              "server_url": "https://mcpgateway.local/alarm", "description": "告警工具"},
-            {"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "占位"},
+            {"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock",
+             "description": "占位", "status": "active"},
         ]
 
     monkeypatch.setattr(mcp_registry_client, "list_servers", fake_servers)
@@ -397,7 +398,7 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert second["mcps_created"] == 0  # create-if-missing 幂等
 
-    async def boom():
+    async def boom(include_inactive=False):
         raise RuntimeError("console down")
 
     monkeypatch.setattr(mcp_registry_client, "list_servers", boom)
@@ -460,7 +461,7 @@ def test_reconcile_real_mode_skips_placeholder_and_empty_endpoint_assets(client,
 
     asyncio.run(_setup())
 
-    async def _servers():
+    async def _servers(include_inactive=False):
         return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
 
     async def _disc(server_url, extra_headers=None):
@@ -887,6 +888,13 @@ def _age_skill_rows(*skill_keys: str) -> None:
                      "where skill_key = any(%(k)s)", {"k": list(skill_keys)})
 
 
+def _age_mcp_rows(*display_names: str) -> None:
+    """MCP 版行龄老化（对照 _age_skill_rows；MCP 无 key 列，身份锚是 display_name）。"""
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("update sre_mcp_asset set creation_date = creation_date - interval '1 hour' "
+                     "where display_name = any(%(n)s)", {"n": list(display_names)})
+
+
 def _live_user_keys(client) -> set:
     return {s["skill_key"] for s in
             unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]}
@@ -1023,6 +1031,148 @@ def test_tombstoned_bound_skill_marked_deleted_in_bindings(client, monkeypatch):
     bindings = [b for b in _bindings(client, inst["instance_id"]) if b["asset_type"] == "skill"]
     ghost = next(b for b in bindings if str(b.get("skill_id")) == str(row["skill_id"]))
     assert ghost["asset_status"] == "deleted"  # join-miss 标注为已删，而非 unknown
+
+
+# ======================== MCP 缺席墓碑（只墓碑真删除，offline 豁免） ========================
+
+
+def _mcp_srv(name: str, url: str | None = None, status: str = "active") -> dict:
+    """构造 list_servers(include_inactive=True) 返回形状的一条 server。"""
+    return {"server_id": name, "server_name": name, "server_url": url if url is not None else f"https://{name}.example/mcp",
+            "description": "d", "status": status}
+
+
+def _live_platform_mcp_names() -> set:
+    return {r[0] for r in _sql("select display_name from sre_mcp_asset "
+                               "where source_type='platform' and deleted_at is null", {})}
+
+
+def test_reconcile_mcp_absent_tombstoned(client, monkeypatch):
+    """上游注册表（非空）不再含某 reconcile 入库的平台 MCP → 软删 + summary 计数 + 审计；
+    手造平台行（manifest 无 synced_from）与 seed 行恒豁免。"""
+    import asyncio
+
+    from infra.repositories import assets as assets_repo
+
+    asyncio.run(assets_repo.create_mcp(None, "platform", "handmade-mcp", "http",
+                                       {"endpoint": "https://hm.example/mcp"}, {}))
+
+    async def both(include_inactive=False):
+        return [_mcp_srv("mcp-keep"), _mcp_srv("mcp-gone")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", both)
+    first = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert first["mcps_created"] == 2
+    _age_mcp_rows("mcp-keep", "mcp-gone", "handmade-mcp", "oModel 查询与恢复")  # seed 行一并老化：豁免靠 synced_from 而非宽限期
+
+    async def only_keep(include_inactive=False):
+        return [_mcp_srv("mcp-keep")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", only_keep)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert summary["mcps_tombstoned"] == 1
+
+    names = _live_platform_mcp_names()
+    assert "mcp-keep" in names and "mcp-gone" not in names
+    assert "handmade-mcp" in names and "oModel 查询与恢复" in names  # 无 synced_from → 恒豁免
+    rows = _sql("select status, deleted_at from sre_mcp_asset where display_name='mcp-gone'", {})
+    assert rows and rows[0][0] == "deleted" and rows[0][1] is not None  # 软删墓碑
+    audit_rows = _sql("select payload_redacted_json->>'display_name' from sre_audit_event "
+                      "where event_type='mcp.deleted' and action='upstream_absent'", {})
+    assert [r[0] for r in audit_rows] == ["mcp-gone"]
+
+
+def test_reconcile_mcp_offline_not_tombstoned(client, monkeypatch):
+    """核心语义：上游 status=offline ≠ 缺席——临时下线保留本地行与工具标注（墓碑复活会换
+    version_id 丢全部标注）；运行时工具面直连上游 active 列表，下线自然断，无需本地动作。"""
+    async def both(include_inactive=False):
+        return [_mcp_srv("mcp-a"), _mcp_srv("mcp-b")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", both)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    _age_mcp_rows("mcp-a", "mcp-b")
+
+    async def b_offline(include_inactive=False):
+        return [_mcp_srv("mcp-a"), _mcp_srv("mcp-b", status="offline")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", b_offline)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert summary["mcps_tombstoned"] == 0 and summary["mcps_created"] == 0
+    rows = _sql("select status from sre_mcp_asset where display_name='mcp-b'", {})
+    assert rows and rows[0][0] == "active"  # 行保持 active，标注无损
+
+
+def test_reconcile_mcp_empty_upstream_guard(client, monkeypatch):
+    """护栏：上游全量列表为空 → 整段跳过（清空型操作要有非空上游证据），行保留。"""
+    async def one(include_inactive=False):
+        return [_mcp_srv("mcp-survive")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", one)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    _age_mcp_rows("mcp-survive")
+
+    async def empty(include_inactive=False):
+        return []
+    monkeypatch.setattr(mcp_registry_client, "list_servers", empty)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert summary.get("mcp_tombstone_skipped") == "empty_upstream"
+    assert "mcp-survive" in _live_platform_mcp_names()
+
+
+def test_reconcile_mcp_grace_protects_fresh_row(client, monkeypatch):
+    """护栏：刚入库的行（宽限期内）即使上游缺席也不动。"""
+    async def two(include_inactive=False):
+        return [_mcp_srv("mcp-anchor"), _mcp_srv("mcp-fresh")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", two)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+
+    async def anchor_only(include_inactive=False):
+        return [_mcp_srv("mcp-anchor")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", anchor_only)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert summary["mcps_tombstoned"] == 0
+    assert "mcp-fresh" in _live_platform_mcp_names()  # 缺席但在宽限期内 → 保留
+
+
+def test_reconcile_mcp_ingest_error_no_tombstone(client, monkeypatch):
+    """列表取回失败 → 记 mcp_ingest_error、整段放弃（含墓碑），行保留。"""
+    async def one(include_inactive=False):
+        return [_mcp_srv("mcp-keep-on-fail")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", one)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    _age_mcp_rows("mcp-keep-on-fail")
+
+    async def boom(include_inactive=False):
+        raise RuntimeError("registry down")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", boom)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert "registry down" in summary.get("mcp_ingest_error", "")
+    assert summary["mcps_tombstoned"] == 0
+    assert "mcp-keep-on-fail" in _live_platform_mcp_names()
+
+
+def test_reconcile_mcp_sanitized_name_idempotent(client, monkeypatch):
+    """含 :: 的 server_name：入库前归一为 :（复合键分隔符保留）。此前 existing 集用原始名比对，
+    每轮重复建行、墓碑会误判缺席——回归锚：幂等 + 老化后仍在上游 → 不被误墓碑。"""
+    async def weird(include_inactive=False):
+        return [_mcp_srv("weird::name")]
+    monkeypatch.setattr(mcp_registry_client, "list_servers", weird)
+    first = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert first["mcps_created"] == 1
+    assert "weird:name" in _live_platform_mcp_names()  # sanitize 后入库
+
+    second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert second["mcps_created"] == 0  # 比对键同口径 → 不再重复建行
+
+    _age_mcp_rows("weird:name")
+    third = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
+    assert third["mcps_tombstoned"] == 0  # 仍在上游（sanitize 后匹配）→ 不误墓碑
+
+
+def test_deleted_own_mcp_marked_deleted_in_bindings(client, no_egress):
+    """删除自己的 MCP 后：mute 绑定行保留（不可变历史），asset_status 标 deleted 而非 unknown。"""
+    inst = create_instance(client)
+    mcp = _register_mcp(client, "ghost-mcp")
+    _mute_mcp(client, inst["instance_id"], mcp)
+    unwrap(client.delete(f"/api/openops/v1/assets/mcps/{mcp['mcp_id']}", headers=USER_HEADERS))
+    rows = [b for b in _bindings(client, inst["instance_id"]) if b.get("asset_type") == "mcp"]
+    ghost = next(b for b in rows if str(b.get("mcp_id")) == str(mcp["mcp_id"]))
+    assert ghost["asset_status"] == "deleted"
 
 
 # ============================ 个人 skill 默认挂载 + 解绑/重新绑定（mute 模型） ============================
@@ -1234,8 +1384,8 @@ def test_personal_mcp_mute_is_idempotent_guarded(client, no_egress):
 
 def test_platform_mcp_cannot_be_muted(client, no_egress, monkeypatch):
     """平台 MCP 由模板装配、不可解绑：调 mcp-mutes → 403。"""
-    async def fake_servers():
-        return [{"server_id": "alarm", "server_name": "alarm-server",
+    async def fake_servers(include_inactive=False):
+        return [{"server_id": "alarm", "server_name": "alarm-server", "status": "active",
                  "server_url": "https://alarm.example.com/mcp", "description": "d"}]
 
     monkeypatch.setattr(mcp_registry_client, "list_servers", fake_servers)

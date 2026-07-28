@@ -144,13 +144,16 @@ async def update_skill_version_manifest(skill_version_id: str, manifest_json: di
 
 
 async def list_platform_mcps() -> list[dict[str, Any]]:
-    """平台 HTTP MCP（含最新版本 id）：对账 tools/list 用。"""
+    """平台 HTTP MCP（含最新版本 id + manifest）：对账 tools/list 与缺席墓碑判定（synced_from）用。
+
+    left join lateral 与 skill 侧 list_platform_skills 同口径：无版本行的 MCP 也返回（此前 inner join
+    会把它挤出 existing 集 → reconcile 每轮重复建行），version 列为 NULL 时调用方自行跳过。"""
     return await q_all(
         """
-        select m.*, v.mcp_version_id
+        select m.*, v.mcp_version_id, v.manifest_json
         from sre_mcp_asset m
-        join lateral (
-          select mcp_version_id from sre_mcp_asset_version mv
+        left join lateral (
+          select mcp_version_id, manifest_json from sre_mcp_asset_version mv
           where mv.mcp_id = m.mcp_id and mv.deleted_at is null
           order by mv.version_no desc limit 1
         ) v on true

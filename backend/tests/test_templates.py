@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 import time
 
+import psycopg
 from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
 from test_assets import _assert_recover_blocked, _bind_skill, _upload_skill
 
@@ -219,6 +221,65 @@ def test_delete_mcp_cascades_scrub_template_draft(client):
         return v["content_json"]["main"]["default_tools"]
 
     assert asyncio.run(scenario()) == []  # 该 server 的复合键绑定随 server 删除被级联摘掉
+
+
+def test_mcp_absent_tombstone_scrubs_template_draft(client, monkeypatch):
+    """上游真删除触发缺席墓碑时，同样级联清 draft 引用（对齐手动 delete_mcp 的 renormalize 语义）。
+    real 模式 + 假注册表：造一个 reconcile 来源、带 allowed 标注工具的平台 MCP → draft 引用其复合键
+    → 上游列表移除该 server → reconcile：mcps_tombstoned=1、templates_scrubbed>=1、draft 引用被摘。"""
+    import asyncio
+
+    from app import asset_reconcile_service as ars
+    from infra.repositories import mcp_tools
+
+    async def both(include_inactive=False):
+        return [{"server_id": "scrub-server", "server_name": "scrub-server", "status": "active",
+                 "server_url": "https://scrub.example/mcp", "description": "d"},
+                {"server_id": "anchor-server", "server_name": "anchor-server", "status": "active",
+                 "server_url": "https://anchor.example/mcp", "description": "d"}]
+
+    async def disc(server_url, extra_headers=None):
+        return [{"tool_name": "scrub_tool", "description": "d", "readonly": True,
+                 "input_schema": {"type": "object", "properties": {}}, "schema_hash": "h-scrub"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")  # mock 模式方向守卫会跳过真 endpoint 的工具同步
+    monkeypatch.setattr(ars.mcp_registry_client, "list_servers", both)
+    monkeypatch.setattr(ars.mcp_registry_client, "discover_tools", disc)
+    ars._reset()
+    first = asyncio.run(ars.reconcile(force=True, trigger="test"))
+    assert first["mcps_created"] == 2 and first["tools_created"] >= 1
+
+    async def annotate() -> None:
+        # scrub-server 名下的 scrub_tool 标 allowed（draft 归一化只保留 allowed 复合键）
+        for row in await mcp_tools.list_catalog_with_annotation():
+            if row.get("mcp_display_name") == "scrub-server" and row.get("tool_name") == "scrub_tool":
+                await mcp_tools.save_annotation(str(row["tool_catalog_id"]), False, False,
+                                                "required", "$.appid", "allowed", None, "admin")
+                return
+        raise AssertionError("scrub-server 的 scrub_tool 未入 catalog")
+    asyncio.run(annotate())
+
+    tid = _template_id(client)
+    draft = unwrap(_save_draft(client, tid, _content(["scrub-server::scrub_tool"])))
+    dvid = str(draft["template_version_id"])
+    assert draft["content_json"]["main"]["default_tools"] == ["scrub-server::scrub_tool"]
+
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:  # 老化绕宽限期
+        conn.execute("update sre_mcp_asset set creation_date = creation_date - interval '1 hour' "
+                     "where display_name='scrub-server'")
+
+    async def anchor_only(include_inactive=False):
+        return [{"server_id": "anchor-server", "server_name": "anchor-server", "status": "active",
+                 "server_url": "https://anchor.example/mcp", "description": "d"}]
+    monkeypatch.setattr(ars.mcp_registry_client, "list_servers", anchor_only)
+    summary = asyncio.run(ars.reconcile(force=True, trigger="test"))
+    assert summary["mcps_tombstoned"] == 1 and summary.get("templates_scrubbed", 0) >= 1
+
+    async def draft_tools() -> list[str]:
+        from infra.repositories import templates as templates_repo
+        v = await templates_repo.get_version(dvid)
+        return v["content_json"]["main"]["default_tools"]
+    assert asyncio.run(draft_tools()) == []  # 被墓碑 server 的复合键引用被级联摘掉
 
 
 def test_template_write_endpoints_forbidden_for_user(client):

@@ -3,7 +3,10 @@
 - 只拉 `source=openops` 资产（ASSET-001/002）。
 - Skill：按 (source_type, skill_key) upsert；checksum 变化 → 追加新版本（历史版本不动）；
   上游列表**缺席**的平台 skill → 软删墓碑收敛（synced_from='skill_hub' 行、上游子集非空、过宽限期，
-  三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。MCP 侧缺口未修（create-if-missing）。
+  三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。
+- MCP：create-if-missing 入库（改名同步不做）；缺席墓碑判**全量**列表（含 offline）——只有上游
+  真删除才墓碑（含 renormalize_drafts 级联清模板 draft 引用），临时下线保留本地行与工具标注
+  （墓碑复活会换 version_id → 标注全丢；运行时工具面直连上游 active 列表，下线自然断）。
 - 平台 MCP：`tools/list` 经 Registry 拉取 → `schema_hash` 对比 → 变化则旧 catalog 行 superseded、
   新行入库且**标注不继承**（未标注 → Tool Gateway fail-closed，需管理员重新标注；ASSET-005）。
 - 触发：登录（节流 fire-and-forget）、配置页 refresh（POST /assets:reconcile，force）、
@@ -19,6 +22,7 @@ import time
 import uuid
 from typing import Any
 
+from domain import tool_key
 from infra import host_ip
 from infra.external import mcp_registry_client, skill_hub_client
 from infra.repositories import assets, audit, mcp_tools
@@ -64,7 +68,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
     _last_run["at"] = time.monotonic()
     summary: dict[str, Any] = {
         "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "skill_manifests_refreshed": 0,
-        "skills_tombstoned": 0,
+        "skills_tombstoned": 0, "mcps_tombstoned": 0,
         "mcps_created": 0, "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
@@ -141,19 +145,66 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
         try:
+            # 一次拉**全量**（含 offline）：ingest 只消费 active 子集（语义同旧——offline 的 server
+            # 不该被装配）；全量名字集供下方缺席墓碑区分「真删除」与「临时下线」——offline 仍在
+            # 列表里 ≠ 缺席。列表翻页取全、失败即 raise（进不了任何写路径）。
+            servers = await mcp_registry_client.list_servers(include_inactive=True)
+
+            def _srv_name(s: dict[str, Any]) -> str:
+                # create_mcp 入库前会 sanitize_server_name（::→:），比对键必须同口径——否则含 ::
+                # 的名字每轮都判"不存在"重复建行，且缺席墓碑会误判缺席（误删）
+                return tool_key.sanitize_server_name(str(s.get("server_name") or s.get("server_id") or ""))
+
             existing = {str(m.get("display_name")) for m in await assets.list_platform_mcps()}
-            for srv in await mcp_registry_client.list_servers():
+            for srv in servers:
+                if str(srv.get("status")) != "active" or not srv.get("server_url"):
+                    continue  # ingest 只收 active + 有 url（同 list_servers 旧默认过滤）
                 url = str(srv.get("server_url") or "")
                 if mcp_registry_client.is_placeholder_endpoint(url):  # 占位防呆（同 discover_tools 口径）
                     continue
-                name = str(srv.get("server_name") or srv.get("server_id") or "")
+                name = _srv_name(srv)
                 if not name or name in existing:
-                    continue  # V1 create-if-missing（改名/下线同步不做）
+                    continue  # V1 create-if-missing（改名同步不做）
                 await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
                                         {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
                                          "description": srv.get("description", "")})
                 existing.add(name)
                 summary["mcps_created"] += 1
+
+            # ---- 缺席即墓碑（MCP 平台面）：上游注册表已不含的本地平台 MCP → 软删收敛。
+            # 判缺席用**全量**名字集：offline 的 server 仍在列表 → 豁免（墓碑复活会换 mcp_version_id
+            # → 工具目录重建 → 管理员标注全丢，临时下线绝不能当已删；运行时工具面本就直连上游
+            # active 列表，下线自然断，无需本地动作）。护栏同 skill 面：空上游整段跳过、只动
+            # reconcile 自己写入的行（synced_from='mcp_registry'——seed/用户手注册行 manifest 无此键
+            # 天然豁免）、行龄须过宽限期。
+            from app.asset_registry_service import _past_absent_grace  # 局部导入避免模块环
+
+            upstream_names = {_srv_name(s) for s in servers if _srv_name(s)}
+            if not upstream_names:
+                summary["mcp_tombstone_skipped"] = "empty_upstream"
+            else:
+                for prow in await assets.list_platform_mcps():
+                    if (prow.get("manifest_json") or {}).get("synced_from") != "mcp_registry":
+                        continue
+                    if str(prow.get("display_name") or "") in upstream_names or not _past_absent_grace(prow):
+                        continue
+                    mcp_id = str(prow["mcp_id"])
+                    tool_names = await assets.tool_names_for_mcp(mcp_id)  # 审计留痕（目录行随资产 join 隐藏，不清）
+                    await assets.delete_mcp(mcp_id, "system")
+                    log.info("tombstoned absent platform mcp: %s", prow.get("display_name"))
+                    await audit.insert_event(
+                        audit_trace_id=str(uuid.uuid4()), event_type="mcp.deleted", user_id="system",
+                        action="upstream_absent",
+                        payload_redacted={"mcp_id": mcp_id, "display_name": prow.get("display_name"),
+                                          "tool_names": tool_names},
+                    )
+                    summary["mcps_tombstoned"] += 1
+            if summary["mcps_tombstoned"]:
+                # 级联清 draft 里被删 server 的 server::tool 引用（对齐 delete_mcp 服务层；published
+                # 不可变、由下次编辑自愈；dangling 引用运行时无害——白名单闸只遍历现存 spec）
+                from app import template_service  # 局部导入避免模块环
+
+                summary["templates_scrubbed"] = await template_service.renormalize_drafts()
         except Exception as e:  # noqa: BLE001 —— 注册表不可达不炸整轮（skill 已对账完，catalog 照刷）
             log.warning("mcp registry ingest failed: %s", str(e)[:200])
             summary["mcp_ingest_error"] = str(e)[:200]
@@ -169,6 +220,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # 展示/运行时之外）。占位判定与 discover_tools / 上方 ingest 防呆同一函数。
         mock_mode = os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real"
         for m in await assets.list_platform_mcps():
+            if not m.get("mcp_version_id"):
+                continue  # left join 后无版本行的资产也会返回：没有版本锚，无法挂 catalog，跳过
             server_url = (m.get("endpoint_config_json") or {}).get("endpoint", "")  # 29.3 proxy 必填 url（mock 忽略）
             if mcp_registry_client.is_placeholder_endpoint(server_url) != mock_mode:
                 # mock×真 endpoint：防污染跳过；real×占位（含 endpoint 为空的错配行，意味着该

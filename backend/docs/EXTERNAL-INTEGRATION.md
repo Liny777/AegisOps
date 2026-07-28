@@ -125,7 +125,18 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
   的 `skills_tombstoned` 计数。`_DELETE_ABSENT_CODES` 已回填 `1002`（owner 校验前置后 1002 几乎必是
   "不存在"；误判也会被下轮 sync 拉回自洽）——上游缺席的僵尸行手动删除同样可清。软删被绑定的 skill 时
   绑定行保留（不可变历史），`asset-bindings` 列表将其 `asset_status` 标为 `deleted`。
-  **MCP 侧同款缺口未修**（reconcile 对 MCP 仍 create-if-missing，牵扯工具目录与模板引用清洗，单独排期）。
+- **MCP 缺席墓碑（2026-07-28）**：与 skill 面同款缺口（reconcile 对 MCP create-if-missing，上游删了
+  本地永存），但语义有一处关键差异——**只墓碑真删除，offline 豁免**：`list_servers` 新增
+  `include_inactive=True` 拿含 offline 的全量列表判缺席（offline 仍在列表 ≠ 缺席）。原因：MCP 墓碑
+  复活会换 mcp_version_id → 工具目录重建 → 管理员标注全丢需重标，临时下线绝不能当已删；且运行时
+  平台工具面直连上游 active 列表（`_dynamic_mcp_specs`），server 下线工具自然断，本地无需动作。
+  护栏同 skill 面：空上游整段跳过（`mcp_tombstone_skipped`）、只动 `synced_from='mcp_registry'` 行
+  （seed/用户手注册行天然豁免）、行龄须过宽限期（与 skill 共用 `OPENOPS_SKILL_ABSENT_GRACE_S`）。
+  墓碑后级联 `renormalize_drafts` 清模板 draft 里该 server 的 `server::tool` 引用（published 不可变、
+  下次编辑自愈），审计 `mcp.deleted/upstream_absent`（含 tool_names），summary 计 `mcps_tombstoned`。
+  顺带修两个重复建行 bug：ingest 比对键改用 sanitize 后的 server_name（含 `::` 的名字此前每轮重复
+  建行、墓碑会误判缺席）；`list_platform_mcps` 改 left join lateral 并投影 manifest_json（无版本行
+  的资产此前不进 existing 集）。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或

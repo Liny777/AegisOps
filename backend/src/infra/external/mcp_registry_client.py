@@ -254,9 +254,14 @@ def console_tls_verify() -> bool | str:
     return False if os.getenv("OPENOPS_TLS_INSECURE") == "1" else True
 
 
-async def list_servers() -> list[dict[str, Any]]:
+async def list_servers(include_inactive: bool = False) -> list[dict[str, Any]]:
     """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
-    real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。"""
+    real 拉真 console（翻页取全）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。
+
+    默认只留 active + 有 server_url（运行时装配语义：offline 的 server 不该被连）。
+    include_inactive=True 返回全量（含 offline/无 url），供 reconcile 的缺席墓碑区分
+    「上游真删除」与「临时下线」——offline 仍在列表里 ≠ 缺席，不会被误墓碑。
+    返回 dict 统一带 "status" 键。"""
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
         from infra.request_context import expand_host
 
@@ -278,14 +283,16 @@ async def list_servers() -> list[dict[str, Any]]:
                 data = body.get("data") or {}
                 items = data.get("items") or []
                 for it in items:
-                    if str(it.get("status")) == "active" and it.get("server_url"):
+                    if include_inactive or (str(it.get("status")) == "active" and it.get("server_url")):
                         out.append({"server_id": it.get("server_id"), "server_name": it.get("server_name"),
-                                    "server_url": it.get("server_url"), "description": it.get("description", "")})
+                                    "server_url": it.get("server_url"), "description": it.get("description", ""),
+                                    "status": it.get("status")})
                 if not items or page * page_size >= int(data.get("total", 0)):
                     break
                 page += 1
         return out
-    return [{"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "mock"}]
+    return [{"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock",
+             "description": "mock", "status": "active"}]
 
 
 async def get_mcp_detail(server_id: str) -> dict[str, Any]:

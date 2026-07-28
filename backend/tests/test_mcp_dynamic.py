@@ -696,7 +696,7 @@ def test_reconcile_isolates_bad_server(client, monkeypatch):
 
     asyncio.run(_setup())
 
-    async def _servers():
+    async def _servers(include_inactive=False):
         return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
 
     async def _disc(server_url, extra_headers=None):
