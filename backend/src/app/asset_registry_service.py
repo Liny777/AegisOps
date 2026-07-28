@@ -171,18 +171,29 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
     checksum = hashlib.sha256(zip_bytes).hexdigest()  # ZIP 原始字节 sha256（真 checksum，非名称假造）
     try:
         result = await skill_hub_client.upload_skill(
-            filename, zip_bytes, category, tags, source="openops", is_system=False)
-    except RuntimeError as e:
+            filename, zip_bytes, category, tags, source="openops", is_system=False,
+            uploader_id=user["user_id"])
+    except skill_hub_client.SkillHubError as e:
+        # 29.9：2003 他人已发布 / 2004 跨作用域同名——用户可自救（改 SKILL.md name），透传上游说法转 409；
+        # 其余（network/http/别的业务码）维持 502 上游错误口径
+        if e.kind == "biz" and e.biz_code in (2003, 2004):
+            raise ApiError(Err.SKILL_NAME_CONFLICT,
+                           f"Skill 名称冲突：{e.message}（请修改 SKILL.md 的 name 后重新上传）") from None
+        raise ApiError(Err.IAM_UPSTREAM, f"SkillHub 上传失败：{e}") from None
+    except RuntimeError as e:  # 兜底（base 未配等非 SkillHubError 的 RuntimeError）
         raise ApiError(Err.IAM_UPSTREAM, f"SkillHub 上传失败：{e}") from None
 
-    skill_key = meta["skill_key"]
+    # 29.9 键口径：本地 skill_key 必须取上游返回的命名空间化 skill_id（执行下载/后续 sync 都按它对齐），
+    # SKILL.md 裸 name 仅在响应缺失时回退（29.9 未上线的旧网关）；display_name 恒为原始名（展示/别名解析）
+    skill_key = str(result.get("skill_id") or meta["skill_key"])
+    display_name = str(result.get("name") or meta["name"])
     manifest = {"entrypoint": meta.get("entrypoint") or "python3 run.py",
                 "category": category or None, "tags": tags, "synced_from": "upload",  # 分类/标签可空（上传流程已移除该输入）→ 列表回退「—」
                 "description": meta.get("description"),  # SKILL.md frontmatter 的用途（发现链路：注入工具描述让 Agent 主动发现）
                 "latest_version": result.get("version")}  # §2.1 上传响应 version → 上传后即刻可展示 semver
     existing = await assets.get_user_skill_by_key(user["user_id"], skill_key)  # owner 作用域：同 (owner, key) 才认作同一 skill
     if existing is None:
-        row = await assets.create_skill(user["user_id"], "user", meta["name"], skill_key, manifest, checksum)
+        row = await assets.create_skill(user["user_id"], "user", display_name, skill_key, manifest, checksum)
         action = "created"
     else:
         latest = await assets.latest_skill_version(str(existing["skill_id"]))
@@ -191,11 +202,21 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
         row = {"skill_id": str(existing["skill_id"]), "skill_version_id": vid}
         action = "version_updated"
     # action 以本地目录实际动作为准（UI 反映的就是本地行）；SkillHub 侧动作另附参考
-    return {**row, "skill_key": skill_key, "display_name": meta["name"],
+    return {**row, "skill_key": skill_key, "display_name": display_name,
             "action": action, "skillhub_action": result.get("action")}
 
 
+# 29.9 delete「上游已无此 skill」的业务码：命中视作已删、继续本地删。联调确认后回填
+# （文档 1002 语义混杂"不存在/无权限"——误收会造成"本地删了、上游还在、下轮同步复活"，故默认留空、
+# 一切业务拒绝都上浮报错）。
+_DELETE_ABSENT_CODES: tuple[int, ...] = ()
+
+
 async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
+    """删除 Skill：个人级且确实来自 SkillHub 的行先回删上游（29.9 `POST /skills/delete`），再本地软删。
+
+    只软删本地会被 sync_user_skills 在 TTL 后原样拉回（复活）；回删上游后闭环。上游未上线该接口
+    （HTTP 404）→ 降级仅本地删（=今日行为）；上游明确拒绝/不可达 → 不本地删（避免制造复活假象）。"""
     row = await assets.get_skill(skill_id)
     if row is None:
         raise ApiError(Err.NOT_FOUND, "Skill 不存在")
@@ -203,7 +224,28 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
         raise ApiError(Err.FORBIDDEN, "无权删除该 Skill")
     if await agent_teams.asset_in_use("skill", skill_id):
         raise ApiError(Err.ASSET_IN_USE, "该资产仍被 active 配置引用，请先解绑")  # CFG-006
+    if row["source_type"] == "user" and row.get("skill_key"):
+        from infra.external import skill_hub_client
+
+        latest = await assets.latest_skill_version(str(row["skill_id"]))
+        synced_from = ((latest or {}).get("manifest_json") or {}).get("synced_from")
+        # 只有真来自 SkillHub 的行（上传/按用户同步）才回删上游；本地手造行（旧 JSON 端点）没有上游对应
+        if synced_from in ("upload", "skill_hub_user"):
+            try:
+                await skill_hub_client.delete_skill(str(row["skill_key"]))
+            except skill_hub_client.SkillHubError as e:
+                if e.kind == "http" and e.status_code == 404:
+                    log.warning("skillhub delete 接口不存在（29.9 未上线），降级仅本地删：%s", row["skill_key"])
+                elif e.kind == "biz" and e.biz_code in _DELETE_ABSENT_CODES:
+                    pass  # 上游已无此 skill → 视作已删，继续本地删
+                elif e.kind == "network":
+                    raise ApiError(Err.IAM_UPSTREAM, "SkillHub 不可达，删除未执行，请稍后重试",
+                                   retryable=True) from None
+                else:
+                    # 上游明确拒绝（无权/参数错等）：不本地删——否则本地消失、下轮同步复活，用户更困惑
+                    raise ApiError(Err.IAM_UPSTREAM, f"SkillHub 拒绝删除：{e.message}") from None
     await assets.delete_skill(skill_id, user["user_id"])
+    invalidate_user_skill_sync(user["user_id"])  # 删后强制下轮重拉：节流窗口内不读陈旧集合
 
 
 async def list_mcps(user: dict[str, Any], *, page: int = 1, page_size: int = 20,

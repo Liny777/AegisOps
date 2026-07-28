@@ -327,9 +327,11 @@ export const mockBoundSkills: AssetRow[] = [
   { id: "bind_logscan", name: "日志聚类 logscan", version: "v2", status: "enabled", statusTone: "good", meta: "Skill · 我的 · main", bound: true, kind: "skill", assetId: "skill_user_logscan" },
 ];
 export const mockSkillLibrary: AssetRow[] = [
+  // inspection/logscan 保留裸名 skillKey（29.9 前存量形态）；traceparse 用命名空间化新形态（29.9），
+  // 两形态并存即真实世界——顺带覆盖长 key 在插件页/管理台的展示。
   { id: "skill_inspection", name: "巡检 inspection", version: "v2", status: "active", statusTone: "good", meta: "平台 Skill · 更新于 07-06", bound: false, kind: "skill", skillKey: "inspection" },
   { id: "skill_user_logscan", name: "日志聚类 logscan", version: "v2", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-06", bound: true, kind: "skill", skillKey: "logscan" },
-  { id: "skill_user_traceparse", name: "链路解析 traceparse", version: "v1", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-01", bound: false, kind: "skill", skillKey: "traceparse" },
+  { id: "skill_user_traceparse", name: "链路解析 traceparse", version: "v1", status: "active", statusTone: "good", meta: "我的 Skill · 更新于 07-01", bound: false, kind: "skill", skillKey: "user-0026demo01-traceparse" },
 ];
 export const mockMcpLibrary: AssetRow[] = [
   { id: "mcp_alarm_server", name: "alarm-server", version: "v1", status: "active", statusTone: "good", meta: "平台 MCP · 告警列表/详情查询", bound: false, kind: "mcp" },

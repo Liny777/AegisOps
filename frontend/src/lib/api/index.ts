@@ -191,8 +191,9 @@ export interface OpenOpsApi {
   /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。 */
   testLlmConnection(input: { base_url: string; model_name: string; api_key: string }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
-  /** 上传 Skill ZIP（29.3 §2.1 multipart）：仅 file 必填（分类/标签已移除）。 */
-  uploadSkill(file: File): Promise<{ skill_key: string; action: string }>;
+  /** 上传 Skill ZIP（29.3 §2.1 multipart）：仅 file 必填（分类/标签已移除）。
+   * 29.9 起 skill_key 是命名空间化 id（user-{工号}-{name}），display_name 才是原始名（横幅展示用）。 */
+  uploadSkill(file: File): Promise<{ skill_key: string; display_name?: string; action: string }>;
   registerMcp(name: string, endpoint: string): Promise<void>;
   deleteAsset(kind: "skill" | "mcp", id: string): Promise<void>;
   bindAsset(instanceId: string, row: AssetRow): Promise<void>;
@@ -325,11 +326,24 @@ async function loadAvailableSkills(instanceId: string, signal: AbortSignal): Pro
     `/openops/v1/agent-teams/${instanceId}/available-skills`,
     { signal },
   );
-  return rows.map((r) => ({
-    skill_id: String(r.skill_key),
-    name: "/" + String(r.skill_key),
-    desc: `${r.display_name ?? r.skill_key} · ${r.source_type === "platform" ? "平台" : "我的"}`,
-  }));
+  // 29.9 命名空间化：skill_key 带 user-{工号}-/system- 前缀，人打的斜杠名用原始名（display_name）。
+  // 后端对 "/" hint 做「原始名→key」唯一别名解析；display_name 含空白（hint 按空白分词）或本集合内
+  // 重名（解析多义）时回退完整 key，保证插进输入框的 token 一定能被解析。
+  const dup = new Map<string, number>();
+  for (const r of rows) {
+    const d = String(r.display_name ?? "");
+    dup.set(d, (dup.get(d) ?? 0) + 1);
+  }
+  return rows.map((r) => {
+    const key = String(r.skill_key);
+    const dn = String(r.display_name ?? key);
+    const token = /^\S+$/.test(dn) && (dup.get(dn) ?? 0) <= 1 ? dn : key;
+    return {
+      skill_id: key,
+      name: "/" + token,
+      desc: `${key} · ${r.source_type === "platform" ? "平台" : "我的"}`,
+    };
+  });
 }
 
 function getAvailableSkillsCached(instanceId: string, options: RequestOptions = {}): Promise<Skill[]> {
@@ -557,7 +571,11 @@ const realApi: OpenOpsApi = {
     const fd = new FormData();
     fd.append("file", file);
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/assets/skills:upload", { method: "POST", body: fd });
-    return { skill_key: String(d.skill_key ?? ""), action: String(d.action ?? "created") };
+    return {
+      skill_key: String(d.skill_key ?? ""),
+      display_name: d.display_name ? String(d.display_name) : undefined, // 29.9：原始名（横幅展示）
+      action: String(d.action ?? "created"),
+    };
   },
   async registerMcp(name, endpoint) {
     await apiFetch("/openops/v1/assets/mcps", {
@@ -1122,7 +1140,11 @@ const mockApi: OpenOpsApi = {
   }),
   getAllSkills: () => delay(M.mockSkillLibrary),
   getAllMcps: () => delay(M.mockMcpLibrary),
-  uploadSkill: (file) => delay({ skill_key: file.name.replace(/\.zip$/i, "").toLowerCase(), action: "created" }),
+  uploadSkill: (file) => {
+    // 29.9 形态对齐后端 mock：skill_key = 命名空间化 id（user-{uid}-{原始名}），display_name = 原始名
+    const raw = file.name.replace(/\.zip$/i, "").toLowerCase();
+    return delay({ skill_key: `user-0026demo01-${raw}`, display_name: raw, action: "created" });
+  },
   registerMcp: () => delay(undefined as unknown as void),
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
   bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),

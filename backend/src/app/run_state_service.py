@@ -9,6 +9,7 @@ from typing import Any
 from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, scope_service
 from domain import tool_key
 from domain.errors import ApiError, Err
+from domain.skill_alias import resolve_skill_alias
 from infra import idempotency
 from infra.db import row_json
 from infra.redact import redact_text, sanitize_activity_payload, sanitize_approval_arguments
@@ -296,9 +297,14 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
     if not _hint:
         _txt = (req.input_text or "").lstrip()
         if _txt.startswith("/") and len(_txt) > 1:
-            _hint = _txt[1:].split(None, 1)[0]  # / 后首个空白分隔 token（skill_key 无空格）
-    if _hint and _hint in (st.available_skills or {}):
-        st.skill_hint = _hint
+            _hint = _txt[1:].split(None, 1)[0]  # / 后首个空白分隔 token（skill_key/原始名均无空格）
+    if _hint:
+        # 29.9 命名空间化后前端斜杠菜单插的是原始名（display_name）——别名解析回 canonical key。
+        # st.skill_hint 必须存 key：_skill_hint_clause 注入给模型的名字要与工具目录（按 key 列出）
+        # 同源，子 Agent 复验 `in available_skills` 也按键。解析不到/多义 → 维持忽略（防脏注入）。
+        _resolved, _ = resolve_skill_alias(str(_hint), st.available_skills or {})
+        if _resolved:
+            st.skill_hint = _resolved
     # P2：初始 running 快照（task.started 审计在上方直发不走 emit，此处补单点落盘）；失败降级不阻断
     try:
         await task_states.upsert_snapshot(st, "running", trace)

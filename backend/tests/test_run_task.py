@@ -314,6 +314,35 @@ def test_start_task_slash_prefix_sets_skill_hint(client):
     assert st is not None and st.skill_hint == "inspection"  # seed 平台 skill，main.skills=[] 不收窄
 
 
+def test_start_task_slash_display_name_resolves_to_key(client):
+    """29.9 别名解析：命名空间化后前端斜杠菜单插的是原始名（display_name），skill_key 是带前缀 id
+    —— hint 必须解析回 canonical key（LLM 目录/子 Agent 复验都按键同源）。"""
+    import io
+    import zipfile
+
+    from runtime import task_registry
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("SKILL.md", "---\nname: logscan2\nversion: 0.0.1\nentrypoint: python3 run.py\n---\n")
+        z.writestr("run.py", "print(1)\n")
+    unwrap(client.post(  # ZIP 上传（mock SkillHub）→ skill_key=user-0026demo01-logscan2，个人 skill 自动挂载
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("ls.zip", buf.getvalue(), "application/zip")},
+    ))
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    start_task(client, run["agent_run_id"], "/logscan2 查一下错误日志")
+    st = task_registry.get_by_run(run["agent_run_id"])
+    assert st is not None and st.skill_hint == "user-0026demo01-logscan2"  # 原始名 → canonical key
+
+    # 直接给完整 key 仍精确命中（存量口径不回退）
+    run2 = create_run(client, instance["instance_id"])
+    start_task(client, run2["agent_run_id"], "/user-0026demo01-logscan2 再查一次")
+    st2 = task_registry.get_by_run(run2["agent_run_id"])
+    assert st2 is not None and st2.skill_hint == "user-0026demo01-logscan2"
+
+
 def test_available_skills_endpoint_shape_and_ownership(client):
     """GET /agent-teams/{id}/available-skills：与执行门禁同源；他人实例 403。"""
     from conftest import OTHER_HEADERS, USER_HEADERS, create_instance, unwrap

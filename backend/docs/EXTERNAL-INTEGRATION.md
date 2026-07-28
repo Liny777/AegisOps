@@ -15,7 +15,7 @@ real 变体已**按权威契约（29.7/29.3/28.2）对齐 HTTP 形状 + 信封�
 | 应用目录（初始化「从应用创建系统范围」选源） | `OPENOPS_APPTREE=real` | `OPENOPS_APPTREE_BASE_URL` + `OPENOPS_APPTREE_COOKIE`（可选，IAM 会话态）；`OPENOPS_APPTREE_ENTERPRISE_ID`/`OPENOPS_APPTREE_PROJECT_ID`（联调默认值）；联调缝 `OPENOPS_APPTREE_USER_ID`（mock 头非 W3 账号时覆盖） | mock | **已按 verification 契约对齐**（`userid_search_appid`；内网待联调） |
 | 平台/动态 MCP（tools/call） | `OPENOPS_MCP=real` | `OPENOPS_MCP_ROUTE=direct(默认)|proxy`；direct 直连 server_url、proxy 走 console（另需 legacy `OPENOPS_MCP_BASE_URL` 仅 demo 工具） | mock | ✅ **内网已通**（direct streamable-HTTP；console proxy 上游 404 待对端修） |
 | MCP Registry（list servers + discover tools） | `OPENOPS_MCPREGISTRY=real` | `OPENOPS_MCPREGISTRY_BASE_URL` + `OPENOPS_MCPREGISTRY_COOKIE`（console 鉴权，会话态会过期） | mock | ✅ **内网已通**（list/query 走 console；tools/list 按 route 走 direct/proxy） |
-| Skill Hub（list + 下载 ZIP） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL`（未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`，同 console 网关）+ cookie（专属/共享） | mock | **已按 29.3 对齐**，接真护栏齐（cookie/带体报错/HTML 检测/check-net ⑤） |
+| Skill Hub（list + 上传/下载 ZIP + 删除） | `OPENOPS_SKILLHUB=real` | `OPENOPS_SKILLHUB_BASE_URL`（未配回退 `OPENOPS_MCPREGISTRY_BASE_URL`，同 console 网关）+ cookie（专属/共享） | mock | **已按 29.3 + 29.9（命名空间化/delete）对齐**，接真护栏齐（cookie/带体报错/HTML 检测/check-net ⑤） |
 | 用户自定义 LLM 探测 | `OPENOPS_LLM_PROBE=mock`（反向：关真探测） | 用户配置的 base_url/Key（建配置时提交） | **real** | **已启用**，发真 `chat/completions` 验能力；仅无出网环境退回 mock |
 | Secret 加密 key | —（生产必配） | `OPENOPS_ENCRYPTION_KEY`（+`_OLD` 轮换） | 派生 dev key | **代码就绪**（Fernet），生产须配 |
 | 真 W3/IAM introspect | 未做（B9） | — | `X-OpenOps-Mock-User` 头 | **未做**（B9 整块） |
@@ -105,6 +105,16 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
 `OPENOPS_HTTP_DEBUG=1` 打门控诊断（出站方法/URL/头/体 + 响应状态/体；Cookie 只打长度、客户端 IP
 只打在场与否，SEC-001）：
 - **Skill Hub**：`list_skills` → `POST /obsv/agent/management/skills/list/query`，解 `{code,message,data:{items}}` 信封 + 字段映射（`skill_id→skill_key`、`is_system→source_type`、`latest_version→version_no` 等，29.4）；`download` → `GET /obsv/agent/management/skills/download?skill_id=`，按 `X-Checksum-SHA256`（ZIP 原始字节 sha256，C1-CHK-001）校验。**V1 下载 latest（省略 version）**——OpenOps 无 semver，精确 pin 待 repo 穿透。
+- **Skill Hub 29.9 命名空间化适配（2026-07-27）**：对端将把新上传 skill 的 `skill_id` 命名空间化
+  （个人级 `user-{工号}-{name}`、系统级 `system-{name}`，存量裸名不变；`name` 恒为 SKILL.md 原始名）。
+  本侧口径：**上传后本地 `skill_key` 取上传响应 `data.skill_id`**（缺失回退 SKILL.md 裸名 = 旧网关兼容），
+  展示/斜杠命令用 `display_name`（原始名），执行入口（`/` hint 与 `run_platform_skill` 入参）经
+  `domain/skill_alias.resolve_skill_alias` 做「原始名→key」唯一别名解析（精确 key 优先，多义 fail-closed 附候选）。
+  SKILL.md name 以 `system-`/`user-` 开头本地预拒（对应上游 1001）。上游业务码 2003/2004（名称冲突）→
+  409 `SKILL_NAME_CONFLICT` 透传上游 message；其余仍 502。`delete` → `POST /skills/delete`（29.9 §8.1，
+  仅个人级、viewer cookie）：删除个人 skill 先回删上游再本地软删（否则 sync TTL 后复活）；对端接口未上线
+  （HTTP 404）降级仅本地删，明确拒绝/不可达则不删本地。`/skills/upgrade`（个人转系统级）**暂不对接**。
+  异常统一 `SkillHubError(kind=biz|http|network)`（含 httpx 传输层收口，此前会漏成 500）。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或

@@ -569,22 +569,27 @@ def _make_skill_zip(name: str = "uploaded-skill", with_skill_md: bool = True) ->
 
 
 def test_skill_zip_upload_writes_local_catalog(client):
-    """真 ZIP 上传（29.3 §2.1，mock 转发）：写本地目录、真 checksum、UI 立即可见；重复上传加版本。"""
+    """真 ZIP 上传（29.3 §2.1，mock 转发）：写本地目录、真 checksum、UI 立即可见；重复上传加版本。
+
+    29.9 键口径：本地 skill_key = 上传响应的命名空间化 skill_id（个人级 `user-{uid}-{name}`），
+    display_name = SKILL.md 原始名。"""
     data = _make_skill_zip("zip-upload-demo")
     res = unwrap(client.post(
         "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
         files={"file": ("demo.zip", data, "application/zip")},
         data={"category": "运维", "tags": "监控,告警"},
     ))
-    assert res["skill_key"] == "zip-upload-demo" and res["action"] == "created"
+    assert res["skill_key"] == "user-0026demo01-zip-upload-demo" and res["action"] == "created"
+    assert res["display_name"] == "zip-upload-demo"  # 展示名 = 原始名（横幅/插件页用）
     # 本地目录立即出现（skill_key 命中），checksum 为 ZIP 字节真 sha256（非名称假造）
     import hashlib
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
-    row = next(s for s in skills if s["skill_key"] == "zip-upload-demo")
+    row = next(s for s in skills if s["skill_key"] == "user-0026demo01-zip-upload-demo")
     assert row["checksum_sha256"] == hashlib.sha256(data).hexdigest()
     assert row["latest_version"] == "0.0.1"  # §2.1 上传响应 version → manifest → 透出（上传即可展示 semver）
+    assert row["display_name"] == "zip-upload-demo"
 
-    # 重复上传同 skill_key → 加版本
+    # 重复上传同 skill_key（同 uploader 同名 → 同命名空间化 id）→ 加版本
     again = unwrap(client.post(
         "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
         files={"file": ("demo.zip", _make_skill_zip("zip-upload-demo"), "application/zip")},
@@ -609,9 +614,9 @@ def test_skill_zip_upload_folds_block_scalar_description(client):
         "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
         files={"file": ("folded.zip", buf.getvalue(), "application/zip")},
     ))
-    assert res["skill_key"] == "folded-desc-skill"
+    assert res["skill_key"] == "user-0026demo01-folded-desc-skill"  # 29.9 命名空间化键
     skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
-    row = next(s for s in skills if s["skill_key"] == "folded-desc-skill")
+    row = next(s for s in skills if s["skill_key"] == "user-0026demo01-folded-desc-skill")
     assert row["description"] == "这是一段较长的技能说明第一行， 接着第二行。"  # 折叠成一行，不再是 `>`
 
 
@@ -632,10 +637,157 @@ def test_skill_zip_upload_without_category(client):
         "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
         files={"file": ("nocat.zip", _make_skill_zip("nocat-skill"), "application/zip")},
     ))
-    assert res["skill_key"] == "nocat-skill" and res["action"] == "created"
+    assert res["skill_key"] == "user-0026demo01-nocat-skill" and res["action"] == "created"  # 29.9 命名空间化键
     skills = unwrap(client.get("/api/openops/v1/assets/skills", headers=USER_HEADERS))["items"]
-    row = next(s for s in skills if s["skill_key"] == "nocat-skill")
+    row = next(s for s in skills if s["skill_key"] == "user-0026demo01-nocat-skill")
     assert row.get("category") is None
+
+
+# ============================ SkillHub 29.9：上传键口径 / 错误映射 / 删除对接 ============================
+
+
+def _upload_zip_skill(client, name: str) -> dict:
+    """ZIP 端点上传（mock SkillHub → synced_from='upload'，skill_key 为命名空间化 id）。"""
+    return unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": (f"{name}.zip", _make_skill_zip(name), "application/zip")},
+    ))
+
+
+def test_skill_upload_prefers_response_skill_id(client, monkeypatch):
+    """29.9 键口径：本地 skill_key 优先取上传响应的 skill_id（即使与 SKILL.md 裸名不同——上游才是键的
+    权威）；响应缺失（29.9 未上线的旧网关）回退裸名，行为与今日一致。"""
+    async def fake_upload(filename, zip_bytes, category, tags, source="openops",
+                          is_system=False, uploader_id=None):
+        return {"skill_id": "user-0026demo01-resp-wins", "name": "resp-wins",
+                "version": "0.0.9", "status": "active", "action": "created"}
+    monkeypatch.setattr(skill_hub_client, "upload_skill", fake_upload)
+    res = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("r.zip", _make_skill_zip("resp-wins"), "application/zip")},
+    ))
+    assert res["skill_key"] == "user-0026demo01-resp-wins" and res["display_name"] == "resp-wins"
+
+    async def legacy_upload(filename, zip_bytes, category, tags, source="openops",
+                            is_system=False, uploader_id=None):
+        return {"version": "0.0.1", "action": "created"}  # 旧网关：响应无 skill_id/name
+    monkeypatch.setattr(skill_hub_client, "upload_skill", legacy_upload)
+    res2 = unwrap(client.post(
+        "/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+        files={"file": ("l.zip", _make_skill_zip("legacy-name"), "application/zip")},
+    ))
+    assert res2["skill_key"] == "legacy-name" and res2["display_name"] == "legacy-name"
+
+
+def test_skill_upload_name_conflict_maps_409(client, monkeypatch):
+    """29.9 错误映射：上游 2004（跨作用域同名）/ 2003（他人已发布）→ 409 SKILL_NAME_CONFLICT，
+    透传上游 message + 改名引导（用户可自救）；其余业务码维持 502 IAM_UPSTREAM。"""
+    async def conflict(*a, **k):
+        raise skill_hub_client.SkillHubError(
+            "biz", "系统级已存在同名skill [foo]，个人级skill不能与系统级同名", biz_code=2004)
+    monkeypatch.setattr(skill_hub_client, "upload_skill", conflict)
+    resp = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                       files={"file": ("c.zip", _make_skill_zip("foo"), "application/zip")})
+    assert resp.status_code == 409
+    err = resp.json()["error"]
+    assert err["code"] == "SKILL_NAME_CONFLICT"
+    assert "系统级已存在同名skill" in err["message"] and "重新上传" in err["message"]
+
+    async def other_biz(*a, **k):
+        raise skill_hub_client.SkillHubError("biz", "服务器内部错误", biz_code=5001)
+    monkeypatch.setattr(skill_hub_client, "upload_skill", other_biz)
+    resp2 = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                        files={"file": ("c.zip", _make_skill_zip("foo"), "application/zip")})
+    assert resp2.status_code == 502 and resp2.json()["error"]["code"] == "IAM_UPSTREAM"
+
+
+def test_skill_upload_reserved_prefix_rejected(client):
+    """29.9 §7 本地预校验：SKILL.md name 以 user-/system- 开头 → 400 SKILL_PACKAGE_INVALID（不打上游）。"""
+    bad = client.post("/api/openops/v1/assets/skills:upload", headers=USER_HEADERS,
+                      files={"file": ("b.zip", _make_skill_zip("user-999-evil"), "application/zip")})
+    assert bad.status_code == 400 and bad.json()["error"]["code"] == "SKILL_PACKAGE_INVALID"
+    assert "保留" in bad.json()["error"]["message"] or "不能以" in bad.json()["error"]["message"]
+
+
+def test_skill_delete_calls_upstream_then_soft_deletes(client, monkeypatch):
+    """删除对接（29.9）：来自 SkillHub 的个人 skill 先回删上游（入参=skill_key 即上游 id）再本地软删。"""
+    row = _upload_zip_skill(client, "del-target")
+    calls: list[str] = []
+
+    async def fake_delete(skill_id):
+        calls.append(skill_id)
+        return {"skill_id": skill_id, "action": "deleted"}
+    monkeypatch.setattr(skill_hub_client, "delete_skill", fake_delete)
+
+    unwrap(client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS))
+    assert calls == ["user-0026demo01-del-target"]
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert all(s["skill_key"] != "user-0026demo01-del-target" for s in skills)
+
+
+def test_skill_delete_upstream_refusal_keeps_local(client, monkeypatch):
+    """上游明确拒绝（biz）→ 502 且本地不删：否则本地消失、下轮同步复活，制造"删不掉还闪现"的困惑。"""
+    row = _upload_zip_skill(client, "del-refuse")
+
+    async def refuse(skill_id):
+        raise skill_hub_client.SkillHubError("biz", "无权限操作", biz_code=1002)
+    monkeypatch.setattr(skill_hub_client, "delete_skill", refuse)
+
+    resp = client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS)
+    assert resp.status_code == 502 and "拒绝删除" in resp.json()["error"]["message"]
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert any(s["skill_key"] == "user-0026demo01-del-refuse" for s in skills)  # 本地保留
+
+
+def test_skill_delete_endpoint_missing_degrades_local_only(client, monkeypatch):
+    """上游接口未上线（HTTP 404）→ 降级仅本地删（= 29.9 前行为），不阻断用户。"""
+    row = _upload_zip_skill(client, "del-degrade")
+
+    async def gone(skill_id):
+        raise skill_hub_client.SkillHubError("http", "console HTTP 404：Not Found", status_code=404)
+    monkeypatch.setattr(skill_hub_client, "delete_skill", gone)
+
+    unwrap(client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert all(s["skill_key"] != "user-0026demo01-del-degrade" for s in skills)
+
+
+def test_skill_delete_network_error_retryable_keeps_local(client, monkeypatch):
+    """上游不可达（network）→ 502 retryable、本地不删（结果未知，不制造两边不一致）。"""
+    row = _upload_zip_skill(client, "del-netdown")
+
+    async def down(skill_id):
+        raise skill_hub_client.SkillHubError("network", "SkillHub 不可达：ConnectError")
+    monkeypatch.setattr(skill_hub_client, "delete_skill", down)
+
+    resp = client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS)
+    assert resp.status_code == 502
+    err = resp.json()["error"]
+    assert err["retryable"] is True and "稍后重试" in err["message"]
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert any(s["skill_key"] == "user-0026demo01-del-netdown" for s in skills)
+
+
+def test_skill_delete_local_manual_row_skips_upstream(client, monkeypatch):
+    """本地手造行（旧 JSON 端点，manifest 无 synced_from）没有上游对应 → 不调上游、直接本地删。"""
+    row = _upload_skill(client, "手造行")
+    called: list[str] = []
+
+    async def fake_delete(skill_id):
+        called.append(skill_id)
+        return {}
+    monkeypatch.setattr(skill_hub_client, "delete_skill", fake_delete)
+
+    unwrap(client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS))
+    assert called == []
+
+
+def test_skill_delete_mock_mode_end_to_end(client):
+    """mock 模式（不打桩）：真 skill_hub_client.delete_skill 的 mock 分支恒成功，本地删闭环。"""
+    row = _upload_zip_skill(client, "del-mock-e2e")
+    unwrap(client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert all(s["skill_key"] != "user-0026demo01-del-mock-e2e" for s in skills)
 
 
 def _personal_skill(skill_key: str, created_by: str = "l00833445") -> dict:
