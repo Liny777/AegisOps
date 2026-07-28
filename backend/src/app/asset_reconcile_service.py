@@ -1,7 +1,9 @@
 """资产对账（28.7 / B6）：Skill Hub / MCP Registry → OpenOps 资产与工具目录。
 
 - 只拉 `source=openops` 资产（ASSET-001/002）。
-- Skill：按 (source_type, skill_key) upsert；checksum 变化 → 追加新版本（历史版本不动）。
+- Skill：按 (source_type, skill_key) upsert；checksum 变化 → 追加新版本（历史版本不动）；
+  上游列表**缺席**的平台 skill → 软删墓碑收敛（synced_from='skill_hub' 行、上游子集非空、过宽限期，
+  三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。MCP 侧缺口未修（create-if-missing）。
 - 平台 MCP：`tools/list` 经 Registry 拉取 → `schema_hash` 对比 → 变化则旧 catalog 行 superseded、
   新行入库且**标注不继承**（未标注 → Tool Gateway fail-closed，需管理员重新标注；ASSET-005）。
 - 触发：登录（节流 fire-and-forget）、配置页 refresh（POST /assets:reconcile，force）、
@@ -62,6 +64,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
     _last_run["at"] = time.monotonic()
     summary: dict[str, Any] = {
         "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "skill_manifests_refreshed": 0,
+        "skills_tombstoned": 0,
         "mcps_created": 0, "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
@@ -69,9 +72,10 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # 个人 skill（source_type='user'）改由 asset_registry_service.sync_user_skills 按「当前 viewer」
         # 同步：全局 reconcile 只有一个 cookie 身份、只能看到一个人的个人 skill 且 owner 必错（存成
         # created_by 而非 viewer id）→ 交给按用户路径，避免双写、错 owner 的半坏行。
-        for s in await skill_hub_client.list_skills("system"):
-            if s.get("source") != "openops" or s.get("source_type") != "platform":
-                continue
+        # 先整表物化：缺席墓碑（下方）必须建立在「上游列表完整」之上（list_skills 翻页取全、失败即 raise）
+        listed = [s for s in await skill_hub_client.list_skills("system")
+                  if s.get("source") == "openops" and s.get("source_type") == "platform"]
+        for s in listed:
             # §2.2 semver + category + description 落进 manifest_json（零迁移展示/发现口径；
             # latest_version=SkillHub 原串）。description 优先取列表自带（§2.2 latest_description），
             # 列表没给才回退下载解包——见 _skill_description
@@ -115,6 +119,24 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                          "description": desc},
                     )
                     summary["skill_manifests_refreshed"] += 1
+
+        # ---- 缺席即墓碑（平台面）：上游列表已不含的本地平台 skill → 软删收敛（修"hub 删了、本地永存"）。
+        # 护栏同 sync_user_skills（个人面）：上游平台子集为空整段跳过（清空型操作要有非空上游证据）；
+        # 只动 reconcile 自己写入的行（synced_from='skill_hub'——seed 行无此键天然豁免）；行龄须过宽限期。
+        from app.asset_registry_service import _past_absent_grace  # 局部导入避免模块环
+
+        upstream_platform = {str(s["skill_key"]) for s in listed}
+        if not upstream_platform:
+            summary["skills_tombstone_skipped"] = "empty_upstream"
+        else:
+            for prow in await assets.list_platform_skills():
+                if (prow.get("manifest_json") or {}).get("synced_from") != "skill_hub":
+                    continue
+                if str(prow.get("skill_key") or "") in upstream_platform or not _past_absent_grace(prow):
+                    continue
+                await assets.delete_skill(str(prow["skill_id"]), "system")
+                log.info("tombstoned absent platform skill: %s", prow.get("skill_key"))
+                summary["skills_tombstoned"] += 1
 
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----

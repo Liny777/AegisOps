@@ -726,17 +726,36 @@ def test_skill_delete_calls_upstream_then_soft_deletes(client, monkeypatch):
 
 
 def test_skill_delete_upstream_refusal_keeps_local(client, monkeypatch):
-    """上游明确拒绝（biz）→ 502 且本地不删：否则本地消失、下轮同步复活，制造"删不掉还闪现"的困惑。"""
+    """上游明确拒绝（biz，非缺席码）→ 502 且本地不删：否则本地消失、下轮同步复活，制造"删不掉还闪现"的困惑。"""
     row = _upload_zip_skill(client, "del-refuse")
 
     async def refuse(skill_id):
-        raise skill_hub_client.SkillHubError("biz", "无权限操作", biz_code=1002)
+        raise skill_hub_client.SkillHubError("biz", "系统级skill不支持删除", biz_code=1003)
     monkeypatch.setattr(skill_hub_client, "delete_skill", refuse)
 
     resp = client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS)
     assert resp.status_code == 502 and "拒绝删除" in resp.json()["error"]["message"]
     skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
     assert any(s["skill_key"] == "user-0026demo01-del-refuse" for s in skills)  # 本地保留
+
+
+def test_skill_delete_upstream_absent_1002_deletes_local(client, monkeypatch):
+    """上游 1002（资源不存在——owner 校验已前置，几乎必是"hub 已删"）→ 视作已删，本地照删。
+    这是"hub 删了、本地僵尸"场景下手动清理的兜底路径（缺席同步的空子集护栏挡住时也能删）。"""
+    row = _upload_zip_skill(client, "del-absent")
+
+    async def absent(skill_id):
+        raise skill_hub_client.SkillHubError("biz", "资源不存在", biz_code=1002)
+    monkeypatch.setattr(skill_hub_client, "delete_skill", absent)
+
+    unwrap(client.delete(f"/api/openops/v1/assets/skills/{row['skill_id']}", headers=USER_HEADERS))
+    skills = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]
+    assert all(s["skill_key"] != "user-0026demo01-del-absent" for s in skills)
+    # 审计带 upstream=already_absent（降级路径可观测）
+    rows = _sql("select payload_redacted_json->>'upstream' from sre_audit_event "
+                "where event_type='skill.deleted' and action='delete' "
+                "and payload_redacted_json->>'skill_key'='user-0026demo01-del-absent'", {})
+    assert rows and rows[0][0] == "already_absent"
 
 
 def test_skill_delete_endpoint_missing_degrades_local_only(client, monkeypatch):
@@ -855,6 +874,155 @@ def test_reconcile_ignores_user_skills(client, monkeypatch):
     keys = {r[0] for r in _sql("select skill_key from sre_skill_asset where deleted_at is null", {})}
     assert "plat-x" in keys       # 平台 skill 照常 reconcile 入库
     assert "user-y" not in keys   # 个人 skill 不被全局 reconcile 吞
+
+
+# ============================ 缺席即墓碑（上游删除 → 本地收敛） ============================
+
+
+def _age_skill_rows(*skill_keys: str) -> None:
+    """把行龄拨老 1 小时：绕过缺席墓碑的创建宽限期（OPENOPS_SKILL_ABSENT_GRACE_S 默认 600s）。
+    （_sql 是 SELECT 专用——UPDATE 无结果集，fetchall 会炸，这里直接 execute。）"""
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("update sre_skill_asset set creation_date = creation_date - interval '1 hour' "
+                     "where skill_key = any(%(k)s)", {"k": list(skill_keys)})
+
+
+def _live_user_keys(client) -> set:
+    return {s["skill_key"] for s in
+            unwrap(client.get("/api/openops/v1/assets/skills?source_type=user", headers=USER_HEADERS))["items"]}
+
+
+def test_user_skill_absent_tombstoned_and_reappear_recreates(client, monkeypatch):
+    """上游列表（非空）不再含某已同步个人 skill → 本地软删（审计 upstream_absent）；重新出现 → 重建。"""
+    async def two(uid):
+        return [_personal_skill("keep-a"), _personal_skill("gone-b")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", two)
+    assert {"keep-a", "gone-b"} <= _live_user_keys(client)  # 触发同步落库
+    _age_skill_rows("keep-a", "gone-b")
+
+    async def one(uid):
+        return [_personal_skill("keep-a")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", one)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    keys = _live_user_keys(client)
+    assert "keep-a" in keys and "gone-b" not in keys
+    rows = _sql("select status, deleted_at from sre_skill_asset where skill_key='gone-b'", {})
+    assert rows and rows[0][0] == "deleted" and rows[0][1] is not None  # 软删墓碑，非硬删
+    audit_rows = _sql("select 1 from sre_audit_event where event_type='skill.deleted' "
+                      "and action='upstream_absent' and payload_redacted_json->>'skill_key'='gone-b'", {})
+    assert audit_rows
+
+    # 上游重新出现 → 下轮同步重建新行（收敛闭环）
+    monkeypatch.setattr(skill_hub_client, "list_skills", two)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "gone-b" in _live_user_keys(client)
+
+
+def test_user_skill_absent_empty_upstream_guard(client, monkeypatch):
+    """护栏：上游个人子集为**空**（cookie 失效的典型形状——list 不要求认证，200 但个人被滤光）
+    → 整段跳过，不误清个人 skill。"""
+    async def one(uid):
+        return [_personal_skill("survive-x")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", one)
+    assert "survive-x" in _live_user_keys(client)
+    _age_skill_rows("survive-x")
+
+    async def empty(uid):
+        return []
+    monkeypatch.setattr(skill_hub_client, "list_skills", empty)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "survive-x" in _live_user_keys(client)  # 空子集不当"全删了"
+
+
+def test_user_skill_absent_handmade_row_survives(client, monkeypatch):
+    """老 JSON 端点手造行（manifest 无 synced_from）没有上游对应 → 上游恒缺席也不动。"""
+    _upload_skill(client, "handmade")  # 本地手造（skill_key='handmade'，无 synced_from）
+    _age_skill_rows("handmade")
+    async def other(uid):
+        return [_personal_skill("someone-else")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", other)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "handmade" in _live_user_keys(client)
+
+
+def test_user_skill_absent_grace_protects_fresh_row(client, monkeypatch):
+    """护栏：刚上传的行（宽限期内）即使上游列表缺席也不动——防并发同步用旧列表误删新上传。"""
+    async def other(uid):
+        return [_personal_skill("someone-else")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", other)
+    _upload_zip_skill(client, "fresh-up")  # synced_from='upload'，creation_date=刚刚
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "user-0026demo01-fresh-up" in _live_user_keys(client)  # 上游缺席但在宽限期内 → 保留
+
+
+def test_user_skill_sync_failure_no_tombstone(client, monkeypatch):
+    """列表取回失败（异常）→ 整轮放弃，不做任何墓碑（缺席集必须建立在完整列表上）。"""
+    async def one(uid):
+        return [_personal_skill("keep-on-fail")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", one)
+    assert "keep-on-fail" in _live_user_keys(client)
+    _age_skill_rows("keep-on-fail")
+
+    async def boom(uid):
+        raise RuntimeError("skill hub down")
+    monkeypatch.setattr(skill_hub_client, "list_skills", boom)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "keep-on-fail" in _live_user_keys(client)  # 失败不阻断读，也不墓碑
+
+
+def _platform_skill(skill_key: str) -> dict:
+    return {"skill_key": skill_key, "display_name": f"平台{skill_key}", "source": "openops",
+            "source_type": "platform", "owner_user_id": None, "latest_version": "1.0.0",
+            "category": "ops", "description": f"{skill_key} 描述", "checksum_sha256": f"p-{skill_key}",
+            "status": "active"}
+
+
+def test_reconcile_platform_absent_tombstoned(client, monkeypatch):
+    """平台面缺席墓碑：上游列表少了一条 reconcile 写入的行 → 软删 + summary 计数；
+    seed 形状行（manifest 无 synced_from）恒豁免；上游平台子集为空 → 跳过 + summary 标记。"""
+    async def both(uid):
+        return [_platform_skill("plat-x"), _platform_skill("plat-y")]
+    monkeypatch.setattr(skill_hub_client, "list_skills", both)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    _age_skill_rows("plat-x", "plat-y", "inspection")  # seed 行一并老化：证明豁免靠 synced_from 而非宽限期
+
+    async def only_x(uid):
+        return [_platform_skill("plat-x")]
+    monkeypatch.setattr(skill_hub_client, "list_skills", only_x)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["skills_tombstoned"] == 1
+    keys = {r[0] for r in _sql("select skill_key from sre_skill_asset "
+                               "where source_type='platform' and deleted_at is null", {})}
+    assert "plat-x" in keys and "plat-y" not in keys
+    assert "inspection" in keys  # seed 行（无 synced_from）不被墓碑
+
+    # 上游平台子集为空 → 护栏跳过（清空型操作要有非空上游证据）
+    async def empty(uid):
+        return []
+    monkeypatch.setattr(skill_hub_client, "list_skills", empty)
+    summary2 = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary2.get("skills_tombstone_skipped") == "empty_upstream"
+    keys2 = {r[0] for r in _sql("select skill_key from sre_skill_asset "
+                                "where source_type='platform' and deleted_at is null", {})}
+    assert "plat-x" in keys2  # 未被清
+
+
+def test_tombstoned_bound_skill_marked_deleted_in_bindings(client, monkeypatch):
+    """被绑定的 skill 被缺席墓碑后：绑定行保留（不可变历史），asset_status 标 deleted 而非 unknown。"""
+    inst = create_instance(client)
+    row = _upload_zip_skill(client, "bound-gone")
+    _bind_skill(client, inst["instance_id"], row)
+    _age_skill_rows("user-0026demo01-bound-gone")
+
+    async def other(uid):
+        return [_personal_skill("someone-else")] if uid == "0026demo01" else []
+    monkeypatch.setattr(skill_hub_client, "list_skills", other)
+    asset_registry_service.invalidate_user_skill_sync("0026demo01")
+    assert "user-0026demo01-bound-gone" not in _live_user_keys(client)  # in-use 不豁免：上游已删，留着也执行不了
+
+    bindings = [b for b in _bindings(client, inst["instance_id"]) if b["asset_type"] == "skill"]
+    ghost = next(b for b in bindings if str(b.get("skill_id")) == str(row["skill_id"]))
+    assert ghost["asset_status"] == "deleted"  # join-miss 标注为已删，而非 unknown
 
 
 # ============================ 个人 skill 默认挂载 + 解绑/重新绑定（mute 模型） ============================
