@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app import agent_team_service, template_service
@@ -22,6 +23,18 @@ log = logging.getLogger("openops.user_skill_sync")
 _USER_SKILL_TTL_S = float(os.environ.get("OPENOPS_USER_SKILL_TTL_S", os.environ.get("OPENOPS_RECONCILE_TTL_S", "300")))
 _user_skill_synced: dict[str, float] = {}  # user_id -> 上次同步的 monotonic 时刻
 
+# 缺席墓碑宽限期：本地行创建后至少存活这么久才允许因"上游列表缺席"被软删——防"刚上传、
+# 并发同步用的还是旧列表"的竞态误删（上传与同步无互锁，靠时间窗兜底）。
+_ABSENT_GRACE_S = float(os.environ.get("OPENOPS_SKILL_ABSENT_GRACE_S", "600"))
+
+
+def _past_absent_grace(row: dict[str, Any]) -> bool:
+    """行龄是否已过缺席墓碑宽限期（creation_date 为 timestamptz → tz-aware 比较）。"""
+    created = row.get("creation_date")
+    if created is None:
+        return False  # 无创建时间（异常形状）：保守不删
+    return datetime.now(timezone.utc) - created >= timedelta(seconds=_ABSENT_GRACE_S)
+
 
 def _reset_user_skill_sync() -> None:  # 测试隔离（对齐 asset_reconcile_service._reset）
     _user_skill_synced.clear()
@@ -34,7 +47,8 @@ def invalidate_user_skill_sync(user_id: str) -> None:
 
 async def sync_user_skills(user: dict[str, Any]) -> None:
     """请求内按 viewer 同步个人 skill：用 viewer cookie 拉 SkillHub，把 source_type='user' 的 skill
-    upsert 进本地表、归属 viewer 的 user_id。per-user 节流；失败只记日志不阻断列表读（读本地兜底）。"""
+    upsert 进本地表、归属 viewer 的 user_id；上游列表**缺席**的本地行走墓碑收敛
+    （_tombstone_absent_user_skills，三护栏防误删）。per-user 节流；失败只记日志不阻断列表读（读本地兜底）。"""
     uid = user["user_id"]
     now = time.monotonic()
     if now - _user_skill_synced.get(uid, 0.0) < _USER_SKILL_TTL_S:
@@ -43,9 +57,11 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
     try:
         from infra.external import skill_hub_client
 
-        for s in await skill_hub_client.list_skills(uid):  # viewer cookie 经 console_cookie 请求上下文透传
-            if s.get("source") != "openops" or s.get("source_type") != "user":
-                continue  # 只收个人 skill；平台 skill 走全局 reconcile
+        # 先整表物化：翻页取全、失败即 raise（进不了下方任何写路径）。缺席墓碑必须建立在
+        # 「上游列表完整」之上——边迭代边判缺席，半途失败会把没读到的当"已删"误清。
+        listed = [s for s in await skill_hub_client.list_skills(uid)  # viewer cookie 经 console_cookie 请求上下文透传
+                  if s.get("source") == "openops" and s.get("source_type") == "user"]  # 只收个人 skill；平台走全局 reconcile
+        for s in listed:
             manifest = {"synced_from": "skill_hub_user", "latest_version": s.get("latest_version"),
                         "category": s.get("category"), "updated_date": s.get("updated_date")}
             existing = await assets.get_user_skill_by_key(uid, s["skill_key"])
@@ -67,8 +83,37 @@ async def sync_user_skills(user: dict[str, Any]) -> None:
                         str(latest["skill_version_id"]),
                         {**cur, "latest_version": s.get("latest_version"), "category": s.get("category"),
                          "updated_date": s.get("updated_date")})
+        await _tombstone_absent_user_skills(uid, {str(s["skill_key"]) for s in listed})
     except Exception as e:  # noqa: BLE001 —— SkillHub 挂/cookie 失效不阻断列表读
         log.warning("user skill sync failed (%s): %s", uid, str(e)[:200])
+
+
+async def _tombstone_absent_user_skills(uid: str, upstream_keys: set[str]) -> None:
+    """缺席即墓碑（个人面）：上游列表里已不存在的本地个人 skill → 软删收敛（修"hub 删了、本地永存"）。
+
+    护栏（防误删优先于清理）：
+    - 上游个人子集为**空**时整段跳过——hub 的 list 不要求认证，cookie 失效会 200 但个人子集为空，
+      误当"全删了"会清光该用户个人 skill 并连带丢 mute 关系。代价：删到只剩 0 个时不自动收敛，
+      由手动删除兜底（_DELETE_ABSENT_CODES 已能删上游缺席行）。
+    - 只动确实来自 hub 的行（synced_from ∈ upload/skill_hub_user）；老 JSON 端点手造行无上游对应，恒不动。
+    - 行龄须过宽限期（_ABSENT_GRACE_S）——防刚上传的行被并发同步的旧列表误删。
+    不做 asset_in_use 检查：上游已删，本地留着也执行不了；绑定行由 list_instance_bindings 标注"deleted"。"""
+    if not upstream_keys:
+        log.info("skip absent-tombstone (%s): 上游个人子集为空（可能 cookie 失效），不做清理", uid)
+        return
+    for row in await assets.list_skills(uid, include_platform=False):
+        synced_from = (row.get("manifest_json") or {}).get("synced_from")
+        if synced_from not in ("upload", "skill_hub_user"):
+            continue
+        if str(row.get("skill_key") or "") in upstream_keys or not _past_absent_grace(row):
+            continue
+        await assets.delete_skill(str(row["skill_id"]), "sync")
+        log.info("tombstoned absent user skill (%s): %s", uid, row.get("skill_key"))
+        await audit.insert_event(
+            audit_trace_id=str(uuid.uuid4()), event_type="skill.deleted", user_id=uid,
+            action="upstream_absent",
+            payload_redacted={"skill_id": str(row["skill_id"]), "skill_key": row.get("skill_key")},
+        )
 
 
 async def list_skills(user: dict[str, Any], *, page: int = 1, page_size: int = 20,
@@ -206,10 +251,11 @@ async def upload_skill_package(user: dict[str, Any], filename: str, zip_bytes: b
             "action": action, "skillhub_action": result.get("action")}
 
 
-# 29.9 delete「上游已无此 skill」的业务码：命中视作已删、继续本地删。联调确认后回填
-# （文档 1002 语义混杂"不存在/无权限"——误收会造成"本地删了、上游还在、下轮同步复活"，故默认留空、
-# 一切业务拒绝都上浮报错）。
-_DELETE_ABSENT_CODES: tuple[int, ...] = ()
+# 29.9 delete「上游已无此 skill」的业务码：命中视作已删、继续本地删。
+# 1002 文档语义混杂"不存在/无权限"，但走到上游调用前本地已做 owner 校验（FORBIDDEN 前置），
+# 此时 1002 几乎必是"资源不存在"（如 hub 侧已被删——本地僵尸行正需要能删掉）；即使误判成
+# "无权限"，skill 仍在上游 → 下轮 sync 的 upsert 会把行拉回来，与上游保持自洽，无永久僵尸。
+_DELETE_ABSENT_CODES: tuple[int, ...] = (1002,)
 
 
 async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
@@ -224,6 +270,7 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
         raise ApiError(Err.FORBIDDEN, "无权删除该 Skill")
     if await agent_teams.asset_in_use("skill", skill_id):
         raise ApiError(Err.ASSET_IN_USE, "该资产仍被 active 配置引用，请先解绑")  # CFG-006
+    upstream = "skipped"  # 非 hub 行/平台行：不回删上游
     if row["source_type"] == "user" and row.get("skill_key"):
         from infra.external import skill_hub_client
 
@@ -233,11 +280,13 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
         if synced_from in ("upload", "skill_hub_user"):
             try:
                 await skill_hub_client.delete_skill(str(row["skill_key"]))
+                upstream = "deleted"
             except skill_hub_client.SkillHubError as e:
                 if e.kind == "http" and e.status_code == 404:
                     log.warning("skillhub delete 接口不存在（29.9 未上线），降级仅本地删：%s", row["skill_key"])
+                    upstream = "endpoint_missing"
                 elif e.kind == "biz" and e.biz_code in _DELETE_ABSENT_CODES:
-                    pass  # 上游已无此 skill → 视作已删，继续本地删
+                    upstream = "already_absent"  # 上游已无此 skill → 视作已删，继续本地删
                 elif e.kind == "network":
                     raise ApiError(Err.IAM_UPSTREAM, "SkillHub 不可达，删除未执行，请稍后重试",
                                    retryable=True) from None
@@ -246,6 +295,12 @@ async def delete_skill(user: dict[str, Any], skill_id: str) -> None:
                     raise ApiError(Err.IAM_UPSTREAM, f"SkillHub 拒绝删除：{e.message}") from None
     await assets.delete_skill(skill_id, user["user_id"])
     invalidate_user_skill_sync(user["user_id"])  # 删后强制下轮重拉：节流窗口内不读陈旧集合
+    # 审计对齐 mcp.deleted（此前 skill 删除无任何审计）；upstream 让 404 降级/缺席路径可观测
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="skill.deleted", user_id=user["user_id"],
+        action="delete",
+        payload_redacted={"skill_id": skill_id, "skill_key": row.get("skill_key"), "upstream": upstream},
+    )
 
 
 async def list_mcps(user: dict[str, Any], *, page: int = 1, page_size: int = 20,
@@ -338,7 +393,10 @@ async def list_instance_bindings(user: dict[str, Any], instance_id: str) -> list
         if d["asset_type"] == "skill":
             d["display_name"] = d.get("skill_display_name") or "Skill"
             d["version_no"] = d.get("skill_version_no") or 1
-            d["asset_status"] = d.get("skill_status") or "unknown"
+            # join-miss（skill_id 有值但连不出资产行）= 资产已软删（缺席墓碑/手动删）——标 deleted
+            # 而非 unknown，绑定列表能看出"资产没了"（绑定行是不可变历史，保留展示）
+            ghost = d.get("skill_id") and d.get("skill_display_name") is None
+            d["asset_status"] = d.get("skill_status") or ("deleted" if ghost else "unknown")
             d["source_type"] = d.get("skill_source_type") or "user"
         else:
             d["display_name"] = d.get("mcp_display_name") or "HTTP MCP"

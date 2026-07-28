@@ -159,6 +159,25 @@ async def list_platform_mcps() -> list[dict[str, Any]]:
     )
 
 
+async def list_platform_skills() -> list[dict[str, Any]]:
+    """全部平台 skill（含最新版本 manifest）：reconcile 缺席墓碑判定用（synced_from 在版本 manifest 里）。
+
+    left join lateral 与 _SKILL_FROM 同口径：无版本行的 skill 也返回（manifest 为 NULL →
+    synced_from 判定自然豁免，只跳过不误删）。"""
+    return await q_all(
+        """
+        select s.*, v.manifest_json
+        from sre_skill_asset s
+        left join lateral (
+          select manifest_json from sre_skill_asset_version sv
+          where sv.skill_id = s.skill_id and sv.deleted_at is null
+          order by sv.version_no desc limit 1
+        ) v on true
+        where s.source_type='platform' and s.deleted_at is null
+        """
+    )
+
+
 async def delete_skill(skill_id: str, by: str) -> int:
     return await exec1(
         "update sre_skill_asset set deleted_at=now(), status='deleted', last_updated_by=%(b)s where skill_id=%(s)s and deleted_at is null",

@@ -115,6 +115,17 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
   仅个人级、viewer cookie）：删除个人 skill 先回删上游再本地软删（否则 sync TTL 后复活）；对端接口未上线
   （HTTP 404）降级仅本地删，明确拒绝/不可达则不删本地。`/skills/upgrade`（个人转系统级）**暂不对接**。
   异常统一 `SkillHubError(kind=biz|http|network)`（含 httpx 传输层收口，此前会漏成 500）。
+- **缺席即墓碑（2026-07-28）**：上游删除 skill 后其 list 不再返回，此前两条同步路径均 upsert-only →
+  本地行永存（插件页仍显示、执行下载 404）。现个人面（`sync_user_skills`）与平台面（`reconcile`）在
+  **完整取回上游列表后**对缺席的本地行软删收敛，三护栏防误删：① 上游对应子集为**空**整段跳过
+  （list 不要求认证，cookie 失效会 200 但个人子集为空——误当"全删"会清光个人 skill 并丢 mute 关系；
+  删到 0 个的收敛由手动删除兜底）；② 只动 `synced_from ∈ upload/skill_hub_user/skill_hub` 的行
+  （seed/手造行天然豁免）；③ 行龄须过 `OPENOPS_SKILL_ABSENT_GRACE_S`（默认 600s）——防刚上传的行被
+  并发同步的旧列表误删。审计：个人面 `skill.deleted/upstream_absent`，平台面进 `asset.reconciled`
+  的 `skills_tombstoned` 计数。`_DELETE_ABSENT_CODES` 已回填 `1002`（owner 校验前置后 1002 几乎必是
+  "不存在"；误判也会被下轮 sync 拉回自洽）——上游缺席的僵尸行手动删除同样可清。软删被绑定的 skill 时
+  绑定行保留（不可变历史），`asset-bindings` 列表将其 `asset_status` 标为 `deleted`。
+  **MCP 侧同款缺口未修**（reconcile 对 MCP 仍 create-if-missing，牵扯工具目录与模板引用清洗，单独排期）。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或
