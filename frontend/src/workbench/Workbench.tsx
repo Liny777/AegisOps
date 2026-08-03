@@ -248,10 +248,12 @@ export function Workbench({
     if (API_MODE !== "real" || !effectiveInstanceId) return;
     const controller = new AbortController();
     setModelLabel(""); setWsStatus(null); setMcpStat(null);
-    Promise.all([api.getAgentTeam(effectiveInstanceId), api.getModelConfigs()])
-      .then(([team, models]) => {
+    // 模板清单失败不摧毁整条链（catch 空数组 → 模板绑定显示兜底文案）
+    Promise.all([api.getAgentTeam(effectiveInstanceId), api.getModelConfigs(),
+                 api.getModelTemplates().catch(() => [])])
+      .then(([team, models, mtpls]) => {
         if (controller.signal.aborted) return;
-        setModelLabel(resolveModelLabel(team.overlay, models));
+        setModelLabel(resolveModelLabel(team.overlay, models, mtpls));
         if (team.workspace_id) {
           api.getWorkspaceStatus(team.workspace_id)
             .then((ws) => { if (!controller.signal.aborted) setWsStatus({ sync_status: ws.sync_status, app_ids: ws.app_ids }); })

@@ -421,6 +421,41 @@ export interface Template {
   capabilities: string[];
   active_version: string;
 }
+
+/** 模型模板（38 号：管理员编排的 主/子 Agent 模型组合）。
+ * 用户侧 GET /models/templates 经 ACL 过滤（主、子槽位都授权才可见），real 模式只回 active 行。 */
+export interface ModelTemplateOption {
+  model_template_id: string;
+  display_name: string;
+  description?: string;
+  main_model: { model_id: string; display_name: string };
+  sub_model: { model_id: string; display_name: string };
+  is_default: boolean;
+  status: "active" | "disabled";
+}
+
+/** 管理台模型模板行（列表/编辑弹窗共用）：比用户侧多编辑所需的槽位资产 UUID。 */
+export interface AdminModelTemplate {
+  model_template_id: string;
+  display_name: string;
+  description: string;
+  main_model_asset_id: string;
+  main_model_id: string;   // 槽位资产的 model_id（展示/兜底）
+  main_model_name: string; // 槽位资产展示名（资产被删时为空串）
+  sub_model_asset_id: string;
+  sub_model_id: string;
+  sub_model_name: string;
+  is_default: boolean;
+  status: "active" | "disabled";
+}
+
+/** 模型模板编辑弹窗的槽位候选（来自 GET /admin/model-assets）。 */
+export interface AdminModelAssetOption {
+  model_asset_id: string;
+  model_id: string;
+  display_name: string;
+  status: string;
+}
 export interface ScopeApp {
   app_id: string;
   name: string;

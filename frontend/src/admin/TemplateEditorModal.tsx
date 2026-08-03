@@ -280,9 +280,12 @@ export function TemplateEditorModal({ open, templateId, onClose, onChanged }: {
           </button>
           <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 8 }}>写工具可绑到子 Agent（E1 审批桥）：需人工审批的工具触发时弹审批卡（任务号带子 Agent 后缀），批准后由该子 Agent 继续执行；tool_result_limit 必须小于模型窗口（经验 ≤1/3）。新增角色的 key/role 必填、key 唯一、绑定工具须已 allowed 标注（发布时校验）。</div>
         </Box>
-        <Box title="模板默认 LLM">
-          <div style={{ fontSize: 12.5, color: color.textBody, fontFamily: "ui-monospace, monospace" }}>
-            {String(((content.default_llm ?? {}) as Record<string, unknown>).provider ?? "platform")} · {String(((content.default_llm ?? {}) as Record<string, unknown>).model ?? "—")}
+        {/* content_json.default_llm 已废弃（38 号）：从未被运行时消费，模型改由「模型模板」编排。
+            保留 Box 位置给管理员指路，避免在此找不到模型配置入口。 */}
+        <Box title="模型配置">
+          <div style={{ fontSize: 12, color: color.textSubtle, lineHeight: 1.6 }}>
+            模型不在 Agent 模板中配置：请到 <b>管理台 → 模型模板</b> 编排「主 Agent + 子 Agent」模型组合；
+            用户初始化 Agent 时选择一套模板（或在高级选项使用自带模型）。
           </div>
         </Box>
         {msg ? <div style={{ fontSize: 12, color: color.goodText, fontWeight: 600 }}>{msg}</div> : null}

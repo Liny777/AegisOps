@@ -5,7 +5,7 @@ import os
 
 from infra.db import q_one
 from infra.external import mcp_registry_client
-from infra.repositories import assets, mcp_tools, model_assets, runtime_config, templates, users
+from infra.repositories import assets, mcp_tools, model_assets, model_templates, runtime_config, templates, users
 
 SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "max_user_containers_per_host": (26, "单机最大用户容器数"),
@@ -49,6 +49,37 @@ MODEL_ASSETS = [
     ("交易大模型-TX", "tx-llm-v2", None, None, "restricted", "active"),
 ]
 
+# 模型模板（38 号：主/子 Agent 槽位）：(display_name, description, main_model_id, sub_model_id, is_default)
+# 选型依据 95.x 模型评估：GLM-5.1 全场景领先作生产默认；「经济」把子任务放 Qwen3.5 省成本。
+MODEL_TEMPLATES = [
+    ("均衡（推荐）", "主 / 子 Agent 均使用 GLM-5.1，效果优先", "glm-5.1", "glm-5.1", True),
+    ("经济", "主 GLM-5.1 + 子 Qwen3.5-Instruct，子任务省成本", "glm-5.1", "qwen3.5-instruct", False),
+]
+
+
+async def ensure_model_template_seed() -> None:
+    """模型模板补种（幂等）：表空才种、按 model_id 解析资产、解析不到即整条跳过。
+
+    不覆盖管理员已建/已改模板（表非空即整体跳过，对齐 ensure_sandbox_defaults 只补缺哲学）；
+    旧库未跑 migrate-2026-07-29-model-template.sql（表缺失）时静默跳过不阻断启动。
+    seed() 调用两次：守卫前覆盖存量库（跑完 migrate 重启即得种子），末尾覆盖全新库/pytest 库
+    （首次启动守卫前那次因模型资产尚未种下会整体跳过，资产种完后这次才解析得到 asset_id）。
+    """
+    try:
+        if await q_one("select 1 ok from sre_model_template limit 1"):
+            return
+    except Exception:  # noqa: BLE001 —— 表未迁移（旧库未跑 migrate-2026-07-29）
+        return
+    for name, desc, main_mid, sub_mid, is_default in MODEL_TEMPLATES:
+        main = await model_assets.get_by_model_id(main_mid)
+        sub = await model_assets.get_by_model_id(sub_mid)
+        if main is None or sub is None:
+            continue
+        row = await model_templates.create(name, desc, str(main["model_asset_id"]),
+                                           str(sub["model_asset_id"]), "system")
+        if is_default:
+            await model_templates.set_default(str(row["model_template_id"]), "system")
+
 TEMPLATE_CONTENT = {
     "main": {
         "role": "理解用户任务，调度巡检/诊断/恢复能力，工具调用前遵守平台安全策略。",
@@ -78,6 +109,9 @@ TEMPLATE_CONTENT = {
         {"key": "recover", "label": "恢复", "role": "执行受控恢复动作：先核对目标与影响面，恢复类工具调用需人工批准后执行。",
          "skills": [], "mcp_tools": ["recover_execute"], "max_iters": 10, "tool_result_limit": 24000},
     ],
+    # DEPRECATED（2026-07-29，38 号）：default_llm 从未被运行时消费（run_state_service 只读实例
+    # overlay 三键）。模型改由 sre_model_template（管理台「模型模板」页）编排；字段保留仅为
+    # 兼容存量模板版本 content_json 的形状（test_templates 夹具仍含它），勿新增消费方。
     "default_llm": {"provider": "platform", "model": "qwen3.5-instruct"},
 }
 
@@ -85,6 +119,8 @@ TEMPLATE_CONTENT = {
 async def seed() -> None:
     # 沙箱配置补缺（守卫之前）：老库重启也能自动补新增键，不覆盖管理员改过的值
     await ensure_sandbox_defaults()
+    # 模型模板补种（守卫之前）：存量库跑完 migrate 重启即得种子模板（全新库靠 seed 末尾的第二次调用）
+    await ensure_model_template_seed()
     # 已播种则跳过（以模板存在为标志）
     if await q_one("select 1 ok from sre_agent_team_template where template_key='sensai_fast_recovery'"):
         return
@@ -141,3 +177,6 @@ async def seed() -> None:
         row = await model_assets.create(display_name, "openai_compatible", model_id, base_url, env_var, scope, status, "system")
         if scope == "restricted":
             await model_assets.replace_grants(str(row["model_asset_id"]), ["0026demo01"], "system")
+
+    # 模型模板（38 号）：第二次调用覆盖全新库/pytest 库——守卫前那次因资产未种会整体跳过
+    await ensure_model_template_seed()

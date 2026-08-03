@@ -225,20 +225,37 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         except Exception:  # noqa: BLE001
             log.warning("[OpenOps][run] 自动起名失败（run_title 列缺失？见 sql/migrate-2026-07-12-run-title.sql）")
 
-    # 实例默认模型：active 配置 overlay 绑定的用户自定义 LLM 作为该实例默认（InitWizard custom 分支 / 30.5）。
-    # 会话级 select-model 在本 task 内直接改 st.selected_model 覆盖；无绑定则 None→平台默认（B7 ACL 解析）。
+    # 实例默认模型：active 配置 overlay 三键互斥（InitWizard / 30.5 / 模型模板化）——
+    # user_llm_config_id（BYO：主=子=用户 LLM）> model_template_id（主/子槽位模板）> platform_model_id（legacy：主=子）。
+    # 会话级 select-model 只覆盖主槽位（子仍用模板 sub 槽；无模板时子回落主，维持现状）。
     active_cv = await agent_teams.get_config_version(str(inst["active_config_version_id"]))
-    _overlay = (active_cv or {}).get("overlay_json") or {}  # user_llm_config_id + platform_model_id + main_role_append 同源
-    if not st.selected_model:
-        bound_llm = _overlay.get("user_llm_config_id")
-        bound_platform = _overlay.get("platform_model_id")  # InitWizard 选中的平台模型（管理员注册且授权）
-        if bound_llm:
-            st.selected_model = str(bound_llm)
-        elif bound_platform:
-            # 平台模型 model_id 交给 resolve_runtime_model 按用户授权解析（越权/失效 → 回平台默认，fail-safe）
-            st.selected_model = str(bound_platform)
-    # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
-    st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
+    _overlay = (active_cv or {}).get("overlay_json") or {}  # 模型三键 + main_role_append 同源
+    _tpl_id = _overlay.get("model_template_id")
+    if _overlay.get("user_llm_config_id"):
+        st.selected_model = str(_overlay["user_llm_config_id"])
+        # 用户 LLM 失效走显式报错（S3 语义），不静默回退
+        st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
+    elif _tpl_id:
+        _res = await model_gateway.resolve_template_models(str(_tpl_id), uid)
+        st.model_spec, st.sub_model_spec = _res["main_spec"], _res["sub_spec"]
+        st.selected_model, st.selected_sub_model = _res["main_selected"], _res["sub_selected"]
+        for _d in _res["degraded"]:  # 槽位失效回退平台默认：审计留痕 + SSE（fail-safe 不阻断任务）
+            _msg = ("模型模板不可用，已回退平台默认模型" if _d["slot"] == "template"
+                    else f"模板{'主' if _d['slot'] == 'main' else '子'} Agent 模型槽位未授权或已失效，该槽位回退平台默认")
+            _eid = await audit.insert_event(
+                audit_trace_id=trace, event_type="model.template_degraded", user_id=uid, run_id=run_id,
+                instance_id=st.instance_id, task_id=task_id, action=str(_d["slot"]), actor_type="system",
+                payload_redacted={**_d, "summary": _msg},
+            )
+            events.publish(run_id, events.envelope(run_id, "openops.model.template_degraded", task_id=task_id,
+                                                   message=_msg, payload=dict(_d),
+                                                   audit_trace_id=trace, event_id=_eid))
+    else:
+        if _overlay.get("platform_model_id"):
+            # legacy 平台模型：交给 resolve_runtime_model 按用户授权解析（越权/失效 → 回平台默认，fail-safe）
+            st.selected_model = str(_overlay["platform_model_id"])
+        # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
+        st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
     # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4）
     st.scope_ctx = scope
     # 模板工具集（B7·二）：RuntimePlan 只装配模板 default_tools 内的平台工具；标注快照按此过滤
@@ -644,7 +661,8 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     rca: Any = None
     if st is not None:
         active_task = {"task_id": st.task_id, "status": st.status, "input_text": st.input_text,
-                       "started_at": st.started_at, "selected_model": st.selected_model}
+                       "started_at": st.started_at, "selected_model": st.selected_model,
+                       "selected_sub_model": st.selected_sub_model}
         rca = st.rca
     else:
         # P2 回退：内存 miss（进程重启过）读影子快照——恢复面能看到最后任务与 RCA，
@@ -656,7 +674,9 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
         if snap is not None:
             active_task = {"task_id": snap["task_id"], "status": snap["task_status"],
                            "input_text": snap["input_text"], "started_at": snap["started_at"],
-                           "selected_model": snap["selected_model"]}
+                           "selected_model": snap["selected_model"],
+                           # .get 容忍未跑 migrate-2026-07-29 的旧库快照缺列
+                           "selected_sub_model": snap.get("selected_sub_model")}
             rca = snap["rca_json"]
     recent_items = [_event_json(e) for e in recent]
     delegation_rows = await delegations.list_by_run(run_id, limit=100)
@@ -718,7 +738,11 @@ async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
-    """会话级临时模型选择（MODEL-005：不生成配置版本）。平台模型须经授权（B7 模型 ACL）。"""
+    """会话级临时模型选择（MODEL-005：不生成配置版本）。平台模型须经授权（B7 模型 ACL）。
+
+    模型模板语义：仅覆盖**主模型槽位**（st.selected_model）；模板绑定的子槽位
+    （selected_sub_model/sub_model_spec）不受影响——无模板时子回落主，维持主=子现状。
+    已知偏差（既有）：只改标量不重解析 model_spec，对当前在跑 task 实际无效，见 38 号设计文档。"""
     from app import model_asset_service  # 局部导入避免环
 
     run = await owned_run(user["user_id"], run_id)

@@ -49,13 +49,15 @@ class SaveConfigRequest(BaseModel):
 
 class UpdateAgentTeamRequest(BaseModel):
     """编辑实例（编辑向导）：改名 / 换 workspace / 换模型。全量语义（向导预填后总有全部值）；
-    模板不可换不收；main_role_append 服务端保留（overlay 只动模型两键）。"""
+    模板不可换不收；main_role_append 服务端保留（overlay 只动模型三键）。"""
     client_request_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     workspace_id: str = Field(min_length=1)
-    # 模型三态（互斥）：user_llm_config_id=自带 LLM；platform_model_id=平台模型；二者皆 None=平台默认（从 overlay 移除）
+    # 模型四态（互斥）：user_llm_config_id=自带 LLM（主=子）；model_template_id=模型模板（主/子槽位）；
+    # platform_model_id=平台模型 legacy（主=子）；全 None=平台默认（从 overlay 移除）
     user_llm_config_id: str | None = None
     platform_model_id: str | None = None
+    model_template_id: str | None = None
 
 
 class AssetBindingRequest(BaseModel):
@@ -147,7 +149,8 @@ class DecisionRequest(BaseModel):
 
 
 class SaveTemplateVersionRequest(BaseModel):
-    """保存模板草稿版本（B7·二）：全量 content_json（main/sub_agents/default_llm）。"""
+    """保存模板草稿版本（B7·二）：全量 content_json（main/sub_agents；
+    default_llm 已废弃仅兼容展示——模型改由「模型模板」sre_model_template 编排）。"""
     client_request_id: str = Field(min_length=1)
     content_json: dict[str, Any] = Field(default_factory=dict)
 
@@ -192,6 +195,37 @@ class UpdateModelAssetRequest(BaseModel):
     base_url: str | None = None
     secret_env_var: str | None = None
     context_window_tokens: int | None = Field(default=None, gt=0)
+
+
+class CreateModelTemplateRequest(BaseModel):
+    """创建模型模板（主/子 Agent 两槽位，槽位引用 sre_model_asset 主键）；
+    is_default=true 时服务层先落库（false）再原子切换默认（两步，防撞部分唯一索引）。"""
+    client_request_id: str = Field(min_length=1)
+    display_name: str = Field(min_length=1)
+    description: str = ""
+    main_model_asset_id: str = Field(min_length=1)
+    sub_model_asset_id: str = Field(min_length=1)
+    is_default: bool = False
+
+
+class UpdateModelTemplateRequest(BaseModel):
+    """更新模型模板（PATCH 语义：exclude_unset 取差集，对齐 UpdateModelAssetRequest）。
+    is_default / status 刻意不含——各有 :set-default 与 :status 专用端点。"""
+    client_request_id: str = Field(min_length=1)
+    display_name: str | None = Field(default=None, min_length=1)
+    description: str | None = None
+    main_model_asset_id: str | None = Field(default=None, min_length=1)
+    sub_model_asset_id: str | None = Field(default=None, min_length=1)
+
+
+class ModelTemplateStatusRequest(BaseModel):
+    client_request_id: str = Field(min_length=1)
+    status: str = Field(pattern="^(active|disabled)$")
+
+
+class ModelTemplateActionRequest(BaseModel):
+    """:set-default 无字段动作体（对齐 TemplateVersionActionRequest）。"""
+    client_request_id: str = Field(min_length=1)
 
 
 class UpdateRuntimeConfigRequest(BaseModel):

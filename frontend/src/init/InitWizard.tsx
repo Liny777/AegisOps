@@ -4,7 +4,7 @@ import { color, radius, shadow } from "../theme/tokens";
 import { Icon, useHover, Button, TextInput } from "../ui";
 import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
-import type { ModelOption, Template, Workspace, OmodelStatistics } from "../lib/api/types";
+import type { ModelTemplateOption, Template, Workspace, OmodelStatistics } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
 import { submitCustomLlm, useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
@@ -33,12 +33,17 @@ export function InitWizard() {
   const [tplId, setTplId] = useState("");
   const [name, setName] = useState("");
   const [wsId, setWsId] = useState("");
-  const [llm, setLlm] = useState<"platform" | "custom">("platform");
+  // 模型三态（38 号）：template=选一套模型模板（主/子 Agent 组合）；custom=BYO 自带模型（主/子都用它）；
+  // legacy=存量实例绑的旧版单平台模型（仅编辑态出现，保存原样回传，引导换绑模板）
+  const [llm, setLlm] = useState<"template" | "custom" | "legacy">("template");
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
-  const [platformModels, setPlatformModels] = useState<ModelOption[]>([]); // 管理员注册且对本用户授权的平台模型全集（可选）
-  const [selectedPlatformId, setSelectedPlatformId] = useState(""); // 选中的平台模型 model_id（裸 id；空=平台默认兜底）
+  const [modelTemplates, setModelTemplates] = useState<ModelTemplateOption[]>([]); // 管理员编排且对本用户授权（主/子槽位双授权）的模板
+  const [selectedModelTemplateId, setSelectedModelTemplateId] = useState(""); // 选中的模板 id（空=平台默认兜底卡）
+  const [legacyPlatformId, setLegacyPlatformId] = useState(""); // 存量 overlay.platform_model_id（仅编辑态非空）
+  const [legacyLabel, setLegacyLabel] = useState("");
+  const [advancedOpen, setAdvancedOpen] = useState(false); // BYO 高级折叠区
   const [wsDialog, setWsDialog] = useState<null | { id?: string }>(null);  // null=关；{}=新建；{id}=编辑
   const [confirmDelWs, setConfirmDelWs] = useState<Workspace | null>(null);
   const [delBusy, setDelBusy] = useState(false);
@@ -49,6 +54,8 @@ export function InitWizard() {
   useEffect(() => {
     if (editing && instanceId) {
       // 编辑态：并取模板/范围/实例详情/模型清单，预填 名称+范围+模板（锁定）+模型
+      // （模型模板清单由下方公共 effect 拉取，此处只定预填态，避免两处 setState 竞态）
+      // 预填互斥优先级与后端解析同序：custom(BYO) > model_template_id > platform_model_id(legacy)
       Promise.all([api.getTemplates(), api.getWorkspaces(), api.getAgentTeam(instanceId), api.getModelConfigs()])
         .then(([tpls, wss, d, models]) => {
           setTemplates(tpls);
@@ -58,15 +65,22 @@ export function InitWizard() {
           setName(d.name);
           setWsId(d.workspace_id);
           const llmId = typeof d.overlay.user_llm_config_id === "string" ? d.overlay.user_llm_config_id : "";
+          const mtplId = typeof d.overlay.model_template_id === "string" ? d.overlay.model_template_id : "";
           const platformId = typeof d.overlay.platform_model_id === "string" ? d.overlay.platform_model_id : "";
           if (llmId) {
             setLlm("custom");
             setCustomLlmId(llmId);
             setCustomLlmLabel(models.find((m) => m.llm_config_id === llmId)?.label ?? "自定义模型");
+            setAdvancedOpen(true); // BYO 藏在高级折叠区：绑定态进来必须展开，否则选中卡不可见
+          } else if (mtplId) {
+            // 绑定的模板缺席/停用（清单只回 active+已授权）→ 保持选中原样保存由后端裁决，卡区显提示条引导换绑
+            setLlm("template");
+            setSelectedModelTemplateId(mtplId);
           } else if (platformId) {
-            // 编辑态预填：实例默认绑的是平台模型 → 选中它（无绑定则由上面清单 effect 保持默认）
-            setLlm("platform");
-            setSelectedPlatformId(platformId);
+            // 存量单平台模型绑定：legacy 卡展示 + 引导换绑模板；保存不动即原样回传
+            setLlm("legacy");
+            setLegacyPlatformId(platformId);
+            setLegacyLabel(models.find((m) => m.llm_config_id === "platform:" + platformId)?.label ?? platformId);
           }
         })
         .catch((e: unknown) => setErr(e instanceof Error ? e.message : "加载失败，请重试"));
@@ -76,39 +90,43 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, [editing, instanceId]);
 
-  // 平台模型清单（后台驱动）：/models/platform 返回管理员注册且对本用户授权的全部平台模型，逐个可选。
-  // 新建态默认选中后端标记的运行默认（is_default→current）；编辑态由上面的编辑预填决定。
+  // 模型模板清单（38 号）：/models/templates 返回管理员编排且对本用户授权（主/子槽位双授权）的 active 模板。
+  // 新建态默认选中 is_default 模板（无默认取首条）；编辑态由上面的编辑预填决定。
+  // 拉取失败置空清单 → 渲染「平台默认配置」兜底卡，不死路。
   useEffect(() => {
-    api.getModelConfigs()
-      .then((models) => {
-        const platforms = models.filter((m) => m.llm_config_id.startsWith("platform:"));
-        setPlatformModels(platforms);
+    api.getModelTemplates()
+      .then((rows) => {
+        const active = rows.filter((t) => t.status === "active");
+        setModelTemplates(active);
         if (!editing) {
-          const def = platforms.find((m) => m.current) ?? platforms[0];
-          if (def) setSelectedPlatformId(def.llm_config_id.slice("platform:".length));
+          const def = active.find((t) => t.is_default) ?? active[0];
+          if (def) setSelectedModelTemplateId(def.model_template_id);
         }
       })
-      .catch(() => undefined);
+      .catch(() => setModelTemplates([]));
   }, [editing]);
 
-  // 门条件：step0 配置（名称+范围+模型，custom 须已创建否则死路）；step1 OModel 初始化转完；step2 放行
-  const canNext = [!!name.trim() && !!wsId && (llm === "platform" || !!customLlmId), omodelReady, true][step];
+  // 门条件：step0 配置（名称+范围+模型，custom 须已创建否则死路；template 恒预选/兜底卡有效；legacy 有效）；
+  // step1 OModel 初始化转完；step2 放行
+  const canNext = [!!name.trim() && !!wsId && (llm === "custom" ? !!customLlmId : true), omodelReady, true][step];
 
   const activate = () => {
     setActivating(true);
     setErr("");
     const done = editing && instanceId
-      // 编辑态：更新同一实例（模板不送），刷新全局列表后回清单页
+      // 编辑态：更新同一实例（模板不送），刷新全局列表后回清单页。
+      // 模型四态互斥：custom > template > legacy（原样回传）> 全 null=平台默认
       ? api.updateAgentTeam(instanceId, {
           name, workspace_id: wsId,
           user_llm_config_id: llm === "custom" && customLlmId ? customLlmId : null,
-          platform_model_id: llm === "platform" && selectedPlatformId ? selectedPlatformId : null,
+          model_template_id: llm === "template" && selectedModelTemplateId ? selectedModelTemplateId : null,
+          platform_model_id: llm === "legacy" && legacyPlatformId ? legacyPlatformId : null,
         }).then(() => { refresh(); nav("/agents"); })
       : api.createAgentTeam({
           template_version_id: tplId, name, workspace_id: wsId,
           initial_overlay_json:
             llm === "custom" && customLlmId ? { user_llm_config_id: customLlmId }
-            : llm === "platform" && selectedPlatformId ? { platform_model_id: selectedPlatformId }
+            : llm === "template" && selectedModelTemplateId ? { model_template_id: selectedModelTemplateId }
             : undefined,
         }).then((r) => { nav(`/agent-teams/${r.instance_id}/chat`); });
     done.catch((e: unknown) => {
@@ -155,13 +173,24 @@ export function InitWizard() {
               workspaces={workspaces} wsId={wsId} onPickWs={setWsId} onCreateWs={() => setWsDialog({})}
               onEditWs={(id) => setWsDialog({ id })} onDeleteWs={(ws) => setConfirmDelWs(ws)}
               llm={llm} onLlm={setLlm}
-              platformModels={platformModels} selectedPlatformId={selectedPlatformId}
-              onPickPlatform={(id) => { setSelectedPlatformId(id); setLlm("platform"); }}
+              modelTemplates={modelTemplates} selectedModelTemplateId={selectedModelTemplateId}
+              onPickTemplate={(id) => { setSelectedModelTemplateId(id); setLlm("template"); }}
+              legacyPlatformId={legacyPlatformId} legacyLabel={legacyLabel}
+              advancedOpen={advancedOpen} onToggleAdvanced={() => setAdvancedOpen((v) => !v)}
               customLlmId={customLlmId} customLlmLabel={customLlmLabel} customLlmMeta={customLlmMeta}
               onCustomCreated={(id, label, meta) => {
                 setCustomLlmId(id); setCustomLlmLabel(label); setCustomLlmMeta(meta); setLlm("custom");
               }}
-              onCustomRemoved={() => { setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null); setLlm("platform"); }}
+              onCustomRemoved={() => {
+                // 删除 BYO 后的落点：存量 legacy 绑定优先回 legacy；否则回模板态（保留/补选默认）
+                setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null);
+                if (legacyPlatformId) { setLlm("legacy"); return; }
+                setLlm("template");
+                if (!selectedModelTemplateId) {
+                  const def = modelTemplates.find((t) => t.is_default) ?? modelTemplates[0];
+                  if (def) setSelectedModelTemplateId(def.model_template_id);
+                }
+              }}
             />
           ) : null}
           {step === 1 ? (
@@ -420,18 +449,21 @@ function RadioDot({ on }: { on: boolean }) {
   );
 }
 
-/** 合并配置页（原型 STEP1）：名称 → 身份确认 → 模型供应商 → 系统看护范围。 */
+/** 合并配置页（原型 STEP1）：名称 → 身份确认 → 模型供应商（选一套模型模板）→ 系统看护范围。 */
 function StepConfigure({
   name, onName,
   workspaces, wsId, onPickWs, onCreateWs, onEditWs, onDeleteWs,
-  llm, onLlm, platformModels, selectedPlatformId, onPickPlatform,
+  llm, onLlm, modelTemplates, selectedModelTemplateId, onPickTemplate,
+  legacyPlatformId, legacyLabel, advancedOpen, onToggleAdvanced,
   customLlmId, customLlmLabel, customLlmMeta, onCustomCreated, onCustomRemoved,
 }: {
   name: string; onName: (v: string) => void;
   workspaces: Workspace[]; wsId: string; onPickWs: (id: string) => void; onCreateWs: () => void;
   onEditWs: (id: string) => void; onDeleteWs: (ws: Workspace) => void;
-  llm: "platform" | "custom"; onLlm: (v: "platform" | "custom") => void;
-  platformModels: ModelOption[]; selectedPlatformId: string; onPickPlatform: (id: string) => void;
+  llm: "template" | "custom" | "legacy"; onLlm: (v: "template" | "custom" | "legacy") => void;
+  modelTemplates: ModelTemplateOption[]; selectedModelTemplateId: string; onPickTemplate: (id: string) => void;
+  legacyPlatformId: string; legacyLabel: string;
+  advancedOpen: boolean; onToggleAdvanced: () => void;
   customLlmId: string; customLlmLabel: string; customLlmMeta: CustomLlmMeta | null;
   onCustomCreated: (id: string, label: string, meta: CustomLlmMeta) => void;
   onCustomRemoved: () => void;
@@ -439,6 +471,9 @@ function StepConfigure({
   const { me } = useApp(); // 身份确认用真实登录账号（IAM 开启=工号/姓名；mock=演示身份）
   const [showAdd, setShowAdd] = useState(false);
   const selectedWs = workspaces.find((w) => w.workspace_id === wsId);
+  // 编辑态绑定的模板不在清单里（被停用/撤销授权）→ 提示条引导换绑（原样保存由后端裁决）
+  const boundTemplateMissing = llm === "template" && !!selectedModelTemplateId
+    && !modelTemplates.some((t) => t.model_template_id === selectedModelTemplateId);
   return (
     <>
       <div style={{ background: "#fff", border: "1px solid rgb(226, 229, 234)", borderRadius: radius.xxl, padding: "26px 28px", display: "flex", flexDirection: "column", gap: 24 }}>
@@ -469,41 +504,65 @@ function StepConfigure({
           </div>
         </div>
 
-        {/* ③ 模型供应商 */}
+        {/* ③ 模型供应商（38 号：选一套模型模板 = 主 Agent + 子 Agent 模型组合） */}
         <div>
           <SectionLabel text="模型供应商" />
-          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 10px" }}>选择 Agent 使用的模型：可用平台提供的模型，也可接入自带模型（OpenAI 兼容，须支持 tool calling）。</div>
+          <div style={{ fontSize: 12, color: color.textSubtle, margin: "0 0 10px" }}>选择一套模型模板（主 Agent 与子 Agent 分别使用的模型，由管理员编排）；也可在高级选项接入自带模型。</div>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {platformModels.length > 0 ? platformModels.map((m) => {
-              const mid = m.llm_config_id.slice("platform:".length);
-              return (
-                <LlmCard key={mid} selected={llm === "platform" && selectedPlatformId === mid}
-                  onClick={() => onPickPlatform(mid)}
-                  icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
-                  label={m.label} badge={m.current ? "平台默认" : "平台提供"} badgeTone={m.current ? "good" : undefined} />
-              );
-            }) : (
-              // 无已授权平台模型（管理员未注册/未授权）：仍给一个走后端默认的兜底卡，避免无模型可选
-              <LlmCard selected={llm === "platform"} onClick={() => onPickPlatform("")}
+            {boundTemplateMissing ? (
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 8, background: "#fff7e8", border: "1px solid #f5dcb0", borderRadius: radius.lg, padding: "9px 12px", fontSize: 12, color: "#8a5a00", lineHeight: 1.6 }}>
+                <Icon name="alert-triangle" size={14} color="#c58a00" />
+                <span>原绑定的模型模板已停用或不再对你可见：保存将维持原绑定（下次运行回退平台默认模型），建议改选下方的一套模板。</span>
+              </div>
+            ) : null}
+            {modelTemplates.length > 0 ? modelTemplates.map((t) => (
+              <ModelTemplateCard key={t.model_template_id} tpl={t}
+                selected={llm === "template" && selectedModelTemplateId === t.model_template_id}
+                onClick={() => onPickTemplate(t.model_template_id)} />
+            )) : (
+              // 无可用模板（管理员未编排 / 主子槽位授权不全）：走后端默认的兜底卡，避免无模型可选
+              <LlmCard selected={llm === "template" && !selectedModelTemplateId} onClick={() => onPickTemplate("")}
                 icon="sparkles" iconBg={color.brandTintBg} iconColor={color.brand}
-                label="平台默认模型" badge="平台提供" />
+                label="平台默认配置" badge="平台提供" />
             )}
 
-            {customLlmId ? (
-              <LlmCard selected={llm === "custom"} onClick={() => onLlm("custom")}
-                icon="cpu" iconBg={color.neutralBg} iconColor={color.textNav}
-                label={customLlmLabel} badge="可用" badgeTone="good"
-                extra={customLlmMeta ? <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.baseUrl}</div> : null}
-                trailing={<Icon name="trash" size={16} color={color.textFaint} title="删除该自定义模型（回退平台默认）" onClick={onCustomRemoved} />} />
+            {legacyPlatformId ? (
+              <>
+                <LlmCard selected={llm === "legacy"} onClick={() => onLlm("legacy")}
+                  icon="cpu" iconBg={color.neutralBg} iconColor={color.textNav}
+                  label={legacyLabel || legacyPlatformId} badge="旧版单模型配置" />
+                {llm === "legacy" ? (
+                  <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.6, padding: "0 2px" }}>
+                    当前为旧版单模型绑定（主 / 子 Agent 共用该模型）。建议改选上方的一套模型模板，让主 / 子 Agent 分别使用编排好的模型。
+                  </div>
+                ) : null}
+              </>
             ) : null}
 
-            {showAdd ? (
-              <InlineAddModel
-                onCancel={() => setShowAdd(false)}
-                onCreated={(id, label, meta) => { setShowAdd(false); onCustomCreated(id, label, meta); }}
-              />
-            ) : !customLlmId ? (
- <AddModelButton onClick={() => setShowAdd(true)} />
+            {/* BYO 高级折叠区：自带模型（OpenAI 兼容，须支持 tool calling）；选中后主/子 Agent 都用它（覆盖整套模板） */}
+            <div onClick={onToggleAdvanced}
+              style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", padding: "4px 2px", fontSize: 12, fontWeight: 600, color: color.brand, userSelect: "none" }}>
+              <Icon name={advancedOpen ? "chevron-down" : "chevron-right"} size={14} color={color.brand} />
+              高级选项：接入自带模型（选中后主 / 子 Agent 都使用它）
+            </div>
+            {advancedOpen ? (
+              <>
+                {customLlmId ? (
+                  <LlmCard selected={llm === "custom"} onClick={() => onLlm("custom")}
+                    icon="cpu" iconBg={color.neutralBg} iconColor={color.textNav}
+                    label={customLlmLabel} badge="可用" badgeTone="good"
+                    extra={customLlmMeta ? <div style={{ fontSize: 11, color: color.textSubtle, marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontFamily: "ui-monospace, monospace" }}>{customLlmMeta.baseUrl}</div> : null}
+                    trailing={<Icon name="trash" size={16} color={color.textFaint} title="删除该自定义模型（回退模型模板）" onClick={onCustomRemoved} />} />
+                ) : null}
+                {showAdd ? (
+                  <InlineAddModel
+                    onCancel={() => setShowAdd(false)}
+                    onCreated={(id, label, meta) => { setShowAdd(false); onCustomCreated(id, label, meta); }}
+                  />
+                ) : !customLlmId ? (
+                  <AddModelButton onClick={() => setShowAdd(true)} />
+                ) : null}
+              </>
             ) : null}
           </div>
         </div>
@@ -524,6 +583,36 @@ function StepConfigure({
         </div>
       </div>
     </>
+  );
+}
+
+/** 模型模板卡（38 号）：模板名 + 主/子 Agent 槽位模型行。export 供 e2e fixture 溢出回归复用；
+ * 标题 span 保留 data-testid="llm-label"（与 LlmCard 同一宽度断言体系）。 */
+export function ModelTemplateCard({ tpl, selected, onClick }: {
+  tpl: ModelTemplateOption; selected: boolean; onClick: () => void;
+}) {
+  const { hovered, bind } = useHover();
+  const borderColor = selected ? color.brand : hovered ? "#1890FF" : "rgb(226, 229, 234)";
+  return (
+    <div onClick={onClick} {...bind}
+      style={{ border: `1px solid ${borderColor}`, background: selected ? color.brandTintBg : "#fff", borderRadius: radius.xl, padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ width: 34, height: 34, borderRadius: radius.md, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 34px" }}>
+        <Icon name="sparkles" size={17} color={color.brand} />
+      </div>
+      <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <span data-testid="llm-label" title={tpl.display_name} style={{ fontSize: 13, fontWeight: 600, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{tpl.display_name}</span>
+          <span style={{ fontSize: 10, color: tpl.is_default ? color.goodText : color.textSubtle, background: tpl.is_default ? color.goodBg : color.neutralBg, padding: "2px 6px", borderRadius: 5, whiteSpace: "nowrap", flexShrink: 0 }}>
+            {tpl.is_default ? "默认推荐" : "平台模板"}
+          </span>
+        </div>
+        <div title={`主 Agent：${tpl.main_model.display_name} · 子 Agent：${tpl.sub_model.display_name}`}
+          style={{ fontSize: 11, color: color.textSubtle, marginTop: 3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+          主 Agent：{tpl.main_model.display_name} · 子 Agent：{tpl.sub_model.display_name}
+        </div>
+      </div>
+      <RadioDot on={selected} />
+    </div>
   );
 }
 

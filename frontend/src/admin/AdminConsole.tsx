@@ -8,6 +8,7 @@ import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "..
 import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
+import { ModelTemplateDialog } from "./ModelTemplateDialog";
 import { STUDIO_ADMIN_PAGE } from "../studio/entry";
 import { groupCatalog, normalizeSelection } from "./toolBinding";
 
@@ -17,6 +18,7 @@ const ADMIN_PAGE_SIZE = 20;
 const TITLES: Record<string, string> = {
   templates: "模板管理",
   "model-assets": "模型资产",
+  "model-templates": "模型模板",
   skills: "Skill 基线",
   users: "用户与白名单",
   sandbox: "沙箱与容量",
@@ -39,6 +41,8 @@ export function AdminConsole() {
   const [registerOpen, setRegisterOpen] = useState(false);
   const [grantsFor, setGrantsFor] = useState<{ id: string; name: string } | null>(null);
   const [tplEdit, setTplEdit] = useState<string | null>(null);
+  // 模型模板（38 号）：新建/编辑弹窗（id=null 新建）
+  const [mtEdit, setMtEdit] = useState<{ id: string | null } | null>(null);
   // B7·三：白名单添加弹窗 / 表格动作错误横幅 / 审计 Trace 过滤
   const [wlAddOpen, setWlAddOpen] = useState(false);
   const [actionErr, setActionErr] = useState("");
@@ -49,7 +53,7 @@ export function AdminConsole() {
   const [tagFilter, setTagFilter] = useState("");
   const [userTags, setUserTags] = useState<string[]>([]);
 
-  const isTable = ["templates", "model-assets", "skills", "users"].includes(page);
+  const isTable = ["templates", "model-assets", "model-templates", "skills", "users"].includes(page);
 
   const load = useCallback(async () => {
     if (page === "templates") {
@@ -139,6 +143,20 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteUser(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "mt-edit") setMtEdit({ id: rowId });
+    else if (key === "mt-disable" || key === "mt-enable") {
+      // 停用不删数据：用户选单隐身、已绑实例下次起任务降级回退（审计留痕）；启用即恢复
+      if (key === "mt-disable" && !window.confirm(
+        `停用模型模板「${rowName}」？停用后不再出现在用户选单，已绑定该模板的实例起任务时回退平台默认模型。`)) return;
+      setActionErr("");
+      void api.adminSetModelTemplateStatus(rowId, key === "mt-enable" ? "active" : "disabled")
+        .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
+    else if (key === "mt-default") {
+      setActionErr("");
+      void api.adminSetModelTemplateDefault(rowId)
+        .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "user-tags") {
       // 行内编辑领域标签（prompt 交互与「销毁容器 reason」同风格）：当前值从「标签」列单元格取（「设标签」=空）
       const ti = table?.cols.findIndex((c) => c.label === "标签") ?? -1;
@@ -205,6 +223,9 @@ export function AdminConsole() {
         <div style={{ flex: 1 }} />
         {page === "model-assets" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setRegisterOpen(true)}>{table.primary.label}</Button>
+        ) : null}
+        {page === "model-templates" && table?.primary ? (
+          <Button icon={table.primary.icon} onClick={() => setMtEdit({ id: null })}>{table.primary.label}</Button>
         ) : null}
         {page === "users" ? (
           <input
@@ -342,6 +363,7 @@ export function AdminConsole() {
       {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
       {grantsFor ? <ModelGrantsDialog target={grantsFor} onClose={() => setGrantsFor(null)} onSaved={() => { setGrantsFor(null); void load(); }} /> : null}
       <TemplateEditorModal open={!!tplEdit} templateId={tplEdit} onClose={() => setTplEdit(null)} onChanged={() => void load()} />
+      {mtEdit ? <ModelTemplateDialog target={mtEdit.id} onClose={() => setMtEdit(null)} onSaved={() => { setMtEdit(null); void load(); }} /> : null}
       {wlAddOpen ? <AddWhitelistDialog onClose={() => setWlAddOpen(false)} onSaved={() => { setWlAddOpen(false); void load(); }} /> : null}
     </>
   );

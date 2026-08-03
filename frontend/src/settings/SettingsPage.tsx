@@ -3,7 +3,8 @@ import { useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { Icon, Interactive, Pill, Button, TextInput, Toggle, Pagination } from "../ui";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
-import { api } from "../lib/api";
+import { api, API_MODE } from "../lib/api";
+import { resolveModelLabel } from "../workbench/modelLabel";
 import type { AgentInstance, AssetRow, ConfigVersionRow, Paged } from "../lib/api/types";
 
 /** 插件页左树每组每页条数（服务端分页；两组各自独立翻页）。 */
@@ -54,6 +55,35 @@ function AgentListPage({ agents, onOpen, onChanged }: {
   const [filter, setFilter] = useState<Filter>("all");
   const [confirmDel, setConfirmDel] = useState<AgentInstance | null>(null);
   const [creatingRunId, setCreatingRunId] = useState<string | null>(null);
+  // 「模型提供商」行真值（38 号）：后端列表行无 overlay，real 模式对个人实例小规模补拉
+  // （cap 20 并发 getAgentTeam + 各一次模型/模板清单 → resolveModelLabel）；任一失败静默回退兜底文案。
+  // 刻意不挪进全局 appState：清单视图才需要，放全局会让每次 boot 放大请求。
+  const [modelLabels, setModelLabels] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (API_MODE !== "real" || agents.length === 0) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const [models, mtpls] = await Promise.all([
+          api.getModelConfigs(), api.getModelTemplates().catch(() => []),
+        ]);
+        const targets = agents.slice(0, 20);
+        const rows = await Promise.all(targets.map((a) =>
+          api.getAgentTeam(a.instance_id).then((d) => [a.instance_id, d.overlay] as const).catch(() => null)));
+        if (controller.signal.aborted) return;
+        const next = new Map<string, string>();
+        for (const row of rows) {
+          if (!row) continue;
+          const label = resolveModelLabel(row[1], models, mtpls);
+          if (label) next.set(row[0], label);
+        }
+        setModelLabels(next);
+      } catch {
+        /* 静默：卡片回退「平台提供」 */
+      }
+    })();
+    return () => controller.abort();
+  }, [agents]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -108,7 +138,7 @@ function AgentListPage({ agents, onOpen, onChanged }: {
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <InfoRow icon="stack-2" label="系统范围" value={ag.workspace_label || ag.workspace_id} />
-                    <InfoRow icon="cpu" label="模型提供商" value={ag.model ?? "平台提供"} />
+                    <InfoRow icon="cpu" label="模型提供商" value={modelLabels.get(ag.instance_id) ?? ag.model ?? "平台提供"} />
                   </div>
                 </div>
                 <div style={{ display: "flex", alignItems: "stretch", borderTop: `1px solid #f0f1f4` }}>

@@ -11,13 +11,17 @@ from app import (
     identity_service,
     mcp_tool_annotation_service,
     model_asset_service,
+    model_template_service,
     runtime_config_service,
     sandbox_admin_service,
     template_service,
 )
 from domain.schemas import (
+    CreateModelTemplateRequest,
     ModelGrantsRequest,
     ModelStatusRequest,
+    ModelTemplateActionRequest,
+    ModelTemplateStatusRequest,
     RegisterModelAssetRequest,
     TestModelAssetRequest,
     SandboxDestroyRequest,
@@ -26,6 +30,7 @@ from domain.schemas import (
     SetTagsRequest,
     TemplateVersionActionRequest,
     UpdateModelAssetRequest,
+    UpdateModelTemplateRequest,
     UpdateRuntimeConfigRequest,
     WhitelistRequest,
 )
@@ -188,6 +193,35 @@ async def model_assets_grants(model_asset_id: str, _admin: Admin):
 @router.put("/model-assets/{model_asset_id}/grants")
 async def model_assets_save_grants(model_asset_id: str, req: ModelGrantsRequest, admin: Admin):
     return ok(await model_asset_service.save_grants(model_asset_id, req, admin["user_id"]))
+
+
+# ---- 模型模板（38 号：主/子 Agent 槽位模型编排；用户初始化「选一套模板」的管理侧数据源） ----
+@router.get("/model-templates")
+async def model_templates_list(_admin: Admin):
+    return ok(await model_template_service.admin_list())
+
+
+@router.post("/model-templates")
+async def model_templates_create(req: CreateModelTemplateRequest, admin: Admin):
+    return ok(await model_template_service.create(req, admin["user_id"]))
+
+
+@router.put("/model-templates/{model_template_id}:status")
+async def model_templates_status(model_template_id: str, req: ModelTemplateStatusRequest, admin: Admin):
+    await model_template_service.set_status(model_template_id, req.status, admin["user_id"])
+    return ok({"status": req.status})
+
+
+@router.post("/model-templates/{model_template_id}:set-default")
+async def model_templates_set_default(model_template_id: str, _req: ModelTemplateActionRequest, admin: Admin):
+    return ok(await model_template_service.set_default(model_template_id, admin["user_id"]))
+
+
+# 注意：与 /model-assets 同款冒号坑（见上方注释）——PUT /{id} 必须留在 `:status` 之后
+@router.put("/model-templates/{model_template_id}")
+async def model_templates_update(model_template_id: str, req: UpdateModelTemplateRequest, admin: Admin):
+    """更新模型模板（PATCH 语义，只改请求体里显式给出的键）。"""
+    return ok(await model_template_service.update(model_template_id, req, admin["user_id"]))
 
 
 @router.get("/audit/recent")
