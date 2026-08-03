@@ -126,6 +126,10 @@ _GENERIC_SAFE_KEYS = (
     "workspace_id",
     "model_id",
     "model_asset_id",
+    # 模型模板（38 号）：model.template_degraded 的降级槽位与模板 id、model_template.* 管理面事件。
+    # 本函数是 deny-by-default——不进白名单的自定义键会被静默剥掉（写入与审计读出双侧生效）
+    "model_template_id",
+    "slot",
     "access_scope",
     "template_id",
     "template_version_id",

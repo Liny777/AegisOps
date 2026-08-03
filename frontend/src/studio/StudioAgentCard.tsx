@@ -130,6 +130,10 @@ export function StudioAgentCard({ agent }: { agent: StudioAgentCardData }) {
   const rv = roleVisual(agent.role);
   const t = agent.totals;
   const ho = agent.handover;
+  // 卡头模型 chip（38 号主/子分模型后）：从本卡 llm calls 去重取值，不必逐条展开 CallRow 才看到模型
+  const cardModels = [...new Set(
+    agent.calls.filter((c): c is StudioLlmCall => c.kind === "llm").map((c) => c.model).filter(Boolean),
+  )];
   return (
     <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", borderBottom: `1px solid ${color.borderFaint}` }}>
@@ -145,6 +149,7 @@ export function StudioAgentCard({ agent }: { agent: StudioAgentCardData }) {
         </div>
         <div style={{ flex: 1 }} />
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          {cardModels.length ? <Chip icon="cpu" title="本 Agent 实际调用过的模型">{cardModels.join(" / ")}</Chip> : null}
           <Chip icon="sparkles">{t.llm_calls} LLM</Chip>
           <Chip icon="tool">{t.tool_calls} 工具</Chip>
           <Chip icon="arrows-exchange" title="输入 / 输出 token 合计">↑{fmtTokens(t.input_tokens)} ↓{fmtTokens(t.output_tokens)}</Chip>

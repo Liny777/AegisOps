@@ -13,6 +13,9 @@ import type {
   ScopeApp,
   AssetRow,
   ConfigVersionRow,
+  AdminModelAssetOption,
+  AdminModelTemplate,
+  ModelTemplateOption,
 } from "./types";
 
 export const mockMe = (role: "user" | "platform_admin" = "user"): Me => ({
@@ -343,11 +346,69 @@ export const mockConfigVersions: ConfigVersionRow[] = [
   { version_no: "v2", config_version_id: "cfg_...a2", status: "archived", change_reason: "切换实例默认模型", created_by: "0026demo01", creation_date: "07-06 09:30" },
 ];
 
+/* ---------------------- 模型模板（38 号）mock ---------------------- */
+/** 模板编辑弹窗的槽位候选（可变数组：管理台 mock 写闭环的真源）。 */
+export const mockModelAssets: AdminModelAssetOption[] = [
+  { model_asset_id: "ma_glm51", model_id: "glm-5.1", display_name: "GLM-5.1", status: "active" },
+  { model_asset_id: "ma_qwen35", model_id: "qwen3.5-instruct", display_name: "Qwen3.5", status: "active" },
+  { model_asset_id: "ma_deepseek", model_id: "deepseek-chat", display_name: "DeepSeek-V3", status: "active" },
+];
+
+export const mockModelTemplates: AdminModelTemplate[] = [
+  { model_template_id: "mtpl_balanced", display_name: "均衡（推荐）", description: "主 / 子 Agent 均使用 GLM-5.1，效果优先",
+    main_model_asset_id: "ma_glm51", main_model_id: "glm-5.1", main_model_name: "GLM-5.1",
+    sub_model_asset_id: "ma_glm51", sub_model_id: "glm-5.1", sub_model_name: "GLM-5.1",
+    is_default: true, status: "active" },
+  { model_template_id: "mtpl_economy", display_name: "经济", description: "主 GLM-5.1 + 子 Qwen3.5，子任务省成本",
+    main_model_asset_id: "ma_glm51", main_model_id: "glm-5.1", main_model_name: "GLM-5.1",
+    sub_model_asset_id: "ma_qwen35", sub_model_id: "qwen3.5-instruct", sub_model_name: "Qwen3.5",
+    is_default: false, status: "active" },
+  { model_template_id: "mtpl_retired", display_name: "旧组合（停用）", description: "",
+    main_model_asset_id: "ma_deepseek", main_model_id: "deepseek-chat", main_model_name: "DeepSeek-V3",
+    sub_model_asset_id: "ma_deepseek", sub_model_id: "deepseek-chat", sub_model_name: "DeepSeek-V3",
+    is_default: false, status: "disabled" },
+];
+
+/** AdminModelTemplate → 用户侧选项（mock 专用；real 由后端 ACL 过滤后下发，仅 active 行）。 */
+export const toUserModelTemplate = (t: AdminModelTemplate): ModelTemplateOption => ({
+  model_template_id: t.model_template_id,
+  display_name: t.display_name,
+  description: t.description || undefined,
+  main_model: { model_id: t.main_model_id, display_name: t.main_model_name || t.main_model_id },
+  sub_model: { model_id: t.sub_model_id, display_name: t.sub_model_name || t.sub_model_id },
+  is_default: t.is_default,
+  status: t.status,
+});
+
+/** 管理台「模型模板」表（real/mock 共用同一构建器，保证两模式表形状一致）。
+ * 启/停编码进 onClickKey（mt-disable/mt-enable）：onCellAction 只有 rowId，拿不到行状态。 */
+export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableData => ({
+  title: "模型模板",
+  primary: { label: "新建模板", icon: "plus", actionKey: "new-model-template" },
+  cols: [{ label: "模板名" }, { label: "主 Agent 模型" }, { label: "子 Agent 模型" },
+         { label: "默认", width: "72px" }, { label: "状态", width: "88px" },
+         { label: "编辑", width: "56px" }, { label: "启停", width: "56px" }, { label: "设默认", width: "72px" }],
+  rows: rows.map((t) => ({
+    id: t.model_template_id,
+    cells: [
+      { text: t.display_name },
+      { text: t.main_model_name || t.main_model_id },
+      { text: t.sub_model_name || t.sub_model_id },
+      t.is_default ? { text: "默认", kind: "badge" as const, tone: "good" as const } : { text: "—" },
+      { text: t.status, kind: "badge" as const, tone: t.status === "active" ? "good" as const : "neutral" as const },
+      { text: "编辑", kind: "action" as const, onClickKey: "mt-edit" },
+      t.status === "active"
+        ? { text: "停用", kind: "action" as const, onClickKey: "mt-disable" }
+        : { text: "启用", kind: "action" as const, onClickKey: "mt-enable" },
+      t.is_default ? { text: "—" } : { text: "设默认", kind: "action" as const, onClickKey: "mt-default" },
+    ],
+  })),
+});
+
 /* --------------------------- 管理台（30.6） --------------------------- */
 export const adminTables: Record<string, AdminTableData> = {
   templates: {
     title: "模板管理",
-    primary: { label: "新建模板", icon: "plus", actionKey: "new-template" },
     cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "148px" }],
     rows: [
       { id: "tpl_sre_fast_recovery", cells: [
@@ -451,7 +512,6 @@ export const mockTemplateDetail = {
         skills: [],
       },
       sub_agents: [{ key: "inspect", label: "巡检", role: "巡检", skills: [], mcp_tools: ["query_resource"] }],
-      default_llm: { provider: "platform", model: "qwen3.5-instruct" },
     },
   },
   draft_version: null as Record<string, unknown> | null,

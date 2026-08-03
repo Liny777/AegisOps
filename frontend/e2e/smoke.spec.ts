@@ -191,7 +191,33 @@ test("初始化向导：三步骨架（配置 → 确认能力清单 → 激活�
   await expect(page.getByText("身份确认")).toBeVisible();
   await expect(page.getByText("模型供应商")).toBeVisible();
   await expect(page.getByText("系统看护范围")).toBeVisible();
+  // 38 号：模型段改为「选一套模型模板」——默认模板卡（is_default→「默认推荐」徽标）+ 主/子槽位行可见
+  await expect(page.getByText("均衡（推荐）")).toBeVisible();
+  await expect(page.getByText("默认推荐")).toBeVisible();
+  await expect(page.getByText(/主 Agent：GLM-5\.1 · 子 Agent：GLM-5\.1/)).toBeVisible();
+  // 停用模板不进选单（mock 清单含 1 条 disabled 行，前端按 active 过滤）
+  await expect(page.getByText("旧组合（停用）")).toHaveCount(0);
+  // BYO 收进高级折叠区：默认收起（按钮不可见）→ 点开后「添加自定义模型」出现
+  await expect(page.getByRole("button", { name: "添加自定义模型" })).toHaveCount(0);
+  await page.getByText(/高级选项：接入自带模型/).click();
   await expect(page.getByRole("button", { name: "添加自定义模型" })).toBeVisible();
+});
+
+test("管理台模型模板页：表格 + 新建弹窗（主/子槽位下拉）", async ({ page }) => {
+  await page.goto("/admin/model-templates?as=admin");
+  // 表格：种子行 + 默认徽标 + 主/子模型列
+  await expect(page.getByRole("main").getByText("均衡（推荐）")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("main").getByText("经济", { exact: true })).toBeVisible();
+  // 「默认」出现两处（表头列名 + 均衡行徽标）——用 count 断言避免 strict mode 撞车
+  await expect(page.getByRole("main").getByText("默认", { exact: true })).toHaveCount(2);
+  // 「设默认」= 表头 + 两个非默认行动作（经济 / 旧组合）
+  await expect(page.getByRole("main").getByText("设默认", { exact: true })).toHaveCount(3);
+  // 新建弹窗：模板名输入 + 主/子 Agent 模型两个下拉 + 全局默认勾选
+  await page.getByRole("button", { name: "新建模板" }).click();
+  await expect(page.getByPlaceholder(/模板名/)).toBeVisible();
+  await expect(page.getByText("主 Agent 模型（任务理解与编排）")).toBeVisible();
+  await expect(page.getByText(/子 Agent 模型（巡检/)).toBeVisible();
+  await expect(page.getByText(/设为全局默认/)).toBeVisible();
 });
 
 test("全部 Agents 清单（/agents）", async ({ page }) => {

@@ -23,6 +23,10 @@ class TaskState:
     rca_source: str | None = None
     selected_model: str | None = None
     model_spec: dict[str, Any] | None = None  # 平台模型元数据（无 API Key）；agentscope 后端据此建真模型/回退 stub
+    # 模型模板 sub 槽位（overlay.model_template_id 绑定时由 start_task 解析）；None=子 Agent 跟随主模型。
+    # 子 TaskState 经 _child_state 取 `sub_model_spec or model_spec` 作为自己的 model_spec，自身不再持有本字段。
+    selected_sub_model: str | None = None
+    sub_model_spec: dict[str, Any] | None = None
     scope_ctx: dict[str, Any] | None = None  # ScopeContext（effective_appids/snapshot_id/revision）；Tool Gateway 校验用
     tool_annotations: dict[str, dict[str, Any]] | None = None  # 平台工具标注快照（by tool_name）；Gateway/ASK 判定用
     plan_notified: set[str] = field(default_factory=set)  # 已发过 runtime_plan.updated 的工具（每 task 每工具一次）

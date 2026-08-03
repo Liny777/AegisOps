@@ -16,7 +16,8 @@ def _params(st: Any, status: str, audit_trace_id: str) -> dict[str, Any]:
     return {
         "t": st.task_id, "r": st.run_id, "u": st.user_id, "i": st.instance_id,
         "s": status, "x": st.input_text, "rc": jsonb(st.rca) if st.rca else None,
-        "m": st.selected_model, "sc": jsonb(st.scope_ctx) if st.scope_ctx else None,
+        "m": st.selected_model, "sm": st.selected_sub_model,
+        "sc": jsonb(st.scope_ctx) if st.scope_ctx else None,
         "a": st.approval_id, "sa": st.started_at, "tr": audit_trace_id,
     }
 
@@ -29,10 +30,10 @@ async def upsert_snapshot(st: Any, status: str, audit_trace_id: str) -> None:
             """
             insert into sre_task_state
               (task_id, run_id, user_id, instance_id, task_status, input_text, rca_json,
-               selected_model, scope_ctx_json, approval_id, started_at, audit_trace_id,
-               created_by, last_updated_by)
-            values (%(t)s, %(r)s, %(u)s, %(i)s, %(s)s, %(x)s, %(rc)s, %(m)s, %(sc)s, %(a)s,
-                    %(sa)s, %(tr)s, %(u)s, %(u)s)
+               selected_model, selected_sub_model, scope_ctx_json, approval_id, started_at,
+               audit_trace_id, created_by, last_updated_by)
+            values (%(t)s, %(r)s, %(u)s, %(i)s, %(s)s, %(x)s, %(rc)s, %(m)s, %(sm)s, %(sc)s,
+                    %(a)s, %(sa)s, %(tr)s, %(u)s, %(u)s)
             """,
             p,
         )
@@ -40,8 +41,8 @@ async def upsert_snapshot(st: Any, status: str, audit_trace_id: str) -> None:
         await exec1(
             """
             update sre_task_state
-            set task_status=%(s)s, rca_json=%(rc)s, selected_model=%(m)s, approval_id=%(a)s,
-                last_update_date=now(), last_updated_by=%(u)s
+            set task_status=%(s)s, rca_json=%(rc)s, selected_model=%(m)s, selected_sub_model=%(sm)s,
+                approval_id=%(a)s, last_update_date=now(), last_updated_by=%(u)s
             where task_id=%(t)s
             """,
             p,

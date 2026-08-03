@@ -1188,8 +1188,10 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                     await emit(st, run, "openops.model.call.started", action="model_call",
                                message=f"模型推理中（{ev.model_name}）", payload={"model": ev.model_name})
                 elif isinstance(ev, ModelCallEndEvent):
+                    # model 取自 model_spec（EndEvent 不带 model_name）：主/子异模型后成对事件才能对上模型名
                     await emit(st, run, "openops.model.call.succeeded", action="model_call", message="模型推理完成",
-                               payload={"input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
+                               payload={"model": (st.model_spec or {}).get("model_id"),
+                                        "input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
                 elif isinstance(ev, TextBlockDeltaEvent):
                     # 助手文本增量（B5）：只发 SSE 供 AG-UI 流翻译成 TEXT_MESSAGE_*，不写审计（增量非事实）
                     events.publish(st.run_id, events.envelope(

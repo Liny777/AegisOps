@@ -55,6 +55,9 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   "openops.run.closed": { icon: "lock", tone: "neutral", title: "会话关闭" },
   "openops.model.selected": { icon: "cpu", tone: "neutral", title: "模型切换" },
   "model.selected": { icon: "cpu", tone: "neutral", title: "模型切换" },
+  // 38 号：模型模板槽位降级（授权撤销/模板停用 → 该槽回退平台默认）。双写裸名：审计行无 openops. 前缀
+  "openops.model.template_degraded": { icon: "alert-triangle", tone: "warning", title: "模型模板降级" },
+  "model.template_degraded": { icon: "alert-triangle", tone: "warning", title: "模型模板降级" },
   "run.closed": { icon: "lock", tone: "neutral", title: "会话关闭" },
 };
 
@@ -213,6 +216,8 @@ export function projectInstance(r: Record<string, unknown>, wsNames?: Map<string
     active_config_version: String(r.active_config_version_id ?? "").slice(0, 8),
     counts: "",
     desc: "自动接管告警，执行诊断与恢复",
-    model: "平台提供",
+    // 列表行无 overlay，投影层给不出真实模型——留空由 SettingsPage 补拉（resolveModelLabel）
+    // 后兜底「平台提供」；此处硬编码假信息会盖住补拉结果。
+    model: undefined,
   };
 }

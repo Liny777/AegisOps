@@ -24,6 +24,9 @@ import type {
   Paged,
   ConfigVersionRow,
   ModelOption,
+  ModelTemplateOption,
+  AdminModelTemplate,
+  AdminModelAssetOption,
   ActivityNode,
   ActivityEventsPage,
 } from "./types";
@@ -185,6 +188,9 @@ export interface OpenOpsApi {
   getAllMcps(): Promise<AssetRow[]>;
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
+  /** 模型模板清单（38 号：主/子 Agent 模型组合）——初始化向导「选一套模板」与展示面数据源；
+   * 按当前用户 ACL 过滤（主、子槽位模型都授权才可见）。 */
+  getModelTemplates(): Promise<ModelTemplateOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
   createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
   createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string; context_window_tokens?: number }): Promise<{ llm_config_id: string }>;
@@ -243,6 +249,15 @@ export interface OpenOpsApi {
   adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
   /** 平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名），客户端不持 Key。 */
   testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string }): Promise<TestConnResult>;
+  // admin 模型模板（38 号）：主/子 Agent 槽位编排 CRUD
+  adminListModelTemplates(): Promise<AdminModelTemplate[]>;
+  /** 模板编辑弹窗的槽位候选（复用 GET /admin/model-assets）。 */
+  adminListModelAssets(): Promise<AdminModelAssetOption[]>;
+  adminCreateModelTemplate(input: { display_name: string; description?: string; main_model_asset_id: string; sub_model_asset_id: string; is_default?: boolean }): Promise<void>;
+  /** PATCH 语义：只传要改的键。 */
+  adminUpdateModelTemplate(id: string, input: { display_name?: string; description?: string; main_model_asset_id?: string; sub_model_asset_id?: string }): Promise<void>;
+  adminSetModelTemplateStatus(id: string, status: "active" | "disabled"): Promise<void>;
+  adminSetModelTemplateDefault(id: string): Promise<void>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -261,8 +276,9 @@ export interface OpenOpsApi {
   createAgentTeam(input: { template_version_id: string; name: string; workspace_id: string; initial_overlay_json?: Record<string, unknown> }): Promise<{ instance_id: string }>;
   /** 编辑向导预填：实例真实字段 + active overlay（区别于 listAgents 的卡片展示投影）。 */
   getAgentTeam(instanceId: string): Promise<AgentTeamDetail>;
-  /** 编辑保存（POST :update）：改名 / 换 workspace / 换模型；user_llm_config_id=null 回平台默认。 */
-  updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null; platform_model_id: string | null }): Promise<void>;
+  /** 编辑保存（POST :update）：改名 / 换 workspace / 换模型。模型四态互斥：
+   * user_llm_config_id（BYO）/ model_template_id（模型模板）/ platform_model_id（legacy 原样回传）/ 全 null=平台默认。 */
+  updateAgentTeam(instanceId: string, input: { name: string; workspace_id: string; user_llm_config_id: string | null; platform_model_id: string | null; model_template_id: string | null }): Promise<void>;
   demoState(): WorkbenchState; // mock 兜底静态（composer skills/models 等）
 }
 
@@ -359,12 +375,23 @@ export function invalidateAvailableSkills(instanceId?: string): void {
   availableSkillsCache.invalidate(instanceId);
 }
 
-/** audit_event 行 → 审计页节点（recent 与 by-trace 共用）。 */
-const auditNode = (e: Record<string, unknown>) => ({
-  event: String(e.event_type),
-  detail: [e.task_id, e.reason_code, e.decision].filter(Boolean).join(" · ") || String(e.action ?? ""),
-  trace: e.audit_trace_id ? String(e.audit_trace_id) : undefined,
-});
+/** audit_event 行 → 审计页节点（recent 与 by-trace 共用）。
+ * detail 补读 payload 里的模型模板降级键（slot/model_template_id/reason_summary）——
+ * 审计页是 model.template_degraded 的唯一排障入口（工作台主 Agent 时间线已下线）。 */
+const auditNode = (e: Record<string, unknown>) => {
+  const p = (e.payload_redacted_json ?? {}) as Record<string, unknown>;
+  const extras = [
+    p.slot ? `槽位 ${String(p.slot)}` : null,
+    p.model_template_id ? `模板 ${String(p.model_template_id).slice(0, 8)}` : null,
+    p.reason_summary ? String(p.reason_summary) : null,
+  ].filter(Boolean) as string[];
+  return {
+    event: String(e.event_type),
+    detail: [e.task_id, e.reason_code, e.decision, ...extras].filter(Boolean).join(" · ")
+      || String(e.action ?? ""),
+    trace: e.audit_trace_id ? String(e.audit_trace_id) : undefined,
+  };
+};
 
 const realApi: OpenOpsApi = {
   async getMe() {
@@ -668,6 +695,22 @@ const realApi: OpenOpsApi = {
     }));
     return [...platform, ...mine];
   },
+  async getModelTemplates() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/models/templates");
+    return rows.map((r) => {
+      const main = (r.main_model ?? {}) as Record<string, unknown>;
+      const sub = (r.sub_model ?? {}) as Record<string, unknown>;
+      return {
+        model_template_id: String(r.model_template_id),
+        display_name: String(r.display_name),
+        description: r.description ? String(r.description) : undefined,
+        main_model: { model_id: String(main.model_id ?? ""), display_name: String(main.display_name ?? main.model_id ?? "") },
+        sub_model: { model_id: String(sub.model_id ?? ""), display_name: String(sub.display_name ?? sub.model_id ?? "") },
+        is_default: r.is_default === true,
+        status: r.status === "disabled" ? ("disabled" as const) : ("active" as const),
+      };
+    });
+  },
   async createSecret(secretName, secretValue) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/secrets", {
       method: "POST",
@@ -774,6 +817,10 @@ const realApi: OpenOpsApi = {
         })),
         total: d.total, page: d.page, pageSize: d.page_size,
       };
+    }
+    if (key === "model-templates") {
+      const rows = await realApi.adminListModelTemplates();
+      return M.buildModelTemplateTable(rows);
     }
     if (key === "model-assets") {
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-assets");
@@ -929,6 +976,60 @@ const realApi: OpenOpsApi = {
       body: { client_request_id: crid(), protocol: "openai_compatible", ...fields },
     });
   },
+  // ---- admin 模型模板（38 号）----
+  async adminListModelTemplates() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-templates");
+    return rows.map((r) => {
+      const main = (r.main_model ?? {}) as Record<string, unknown>;
+      const sub = (r.sub_model ?? {}) as Record<string, unknown>;
+      return {
+        model_template_id: String(r.model_template_id),
+        display_name: String(r.display_name),
+        description: r.description ? String(r.description) : "",
+        main_model_asset_id: String(main.model_asset_id ?? ""),
+        main_model_id: String(main.model_id ?? ""),
+        main_model_name: String(main.display_name ?? ""),
+        sub_model_asset_id: String(sub.model_asset_id ?? ""),
+        sub_model_id: String(sub.model_id ?? ""),
+        sub_model_name: String(sub.display_name ?? ""),
+        is_default: r.is_default === true,
+        status: r.status === "disabled" ? ("disabled" as const) : ("active" as const),
+      };
+    });
+  },
+  async adminListModelAssets() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-assets");
+    return rows.map((m) => ({
+      model_asset_id: String(m.model_asset_id),
+      model_id: String(m.model_id),
+      display_name: String(m.display_name),
+      status: String(m.status),
+    }));
+  },
+  async adminCreateModelTemplate(input) {
+    await apiFetch("/openops/v1/admin/model-templates", {
+      method: "POST",
+      body: { client_request_id: crid(), ...input },
+    });
+  },
+  async adminUpdateModelTemplate(id, input) {
+    await apiFetch(`/openops/v1/admin/model-templates/${id}`, {
+      method: "PUT",
+      body: { client_request_id: crid(), ...input },
+    });
+  },
+  async adminSetModelTemplateStatus(id, status) {
+    await apiFetch(`/openops/v1/admin/model-templates/${id}:status`, {
+      method: "PUT",
+      body: { client_request_id: crid(), status },
+    });
+  },
+  async adminSetModelTemplateDefault(id) {
+    await apiFetch(`/openops/v1/admin/model-templates/${id}:set-default`, {
+      method: "POST",
+      body: { client_request_id: crid() },
+    });
+  },
   async getSandboxCfg() {
     const rows = await apiFetch<{ key: string; val: unknown; desc: string }[]>("/openops/v1/admin/sandbox");
     return rows.map((r) => ({ key: r.key, desc: r.desc, val: String(r.val) }));
@@ -1053,7 +1154,8 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/agent-teams/${instanceId}:update`, {
       method: "POST",
       body: { client_request_id: crid(), name: input.name, workspace_id: input.workspace_id,
-              user_llm_config_id: input.user_llm_config_id, platform_model_id: input.platform_model_id },
+              user_llm_config_id: input.user_llm_config_id, platform_model_id: input.platform_model_id,
+              model_template_id: input.model_template_id },
     });
   },
 
@@ -1155,6 +1257,8 @@ const mockApi: OpenOpsApi = {
   reconcileAssets: () => delay({ skipped: true }),
   getConfigVersions: () => delay(M.mockConfigVersions),
   getModelConfigs: () => delay(M.mockModels),
+  // 用户侧模板清单：active 行 ∅ 过滤交给消费方；含 disabled 行供「已绑定但被停用」的兜底展示演示
+  getModelTemplates: () => delay(M.mockModelTemplates.map(M.toUserModelTemplate)),
   createSecret: () => delay({ secret_ref_id: "sec_mock", fingerprint: "sk-…mock" }),
   createLlmConfig: () => delay({ llm_config_id: "llm_mock_" + Math.random().toString(36).slice(2, 8) }),
   // mock「测试连接」：镜像后端 mock 探测（model 含 no-tool → 失败），供离线 UI 验证保存门。
@@ -1165,7 +1269,10 @@ const mockApi: OpenOpsApi = {
       : { ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const },
   ),
   testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const }),
-  getAdminTable: (key) => delay(M.adminTables[key] ?? M.adminTables.templates),
+  getAdminTable: (key) =>
+    key === "model-templates"
+      ? delay(M.buildModelTemplateTable([...M.mockModelTemplates]))  // 从可变数组现算：创建/启停后重拉即反映
+      : delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getSandboxContainers: () => delay([] as SandboxContainer[]),
@@ -1229,6 +1336,54 @@ const mockApi: OpenOpsApi = {
   adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
   adminSaveModelGrants: () => delay(undefined as unknown as void),
   adminRegisterModel: () => delay(undefined as unknown as void),
+  // ---- 模型模板（38 号）mock 写闭环：原地改可变数组（先例：createWorkspace/renameRun）----
+  adminListModelTemplates: () => delay([...M.mockModelTemplates]),
+  adminListModelAssets: () => delay([...M.mockModelAssets]),
+  adminCreateModelTemplate: (input) => {
+    const find = (id: string) => M.mockModelAssets.find((a) => a.model_asset_id === id);
+    const main = find(input.main_model_asset_id);
+    const sub = find(input.sub_model_asset_id);
+    if (input.is_default) M.mockModelTemplates.forEach((t) => { t.is_default = false; });
+    M.mockModelTemplates.push({
+      model_template_id: "mtpl_mock_" + Math.random().toString(36).slice(2, 8),
+      display_name: input.display_name,
+      description: input.description ?? "",
+      main_model_asset_id: input.main_model_asset_id,
+      main_model_id: main?.model_id ?? "", main_model_name: main?.display_name ?? "",
+      sub_model_asset_id: input.sub_model_asset_id,
+      sub_model_id: sub?.model_id ?? "", sub_model_name: sub?.display_name ?? "",
+      is_default: Boolean(input.is_default), status: "active",
+    });
+    return delay(undefined as unknown as void);
+  },
+  adminUpdateModelTemplate: (id, input) => {
+    const t = M.mockModelTemplates.find((x) => x.model_template_id === id);
+    if (t) {
+      if (input.display_name !== undefined) t.display_name = input.display_name;
+      if (input.description !== undefined) t.description = input.description;
+      const find = (aid: string) => M.mockModelAssets.find((a) => a.model_asset_id === aid);
+      if (input.main_model_asset_id) {
+        const m = find(input.main_model_asset_id);
+        t.main_model_asset_id = input.main_model_asset_id;
+        t.main_model_id = m?.model_id ?? ""; t.main_model_name = m?.display_name ?? "";
+      }
+      if (input.sub_model_asset_id) {
+        const s = find(input.sub_model_asset_id);
+        t.sub_model_asset_id = input.sub_model_asset_id;
+        t.sub_model_id = s?.model_id ?? ""; t.sub_model_name = s?.display_name ?? "";
+      }
+    }
+    return delay(undefined as unknown as void);
+  },
+  adminSetModelTemplateStatus: (id, status) => {
+    const t = M.mockModelTemplates.find((x) => x.model_template_id === id);
+    if (t) t.status = status;
+    return delay(undefined as unknown as void);
+  },
+  adminSetModelTemplateDefault: (id) => {
+    M.mockModelTemplates.forEach((t) => { t.is_default = t.model_template_id === id; });
+    return delay(undefined as unknown as void);
+  },
   getTemplates: () => delay(M.mockTemplates),
   getWorkspaces: () => delay(M.mockWorkspaces),
   getWorkspaceStatus: (workspaceId) => {
@@ -1289,10 +1444,16 @@ const mockApi: OpenOpsApi = {
       ag.name = input.name;
       ag.workspace_id = input.workspace_id;
       ag.workspace_label = M.mockWorkspaces.find((w) => w.workspace_id === input.workspace_id)?.name ?? input.workspace_id;
-      ag.model = input.user_llm_config_id ? "自定义模型" : input.platform_model_id || "平台默认模型";
+      const mtpl = input.model_template_id
+        ? M.mockModelTemplates.find((t) => t.model_template_id === input.model_template_id) : undefined;
+      ag.model = input.user_llm_config_id ? "自定义模型"
+        : mtpl ? mtpl.display_name
+        : input.platform_model_id || "平台默认模型";
     }
+    // 互斥写入优先级与后端 _update_body 同序：BYO > 模板 > legacy > 全空
     mockOverlays.set(instanceId,
       input.user_llm_config_id ? { user_llm_config_id: input.user_llm_config_id }
+      : input.model_template_id ? { model_template_id: input.model_template_id }
       : input.platform_model_id ? { platform_model_id: input.platform_model_id }
       : {});
     return delay(undefined as unknown as void);

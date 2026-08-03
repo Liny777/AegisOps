@@ -97,8 +97,11 @@ def _child_state(st: TaskState, sub: dict[str, Any], agent_key: str, text: str, 
     child.activity_tool_labels = dict(st.activity_tool_labels or {})
     child.scope_ctx = st.scope_ctx
     child.sandbox_cfg = st.sandbox_cfg
-    child.model_spec = st.model_spec
-    child.selected_model = st.selected_model
+    # 模型模板 sub 槽位优先（overlay.model_template_id 绑定时 start_task 已解析）；
+    # BYO/legacy/平台默认时 sub_model_spec 为 None → 回落主模型（主=子，旧语义）。
+    # spec 与标量必须同源取值，否则出现「spec 是子模型、selected_model 是主模型」的自相矛盾。
+    child.model_spec = st.sub_model_spec or st.model_spec
+    child.selected_model = st.selected_sub_model or st.selected_model
     allowed_sk = set(sub.get("skills") or [])
     # 切片源=skills_pool 未过滤全集：main.skills 白名单只收窄 main 自己，不得掐子角色技能池
     # （老 D6 主从技能面独立；skills_pool 缺省回退 available_skills 兼容旧快照恢复路径）
@@ -160,9 +163,9 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
     from agentscope.state import AgentState
 
     try:  # E4：治理 config（2.0.3 公开导出优先，私有路径兜底）
-        from agentscope.agent import ContextConfig, ReActConfig
+        from agentscope.agent import ContextConfig, ModelConfig, ReActConfig
     except ImportError:  # pragma: no cover
-        from agentscope.agent._config import ContextConfig, ReActConfig
+        from agentscope.agent._config import ContextConfig, ModelConfig, ReActConfig
 
     from runtime import agentscope_runtime as rt  # 惰性：打破与 runtime 主模块的循环 import
 
@@ -183,6 +186,8 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                              permission_context=rt._permission_context(child)),
             react_config=ReActConfig(max_iters=int(sub.get("max_iters", 20))),
             context_config=ContextConfig(tool_result_limit=int(sub.get("tool_result_limit", 24000))),
+            # 对齐主 Agent（agentscope_runtime run_task）：agent-loop 模型重试同一环境变量同一夹取
+            model_config=ModelConfig(max_retries=rt._clamped_env_int("OPENOPS_MODEL_LOOP_RETRIES", 0, 0, 3)),
             middlewares=studio.agent_middlewares(),  # Agent Studio span 捕获（关闭/降级时 []）
         )
         await emit(child, run, "openops.subagent.started", action=agent_key,
@@ -198,9 +203,11 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
                                message=f"[{agent_key}] 模型推理中（{ev.model_name}）",
                                payload={"model": ev.model_name})
                 elif isinstance(ev, ModelCallEndEvent):
+                    # model 取自 child.model_spec（EndEvent 不带 model_name）：子槽位异模型时审计可对账
                     await emit(child, run, "openops.model.call.succeeded", action="model_call",
                                message=f"[{agent_key}] 模型推理完成",
-                               payload={"input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
+                               payload={"model": (child.model_spec or {}).get("model_id"),
+                                        "input_tokens": ev.input_tokens, "output_tokens": ev.output_tokens})
                 elif isinstance(ev, TextBlockDeltaEvent):
                     chunks.append(ev.delta)  # 子文本不进主对话流（汇报经工具返回给 main），只累积
                 elif isinstance(ev, RequireUserConfirmEvent):

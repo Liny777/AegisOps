@@ -322,6 +322,21 @@ CREATE TABLE IF NOT EXISTS sre_model_access_grant (
   deleted_at timestamptz
 );
 
+CREATE TABLE IF NOT EXISTS sre_model_template (
+  model_template_id uuid NOT NULL PRIMARY KEY,
+  display_name text NOT NULL,
+  description text,
+  main_model_asset_id uuid NOT NULL,
+  sub_model_asset_id uuid NOT NULL,
+  is_default boolean NOT NULL DEFAULT false,
+  status text NOT NULL DEFAULT 'active',
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+
 CREATE TABLE IF NOT EXISTS sre_agent_run (
   agent_run_id uuid NOT NULL PRIMARY KEY,
   user_id text NOT NULL,
@@ -439,6 +454,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_model_access_grant_user
 CREATE INDEX IF NOT EXISTS ix_model_access_grant_user
   ON sre_model_access_grant (user_id)
   WHERE deleted_at IS NULL;
+
+-- 模型模板：未删行 display_name 唯一；全局至多一个默认——
+-- 应用层两步切换（先清旧默认再置新），并发竞态由部分唯一索引兜底（同 ux_tplver_active 哲学）
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_template_name
+  ON sre_model_template (display_name)
+  WHERE deleted_at IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS ux_model_template_default
+  ON sre_model_template (is_default)
+  WHERE is_default AND deleted_at IS NULL;
 
 -- 软删后 template_key 可复用，与实例 owner+name 的处理一致
 CREATE UNIQUE INDEX IF NOT EXISTS ux_tpl_key
@@ -912,6 +937,20 @@ COMMENT ON COLUMN sre_model_access_grant.created_by IS '创建人工号';
 COMMENT ON COLUMN sre_model_access_grant.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_model_access_grant.deleted_at IS '软删除时间，NULL 表示未删除';
 
+COMMENT ON TABLE sre_model_template IS '模型模板（主 Agent + 子 Agent 两槽位；管理台「模型模板」页编排）：实例 overlay.model_template_id 绑定，运行时逐槽过 B7 ACL 解析';
+COMMENT ON COLUMN sre_model_template.model_template_id IS '模型模板主键';
+COMMENT ON COLUMN sre_model_template.display_name IS '模板展示名（未删行唯一），如「均衡（推荐）」';
+COMMENT ON COLUMN sre_model_template.description IS '模板说明，可空';
+COMMENT ON COLUMN sre_model_template.main_model_asset_id IS '主 Agent 槽位 → sre_model_asset.model_asset_id（应用层校验，无外键）';
+COMMENT ON COLUMN sre_model_template.sub_model_asset_id IS '子 Agent 槽位 → sre_model_asset.model_asset_id（全部子 Agent 共用一个槽位）';
+COMMENT ON COLUMN sre_model_template.is_default IS '全局唯一默认（ux_model_template_default 兜底）；仅影响用户选单预选，不影响运行时解析';
+COMMENT ON COLUMN sre_model_template.status IS 'active / disabled：disabled 不进用户选单，已绑实例运行时回退平台默认并留痕';
+COMMENT ON COLUMN sre_model_template.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_model_template.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_model_template.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_model_template.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_model_template.deleted_at IS '软删除时间，NULL 表示未删除';
+
 COMMENT ON TABLE sre_agent_run IS 'OpenOps 对 AgentScope 运行态的业务索引';
 COMMENT ON COLUMN sre_agent_run.agent_run_id IS '运行索引主键';
 COMMENT ON COLUMN sre_agent_run.user_id IS '运行发起人工号';
@@ -1045,6 +1084,7 @@ CREATE TABLE IF NOT EXISTS sre_task_state (
   input_text text NOT NULL DEFAULT '',
   rca_json jsonb,
   selected_model text,
+  selected_sub_model text,
   scope_ctx_json jsonb,
   approval_id text,
   started_at text,
@@ -1066,6 +1106,7 @@ COMMENT ON COLUMN sre_task_state.task_status IS 'running / completed / failed / 
 COMMENT ON COLUMN sre_task_state.input_text IS '任务输入文本';
 COMMENT ON COLUMN sre_task_state.rca_json IS 'RCA 状态快照 JSON，供任务状态恢复展示';
 COMMENT ON COLUMN sre_task_state.selected_model IS '任务选用的模型标识';
+COMMENT ON COLUMN sre_task_state.selected_sub_model IS '子 Agent 槽位选用的模型标识（模型模板 sub 槽）；NULL=跟随主模型（BYO/legacy/平台默认）';
 COMMENT ON COLUMN sre_task_state.scope_ctx_json IS '任务范围上下文快照，含 effective_appids、snapshot_id 和 revision';
 COMMENT ON COLUMN sre_task_state.approval_id IS '当前关联审批请求 ID，可空';
 COMMENT ON COLUMN sre_task_state.started_at IS '任务开始时间，ISO 8601 文本';

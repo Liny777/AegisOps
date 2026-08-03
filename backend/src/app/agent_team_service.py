@@ -11,9 +11,11 @@ from infra.repositories import agent_teams, audit, templates
 from runtime import task_registry
 
 # 初始化 payload 白名单（INIT-004：非 V1 字段忽略）
-# user_llm_config_id = 用户自带 LLM 作实例默认；platform_model_id = 平台模型（管理员注册且已授权）作实例默认。
-# 二者互斥，均缺省 → 平台默认（OPENOPS_RUNTIME_MODEL）。运行时解析见 run_state_service 实例默认段。
-_OVERLAY_ALLOWED = {"main_role_append", "user_llm_config_id", "platform_model_id"}
+# user_llm_config_id = 用户自带 LLM（主=子）；model_template_id = 模型模板（主/子槽位，38 号）；
+# platform_model_id = 平台模型 legacy（主=子）。三键互斥，均缺省 → 平台默认（OPENOPS_RUNTIME_MODEL）。
+# 运行时解析见 run_state_service 实例默认段。
+_OVERLAY_ALLOWED = {"main_role_append", "user_llm_config_id", "platform_model_id", "model_template_id"}
+_MODEL_OVERLAY_KEYS = ("user_llm_config_id", "model_template_id", "platform_model_id")
 
 
 async def _ensure_platform_model_authorized(user_id: str, model_id: Any) -> None:
@@ -24,6 +26,20 @@ async def _ensure_platform_model_authorized(user_id: str, model_id: Any) -> None
     from app import model_asset_service  # 延迟导入：避免与 model_asset_service 潜在环
     if not await model_asset_service.is_authorized(user_id, str(model_id)):
         raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该平台模型未对你授权，请联系管理员申请白名单")
+
+
+async def _ensure_model_template_bindable(user_id: str, model_template_id: Any) -> None:
+    """选模型模板作实例默认时 fail-closed 复校（模板 active + 主/子槽位模型都对该用户授权）；
+    防越权直调兜底，口径同 _ensure_platform_model_authorized。"""
+    if not model_template_id:
+        return
+    from app import model_template_service  # 延迟导入：避免潜在环
+    await model_template_service.ensure_bindable(user_id, str(model_template_id))
+
+
+def _ensure_model_keys_exclusive(overlay: dict[str, Any]) -> None:
+    if sum(1 for k in _MODEL_OVERLAY_KEYS if overlay.get(k)) > 1:
+        raise ApiError(Err.VALIDATION_FAILED, "模型绑定互斥：自带 LLM / 模型模板 / 平台模型只能选其一")
 
 
 def _owner_check(row: dict[str, Any] | None, user_id: str) -> dict[str, Any]:
@@ -66,7 +82,9 @@ async def _create_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
         raise ApiError(Err.VALIDATION_FAILED, "同名实例已存在")
 
     overlay = {k: v for k, v in (req.initial_overlay_json or {}).items() if k in _OVERLAY_ALLOWED}
+    _ensure_model_keys_exclusive(overlay)
     await _ensure_platform_model_authorized(uid, overlay.get("platform_model_id"))
+    await _ensure_model_template_bindable(uid, overlay.get("model_template_id"))
     inst = await agent_teams.create_instance(
         uid, str(tv["template_id"]), req.template_version_id, req.name,
         req.workspace_id, req.scope_revision or ws["scope_revision"], overlay,
@@ -132,13 +150,17 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
         if ws["sync_status"] != "ready":
             raise ApiError(Err.WORKSPACE_NOT_READY, "workspace 未就绪，暂不能激活")  # INIT-003 口径
 
-    # 模型 overlay：save_config 是整体替换，这里必须读旧值合并、只动模型两键（保 main_role_append）。
-    # user_llm_config_id（自带 LLM）与 platform_model_id（平台模型）互斥，二者皆空 = 回平台默认。
+    # 模型 overlay：save_config 是整体替换，这里必须读旧值合并、只动模型三键（保 main_role_append）。
+    # 互斥优先级：user_llm_config_id（BYO）> model_template_id（模板）> platform_model_id（legacy），
+    # 全空 = 回平台默认。剥离集合必须含全部三键，否则旧键跨版本残留会破坏互斥。
     prev = await agent_teams.get_config_version(str(row["active_config_version_id"]))
     prev_overlay = dict((prev or {}).get("overlay_json") or {})
-    new_overlay = {k: v for k, v in prev_overlay.items() if k not in ("user_llm_config_id", "platform_model_id")}
+    new_overlay = {k: v for k, v in prev_overlay.items() if k not in _MODEL_OVERLAY_KEYS}
     if req.user_llm_config_id:
         new_overlay["user_llm_config_id"] = req.user_llm_config_id
+    elif req.model_template_id:
+        await _ensure_model_template_bindable(uid, req.model_template_id)
+        new_overlay["model_template_id"] = req.model_template_id
     elif req.platform_model_id:
         await _ensure_platform_model_authorized(uid, req.platform_model_id)
         new_overlay["platform_model_id"] = req.platform_model_id
@@ -155,6 +177,7 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
         await derive_config_version(row, uid, "edit: 模型变更", overlay=new_overlay)
         changed["user_llm_config_id"] = req.user_llm_config_id
         changed["platform_model_id"] = req.platform_model_id
+        changed["model_template_id"] = req.model_template_id
     if changed:  # payload 只含变化字段的纯标识符（SEC-001）
         await audit.insert_event(
             audit_trace_id=instance_id, event_type="instance.updated",
@@ -244,6 +267,8 @@ async def save_config(user: dict[str, Any], instance_id: str, req: Any) -> dict[
     if req.base_config_version_id and req.base_config_version_id != str(row["active_config_version_id"]):
         raise ApiError(Err.CONFIG_VERSION_INVALID, "配置已被更新，请刷新后重试")
     overlay = {k: v for k, v in (req.overlay_json or {}).items() if k in _OVERLAY_ALLOWED}
+    _ensure_model_keys_exclusive(overlay)
+    await _ensure_model_template_bindable(user["user_id"], overlay.get("model_template_id"))
     out = await derive_config_version(row, user["user_id"], req.change_reason or "update", overlay=overlay)
     return {"config_version": row_json(out["config_version"])}
 
