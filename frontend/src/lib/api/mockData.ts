@@ -402,7 +402,7 @@ export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableD
   cols: [{ label: "模板名" }, { label: "主 Agent 模型" }, { label: "子 Agent 模型" },
          { label: "授权范围" }, { label: "默认", width: "64px" }, { label: "状态", width: "80px" },
          { label: "授权", width: "88px" }, { label: "编辑", width: "56px" },
-         { label: "启停", width: "56px" }, { label: "设默认", width: "72px" }],
+         { label: "启停", width: "56px" }, { label: "设默认", width: "72px" }, { label: "删除", width: "56px" }],
   rows: rows.map((t) => ({
     id: t.model_template_id,
     cells: [
@@ -420,6 +420,7 @@ export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableD
         ? { text: "停用", kind: "action" as const, onClickKey: "mt-disable" }
         : { text: "启用", kind: "action" as const, onClickKey: "mt-enable" },
       t.is_default ? { text: "—" } : { text: "设默认", kind: "action" as const, onClickKey: "mt-default" },
+      { text: "删除", kind: "action" as const, onClickKey: "mt-delete" },
     ],
   })),
 });
@@ -431,17 +432,20 @@ export const adminTables: Record<string, AdminTableData> = {
   "model-assets": {
     title: "模型资产",
     primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-    cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }],
+    cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }, { label: "删除", width: "56px" }],
     rows: [
       { id: "ma_glm51", cells: [
         { text: "GLM-5.1" }, { text: "OpenAI 兼容" }, { text: "glm-5.1", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
+        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
       { id: "ma_qwen35", cells: [
         { text: "Qwen3.5" }, { text: "OpenAI 兼容" }, { text: "qwen3.5-instruct", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
+        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
       { id: "ma_txllm", cells: [
         { text: "交易大模型-TX" }, { text: "OpenAI 兼容" }, { text: "tx-llm-v2", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
+        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
     ],
   },
   templates: {

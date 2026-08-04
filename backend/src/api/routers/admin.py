@@ -185,6 +185,13 @@ async def model_assets_update(model_asset_id: str, req: UpdateModelAssetRequest,
     return ok(await model_asset_service.update(model_asset_id, req, admin["user_id"]))
 
 
+@router.delete("/model-assets/{model_asset_id}")
+async def model_assets_delete(model_asset_id: str, admin: Admin):
+    """软删模型资产（38.2）：被模板槽位引用则 400（先调整模板）；同 model_id 删后可重注册。"""
+    await model_asset_service.delete(model_asset_id, admin["user_id"])
+    return ok({"deleted": True})
+
+
 # 38.1：资产级授权端点（GET/PUT /model-assets/{id}/grants）已移除——授权迁模板维度，见下方模板 /grants。
 
 # ---- 模型模板（38 号：主/子 Agent 槽位模型编排；用户初始化「选一套模板」的管理侧数据源） ----
@@ -214,6 +221,13 @@ async def model_templates_set_default(model_template_id: str, _req: ModelTemplat
 async def model_templates_update(model_template_id: str, req: UpdateModelTemplateRequest, admin: Admin):
     """更新模型模板（PATCH 语义，只改请求体里显式给出的键）。"""
     return ok(await model_template_service.update(model_template_id, req, admin["user_id"]))
+
+
+@router.delete("/model-templates/{model_template_id}")
+async def model_templates_delete(model_template_id: str, admin: Admin):
+    """软删模型模板（38.2）：允许删默认模板；已绑实例下次任务走 TEMPLATE_UNAVAILABLE 降级回平台默认。"""
+    await model_template_service.delete(model_template_id, admin["user_id"])
+    return ok({"deleted": True})
 
 
 # /grants 带 `/`（路径参数不跨段），不受冒号坑影响，注册顺序自由

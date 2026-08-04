@@ -223,6 +223,40 @@ def test_model_asset_update_writes_audit(client):
     assert any(e["event_type"] == "model_asset.updated" for e in recent)
 
 
+def test_model_asset_delete_blocked_when_referenced(client):
+    """删资产（38.2）fail-closed：被模板槽位引用 → 400 提示先调整模板（seed 模板引用 glm-5.1）。"""
+    aid = _asset(client, "glm-5.1")["model_asset_id"]
+    r = client.delete(f"/api/openops/v1/admin/model-assets/{aid}", headers=ADMIN_HEADERS)
+    assert r.status_code == 400 and "模型模板引用" in r.json()["error"]["message"]
+    assert _asset(client, "glm-5.1")["status"] == "active"  # 未被误删
+
+
+def test_model_asset_delete_and_reregister(client):
+    """删未被引用的资产：列表消失 → 同 model_id 可重注册（唯一索引带 WHERE deleted_at IS NULL）；
+    重复删 404、非管理员 403、写审计 model_asset.deleted。"""
+    unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": "d1", "display_name": "临时模型", "model_id": "tmp-llm-1",
+                             "secret_env_var": "OPENOPS_TMP_KEY"}))
+    aid = _asset(client, "tmp-llm-1")["model_asset_id"]
+    assert client.delete(f"/api/openops/v1/admin/model-assets/{aid}",
+                         headers=USER_HEADERS).status_code == 403  # 非管理员
+    out = unwrap(client.request("DELETE", f"/api/openops/v1/admin/model-assets/{aid}",
+                                headers=ADMIN_HEADERS))
+    assert out["deleted"] is True
+    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
+    assert all(r["model_id"] != "tmp-llm-1" for r in rows)
+    assert "tmp-llm-1" not in _platform_models(client, USER_HEADERS)  # 用户侧同步消失
+    assert client.delete(f"/api/openops/v1/admin/model-assets/{aid}",
+                         headers=ADMIN_HEADERS).status_code == 404  # 重复删
+
+    # 同 model_id 重注册 OK
+    assert client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": "d2", "display_name": "临时模型二代",
+                             "model_id": "tmp-llm-1"}).status_code == 200
+    recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
+    assert any(e["event_type"] == "model_asset.deleted" for e in recent)
+
+
 def test_model_acl_005_legacy_binding_open(client):
     """legacy platform_model_id 绑定（38.1 退化）：遗留 restricted 资产也可绑（存在+active 即可）。"""
     inst = create_instance(client, name="legacy 绑 tx")

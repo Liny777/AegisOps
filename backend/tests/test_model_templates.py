@@ -439,6 +439,60 @@ def test_mt_016_migration_file_idempotent_and_names_fit():
     assert "DROP " not in sql.upper()
 
 
+def test_mt_018_delete_template(client):
+    """软删模板（38.2）：admin/用户列表消失、grants 404、重复删 404、同名可重建；
+    允许删默认模板（is_default 只影响选单预选）；写审计 model_template.deleted；非管理员 403。"""
+    tid = next(t["model_template_id"] for t in _admin_templates(client) if t["display_name"] == "经济")
+    assert client.delete(f"/api/openops/v1/admin/model-templates/{tid}",
+                         headers=USER_HEADERS).status_code == 403  # 非管理员
+    out = unwrap(client.request("DELETE", f"/api/openops/v1/admin/model-templates/{tid}",
+                                headers=ADMIN_HEADERS))
+    assert out["deleted"] is True
+    assert "经济" not in {t["display_name"] for t in _admin_templates(client)}
+    assert "经济" not in {t["display_name"] for t in _user_templates(client)}
+    assert client.get(f"/api/openops/v1/admin/model-templates/{tid}/grants",
+                      headers=ADMIN_HEADERS).status_code == 404
+    assert client.delete(f"/api/openops/v1/admin/model-templates/{tid}",
+                         headers=ADMIN_HEADERS).status_code == 404  # 重复删
+
+    # display_name 唯一索引带 WHERE deleted_at IS NULL：同名可重建
+    assets = _assets_by_model_id(client)
+    assert _create_template(client, "经济", assets["glm-5.1"]["model_asset_id"],
+                            assets["qwen3.5-instruct"]["model_asset_id"]).status_code == 200
+
+    # 允许删默认模板：删后无默认（用户选单回退首个 active，前端已兜底）
+    default_tid = next(t["model_template_id"] for t in _admin_templates(client) if t["is_default"])
+    unwrap(client.request("DELETE", f"/api/openops/v1/admin/model-templates/{default_tid}",
+                          headers=ADMIN_HEADERS))
+    assert sum(1 for t in _admin_templates(client) if t["is_default"]) == 0
+
+    recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
+    assert any(e["event_type"] == "model_template.deleted" for e in recent)
+
+
+def test_mt_019_delete_bound_template_degrades(client):
+    """删除已绑实例的模板 → 下次起任务走 TEMPLATE_UNAVAILABLE 降级回平台默认（既有 fail-safe 链）。"""
+    assets = _assets_by_model_id(client)
+    tpl = unwrap(_create_template(client, "将被删除的组合", assets["glm-5.1"]["model_asset_id"],
+                                  assets["qwen3.5-instruct"]["model_asset_id"]))
+    inst = unwrap(_create_team(client, USER_HEADERS, "绑将删模板",
+                               {"model_template_id": tpl["model_template_id"]}))["instance"]
+    unwrap(client.request("DELETE", f"/api/openops/v1/admin/model-templates/{tpl['model_template_id']}",
+                          headers=ADMIN_HEADERS))
+    run = create_run(client, inst["instance_id"])
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+                       json={"client_request_id": f"t_{time.time_ns()}", "input_text": "排查"}))
+    state = wait_until(lambda: _state_with_model(client, run["agent_run_id"]))
+    assert state["active_task"]["selected_model"] == "glm-5.1"  # 主回平台默认
+    assert state["active_task"]["selected_sub_model"] is None    # sub 跟随主
+
+    events = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/events", headers=USER_HEADERS))
+    items = events["items"] if isinstance(events, dict) else events
+    deg = next(e for e in items if e["event_type"] == "model.template_degraded")
+    assert deg["payload_redacted_json"]["slot"] == "template"
+    assert "TEMPLATE_UNAVAILABLE" in str(deg["payload_redacted_json"].get("reason_summary"))
+
+
 def test_mt_017_grants_crud_audit_and_404(client):
     """模板授权端点（38.1，镜像原资产侧 acl_005）：PUT/GET 往返、审计 model_template.grants_updated、
     all 清空白名单、未知模板 404。"""

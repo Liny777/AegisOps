@@ -107,6 +107,31 @@ async def set_status(model_template_id: str, status: str, by: str) -> int:
     )
 
 
+async def soft_delete(model_template_id: str, by: str) -> int:
+    """软删（38.2）：display_name 唯一索引带 WHERE deleted_at IS NULL，删后同名可重建；
+    grant 行原样保留作历史留痕；已绑实例下次 start_task 走 TEMPLATE_UNAVAILABLE 降级链。"""
+    return await exec1(
+        """
+        update sre_model_template set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where model_template_id=%(i)s and deleted_at is null
+        """,
+        {"i": model_template_id, "b": by},
+    )
+
+
+async def list_referencing_asset(model_asset_id: str) -> list[dict[str, Any]]:
+    """引用某模型资产（主或子槽位）的未删模板（38.2：删资产前的引用检查）。"""
+    return await q_all(
+        """
+        select model_template_id, display_name from sre_model_template
+        where deleted_at is null
+          and (main_model_asset_id=%(i)s or sub_model_asset_id=%(i)s)
+        order by creation_date
+        """,
+        {"i": model_asset_id},
+    )
+
+
 # 可经 PUT /admin/model-templates/{id} 改写的列。is_default / status 不在内（各有专用端点）；
 # access_scope 亦不在（/grants 专用端点，镜像旧资产侧口径）。
 _UPDATABLE = ("display_name", "description", "main_model_asset_id", "sub_model_asset_id")

@@ -259,6 +259,10 @@ export interface OpenOpsApi {
   adminUpdateModelTemplate(id: string, input: { display_name?: string; description?: string; main_model_asset_id?: string; sub_model_asset_id?: string }): Promise<void>;
   adminSetModelTemplateStatus(id: string, status: "active" | "disabled"): Promise<void>;
   adminSetModelTemplateDefault(id: string): Promise<void>;
+  /** 软删模板（38.2）：允许删默认模板；已绑实例下次任务降级回平台默认。 */
+  adminDeleteModelTemplate(id: string): Promise<void>;
+  /** 软删模型资产（38.2）：被模板槽位引用时后端 400（提示先调整模板）。 */
+  adminDeleteModelAsset(id: string): Promise<void>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -830,7 +834,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "模型资产",
         primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }],
+        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }, { label: "删除", width: "56px" }],
         rows: rows.map((m) => ({
           id: String(m.model_asset_id),
           cells: [
@@ -839,6 +843,7 @@ const realApi: OpenOpsApi = {
             { text: String(m.model_id), mono: true },
             { text: m.registered_by === "system" ? "平台" : String(m.registered_by) },
             { text: String(m.status), kind: "badge" as const, tone: m.status === "active" ? "good" as const : "neutral" as const },
+            { text: "删除", kind: "action" as const, onClickKey: "ma-delete" },
           ],
         })),
       };
@@ -1030,6 +1035,12 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { client_request_id: crid() },
     });
+  },
+  async adminDeleteModelTemplate(id) {
+    await apiFetch(`/openops/v1/admin/model-templates/${id}`, { method: "DELETE" });
+  },
+  async adminDeleteModelAsset(id) {
+    await apiFetch(`/openops/v1/admin/model-assets/${id}`, { method: "DELETE" });
   },
   async getSandboxCfg() {
     const rows = await apiFetch<{ key: string; val: unknown; desc: string }[]>("/openops/v1/admin/sandbox");
@@ -1397,6 +1408,25 @@ const mockApi: OpenOpsApi = {
   },
   adminSetModelTemplateDefault: (id) => {
     M.mockModelTemplates.forEach((t) => { t.is_default = t.model_template_id === id; });
+    return delay(undefined as unknown as void);
+  },
+  adminDeleteModelTemplate: (id) => {
+    const i = M.mockModelTemplates.findIndex((t) => t.model_template_id === id);
+    if (i >= 0) M.mockModelTemplates.splice(i, 1);
+    delete M.mockModelTemplateGrants[id];
+    return delay(undefined as unknown as void);
+  },
+  adminDeleteModelAsset: (id) => {
+    // 镜像后端 fail-closed：被 mock 模板槽位引用则拒删
+    const refs = M.mockModelTemplates.filter((t) => t.main_model_asset_id === id || t.sub_model_asset_id === id);
+    if (refs.length) {
+      return Promise.reject(new Error(
+        `该模型被模型模板引用（${refs.map((t) => t.display_name).join("、")}），请先在模板中更换主/子槽位或删除对应模板`));
+    }
+    const i = M.mockModelAssets.findIndex((a) => a.model_asset_id === id);
+    if (i >= 0) M.mockModelAssets.splice(i, 1);
+    const r = M.adminTables["model-assets"].rows.findIndex((row) => row.id === id);
+    if (r >= 0) M.adminTables["model-assets"].rows.splice(r, 1);
     return delay(undefined as unknown as void);
   },
   getTemplates: () => delay(M.mockTemplates),
