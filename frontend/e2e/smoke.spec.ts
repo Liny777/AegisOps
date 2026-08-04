@@ -203,20 +203,31 @@ test("初始化向导：三步骨架（配置 → 确认能力清单 → 激活�
   await expect(page.getByRole("button", { name: "添加自定义模型" })).toBeVisible();
 });
 
-test("管理台模型模板页：表格 + 新建弹窗（主/子槽位下拉）", async ({ page }) => {
+test("管理台模型模板页：表格 + 授权（38.1）+ 新建弹窗（主/子槽位下拉）", async ({ page }) => {
   await page.goto("/admin/model-templates?as=admin");
   // 表格：种子行 + 默认徽标 + 主/子模型列
   await expect(page.getByRole("main").getByText("均衡（推荐）")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("main").getByText("经济", { exact: true })).toBeVisible();
   // 「默认」出现两处（表头列名 + 均衡行徽标）——用 count 断言避免 strict mode 撞车
   await expect(page.getByRole("main").getByText("默认", { exact: true })).toHaveCount(2);
-  // 「设默认」= 表头 + 两个非默认行动作（经济 / 旧组合）
-  await expect(page.getByRole("main").getByText("设默认", { exact: true })).toHaveCount(3);
-  // 新建弹窗：模板名输入 + 主/子 Agent 模型两个下拉 + 全局默认勾选
+  // 「设默认」= 表头 + 三个非默认行动作（经济 / 交易专用（受限演示）/ 旧组合）
+  await expect(page.getByRole("main").getByText("设默认", { exact: true })).toHaveCount(4);
+  // 38.1 授权范围列：all → 全员开放徽标 ×3；restricted 演示行 → 限 1 人
+  await expect(page.getByRole("main").getByText("交易专用（受限演示）")).toBeVisible();
+  await expect(page.getByRole("main").getByText("限 1 人")).toBeVisible();
+  await expect(page.getByRole("main").getByText("全员开放").first()).toBeVisible();
+  // 38.1 白名单授权弹窗：restricted 行（mock 第 3 行）回填「限定人员」
+  // AdminConsole 表格是 div 网格无 row role——按动作列出现次序定位（mock 行序固定：均衡/经济/交易专用/旧组合）
+  await page.getByRole("main").getByText("白名单授权", { exact: true }).nth(2).click();
+  await expect(page.getByText(/白名单授权 · 交易专用（受限演示）/)).toBeVisible();
+  await expect(page.getByRole("radio").nth(1)).toBeChecked(); // restricted 回填
+  await page.getByRole("button", { name: "取消" }).click();
+  // 新建弹窗：模板名输入 + 主/子 Agent 模型两个下拉 + 授权范围 radio + 全局默认勾选
   await page.getByRole("button", { name: "新建模板" }).click();
   await expect(page.getByPlaceholder(/模板名/)).toBeVisible();
   await expect(page.getByText("主 Agent 模型（任务理解与编排）")).toBeVisible();
   await expect(page.getByText(/子 Agent 模型（巡检/)).toBeVisible();
+  await expect(page.getByText(/限定人员（创建后在列表/)).toBeVisible();
   await expect(page.getByText(/设为全局默认/)).toBeVisible();
 });
 

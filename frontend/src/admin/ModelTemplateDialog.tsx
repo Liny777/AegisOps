@@ -6,8 +6,9 @@ import type { AdminModelAssetOption } from "../lib/api/types";
 
 /** 模型模板新建/编辑弹窗（38 号，30.6「模型模板」页）：
  * 模板名 / 描述 + 主/子 Agent 模型两个下拉（候选 = 已注册的 active 平台模型资产，value=model_asset_id）。
- * 主=子允许（同一模型跑双槽位是合法配置）。新建态可勾「设为全局默认」；编辑态默认走表格「设默认」动作
- * （后端 update 接口刻意无 is_default，默认切换是独立的原子两步端点）。 */
+ * 主=子允许（同一模型跑双槽位是合法配置）。新建态可勾「设为全局默认」、可选授权范围（38.1：
+ * 授权在模板维度）；编辑态默认走表格「设默认」/「白名单授权」动作（后端 update 接口刻意
+ * 无 is_default / access_scope，各有专用端点）。 */
 export function ModelTemplateDialog({ target, onClose, onSaved }: {
   target: string | null; // null=新建；id=编辑
   onClose: () => void; onSaved: () => void;
@@ -15,6 +16,7 @@ export function ModelTemplateDialog({ target, onClose, onSaved }: {
   const [assets, setAssets] = useState<AdminModelAssetOption[]>([]);
   const [f, setF] = useState({ display_name: "", description: "", main_model_asset_id: "", sub_model_asset_id: "" });
   const [isDefault, setIsDefault] = useState(false);
+  const [scope, setScope] = useState<"all" | "restricted">("all");
   const [busy, setBusy] = useState(true);
   const [err, setErr] = useState("");
 
@@ -40,7 +42,7 @@ export function ModelTemplateDialog({ target, onClose, onSaved }: {
     const base = { display_name: f.display_name.trim(), description: f.description.trim(),
                    main_model_asset_id: f.main_model_asset_id, sub_model_asset_id: f.sub_model_asset_id };
     (target ? api.adminUpdateModelTemplate(target, base)
-            : api.adminCreateModelTemplate({ ...base, is_default: isDefault }))
+            : api.adminCreateModelTemplate({ ...base, access_scope: scope, is_default: isDefault }))
       .then(onSaved)
       .catch((e) => { setErr((e as Error).message); setBusy(false); });
   };
@@ -77,8 +79,18 @@ export function ModelTemplateDialog({ target, onClose, onSaved }: {
             {slotSelect("main_model_asset_id", "主 Agent 模型（任务理解与编排）")}
             {slotSelect("sub_model_asset_id", "子 Agent 模型（巡检 / 诊断 / 恢复等全部子角色共用）")}
             <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.5, marginTop: -2 }}>
-              主 / 子槽位可选同一模型；用户须对两个槽位的模型都有授权才能看到并选用本模板。
+              主 / 子槽位可选同一模型；模板对用户的可见性由「授权范围」控制（全员开放，或经列表「白名单授权」限定人员）。
             </div>
+            {target ? null : (
+              <div style={{ display: "flex", gap: 14, fontSize: 12.5 }}>
+                {(["all", "restricted"] as const).map((s) => (
+                  <label key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+                    <input type="radio" checked={scope === s} onChange={() => setScope(s)} />
+                    {s === "all" ? "全员开放" : "限定人员（创建后在列表「白名单授权」配置）"}
+                  </label>
+                ))}
+              </div>
+            )}
             {target ? null : (
               <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12.5, cursor: "pointer" }}>
                 <input type="checkbox" checked={isDefault} onChange={(e) => setIsDefault(e.target.checked)} />

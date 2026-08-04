@@ -239,9 +239,14 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
         _res = await model_gateway.resolve_template_models(str(_tpl_id), uid)
         st.model_spec, st.sub_model_spec = _res["main_spec"], _res["sub_spec"]
         st.selected_model, st.selected_sub_model = _res["main_selected"], _res["sub_selected"]
-        for _d in _res["degraded"]:  # 槽位失效回退平台默认：审计留痕 + SSE（fail-safe 不阻断任务）
-            _msg = ("模型模板不可用，已回退平台默认模型" if _d["slot"] == "template"
-                    else f"模板{'主' if _d['slot'] == 'main' else '子'} Agent 模型槽位未授权或已失效，该槽位回退平台默认")
+        for _d in _res["degraded"]:  # 模板失效/未授权 或 槽位资产失效：回退平台默认（fail-safe 不阻断）
+            if _d["slot"] == "template":
+                _msg = ("模型模板未对你授权，已回退平台默认模型"
+                        if _d.get("reason") == "TEMPLATE_NOT_AUTHORIZED"
+                        else "模型模板不可用，已回退平台默认模型")
+            else:
+                _msg = (f"模板{'主' if _d['slot'] == 'main' else '子'} Agent 模型槽位已失效"
+                        f"（资产禁用或删除），该槽位回退平台默认")
             _eid = await audit.insert_event(
                 audit_trace_id=trace, event_type="model.template_degraded", user_id=uid, run_id=run_id,
                 instance_id=st.instance_id, task_id=task_id, action=str(_d["slot"]), actor_type="system",
@@ -252,9 +257,9 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, A
                                                    audit_trace_id=trace, event_id=_eid))
     else:
         if _overlay.get("platform_model_id"):
-            # legacy 平台模型：交给 resolve_runtime_model 按用户授权解析（越权/失效 → 回平台默认，fail-safe）
+            # legacy 平台模型：交给 resolve_runtime_model 在全 active 池解析（失效 → 回平台默认，fail-safe）
             st.selected_model = str(_overlay["platform_model_id"])
-        # 平台模型元数据（无 Key）挂到 TaskState；按用户授权解析（B7 ACL），agentscope 后端据此建真模型或回退 stub
+        # 平台模型元数据（无 Key）挂到 TaskState；全 active 池解析（38.1 授权在模板维度），agentscope 后端据此建真模型或回退 stub
         st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
     # ScopeContext + 工具标注挂到 TaskState：Tool Gateway 按此做 标注/APPID/ASK/Secret 判定（B4）
     st.scope_ctx = scope
@@ -738,7 +743,8 @@ async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
-    """会话级临时模型选择（MODEL-005：不生成配置版本）。平台模型须经授权（B7 模型 ACL）。
+    """会话级临时模型选择（MODEL-005：不生成配置版本）。平台模型仅校验存在 + active
+    （38.1 资产级授权放开，fail-closed 保留：未知/禁用 403）。
 
     模型模板语义：仅覆盖**主模型槽位**（st.selected_model）；模板绑定的子槽位
     （selected_sub_model/sub_model_spec）不受影响——无模板时子回落主，维持主=子现状。
@@ -747,10 +753,10 @@ async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str,
 
     run = await owned_run(user["user_id"], run_id)
     st = task_registry.get_by_run(run_id)
-    # 平台模型（非用户自有 llm_config）：白名单外 fail-closed（MODEL-ACL-002）
+    # 平台模型（非用户自有 llm_config）：未知/禁用 fail-closed（38.1 退化，不再查白名单）
     if not req.llm_config_id and req.model_source:
         if not await model_asset_service.is_authorized(user["user_id"], req.model_source):
-            raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该模型未对你授权，请联系管理员申请白名单")
+            raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该模型不存在或已禁用，请重新选择")
     # 用户自定义 LLM（C2：修静默回退——选中前校验归属+可用，避免选无效配置后跑成平台模型）
     if req.llm_config_id:
         cfg = await secrets.get_llm_config(req.llm_config_id)

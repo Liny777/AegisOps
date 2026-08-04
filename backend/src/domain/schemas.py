@@ -160,7 +160,8 @@ class TemplateVersionActionRequest(BaseModel):
 
 
 class RegisterModelAssetRequest(BaseModel):
-    """注册模型接口（B7 模型资产）：DTO 白名单字段，api_key/token 等敏感键天然进不来。"""
+    """注册模型接口（B7 模型资产）：DTO 白名单字段，api_key/token 等敏感键天然进不来。
+    access_scope 已移除（38.1 授权迁模板维度）；旧客户端多传该键会被 Pydantic 忽略。"""
     client_request_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
@@ -168,10 +169,10 @@ class RegisterModelAssetRequest(BaseModel):
     base_url: str | None = None
     secret_env_var: str | None = None
     context_window_tokens: int = 128000
-    access_scope: str = Field(default="all", pattern="^(all|restricted)$")
 
 
 class ModelGrantsRequest(BaseModel):
+    """38.1 起服务于模型模板 PUT /admin/model-templates/{id}/grants（原资产 /grants 已移除）。"""
     client_request_id: str = Field(min_length=1)
     access_scope: str = Field(pattern="^(all|restricted)$")
     user_ids: list[str] = Field(default_factory=list)
@@ -188,7 +189,7 @@ class UpdateModelAssetRequest(BaseModel):
     base_url / secret_env_var 显式传 null 表示清空（走平台网关的模型本就不填 base_url），
     所以「没传」和「传 null」必须可区分——靠默认值区分不了，只能靠 exclude_unset。
     刻意不含 model_id：它是实例 overlay.platform_model_id 的绑定键，改了会让已绑定实例静默失配。
-    status / access_scope 亦不含——已有 :status 与 /grants 专用端点。
+    status 亦不含——已有 :status 专用端点；access_scope 已废弃（38.1 授权迁模板维度）。
     """
     client_request_id: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)
@@ -199,18 +200,20 @@ class UpdateModelAssetRequest(BaseModel):
 
 class CreateModelTemplateRequest(BaseModel):
     """创建模型模板（主/子 Agent 两槽位，槽位引用 sre_model_asset 主键）；
-    is_default=true 时服务层先落库（false）再原子切换默认（两步，防撞部分唯一索引）。"""
+    is_default=true 时服务层先落库（false）再原子切换默认（两步，防撞部分唯一索引）。
+    access_scope=restricted 时创建后经 /grants 配白名单（未配前对用户全隐身，fail-closed）。"""
     client_request_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     description: str = ""
     main_model_asset_id: str = Field(min_length=1)
     sub_model_asset_id: str = Field(min_length=1)
+    access_scope: str = Field(default="all", pattern="^(all|restricted)$")
     is_default: bool = False
 
 
 class UpdateModelTemplateRequest(BaseModel):
     """更新模型模板（PATCH 语义：exclude_unset 取差集，对齐 UpdateModelAssetRequest）。
-    is_default / status 刻意不含——各有 :set-default 与 :status 专用端点。"""
+    is_default / status / access_scope 刻意不含——各有 :set-default、:status、/grants 专用端点。"""
     client_request_id: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)
     description: str | None = None
