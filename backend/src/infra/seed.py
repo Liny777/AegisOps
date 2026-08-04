@@ -37,23 +37,27 @@ async def ensure_sandbox_defaults() -> None:
             await runtime_config.upsert(runtime_config.DOMAIN_SANDBOX, key, val, description=desc, reason="seed")
 
 # 模型资产（B7：sre_model_asset 表；替代旧 sre_platform_runtime_config platform_model 域）
-# (display_name, model_id, base_url, secret_env_var, access_scope, status)
+# (display_name, model_id, base_url, secret_env_var, status)
+# 38.1：授权迁模板维度，资产不再带 access_scope（受限演示上移到模型模板「交易专用（受限演示）」）
 MODEL_ASSETS = [
-    ("Qwen3.5", "qwen3.5-instruct", None, None, "all", "active"),
+    ("Qwen3.5", "qwen3.5-instruct", None, None, "active"),
     ("GLM-5.1", "glm-5.1", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-     "OPENOPS_PLATFORM_GLM_API_KEY", "all", "active"),
-    ("GPT-4.1", "gpt-4.1", None, None, "all", "active"),
-    ("DeepSeek-V3", "deepseek-chat", None, None, "all", "active"),
-    ("Claude 3.5", "claude-3-5-sonnet", None, None, "all", "disabled"),
-    # restricted 演示（部门私有模型接口，仅白名单授权用户可用）：授权 0026demo01
-    ("交易大模型-TX", "tx-llm-v2", None, None, "restricted", "active"),
+     "OPENOPS_PLATFORM_GLM_API_KEY", "active"),
+    ("GPT-4.1", "gpt-4.1", None, None, "active"),
+    ("DeepSeek-V3", "deepseek-chat", None, None, "active"),
+    ("Claude 3.5", "claude-3-5-sonnet", None, None, "disabled"),
+    ("交易大模型-TX", "tx-llm-v2", None, None, "active"),
 ]
 
-# 模型模板（38 号：主/子 Agent 槽位）：(display_name, description, main_model_id, sub_model_id, is_default)
+# 模型模板（38 号：主/子 Agent 槽位）：
+# (display_name, description, main_model_id, sub_model_id, is_default, access_scope)
 # 选型依据 95.x 模型评估：GLM-5.1 全场景领先作生产默认；「经济」把子任务放 Qwen3.5 省成本。
 MODEL_TEMPLATES = [
-    ("均衡（推荐）", "主 / 子 Agent 均使用 GLM-5.1，效果优先", "glm-5.1", "glm-5.1", True),
-    ("经济", "主 GLM-5.1 + 子 Qwen3.5-Instruct，子任务省成本", "glm-5.1", "qwen3.5-instruct", False),
+    ("均衡（推荐）", "主 / 子 Agent 均使用 GLM-5.1，效果优先", "glm-5.1", "glm-5.1", True, "all"),
+    ("经济", "主 GLM-5.1 + 子 Qwen3.5-Instruct，子任务省成本", "glm-5.1", "qwen3.5-instruct", False, "all"),
+    # restricted 演示（38.1：授权在模板维度）：仅白名单可见可绑，授权 0026demo01
+    ("交易专用（受限演示）", "主 GLM-5.1 + 子 交易大模型-TX，部门私有组合仅白名单用户可用",
+     "glm-5.1", "tx-llm-v2", False, "restricted"),
 ]
 
 
@@ -70,15 +74,18 @@ async def ensure_model_template_seed() -> None:
             return
     except Exception:  # noqa: BLE001 —— 表未迁移（旧库未跑 migrate-2026-07-29）
         return
-    for name, desc, main_mid, sub_mid, is_default in MODEL_TEMPLATES:
+    for name, desc, main_mid, sub_mid, is_default, scope in MODEL_TEMPLATES:
         main = await model_assets.get_by_model_id(main_mid)
         sub = await model_assets.get_by_model_id(sub_mid)
         if main is None or sub is None:
             continue
         row = await model_templates.create(name, desc, str(main["model_asset_id"]),
-                                           str(sub["model_asset_id"]), "system")
+                                           str(sub["model_asset_id"]), "system", access_scope=scope)
         if is_default:
             await model_templates.set_default(str(row["model_template_id"]), "system")
+        if scope == "restricted":
+            # 受限演示模板授权 demo 用户（38.1：授权在模板维度）
+            await model_templates.replace_grants(str(row["model_template_id"]), ["0026demo01"], "system")
 
 TEMPLATE_CONTENT = {
     "main": {
@@ -172,11 +179,9 @@ async def seed() -> None:
 
     # 沙箱运行配置已由 ensure_sandbox_defaults()（守卫前）补齐，此处不再重复种
 
-    # 模型资产（管理台「模型资产」页数据源；restricted 演示模型授权 demo 用户）
-    for display_name, model_id, base_url, env_var, scope, status in MODEL_ASSETS:
-        row = await model_assets.create(display_name, "openai_compatible", model_id, base_url, env_var, scope, status, "system")
-        if scope == "restricted":
-            await model_assets.replace_grants(str(row["model_asset_id"]), ["0026demo01"], "system")
+    # 模型资产（管理台「模型资产」页数据源；38.1 无授权位，受限演示见模型模板 seed）
+    for display_name, model_id, base_url, env_var, status in MODEL_ASSETS:
+        await model_assets.create(display_name, "openai_compatible", model_id, base_url, env_var, status, "system")
 
     # 模型模板（38 号）：第二次调用覆盖全新库/pytest 库——守卫前那次因资产未种会整体跳过
     await ensure_model_template_seed()

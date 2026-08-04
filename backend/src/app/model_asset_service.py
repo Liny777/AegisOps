@@ -1,9 +1,9 @@
-"""模型资产与白名单授权（B7，30.6 五 / 18 号 model_asset·model_access_grant）。
+"""模型资产（B7，30.6 五；38.1 起授权迁模型模板维度，本服务只管资产 CRUD/探测）。
 
-- 授权按人（不引入部门维度，2026-07-09 拍板）；`access_scope='all'` 全员开放。
+- 授权见 model_template_service（模板 scope+grant 三闸门）；资产池对全员一致。
 - 注册走 DTO 白名单字段（api_key/token 等敏感键天然进不来）；Key 只经 `secret_env_var` 环境变量名。
-- fail-closed 三处 gating：列表过滤（本服务 list_available）、select-model 校验（is_authorized）、
-  Model Gateway 运行时解析二次校验（app/model_gateway.py）。
+- is_authorized 退化为「存在 + active」（fail-closed 对未知/禁用仍 False），服务
+  select-model 与 legacy platform_model_id 绑定两个旧路径。
 """
 from __future__ import annotations
 
@@ -35,12 +35,12 @@ async def register(req: Any, by: str) -> dict[str, Any]:
         raise ApiError(Err.VALIDATION_FAILED, _ENV_VAR_HINT)
     row = await model_assets.create(
         req.display_name, req.protocol, req.model_id, req.base_url,
-        req.secret_env_var, req.access_scope, "active", by,
+        req.secret_env_var, "active", by,
         context_window_tokens=getattr(req, "context_window_tokens", 128000),
     )
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.registered", user_id=by,
-        action="register", payload_redacted={"model_id": req.model_id, "access_scope": req.access_scope},
+        action="register", payload_redacted={"model_id": req.model_id},
     )
     return row_json(row)
 
@@ -86,34 +86,6 @@ async def set_status(model_asset_id: str, status: str, by: str) -> None:
     )
 
 
-async def get_grants(model_asset_id: str) -> dict[str, Any]:
-    m = await model_assets.get(model_asset_id)
-    if m is None:
-        raise ApiError(Err.NOT_FOUND, "模型资产不存在")
-    return {
-        "model_asset_id": model_asset_id,
-        "access_scope": m["access_scope"],
-        "user_ids": [g["user_id"] for g in await model_assets.list_grants(model_asset_id)],
-    }
-
-
-async def save_grants(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
-    """保存授权：scope + 人员集合（软删+插新）；all 时忽略 user_ids。写审计（含人数不含逐人全文）。"""
-    m = await model_assets.get(model_asset_id)
-    if m is None:
-        raise ApiError(Err.NOT_FOUND, "模型资产不存在")
-    await model_assets.set_access_scope(model_asset_id, req.access_scope, by)
-    user_ids = [] if req.access_scope == "all" else list(req.user_ids)
-    await model_assets.replace_grants(model_asset_id, user_ids, by)
-    await audit.insert_event(
-        audit_trace_id=str(uuid.uuid4()), event_type="model_asset.grants_updated", user_id=by,
-        action="save_grants",
-        payload_redacted={"model_asset_id": model_asset_id, "access_scope": req.access_scope,
-                          "granted_count": len(user_ids)},
-    )
-    return await get_grants(model_asset_id)
-
-
 def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
     """与 [[model_gateway.resolve_runtime_model]] 完全同口径的平台默认解析：
     优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个带 `secret_env_var` 的模型。
@@ -129,10 +101,10 @@ def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
 
 
 async def list_available(user: dict[str, Any]) -> list[dict[str, Any]]:
-    """用户可见平台模型（30.5 ModelTab / 工作台 ModelPicker 数据源）：按授权过滤。
-    每行带 `is_default`（本用户授权范围内运行时实际会用的那个，同 model_gateway 口径），
-    供初始化向导等直接展示真实平台默认模型。"""
-    rows = await model_assets.list_available_for_user(user["user_id"])
+    """用户可见平台模型（30.5 ModelTab / 工作台 ModelPicker 数据源）：全部 active
+    （38.1 资产级授权放开，授权在模板维度）。每行带 `is_default`（运行时实际会用的那个，
+    同 model_gateway 口径），供初始化向导等直接展示真实平台默认模型。"""
+    rows = await model_assets.list_active()
     default_id = _default_model_id(rows)
     return [{**row_json(r), "is_default": r.get("model_id") == default_id} for r in rows]
 
@@ -170,10 +142,8 @@ async def test_connection(req: Any) -> dict[str, Any]:
 
 
 async def is_authorized(user_id: str, model_id: str) -> bool:
-    """select-model / Model Gateway 校验：未知模型、禁用、restricted 白名单外一律 False（fail-closed）。"""
+    """select-model / legacy platform_model_id 绑定校验（38.1 退化）：仅存在性 + active——
+    未知/禁用一律 False（fail-closed 保留）。user_id 参数保留占位不消费（免调用方连锁改签名）；
+    受限模型想控住入口 = 只把它编进 restricted 模板（授权在模板维度）。"""
     m = await model_assets.get_by_model_id(model_id)
-    if m is None or m["status"] != "active":
-        return False
-    if m["access_scope"] == "all":
-        return True
-    return await model_assets.has_grant(str(m["model_asset_id"]), user_id)
+    return m is not None and m["status"] == "active"

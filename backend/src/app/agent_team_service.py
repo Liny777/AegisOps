@@ -19,13 +19,13 @@ _MODEL_OVERLAY_KEYS = ("user_llm_config_id", "model_template_id", "platform_mode
 
 
 async def _ensure_platform_model_authorized(user_id: str, model_id: Any) -> None:
-    """选平台模型作实例默认时按用户授权 fail-closed 校验（同 select-model / Model Gateway 口径）；
-    前端只列已授权模型，此处是防越权直调的服务端兜底。"""
+    """选平台模型作实例默认时的存在性 + active 复校（38.1 资产级授权退化，fail-closed 保留）；
+    前端只列 active 模型，此处是防越权直调的服务端兜底。"""
     if not model_id:
         return
     from app import model_asset_service  # 延迟导入：避免与 model_asset_service 潜在环
     if not await model_asset_service.is_authorized(user_id, str(model_id)):
-        raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该平台模型未对你授权，请联系管理员申请白名单")
+        raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该平台模型不存在或已禁用，请重新选择")
 
 
 async def _ensure_model_template_bindable(user_id: str, model_template_id: Any) -> None:

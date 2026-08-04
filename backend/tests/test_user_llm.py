@@ -211,7 +211,7 @@ def test_register_model_asset_persists_context_window(client):
                        json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "CtxTest",
                              "model_id": f"ctx-test-{time.time_ns()}", "protocol": "openai_compatible",
                              "base_url": _BASE, "secret_env_var": "OPENOPS_CTX_KEY",
-                             "context_window_tokens": 200000, "access_scope": "all"}))
+                             "context_window_tokens": 200000}))
     rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
     row = next(r for r in rows if r["display_name"] == "CtxTest")
     assert row["context_window_tokens"] == 200000

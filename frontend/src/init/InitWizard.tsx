@@ -39,7 +39,7 @@ export function InitWizard() {
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
-  const [modelTemplates, setModelTemplates] = useState<ModelTemplateOption[]>([]); // 管理员编排且对本用户授权（主/子槽位双授权）的模板
+  const [modelTemplates, setModelTemplates] = useState<ModelTemplateOption[]>([]); // 管理员编排且对本用户可见（38.1 模板级授权：scope+白名单）的模板
   const [selectedModelTemplateId, setSelectedModelTemplateId] = useState(""); // 选中的模板 id（空=平台默认兜底卡）
   const [legacyPlatformId, setLegacyPlatformId] = useState(""); // 存量 overlay.platform_model_id（仅编辑态非空）
   const [legacyLabel, setLegacyLabel] = useState("");
@@ -90,7 +90,7 @@ export function InitWizard() {
     api.getWorkspaces().then(setWorkspaces);
   }, [editing, instanceId]);
 
-  // 模型模板清单（38 号）：/models/templates 返回管理员编排且对本用户授权（主/子槽位双授权）的 active 模板。
+  // 模型模板清单（38 号）：/models/templates 返回管理员编排且对本用户可见（38.1 模板级授权）的 active 模板。
   // 新建态默认选中 is_default 模板（无默认取首条）；编辑态由上面的编辑预填决定。
   // 拉取失败置空清单 → 渲染「平台默认配置」兜底卡，不死路。
   useEffect(() => {

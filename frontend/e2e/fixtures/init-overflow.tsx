@@ -29,6 +29,7 @@ const longTpl: ModelTemplateOption = {
   display_name: `均衡推荐-效果优先组合-${longRun}`,
   main_model: { model_id: "m1", display_name: `deepseek-ai/DeepSeek-V2.5-preview-${longRun}` },
   sub_model: { model_id: "m2", display_name: `qwen/Qwen3.5-Instruct-Long-${longRun}` },
+  access_scope: "all",
   is_default: true,
   status: "active",
 };

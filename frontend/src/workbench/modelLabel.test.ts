@@ -10,7 +10,8 @@ const MODELS: ModelOption[] = [
 ];
 
 const TEMPLATES: ModelTemplateOption[] = [
-  { model_template_id: "mtpl_1", display_name: "均衡（推荐）", is_default: true, status: "active",
+  { model_template_id: "mtpl_1", display_name: "均衡（推荐）", access_scope: "all",
+    is_default: true, status: "active",
     main_model: { model_id: "glm-5.1", display_name: "GLM-5.1" },
     sub_model: { model_id: "qwen3.5-instruct", display_name: "Qwen3.5" } },
 ];

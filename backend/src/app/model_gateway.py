@@ -1,9 +1,9 @@
-"""Model Gateway：解析运行应使用的平台模型元数据（B2；B7 起数据源为 model_asset + 按人授权）。
+"""Model Gateway：解析运行应使用的平台模型元数据（B2；38.1 起授权在模型模板维度）。
 
 - 元数据（model_id / base_url / secret_env_var）来自 `model_asset` 表；**API Key 不在这里读、也不返回**，
   只把 `secret_env_var`（环境变量名）传下去，由 runtime 构建 credential 时从环境变量取（SEC-001）。
-- **授权二次校验**（B7 模型 ACL 第三处 gating，防「先选后撤销」）：只在该用户可用集合内解析；
-  选中模型已被撤销授权/禁用 → 忽略选中值回退默认。
+- 资产池对全员一致（list_active，38.1 资产级授权废弃）；**模板级授权二次校验**在
+  resolve_template_models（第三闸门，防「先绑后撤销」）：模板失效/未授权 → 回退平台默认。
 - 返回 None 表示无可用真模型 → runtime 回退 stub（demo / pytest 不依赖真网、不需要 Key）。
 """
 from __future__ import annotations
@@ -66,12 +66,12 @@ async def _user_llm_spec(llm_config_id: str, user_id: str) -> dict[str, Any] | N
 
 
 async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str, Any] | None:
-    """在**该用户授权范围内**解析运行模型。
+    """在**全部 active 平台模型**内解析运行模型（38.1：资产级授权放开）。
 
-    优先级：选中平台模型（授权内）→ 选中的用户自定义 LLM → 平台默认 → 首个带 secret_env_var 的可用 → None(stub)。
+    优先级：选中平台模型 → 选中的用户自定义 LLM → 平台默认 → 首个带 secret_env_var 的可用 → None(stub)。
     C2：选中用户 LLM 时解析用户配置（不再静默回退平台模型）；用户 LLM 不可用（禁用/越权）时才回退默认。
     """
-    rows = await model_assets.list_available_for_user(user_id)
+    rows = await model_assets.list_active()
     by_id = {r["model_id"]: r for r in rows}
     if selected and selected in by_id:
         return _spec(by_id[selected])
@@ -88,7 +88,8 @@ async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str,
 
 def _default_spec(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """平台默认解析（与 model_asset_service._default_model_id 同口径）：
-    `OPENOPS_RUNTIME_MODEL` → 首个带 secret_env_var 的可用 → None(stub)。"""
+    `OPENOPS_RUNTIME_MODEL` → 首个带 secret_env_var 的可用 → None(stub)。
+    候选池 = 全部 active 资产（38.1 关键：不受任何授权约束——无模板授权的用户也不会跌 stub）。"""
     by_id = {r["model_id"]: r for r in rows}
     target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r["secret_env_var"]), None)
     if target is None or not target.get("secret_env_var"):
@@ -97,24 +98,32 @@ def _default_spec(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 async def resolve_template_models(model_template_id: str, user_id: str) -> dict[str, Any]:
-    """模型模板 → 主/子槽位 runtime spec（B7 ACL 第三闸门的模板版，逐槽 fail-safe）。
+    """模型模板 → 主/子槽位 runtime spec（38.1：授权在模板维度，槽位只看资产存活）。
 
-    - 槽位资产不在该用户授权集合（授权撤销/资产禁用/软删）→ 该槽位回退平台默认并记 degraded；
-    - 模板整体失效（软删/disabled）→ 主槽回退平台默认、子槽置 None（子回落跟随主）。
+    - 模板软删/disabled → TEMPLATE_UNAVAILABLE：主槽回平台默认、子槽 None（子回落跟随主）；
+    - 模板 restricted 且该用户无 active grant → TEMPLATE_NOT_AUTHORIZED：同上
+      （ACL 第三闸门，防「先绑后撤销」）；
+    - 槽位资产缺失/禁用/软删 → 该槽位回退平台默认并记 MODEL_UNAVAILABLE（已非授权问题，语义如实）。
     降级不阻断任务（对齐 platform_model_id 的 fail-safe 先例）；留痕由调用方
     （run_state_service.start_task）写 model.template_degraded 审计 + SSE。
     返回 {"main_spec","sub_spec","main_selected","sub_selected","degraded":[{slot,reason,...}]}。
     """
-    rows = await model_assets.list_available_for_user(user_id)
+    rows = await model_assets.list_active()
     degraded: list[dict[str, Any]] = []
-    tpl = await model_templates.get(model_template_id)
-    if tpl is None or tpl.get("status") != "active":
-        degraded.append({"slot": "template", "model_template_id": model_template_id,
-                         "reason": "TEMPLATE_UNAVAILABLE"})
+
+    def _template_fallback(reason: str) -> dict[str, Any]:
+        degraded.append({"slot": "template", "model_template_id": model_template_id, "reason": reason})
         fb = _default_spec(rows)
         return {"main_spec": fb, "sub_spec": None,
                 "main_selected": (fb or {}).get("model_id"), "sub_selected": None,
                 "degraded": degraded}
+
+    tpl = await model_templates.get(model_template_id)
+    if tpl is None or tpl.get("status") != "active":
+        return _template_fallback("TEMPLATE_UNAVAILABLE")
+    # fail-closed 写法：access_scope 列缺失（未迁移旧行）视同 restricted，走 grant 判定
+    if tpl.get("access_scope") != "all" and not await model_templates.has_grant(model_template_id, user_id):
+        return _template_fallback("TEMPLATE_NOT_AUTHORIZED")
     by_asset = {str(r["model_asset_id"]): r for r in rows}
 
     def _slot(asset_id: Any, slot: str) -> tuple[dict[str, Any] | None, str | None]:
@@ -122,7 +131,7 @@ async def resolve_template_models(model_template_id: str, user_id: str) -> dict[
         if row is not None:
             return _spec(row), str(row["model_id"])
         degraded.append({"slot": slot, "model_template_id": model_template_id,
-                         "reason": "MODEL_NOT_AUTHORIZED"})
+                         "reason": "MODEL_UNAVAILABLE"})
         fb = _default_spec(rows)
         return fb, (fb or {}).get("model_id")
 

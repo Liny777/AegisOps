@@ -66,14 +66,15 @@ def test_ddl_001_has_core_tables_plus_runtime_config():
     """
     ddl = "\n".join(f.read_text(encoding="utf-8") for f in DDL_FILES)
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 28  # 22 业务核心（含 model_template） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）
+    assert len(tables) == 29  # 23 业务核心（含 model_template + model_template_grant） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）
     assert "sre_platform_runtime_config" in tables
     assert "sre_agent_studio_span" in tables
     assert "sre_agent_team_tpl_version" in tables
     assert "sre_agent_team_template_version" not in tables
     assert "sre_model_asset" in tables
-    assert "sre_model_access_grant" in tables
+    assert "sre_model_access_grant" in tables  # DEPRECATED（38.1）保留不消费，表仍在
     assert "sre_model_template" in tables
+    assert "sre_model_template_grant" in tables
     assert "user_entitlement_cache" not in tables
 
 

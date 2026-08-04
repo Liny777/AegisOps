@@ -37,7 +37,7 @@ export function AdminConsole() {
   const [mcpDrill, setMcpDrill] = useState<string | null>(null);
   const [toolsRaw, setToolsRaw] = useState<Record<string, unknown>[]>([]);
   const [annotRow, setAnnotRow] = useState<Record<string, unknown> | null>(null);
-  // 模型资产：注册 / 白名单授权弹窗；模板编辑器（B7·二）
+  // 模型资产：注册弹窗；模型模板：白名单授权弹窗（38.1 授权在模板维度）；模板编辑器（B7·二）
   const [registerOpen, setRegisterOpen] = useState(false);
   const [grantsFor, setGrantsFor] = useState<{ id: string; name: string } | null>(null);
   const [tplEdit, setTplEdit] = useState<string | null>(null);
@@ -124,7 +124,7 @@ export function AdminConsole() {
     else if (key === "edit-template") setTplEdit(rowId);
     else if (key === "open-mcp") setMcpDrill(rowId);
     else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
-    else if (key === "model-grants") setGrantsFor({ id: rowId, name: rowName });
+    else if (key === "mt-grants") setGrantsFor({ id: rowId, name: rowName });
     else if (key === "toggle-bind" && tplDrill) void toggleBind(rowId);
     else if (key === "wl-revoke" || key === "wl-add") {
       setActionErr("");
@@ -406,10 +406,11 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
   );
 }
 
-/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 / 上下文长度 / access_scope。
+/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 / 上下文长度。
+ *  38.1：授权范围已迁「模型模板」维度，注册不再选 scope。
  *  存前须「测试连接」通过（Key 走服务器环境变量探测）；走平台网关的模型（不填 base_url）可跳过测试直接存。 */
 function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [f, setF] = useState({ display_name: "", model_id: "", base_url: "", secret_env_var: "", access_scope: "all" });
+  const [f, setF] = useState({ display_name: "", model_id: "", base_url: "", secret_env_var: "" });
   const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
   const [err, setErr] = useState("");
   const test = useConnTest();
@@ -441,7 +442,7 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
     api.adminRegisterModel({
       display_name: f.display_name.trim(), model_id: f.model_id.trim(),
       base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
-      context_window_tokens: contextWindow, access_scope: f.access_scope,
+      context_window_tokens: contextWindow,
     }).then(onSaved).catch((e) => setErr((e as Error).message));
   };
   return (
@@ -467,14 +468,6 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
             <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。填了 base_url 须「测试连接」通过（Key 从环境变量取）才能注册。
           </div>
         </div>
-        <div style={{ display: "flex", gap: 14, marginTop: 12, fontSize: 12.5 }}>
-          {(["all", "restricted"] as const).map((s) => (
-            <label key={s} style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="radio" checked={f.access_scope === s} onChange={() => setF((d) => ({ ...d, access_scope: s }))} />
-              {s === "all" ? "全员开放" : "限定人员（注册后配置授权）"}
-            </label>
-          ))}
-        </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
           <Button variant="secondary" icon={test.state === "testing" ? "loader-2" : "plug-connected"}
             disabled={!hasBaseUrl || !f.model_id.trim() || test.state === "testing"} onClick={runTest}>测试连接</Button>
@@ -491,7 +484,7 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
   );
 }
 
-/** 白名单授权弹窗（30.6 五·人员勾选版，2026-07-09 拍板按人不按部门）。 */
+/** 模板白名单授权弹窗（38.1：授权在模型模板维度；30.6 五·人员勾选版，按人不按部门口径沿用）。 */
 function ModelGrantsDialog({ target, onClose, onSaved }: {
   target: { id: string; name: string }; onClose: () => void; onSaved: () => void;
 }) {
@@ -500,14 +493,14 @@ function ModelGrantsDialog({ target, onClose, onSaved }: {
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [err, setErr] = useState("");
   useEffect(() => {
-    api.adminGetModelGrants(target.id).then((g) => { setScope(g.access_scope as "all" | "restricted"); setPicked(new Set(g.user_ids)); });
+    api.adminGetModelTemplateGrants(target.id).then((g) => { setScope(g.access_scope as "all" | "restricted"); setPicked(new Set(g.user_ids)); });
     api.adminListUsers().then(setUsers);
   }, [target.id]);
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 480, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>白名单授权 · {target.name}</div>
-        <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 14, lineHeight: 1.6 }}>私有模型接口通常只对指定人员开放。设置后，仅授权范围内的用户可在实例配置与会话中选用该模型。</div>
+        <div style={{ fontSize: 12, color: color.textSubtle, marginBottom: 14, lineHeight: 1.6 }}>受限模板通常只对指定人员开放。设置后，仅授权范围内的用户可在初始化 / 编辑 Agent 时看到并选用本模板；已绑定用户被撤销后，下次任务自动回退平台默认模型。</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 8, fontSize: 13 }}>
           <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
             <input type="radio" checked={scope === "all"} onChange={() => setScope("all")} />
@@ -534,7 +527,7 @@ function ModelGrantsDialog({ target, onClose, onSaved }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button onClick={() => {
-            api.adminSaveModelGrants(target.id, scope, scope === "all" ? [] : [...picked])
+            api.adminSaveModelTemplateGrants(target.id, scope, scope === "all" ? [] : [...picked])
               .then(onSaved).catch((e) => setErr((e as Error).message));
           }}>保存授权</Button>
         </div>

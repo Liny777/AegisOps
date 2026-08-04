@@ -185,15 +185,7 @@ async def model_assets_update(model_asset_id: str, req: UpdateModelAssetRequest,
     return ok(await model_asset_service.update(model_asset_id, req, admin["user_id"]))
 
 
-@router.get("/model-assets/{model_asset_id}/grants")
-async def model_assets_grants(model_asset_id: str, _admin: Admin):
-    return ok(await model_asset_service.get_grants(model_asset_id))
-
-
-@router.put("/model-assets/{model_asset_id}/grants")
-async def model_assets_save_grants(model_asset_id: str, req: ModelGrantsRequest, admin: Admin):
-    return ok(await model_asset_service.save_grants(model_asset_id, req, admin["user_id"]))
-
+# 38.1：资产级授权端点（GET/PUT /model-assets/{id}/grants）已移除——授权迁模板维度，见下方模板 /grants。
 
 # ---- 模型模板（38 号：主/子 Agent 槽位模型编排；用户初始化「选一套模板」的管理侧数据源） ----
 @router.get("/model-templates")
@@ -222,6 +214,18 @@ async def model_templates_set_default(model_template_id: str, _req: ModelTemplat
 async def model_templates_update(model_template_id: str, req: UpdateModelTemplateRequest, admin: Admin):
     """更新模型模板（PATCH 语义，只改请求体里显式给出的键）。"""
     return ok(await model_template_service.update(model_template_id, req, admin["user_id"]))
+
+
+# /grants 带 `/`（路径参数不跨段），不受冒号坑影响，注册顺序自由
+@router.get("/model-templates/{model_template_id}/grants")
+async def model_templates_grants(model_template_id: str, _admin: Admin):
+    return ok(await model_template_service.get_grants(model_template_id))
+
+
+@router.put("/model-templates/{model_template_id}/grants")
+async def model_templates_save_grants(model_template_id: str, req: ModelGrantsRequest, admin: Admin):
+    """保存模板授权（38.1：scope + 人员集合整体替换；all 时清空白名单）。"""
+    return ok(await model_template_service.save_grants(model_template_id, req, admin["user_id"]))
 
 
 @router.get("/audit/recent")

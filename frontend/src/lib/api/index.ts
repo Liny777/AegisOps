@@ -189,7 +189,7 @@ export interface OpenOpsApi {
   getConfigVersions(instanceId: string): Promise<ConfigVersionRow[]>;
   getModelConfigs(): Promise<ModelOption[]>;
   /** 模型模板清单（38 号：主/子 Agent 模型组合）——初始化向导「选一套模板」与展示面数据源；
-   * 按当前用户 ACL 过滤（主、子槽位模型都授权才可见）。 */
+   * 按模板级 ACL 过滤（38.1：scope=all ∪ 白名单授权）。 */
   getModelTemplates(): Promise<ModelTemplateOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
   createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
@@ -244,16 +244,17 @@ export interface OpenOpsApi {
   /** 标签下拉候选：所有未删用户已用的领域标签（去重、排序）——「用户与白名单」页头筛选用。 */
   adminListUserTags(): Promise<string[]>;
   // Agent Studio 的 api 已随垂直切片外移到 src/studio/api.ts（core 门面不再承载切片方法）
-  adminGetModelGrants(modelAssetId: string): Promise<{ access_scope: string; user_ids: string[] }>;
-  adminSaveModelGrants(modelAssetId: string, accessScope: string, userIds: string[]): Promise<void>;
-  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; access_scope: string; context_window_tokens?: number }): Promise<void>;
+  /** 模板白名单授权（38.1：授权在模板维度，原资产 /grants 已移除）。 */
+  adminGetModelTemplateGrants(modelTemplateId: string): Promise<{ access_scope: string; user_ids: string[] }>;
+  adminSaveModelTemplateGrants(modelTemplateId: string, accessScope: string, userIds: string[]): Promise<void>;
+  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; context_window_tokens?: number }): Promise<void>;
   /** 平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名），客户端不持 Key。 */
   testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string }): Promise<TestConnResult>;
   // admin 模型模板（38 号）：主/子 Agent 槽位编排 CRUD
   adminListModelTemplates(): Promise<AdminModelTemplate[]>;
   /** 模板编辑弹窗的槽位候选（复用 GET /admin/model-assets）。 */
   adminListModelAssets(): Promise<AdminModelAssetOption[]>;
-  adminCreateModelTemplate(input: { display_name: string; description?: string; main_model_asset_id: string; sub_model_asset_id: string; is_default?: boolean }): Promise<void>;
+  adminCreateModelTemplate(input: { display_name: string; description?: string; main_model_asset_id: string; sub_model_asset_id: string; access_scope?: "all" | "restricted"; is_default?: boolean }): Promise<void>;
   /** PATCH 语义：只传要改的键。 */
   adminUpdateModelTemplate(id: string, input: { display_name?: string; description?: string; main_model_asset_id?: string; sub_model_asset_id?: string }): Promise<void>;
   adminSetModelTemplateStatus(id: string, status: "active" | "disabled"): Promise<void>;
@@ -706,6 +707,7 @@ const realApi: OpenOpsApi = {
         description: r.description ? String(r.description) : undefined,
         main_model: { model_id: String(main.model_id ?? ""), display_name: String(main.display_name ?? main.model_id ?? "") },
         sub_model: { model_id: String(sub.model_id ?? ""), display_name: String(sub.display_name ?? sub.model_id ?? "") },
+        access_scope: r.access_scope === "restricted" ? ("restricted" as const) : ("all" as const),
         is_default: r.is_default === true,
         status: r.status === "disabled" ? ("disabled" as const) : ("active" as const),
       };
@@ -823,11 +825,12 @@ const realApi: OpenOpsApi = {
       return M.buildModelTemplateTable(rows);
     }
     if (key === "model-assets") {
+      // 38.1：授权范围列与「白名单授权」入口已整体迁到「模型模板」页（授权在模板维度）
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-assets");
       return {
         title: "模型资产",
         primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "授权范围" }, { label: "状态" }, { label: "操作", width: "96px" }],
+        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }],
         rows: rows.map((m) => ({
           id: String(m.model_asset_id),
           cells: [
@@ -835,11 +838,7 @@ const realApi: OpenOpsApi = {
             { text: m.protocol === "openai_compatible" ? "OpenAI 兼容" : String(m.protocol) },
             { text: String(m.model_id), mono: true },
             { text: m.registered_by === "system" ? "平台" : String(m.registered_by) },
-            m.access_scope === "all"
-              ? { text: "全员开放", kind: "badge" as const, tone: "good" as const }
-              : { text: `限 ${m.grant_count ?? 0} 人`, kind: "badge" as const, tone: "warning" as const },
             { text: String(m.status), kind: "badge" as const, tone: m.status === "active" ? "good" as const : "neutral" as const },
-            { text: "白名单授权", kind: "action" as const, onClickKey: "model-grants" },
           ],
         })),
       };
@@ -958,14 +957,14 @@ const realApi: OpenOpsApi = {
   async adminDeleteUser(userId) {
     await apiFetch(`/openops/v1/admin/users/${encodeURIComponent(userId)}`, { method: "DELETE" });
   },
-  async adminGetModelGrants(modelAssetId) {
+  async adminGetModelTemplateGrants(modelTemplateId) {
     const d = await apiFetch<{ access_scope: string; user_ids: string[] }>(
-      `/openops/v1/admin/model-assets/${modelAssetId}/grants`,
+      `/openops/v1/admin/model-templates/${modelTemplateId}/grants`,
     );
     return { access_scope: d.access_scope, user_ids: d.user_ids };
   },
-  async adminSaveModelGrants(modelAssetId, accessScope, userIds) {
-    await apiFetch(`/openops/v1/admin/model-assets/${modelAssetId}/grants`, {
+  async adminSaveModelTemplateGrants(modelTemplateId, accessScope, userIds) {
+    await apiFetch(`/openops/v1/admin/model-templates/${modelTemplateId}/grants`, {
       method: "PUT",
       body: { client_request_id: crid(), access_scope: accessScope, user_ids: userIds },
     });
@@ -992,6 +991,8 @@ const realApi: OpenOpsApi = {
         sub_model_asset_id: String(sub.model_asset_id ?? ""),
         sub_model_id: String(sub.model_id ?? ""),
         sub_model_name: String(sub.display_name ?? ""),
+        access_scope: r.access_scope === "restricted" ? ("restricted" as const) : ("all" as const),
+        grant_count: Number(r.grant_count ?? 0),
         is_default: r.is_default === true,
         status: r.status === "disabled" ? ("disabled" as const) : ("active" as const),
       };
@@ -1333,8 +1334,21 @@ const mockApi: OpenOpsApi = {
   adminSaveAnnotation: () => delay(undefined as unknown as void),
   adminListUsers: () => delay([{ user_id: "0026demo01", display_name: "林一" }]),
   adminListUserTags: () => delay(["财经", "研发", "供应"]),
-  adminGetModelGrants: () => delay({ access_scope: "all", user_ids: [] }),
-  adminSaveModelGrants: () => delay(undefined as unknown as void),
+  // 模板白名单授权 mock（38.1 写闭环）：scope 读写 mockModelTemplates、名单读写 mockModelTemplateGrants
+  adminGetModelTemplateGrants: (id) => {
+    const t = M.mockModelTemplates.find((x) => x.model_template_id === id);
+    return delay({ access_scope: t?.access_scope ?? "all", user_ids: [...(M.mockModelTemplateGrants[id] ?? [])] });
+  },
+  adminSaveModelTemplateGrants: (id, accessScope, userIds) => {
+    const t = M.mockModelTemplates.find((x) => x.model_template_id === id);
+    const ids = accessScope === "all" ? [] : [...new Set(userIds)];
+    if (t) {
+      t.access_scope = accessScope as "all" | "restricted";
+      t.grant_count = ids.length;
+    }
+    M.mockModelTemplateGrants[id] = ids;
+    return delay(undefined as unknown as void);
+  },
   adminRegisterModel: () => delay(undefined as unknown as void),
   // ---- 模型模板（38 号）mock 写闭环：原地改可变数组（先例：createWorkspace/renameRun）----
   adminListModelTemplates: () => delay([...M.mockModelTemplates]),
@@ -1352,6 +1366,7 @@ const mockApi: OpenOpsApi = {
       main_model_id: main?.model_id ?? "", main_model_name: main?.display_name ?? "",
       sub_model_asset_id: input.sub_model_asset_id,
       sub_model_id: sub?.model_id ?? "", sub_model_name: sub?.display_name ?? "",
+      access_scope: input.access_scope ?? "all", grant_count: 0,
       is_default: Boolean(input.is_default), status: "active",
     });
     return delay(undefined as unknown as void);
