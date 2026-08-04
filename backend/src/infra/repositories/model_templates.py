@@ -1,4 +1,5 @@
-"""sre_model_template 仓储：模型模板（主/子 Agent 槽位）——管理面 CRUD + 用户侧/运行时读。"""
+"""sre_model_template 仓储：模型模板（主/子 Agent 槽位）——管理面 CRUD + 用户侧/运行时读
++ 模板级白名单授权（38.1：sre_model_template_grant，接替已废弃的资产级授权）。"""
 from __future__ import annotations
 
 import uuid
@@ -19,7 +20,25 @@ left join sre_model_asset sa on sa.model_asset_id = t.sub_model_asset_id and sa.
 
 
 async def list_all() -> list[dict[str, Any]]:
-    return await q_all(_JOINED + " where t.deleted_at is null order by t.creation_date")
+    """管理台清单：含每模板 active 授权人数（grant_count，「授权范围」徽标用；
+    镜像旧 model_assets.list_all 的 lateral 写法）。用户侧/运行时读不带此列。"""
+    return await q_all(
+        """
+        select t.*,
+               ma.model_id main_model_id, ma.display_name main_model_name, ma.status main_model_status,
+               sa.model_id sub_model_id, sa.display_name sub_model_name, sa.status sub_model_status,
+               coalesce(g.cnt, 0) grant_count
+        from sre_model_template t
+        left join sre_model_asset ma on ma.model_asset_id = t.main_model_asset_id and ma.deleted_at is null
+        left join sre_model_asset sa on sa.model_asset_id = t.sub_model_asset_id and sa.deleted_at is null
+        left join lateral (
+          select count(*) cnt from sre_model_template_grant ga
+          where ga.model_template_id = t.model_template_id and ga.deleted_at is null and ga.status='active'
+        ) g on true
+        where t.deleted_at is null
+        order by t.creation_date
+        """
+    )
 
 
 async def list_active() -> list[dict[str, Any]]:
@@ -41,7 +60,8 @@ async def get_by_name(display_name: str) -> dict[str, Any] | None:
 
 
 async def create(display_name: str, description: str | None,
-                 main_model_asset_id: str, sub_model_asset_id: str, by: str) -> dict[str, Any]:
+                 main_model_asset_id: str, sub_model_asset_id: str, by: str,
+                 access_scope: str = "all") -> dict[str, Any]:
     """恒 is_default=false 落库：默认切换必须走 set_default 两步，
     带 true 直插会撞 ux_model_template_default 部分唯一索引。"""
     tid = str(uuid.uuid4())
@@ -49,11 +69,11 @@ async def create(display_name: str, description: str | None,
         """
         insert into sre_model_template
           (model_template_id, display_name, description, main_model_asset_id, sub_model_asset_id,
-           is_default, status, created_by, last_updated_by)
-        values (%(i)s, %(d)s, %(desc)s, %(m)s, %(s)s, false, 'active', %(b)s, %(b)s)
+           access_scope, is_default, status, created_by, last_updated_by)
+        values (%(i)s, %(d)s, %(desc)s, %(m)s, %(s)s, %(a)s, false, 'active', %(b)s, %(b)s)
         """,
         {"i": tid, "d": display_name, "desc": description, "m": main_model_asset_id,
-         "s": sub_model_asset_id, "b": by},
+         "s": sub_model_asset_id, "a": access_scope, "b": by},
     )
     return (await get(tid))  # type: ignore[return-value]
 
@@ -87,7 +107,8 @@ async def set_status(model_template_id: str, status: str, by: str) -> int:
     )
 
 
-# 可经 PUT /admin/model-templates/{id} 改写的列。is_default / status 不在内（各有专用端点）。
+# 可经 PUT /admin/model-templates/{id} 改写的列。is_default / status 不在内（各有专用端点）；
+# access_scope 亦不在（/grants 专用端点，镜像旧资产侧口径）。
 _UPDATABLE = ("display_name", "description", "main_model_asset_id", "sub_model_asset_id")
 
 
@@ -104,4 +125,75 @@ async def update_fields(model_template_id: str, fields: dict[str, Any], by: str)
         where model_template_id=%(i)s and deleted_at is null
         """,
         {**{c: fields[c] for c in cols}, "i": model_template_id, "b": by},
+    )
+
+
+# ---- 模板级白名单授权（38.1，逐行镜像原 model_assets 资产侧实现） ----
+
+async def set_access_scope(model_template_id: str, access_scope: str, by: str) -> int:
+    return await exec1(
+        """
+        update sre_model_template set access_scope=%(a)s, last_updated_by=%(b)s, last_update_date=now()
+        where model_template_id=%(i)s and deleted_at is null
+        """,
+        {"i": model_template_id, "a": access_scope, "b": by},
+    )
+
+
+async def list_grants(model_template_id: str) -> list[dict[str, Any]]:
+    return await q_all(
+        """
+        select * from sre_model_template_grant
+        where model_template_id=%(i)s and deleted_at is null and status='active'
+        order by creation_date
+        """,
+        {"i": model_template_id},
+    )
+
+
+async def replace_grants(model_template_id: str, user_ids: list[str], by: str) -> None:
+    """整体替换授权：软删全部现行 active 行 + 插入新集合（不原地改写，授权变迁可审计回放）。"""
+    await exec1(
+        """
+        update sre_model_template_grant set deleted_at=now(), status='revoked',
+               last_updated_by=%(b)s, last_update_date=now()
+        where model_template_id=%(i)s and deleted_at is null
+        """,
+        {"i": model_template_id, "b": by},
+    )
+    for uid in dict.fromkeys(user_ids):  # 去重保序
+        await exec1(
+            """
+            insert into sre_model_template_grant
+              (grant_id, model_template_id, user_id, granted_by, status, created_by, last_updated_by)
+            values (%(g)s, %(i)s, %(u)s, %(b)s, 'active', %(b)s, %(b)s)
+            """,
+            {"g": str(uuid.uuid4()), "i": model_template_id, "u": uid, "b": by},
+        )
+
+
+async def has_grant(model_template_id: str, user_id: str) -> bool:
+    row = await q_one(
+        """
+        select 1 ok from sre_model_template_grant
+        where model_template_id=%(i)s and user_id=%(u)s and deleted_at is null and status='active'
+        """,
+        {"i": model_template_id, "u": user_id},
+    )
+    return row is not None
+
+
+async def list_available_for_user(user_id: str) -> list[dict[str, Any]]:
+    """该用户可见的 active 模板：scope=all ∪ 有 active 授权（fail-closed 正向集合）。
+    38.1 起这是全系统模型授权的唯一真源（InitWizard 选单 / 绑定校验 / 运行时第三闸门同口径）。"""
+    return await q_all(
+        _JOINED + """
+        where t.deleted_at is null and t.status='active'
+          and ( t.access_scope='all'
+             or exists (select 1 from sre_model_template_grant g
+                        where g.model_template_id=t.model_template_id and g.user_id=%(u)s
+                          and g.deleted_at is null and g.status='active') )
+        order by t.creation_date
+        """,
+        {"u": user_id},
     )

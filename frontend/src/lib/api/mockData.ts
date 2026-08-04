@@ -352,50 +352,69 @@ export const mockModelAssets: AdminModelAssetOption[] = [
   { model_asset_id: "ma_glm51", model_id: "glm-5.1", display_name: "GLM-5.1", status: "active" },
   { model_asset_id: "ma_qwen35", model_id: "qwen3.5-instruct", display_name: "Qwen3.5", status: "active" },
   { model_asset_id: "ma_deepseek", model_id: "deepseek-chat", display_name: "DeepSeek-V3", status: "active" },
+  { model_asset_id: "ma_txllm", model_id: "tx-llm-v2", display_name: "交易大模型-TX", status: "active" },
 ];
 
 export const mockModelTemplates: AdminModelTemplate[] = [
   { model_template_id: "mtpl_balanced", display_name: "均衡（推荐）", description: "主 / 子 Agent 均使用 GLM-5.1，效果优先",
     main_model_asset_id: "ma_glm51", main_model_id: "glm-5.1", main_model_name: "GLM-5.1",
     sub_model_asset_id: "ma_glm51", sub_model_id: "glm-5.1", sub_model_name: "GLM-5.1",
-    is_default: true, status: "active" },
+    access_scope: "all", grant_count: 0, is_default: true, status: "active" },
   { model_template_id: "mtpl_economy", display_name: "经济", description: "主 GLM-5.1 + 子 Qwen3.5，子任务省成本",
     main_model_asset_id: "ma_glm51", main_model_id: "glm-5.1", main_model_name: "GLM-5.1",
     sub_model_asset_id: "ma_qwen35", sub_model_id: "qwen3.5-instruct", sub_model_name: "Qwen3.5",
-    is_default: false, status: "active" },
+    access_scope: "all", grant_count: 0, is_default: false, status: "active" },
+  // restricted 演示（38.1：授权在模板维度）：镜像 seed「交易专用（受限演示）」
+  { model_template_id: "mtpl_tx_restricted", display_name: "交易专用（受限演示）",
+    description: "主 GLM-5.1 + 子 交易大模型-TX，部门私有组合仅白名单用户可用",
+    main_model_asset_id: "ma_glm51", main_model_id: "glm-5.1", main_model_name: "GLM-5.1",
+    sub_model_asset_id: "ma_txllm", sub_model_id: "tx-llm-v2", sub_model_name: "交易大模型-TX",
+    access_scope: "restricted", grant_count: 1, is_default: false, status: "active" },
   { model_template_id: "mtpl_retired", display_name: "旧组合（停用）", description: "",
     main_model_asset_id: "ma_deepseek", main_model_id: "deepseek-chat", main_model_name: "DeepSeek-V3",
     sub_model_asset_id: "ma_deepseek", sub_model_id: "deepseek-chat", sub_model_name: "DeepSeek-V3",
-    is_default: false, status: "disabled" },
+    access_scope: "all", grant_count: 0, is_default: false, status: "disabled" },
 ];
 
-/** AdminModelTemplate → 用户侧选项（mock 专用；real 由后端 ACL 过滤后下发，仅 active 行）。 */
+/** mock 的模板白名单（38.1 写闭环：GrantsDialog 读写；real 的 user_ids 来自后端）。 */
+export const mockModelTemplateGrants: Record<string, string[]> = {
+  mtpl_tx_restricted: ["0026demo01"],
+};
+
+/** AdminModelTemplate → 用户侧选项（mock 专用；real 由后端模板级 ACL 过滤后下发，仅 active 行）。 */
 export const toUserModelTemplate = (t: AdminModelTemplate): ModelTemplateOption => ({
   model_template_id: t.model_template_id,
   display_name: t.display_name,
   description: t.description || undefined,
   main_model: { model_id: t.main_model_id, display_name: t.main_model_name || t.main_model_id },
   sub_model: { model_id: t.sub_model_id, display_name: t.sub_model_name || t.sub_model_id },
+  access_scope: t.access_scope,
   is_default: t.is_default,
   status: t.status,
 });
 
 /** 管理台「模型模板」表（real/mock 共用同一构建器，保证两模式表形状一致）。
- * 启/停编码进 onClickKey（mt-disable/mt-enable）：onCellAction 只有 rowId，拿不到行状态。 */
+ * 启/停编码进 onClickKey（mt-disable/mt-enable）：onCellAction 只有 rowId，拿不到行状态。
+ * 38.1：授权范围列（全员开放/限 N 人）+「白名单授权」动作（原模型资产页的授权入口整体迁到本页）。 */
 export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableData => ({
   title: "模型模板",
   primary: { label: "新建模板", icon: "plus", actionKey: "new-model-template" },
   cols: [{ label: "模板名" }, { label: "主 Agent 模型" }, { label: "子 Agent 模型" },
-         { label: "默认", width: "72px" }, { label: "状态", width: "88px" },
-         { label: "编辑", width: "56px" }, { label: "启停", width: "56px" }, { label: "设默认", width: "72px" }],
+         { label: "授权范围" }, { label: "默认", width: "64px" }, { label: "状态", width: "80px" },
+         { label: "授权", width: "88px" }, { label: "编辑", width: "56px" },
+         { label: "启停", width: "56px" }, { label: "设默认", width: "72px" }],
   rows: rows.map((t) => ({
     id: t.model_template_id,
     cells: [
       { text: t.display_name },
       { text: t.main_model_name || t.main_model_id },
       { text: t.sub_model_name || t.sub_model_id },
+      t.access_scope === "all"
+        ? { text: "全员开放", kind: "badge" as const, tone: "good" as const }
+        : { text: `限 ${t.grant_count} 人`, kind: "badge" as const, tone: "warning" as const },
       t.is_default ? { text: "默认", kind: "badge" as const, tone: "good" as const } : { text: "—" },
       { text: t.status, kind: "badge" as const, tone: t.status === "active" ? "good" as const : "neutral" as const },
+      { text: "白名单授权", kind: "action" as const, onClickKey: "mt-grants" },
       { text: "编辑", kind: "action" as const, onClickKey: "mt-edit" },
       t.status === "active"
         ? { text: "停用", kind: "action" as const, onClickKey: "mt-disable" }
@@ -407,6 +426,24 @@ export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableD
 
 /* --------------------------- 管理台（30.6） --------------------------- */
 export const adminTables: Record<string, AdminTableData> = {
+  // 38.1：授权范围/白名单授权已迁「模型模板」页——本表只剩资产基础列（补齐原 mock 空隙：
+  // 此前无 model-assets 键，mock 下模型资产页会错误回退显示 templates 表）
+  "model-assets": {
+    title: "模型资产",
+    primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
+    cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }],
+    rows: [
+      { id: "ma_glm51", cells: [
+        { text: "GLM-5.1" }, { text: "OpenAI 兼容" }, { text: "glm-5.1", mono: true },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+      { id: "ma_qwen35", cells: [
+        { text: "Qwen3.5" }, { text: "OpenAI 兼容" }, { text: "qwen3.5-instruct", mono: true },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+      { id: "ma_txllm", cells: [
+        { text: "交易大模型-TX" }, { text: "OpenAI 兼容" }, { text: "tx-llm-v2", mono: true },
+        { text: "平台" }, { text: "active", kind: "badge", tone: "good" } ] },
+    ],
+  },
   templates: {
     title: "模板管理",
     cols: [{ label: "模板名" }, { label: "template_key" }, { label: "状态" }, { label: "active 版本" }, { label: "操作", width: "148px" }],

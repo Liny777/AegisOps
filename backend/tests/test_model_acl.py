@@ -1,3 +1,9 @@
+"""模型资产路径回归（38.1：授权已迁模型模板维度，见 test_model_templates 的模板 ACL 用例）。
+
+- 资产级授权放开：全部 active 模型对所有白名单用户可见/可选（disabled 仍隐身，fail-closed 保留）。
+- 旧资产 grants 端点已移除（404）；注册/更新不再有 access_scope 语义（列废弃靠 DEFAULT 兜底）。
+- Model Gateway 在全 active 池内解析（候选池不受授权约束）。
+"""
 from __future__ import annotations
 
 import time
@@ -11,11 +17,6 @@ def _platform_models(client, headers) -> list[str]:
     return [m["model_id"] for m in unwrap(client.get("/api/openops/v1/models/platform", headers=headers))]
 
 
-def _tx_asset_id(client) -> str:
-    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
-    return next(r["model_asset_id"] for r in rows if r["model_id"] == "tx-llm-v2")
-
-
 def _select(client, headers, run_id: str, model: str):
     return client.post(
         f"/api/openops/v1/agent-runs/{run_id}:select-model", headers=headers,
@@ -23,25 +24,29 @@ def _select(client, headers, run_id: str, model: str):
     )
 
 
-def test_model_acl_001_visibility_filtered_by_grant(client):
-    """scope=all 全员可见；restricted 仅被授权用户可见（MODEL-ACL-001/002 列表面）。"""
-    demo = _platform_models(client, USER_HEADERS)  # 0026demo01：seed 已授 tx-llm-v2
+def _whitelist_other(client, crid: str):
+    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
+                       json={"client_request_id": crid, "user_id": "0099other",
+                             "display_name": "Other", "role": "user"}))
+
+
+def test_model_acl_001_asset_path_open_for_all(client):
+    """38.1 资产路径放开：全部 active 模型（含遗留 restricted 数据 tx-llm-v2）对所有白名单用户可见；
+    disabled 仍隐身（fail-closed 的 active 门保留）。"""
+    demo = _platform_models(client, USER_HEADERS)
     assert "qwen3.5-instruct" in demo and "tx-llm-v2" in demo
     assert "claude-3-5-sonnet" not in demo  # disabled 不出现
 
-    # 另一用户先加白（platform 准入）再查：restricted 模型不可见
-    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
-                       json={"client_request_id": "wl_other", "user_id": "0099other",
-                             "display_name": "Other", "role": "user"}))
+    _whitelist_other(client, "wl_other")
     other = _platform_models(client, OTHER_HEADERS)
-    assert "qwen3.5-instruct" in other and "tx-llm-v2" not in other
+    assert "qwen3.5-instruct" in other and "tx-llm-v2" in other  # 38.1：不再按人过滤
+    assert "claude-3-5-sonnet" not in other
 
 
-def test_model_acl_002_restricted_select_403(client):
-    """白名单外用户选 restricted / 未知模型 → MODEL_NOT_AUTHORIZED（MODEL-ACL-002）。"""
-    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
-                       json={"client_request_id": "wl_other2", "user_id": "0099other",
-                             "display_name": "Other", "role": "user"}))
+def test_model_acl_002_select_model_open_but_fail_closed(client):
+    """select-model（38.1 退化）：存在且 active 的模型任何人可选 → 200；
+    未知模型 / disabled 模型 → 403（fail-closed 保留，错误码沿用 MODEL_NOT_AUTHORIZED）。"""
+    _whitelist_other(client, "wl_other2")
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=OTHER_HEADERS))
     inst = unwrap(client.post("/api/openops/v1/agent-teams", headers=OTHER_HEADERS,
                               json={"client_request_id": f"c_{time.time_ns()}",
@@ -50,52 +55,32 @@ def test_model_acl_002_restricted_select_403(client):
     run = unwrap(client.post("/api/openops/v1/agent-runs", headers=OTHER_HEADERS,
                              json={"client_request_id": f"r_{time.time_ns()}",
                                    "agent_team_instance_id": inst["instance_id"]}))["run"]
-    r = _select(client, OTHER_HEADERS, run["agent_run_id"], "tx-llm-v2")
+    ok = _select(client, OTHER_HEADERS, run["agent_run_id"], "tx-llm-v2")
+    assert ok.status_code == 200  # 遗留 restricted 资产也可选（授权在模板维度）
+    r = _select(client, OTHER_HEADERS, run["agent_run_id"], "no-such-model")
     assert r.status_code == 403 and r.json()["error"]["code"] == "MODEL_NOT_AUTHORIZED"
-    r2 = _select(client, OTHER_HEADERS, run["agent_run_id"], "no-such-model")
-    assert r2.status_code == 403  # 未知模型同样 fail-closed
+    r2 = _select(client, OTHER_HEADERS, run["agent_run_id"], "claude-3-5-sonnet")
+    assert r2.status_code == 403  # disabled 同样 fail-closed
 
 
-def test_model_acl_004_grant_then_select_ok(client):
-    """授权后可见可选；撤销后 fail-closed（MODEL-ACL-003/004 API 面）。"""
-    unwrap(client.post("/api/openops/v1/admin/users/whitelist", headers=ADMIN_HEADERS,
-                       json={"client_request_id": "wl_other3", "user_id": "0099other",
-                             "display_name": "Other", "role": "user"}))
-    aid = _tx_asset_id(client)
-    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{aid}/grants", headers=ADMIN_HEADERS,
-                      json={"client_request_id": "g1", "access_scope": "restricted",
-                            "user_ids": ["0026demo01", "0099other"]}))
-    assert "tx-llm-v2" in _platform_models(client, OTHER_HEADERS)
-
-    instance = create_instance(client)
-    run = create_run(client, instance["instance_id"])
-    ok = _select(client, USER_HEADERS, run["agent_run_id"], "tx-llm-v2")
-    assert ok.status_code == 200
-
-    # 撤销 other（保留 demo）→ other 再不可见
-    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{aid}/grants", headers=ADMIN_HEADERS,
-                      json={"client_request_id": "g2", "access_scope": "restricted", "user_ids": ["0026demo01"]}))
-    assert "tx-llm-v2" not in _platform_models(client, OTHER_HEADERS)
-
-
-async def test_model_acl_003_gateway_second_check_fallback(monkeypatch):
-    """Model Gateway 二次校验（MODEL-ACL-003 运行时面）：选中模型不在授权集合 → 回退默认（纯逻辑，不打 DB）。"""
+async def test_model_acl_003_gateway_resolves_in_active_pool(monkeypatch):
+    """Model Gateway（38.1）：在全 active 池内解析——选中不在池内 → 回退默认；空池 → stub（纯逻辑，不打 DB）。"""
     rows = [
         {"model_id": "glm-5.1", "display_name": "GLM-5.1",
          "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
          "secret_env_var": "OPENOPS_PLATFORM_GLM_API_KEY"},
     ]
 
-    async def fake_available(_uid: str):
+    async def fake_active():  # 38.1：list_active 无参（旧 fake 带 _uid 会 TypeError）
         return rows
 
-    monkeypatch.setattr(model_gateway.model_assets, "list_available_for_user", fake_available)
-    spec = await model_gateway.resolve_runtime_model("tx-llm-v2", "u1")  # 选中已撤销授权的模型
+    monkeypatch.setattr(model_gateway.model_assets, "list_active", fake_active)
+    spec = await model_gateway.resolve_runtime_model("gone-model", "u1")  # 选中不在 active 池
     assert spec is not None and spec["model_id"] == "glm-5.1"  # 忽略选中值回退默认
     assert spec["base_url"] == "https://open.bigmodel.cn/api/paas/v4"  # completions 后缀剥离
 
-    monkeypatch.setattr(model_gateway.model_assets, "list_available_for_user", lambda _u: _empty())
-    spec2 = await model_gateway.resolve_runtime_model("tx-llm-v2", "u1")
+    monkeypatch.setattr(model_gateway.model_assets, "list_active", _empty)
+    spec2 = await model_gateway.resolve_runtime_model("gone-model", "u1")
     assert spec2 is None  # 全无可用 → stub
 
 
@@ -103,15 +88,15 @@ async def _empty():
     return []
 
 
-def test_model_acl_005_grants_audit_and_churn(client):
-    """保存授权写审计 model_asset.grants_updated；软删+插新（MODEL-ACL-005）。"""
-    aid = _tx_asset_id(client)
-    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{aid}/grants", headers=ADMIN_HEADERS,
-                      json={"client_request_id": "g3", "access_scope": "restricted", "user_ids": ["admin"]}))
-    grants = unwrap(client.get(f"/api/openops/v1/admin/model-assets/{aid}/grants", headers=ADMIN_HEADERS))
-    assert grants["user_ids"] == ["admin"]
-    recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
-    assert any(e["event_type"] == "model_asset.grants_updated" for e in recent)
+def test_model_acl_004_asset_grants_endpoints_removed(client):
+    """38.1：资产级 grants 端点已移除——GET/PUT /admin/model-assets/{id}/grants 均 404。"""
+    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
+    aid = next(r["model_asset_id"] for r in rows if r["model_id"] == "glm-5.1")
+    assert client.get(f"/api/openops/v1/admin/model-assets/{aid}/grants",
+                      headers=ADMIN_HEADERS).status_code == 404
+    assert client.put(f"/api/openops/v1/admin/model-assets/{aid}/grants", headers=ADMIN_HEADERS,
+                      json={"client_request_id": "g1", "access_scope": "restricted",
+                            "user_ids": ["0026demo01"]}).status_code == 404
 
 
 def test_model_acl_006_admin_endpoints_forbidden_for_user(client):
@@ -120,14 +105,16 @@ def test_model_acl_006_admin_endpoints_forbidden_for_user(client):
 
 
 def test_model_acl_007_register_ignores_sensitive_and_dedups(client):
-    """注册：DTO 白名单字段（api_key 进不来）；model_id 去重（MODEL-ACL-007）。"""
+    """注册：DTO 白名单字段（api_key/access_scope 进不来）；model_id 去重；列废弃靠 DEFAULT 兜底。"""
     unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                        json={"client_request_id": "m1", "display_name": "内部网关模型", "model_id": "gw-llm-1",
-                             "secret_env_var": "OPENOPS_GW_KEY", "access_scope": "all",
-                             "api_key": "sk-should-never-persist"}))
+                             "secret_env_var": "OPENOPS_GW_KEY",
+                             "api_key": "sk-should-never-persist",
+                             "access_scope": "restricted"}))  # 38.1：多传被 Pydantic 忽略，不再有语义
     rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
     gw = next(r for r in rows if r["model_id"] == "gw-llm-1")
     assert "api_key" not in gw and "sk-should-never-persist" not in str(gw)
+    assert gw["access_scope"] == "all"  # 废弃列恒 DEFAULT 'all'（多传 restricted 无效）
     dup = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                       json={"client_request_id": "m2", "display_name": "重复", "model_id": "gw-llm-1"})
     assert dup.status_code == 400
@@ -137,13 +124,13 @@ def test_register_rejects_key_value_in_secret_env_var(client):
     """SEC 护栏：secret_env_var 填成 Key 本身（如 sk-...）→ 入口拒绝，明文 Key 不落库。"""
     r = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                     json={"client_request_id": "reg_k1", "display_name": "误填", "model_id": "oops-llm",
-                          "base_url": "http://gw/v1", "secret_env_var": "sk-1234abcd", "access_scope": "all"})
+                          "base_url": "http://gw/v1", "secret_env_var": "sk-1234abcd"})
     assert r.status_code == 400
     assert "环境变量名" in r.json()["error"]["message"]
 
     r2 = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                      json={"client_request_id": "reg_k2", "display_name": "正确", "model_id": "good-llm",
-                           "base_url": "http://gw/v1", "secret_env_var": "OPENOPS_TX_LLM_KEY", "access_scope": "all"})
+                           "base_url": "http://gw/v1", "secret_env_var": "OPENOPS_TX_LLM_KEY"})
     assert r2.status_code == 200
 
 
@@ -177,7 +164,7 @@ def test_model_asset_update_patches_only_given_keys(client):
 
     after = _asset(client, "glm-5.1")
     assert after["base_url"] == "https://prod.gw/v1/chat/completions"
-    for k in ("display_name", "secret_env_var", "context_window_tokens", "model_id", "status", "access_scope"):
+    for k in ("display_name", "secret_env_var", "context_window_tokens", "model_id", "status"):
         assert after[k] == before[k], f"{k} 不该被这次更新改动"
 
 
@@ -234,3 +221,20 @@ def test_model_asset_update_writes_audit(client):
     _update(client, ADMIN_HEADERS, aid, {"base_url": "https://prod.gw/v1"})
     recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
     assert any(e["event_type"] == "model_asset.updated" for e in recent)
+
+
+def test_model_acl_005_legacy_binding_open(client):
+    """legacy platform_model_id 绑定（38.1 退化）：遗留 restricted 资产也可绑（存在+active 即可）。"""
+    inst = create_instance(client, name="legacy 绑 tx")
+    run = create_run(client, inst["instance_id"])
+    assert run["agent_run_id"]
+    r = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}:update", headers=USER_HEADERS,
+                    json={"client_request_id": f"u_{time.time_ns()}", "name": "legacy 绑 tx",
+                          "workspace_id": "ws_pay_abc", "user_llm_config_id": None,
+                          "model_template_id": None, "platform_model_id": "tx-llm-v2"})
+    assert r.status_code == 200
+    r2 = client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}:update", headers=USER_HEADERS,
+                     json={"client_request_id": f"u_{time.time_ns()}", "name": "legacy 绑 tx",
+                           "workspace_id": "ws_pay_abc", "user_llm_config_id": None,
+                           "model_template_id": None, "platform_model_id": "claude-3-5-sonnet"})
+    assert r2.status_code == 403  # disabled 仍 fail-closed

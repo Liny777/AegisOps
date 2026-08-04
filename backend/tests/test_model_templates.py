@@ -1,10 +1,11 @@
-"""模型模板（38 号：主/子 Agent 槽位模型编排）全链闭合。
+"""模型模板（38 号：主/子 Agent 槽位模型编排；38.1：授权在模板维度）全链闭合。
 
-- 管理面 CRUD（重名/未知资产/403/审计）+ 默认原子切换 + `:status` 路由顺序护栏。
-- 用户列表 ACL fail-closed：主、子槽位都授权才可见；disable 全员隐身。
+- 管理面 CRUD（重名/未知资产/403/审计）+ 默认原子切换 + `:status` 路由顺序护栏 + grants 端点。
+- 模板 ACL fail-closed（38.1）：restricted 模板仅白名单用户可见/可绑；disable 全员隐身。
 - 绑定端到端：overlay.model_template_id → 起任务 → selected_model=主槽 / selected_sub_model=子槽。
 - 越权绑定 403、三键互斥 400、编辑换绑涨版本、legacy 回归（selected_sub_model=None）。
-- resolve_template_models 纯逻辑（降级三态）+ _child_state 继承 + 降级留痕（redact 白名单护栏）。
+- resolve_template_models 纯逻辑（TEMPLATE_UNAVAILABLE / TEMPLATE_NOT_AUTHORIZED / MODEL_UNAVAILABLE）
+  + _child_state 继承 + 降级留痕（redact 白名单护栏）。
 """
 from __future__ import annotations
 
@@ -34,6 +35,14 @@ def _create_template(client, name: str, main_asset: str, sub_asset: str, **extra
                              "main_model_asset_id": main_asset, "sub_model_asset_id": sub_asset, **extra})
 
 
+def _grants(client, template_id: str, scope: str, user_ids: list[str]):
+    """模板授权保存（38.1：PUT /admin/model-templates/{id}/grants）。"""
+    return unwrap(client.put(f"/api/openops/v1/admin/model-templates/{template_id}/grants",
+                             headers=ADMIN_HEADERS,
+                             json={"client_request_id": f"g_{time.time_ns()}",
+                                   "access_scope": scope, "user_ids": user_ids}))
+
+
 def _create_team(client, headers, name: str, overlay: dict | None):
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=headers))
     return client.post("/api/openops/v1/agent-teams", headers=headers,
@@ -52,7 +61,8 @@ def _whitelist_other(client):
 # ---- seed 与管理面 CRUD ----
 
 def test_mt_001_seed_templates_present(client):
-    """seed 双调用时序：全新库（pytest 库）末尾第二次调用生效——种出「均衡（推荐）默认 + 经济」。"""
+    """seed 双调用时序：全新库（pytest 库）末尾第二次调用生效——种出「均衡（推荐）默认 + 经济 +
+    交易专用（受限演示）」；38.1：restricted 种子模板带 scope + grant_count。"""
     rows = _admin_templates(client)
     by_name = {r["display_name"]: r for r in rows}
     assert "均衡（推荐）" in by_name and "经济" in by_name
@@ -60,6 +70,9 @@ def test_mt_001_seed_templates_present(client):
     assert by_name["经济"]["main_model"]["model_id"] == "glm-5.1"
     assert by_name["经济"]["sub_model"]["model_id"] == "qwen3.5-instruct"
     assert sum(1 for r in rows if r["is_default"]) == 1
+    tx = by_name["交易专用（受限演示）"]
+    assert tx["access_scope"] == "restricted" and tx["grant_count"] == 1  # 授权了 0026demo01
+    assert by_name["均衡（推荐）"]["access_scope"] == "all"
 
 
 def test_mt_002_admin_crud_and_audit(client):
@@ -73,6 +86,7 @@ def test_mt_002_admin_crud_and_audit(client):
     assert created["main_model"]["model_id"] == "glm-5.1"
     assert created["sub_model"]["display_name"] == "Qwen3.5"
     assert created["is_default"] is False
+    assert created["access_scope"] == "all"  # 38.1：缺省全员开放
 
     # 重名 400；未知资产 400
     assert _create_template(client, "测试组合", glm["model_asset_id"], qwen["model_asset_id"]).status_code == 400
@@ -140,22 +154,32 @@ def test_mt_005_status_route_not_swallowed(client):
 # ---- 用户列表 ACL 与绑定 ----
 
 def test_mt_006_user_list_acl_fail_closed(client):
-    """主、子槽位都授权才可见：restricted 槽位对未授权用户整套隐身；disable 后全员隐身。"""
+    """模板级 ACL（38.1）：restricted 模板仅白名单用户可见；disable 后全员隐身。
+    seed 的「交易专用（受限演示）」即天然夹具（授权 0026demo01）。"""
     _whitelist_other(client)
-    assets = _assets_by_model_id(client)
-    tx = unwrap(_create_template(client, "含受限子模型", assets["glm-5.1"]["model_asset_id"],
-                                 assets["tx-llm-v2"]["model_asset_id"]))
-
     demo_names = {t["display_name"] for t in _user_templates(client)}
     other_names = {t["display_name"] for t in _user_templates(client, OTHER_HEADERS)}
-    assert "含受限子模型" in demo_names          # 0026demo01：seed 已授 tx-llm-v2
-    assert "含受限子模型" not in other_names     # 0099other：sub 槽未授权 → 整套隐身
-    assert "均衡（推荐）" in other_names          # 全 all 槽位照常可见
+    assert "交易专用（受限演示）" in demo_names       # 0026demo01：seed 已授权
+    assert "交易专用（受限演示）" not in other_names  # 0099other：无 grant → 隐身（fail-closed）
+    assert "均衡（推荐）" in other_names              # scope=all 照常可见
 
-    # disable → 对所有人隐身
-    unwrap(client.put(f"/api/openops/v1/admin/model-templates/{tx['model_template_id']}:status",
+    # 授权 other → 立即可见；撤销 → 再隐身（软删+插新）
+    assets = _assets_by_model_id(client)
+    mine = unwrap(_create_template(client, "临时受限组合", assets["glm-5.1"]["model_asset_id"],
+                                   assets["qwen3.5-instruct"]["model_asset_id"],
+                                   access_scope="restricted"))
+    tid = mine["model_template_id"]
+    assert "临时受限组合" not in {t["display_name"] for t in _user_templates(client, OTHER_HEADERS)}
+    _grants(client, tid, "restricted", ["0099other"])
+    assert "临时受限组合" in {t["display_name"] for t in _user_templates(client, OTHER_HEADERS)}
+    _grants(client, tid, "restricted", [])
+    assert "临时受限组合" not in {t["display_name"] for t in _user_templates(client, OTHER_HEADERS)}
+
+    # disable → 对所有人（含已授权者）隐身
+    unwrap(client.put(f"/api/openops/v1/admin/model-templates/{tid}:status",
                       headers=ADMIN_HEADERS, json={"client_request_id": "st_x", "status": "disabled"}))
-    assert "含受限子模型" not in {t["display_name"] for t in _user_templates(client)}
+    _grants(client, tid, "restricted", ["0026demo01"])
+    assert "临时受限组合" not in {t["display_name"] for t in _user_templates(client)}
 
 
 def test_mt_007_bind_and_runtime_resolution(client):
@@ -178,15 +202,18 @@ def _state_with_model(client, run_id: str):
 
 
 def test_mt_008_bind_unauthorized_403_and_exclusive_400(client):
-    """越权绑定（sub 槽 restricted 未授权）→ MODEL_NOT_AUTHORIZED；三键互斥 → 400；
+    """越权绑定（restricted 模板无 grant）→ MODEL_NOT_AUTHORIZED；三键互斥 → 400；
     绑不存在模板 → 404；停用模板 → TEMPLATE_DISABLED。"""
     _whitelist_other(client)
     assets = _assets_by_model_id(client)
     tx = unwrap(_create_template(client, "受限组合", assets["glm-5.1"]["model_asset_id"],
-                                 assets["tx-llm-v2"]["model_asset_id"]))
+                                 assets["tx-llm-v2"]["model_asset_id"], access_scope="restricted"))
+    _grants(client, tx["model_template_id"], "restricted", ["0026demo01"])  # 只授权 demo
 
     r = _create_team(client, OTHER_HEADERS, "other 越权", {"model_template_id": tx["model_template_id"]})
     assert r.status_code == 403 and r.json()["error"]["code"] == "MODEL_NOT_AUTHORIZED"
+    ok = _create_team(client, USER_HEADERS, "demo 已授权可绑", {"model_template_id": tx["model_template_id"]})
+    assert ok.status_code == 200  # 白名单内正常绑定
 
     r2 = _create_team(client, USER_HEADERS, "双键", {"model_template_id": tx["model_template_id"],
                                                     "user_llm_config_id": "11111111-1111-1111-1111-111111111111"})
@@ -234,18 +261,45 @@ def test_mt_010_legacy_platform_overlay_keeps_sub_none(client):
     assert state["active_task"]["selected_sub_model"] is None
 
 
-def test_mt_011_degraded_slot_falls_back_and_audits(client):
-    """降级留痕：绑定后撤销 sub 槽授权 → 起任务照常 running + model.template_degraded 审计，
-    payload 经 redact 白名单后仍含 slot / model_template_id / reason_summary（护住脱敏白名单）。"""
+def test_mt_011_degraded_template_grant_revoked(client):
+    """降级留痕（38.1）：绑定 restricted 模板后撤销 grant → 起任务照常 + TEMPLATE_NOT_AUTHORIZED
+    降级（主回平台默认、sub=None 跟随主）；payload 经 redact 白名单后仍含
+    slot / model_template_id / reason_summary（护住脱敏白名单）。"""
     assets = _assets_by_model_id(client)
     tpl = unwrap(_create_template(client, "会降级的组合", assets["glm-5.1"]["model_asset_id"],
-                                  assets["tx-llm-v2"]["model_asset_id"]))
+                                  assets["qwen3.5-instruct"]["model_asset_id"], access_scope="restricted"))
+    _grants(client, tpl["model_template_id"], "restricted", ["0026demo01"])
     inst = unwrap(_create_team(client, USER_HEADERS, "降级实例",
                                {"model_template_id": tpl["model_template_id"]}))["instance"]
-    # 撤销 demo 的 tx-llm-v2 授权（改绑空集合）→ sub 槽在下次 start_task 解析时失效
-    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{assets['tx-llm-v2']['model_asset_id']}/grants",
+    # 绑定后撤销授权（改绑空集合）→ 第三闸门在下次 start_task 拦截并降级
+    _grants(client, tpl["model_template_id"], "restricted", [])
+    run = create_run(client, inst["instance_id"])
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+                       json={"client_request_id": f"t_{time.time_ns()}", "input_text": "排查"}))
+    state = wait_until(lambda: _state_with_model(client, run["agent_run_id"]))
+    assert state["active_task"]["selected_model"] == "glm-5.1"      # 主回平台默认
+    assert state["active_task"]["selected_sub_model"] is None        # sub 跟随主
+
+    events = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/events", headers=USER_HEADERS))
+    items = events["items"] if isinstance(events, dict) else events
+    deg = next(e for e in items if e["event_type"] == "model.template_degraded")
+    payload = deg["payload_redacted_json"]
+    assert payload["slot"] == "template"
+    assert payload["model_template_id"] == tpl["model_template_id"]
+    assert "TEMPLATE_NOT_AUTHORIZED" in str(payload.get("reason_summary"))  # reason 经 redact 改名
+
+
+def test_mt_011b_degraded_slot_asset_disabled(client):
+    """槽位资产失效降级（38.1：MODEL_UNAVAILABLE，已非授权问题）：all 模板绑定后禁用 sub 槽资产 →
+    起任务 sub 槽回退平台默认 + 留痕。"""
+    assets = _assets_by_model_id(client)
+    tpl = unwrap(_create_template(client, "槽位会失效的组合", assets["glm-5.1"]["model_asset_id"],
+                                  assets["tx-llm-v2"]["model_asset_id"]))
+    inst = unwrap(_create_team(client, USER_HEADERS, "槽位失效实例",
+                               {"model_template_id": tpl["model_template_id"]}))["instance"]
+    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{assets['tx-llm-v2']['model_asset_id']}:status",
                       headers=ADMIN_HEADERS,
-                      json={"client_request_id": "g_revoke", "access_scope": "restricted", "user_ids": []}))
+                      json={"client_request_id": f"st_{time.time_ns()}", "status": "disabled"}))
     run = create_run(client, inst["instance_id"])
     unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
                        json={"client_request_id": f"t_{time.time_ns()}", "input_text": "排查"}))
@@ -258,8 +312,7 @@ def test_mt_011_degraded_slot_falls_back_and_audits(client):
     deg = next(e for e in items if e["event_type"] == "model.template_degraded")
     payload = deg["payload_redacted_json"]
     assert payload["slot"] == "sub"
-    assert payload["model_template_id"] == tpl["model_template_id"]
-    assert payload.get("reason_summary")  # reason 经 redact 改名 reason_summary
+    assert "MODEL_UNAVAILABLE" in str(payload.get("reason_summary"))
 
 
 # ---- 纯逻辑：resolve_template_models / _child_state ----
@@ -273,19 +326,23 @@ _ROWS = [
 ]
 
 
-def _patch_gateway(monkeypatch, tpl_row):
-    async def fake_available(_uid: str):
+def _patch_gateway(monkeypatch, tpl_row, has_grant: bool = True):
+    async def fake_active():  # 38.1：list_active 无参（旧 fake 带 _uid 会 TypeError）
         return _ROWS
 
     async def fake_get(_tid: str):
         return tpl_row
 
-    monkeypatch.setattr(model_gateway.model_assets, "list_available_for_user", fake_available)
+    async def fake_has_grant(_tid: str, _uid: str):
+        return has_grant
+
+    monkeypatch.setattr(model_gateway.model_assets, "list_active", fake_active)
     monkeypatch.setattr(model_gateway.model_templates, "get", fake_get)
+    monkeypatch.setattr(model_gateway.model_templates, "has_grant", fake_has_grant)
 
 
 async def test_mt_012_resolve_template_models_happy(monkeypatch):
-    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "active",
+    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "active", "access_scope": "all",
                                  "main_model_asset_id": "a-glm", "sub_model_asset_id": "a-qwen"})
     res = await model_gateway.resolve_template_models("t1", "u1")
     assert res["main_spec"]["model_id"] == "glm-5.1" and res["main_selected"] == "glm-5.1"
@@ -293,15 +350,16 @@ async def test_mt_012_resolve_template_models_happy(monkeypatch):
     assert res["degraded"] == []
 
 
-async def test_mt_013_resolve_template_models_sub_unauthorized(monkeypatch):
-    """sub 槽资产不在授权集合 → 该槽回退平台默认（glm）+ degraded 记 MODEL_NOT_AUTHORIZED。"""
-    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "active",
+async def test_mt_013_resolve_template_models_slot_unavailable(monkeypatch):
+    """sub 槽资产不在 active 池（禁用/删除）→ 该槽回退平台默认（glm）+ degraded 记 MODEL_UNAVAILABLE
+    （38.1：已非授权问题，语义如实）。"""
+    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "active", "access_scope": "all",
                                  "main_model_asset_id": "a-glm", "sub_model_asset_id": "a-gone"})
     res = await model_gateway.resolve_template_models("t1", "u1")
     assert res["main_selected"] == "glm-5.1"
     assert res["sub_selected"] == "glm-5.1"  # 回退默认
     assert [d["slot"] for d in res["degraded"]] == ["sub"]
-    assert res["degraded"][0]["reason"] == "MODEL_NOT_AUTHORIZED"
+    assert res["degraded"][0]["reason"] == "MODEL_UNAVAILABLE"
 
 
 async def test_mt_014_resolve_template_models_template_gone(monkeypatch):
@@ -311,10 +369,32 @@ async def test_mt_014_resolve_template_models_template_gone(monkeypatch):
     assert res["main_selected"] == "glm-5.1" and res["sub_spec"] is None and res["sub_selected"] is None
     assert res["degraded"][0]["reason"] == "TEMPLATE_UNAVAILABLE"
 
-    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "disabled",
+    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "disabled", "access_scope": "all",
                                  "main_model_asset_id": "a-glm", "sub_model_asset_id": "a-qwen"})
     res2 = await model_gateway.resolve_template_models("t1", "u1")
     assert res2["degraded"][0]["reason"] == "TEMPLATE_UNAVAILABLE"
+
+
+async def test_mt_014b_resolve_template_models_not_authorized(monkeypatch):
+    """restricted 模板 + 无 grant → TEMPLATE_NOT_AUTHORIZED（第三闸门）：主回默认、sub=None；
+    有 grant → 正常解析（38.1 模板级授权二次校验）。access_scope 缺失视同 restricted（fail-closed）。"""
+    tpl = {"model_template_id": "t1", "status": "active", "access_scope": "restricted",
+           "main_model_asset_id": "a-glm", "sub_model_asset_id": "a-qwen"}
+    _patch_gateway(monkeypatch, tpl, has_grant=False)
+    res = await model_gateway.resolve_template_models("t1", "u1")
+    assert res["main_selected"] == "glm-5.1" and res["sub_spec"] is None
+    assert res["degraded"][0]["reason"] == "TEMPLATE_NOT_AUTHORIZED"
+
+    _patch_gateway(monkeypatch, tpl, has_grant=True)
+    res2 = await model_gateway.resolve_template_models("t1", "u1")
+    assert res2["degraded"] == [] and res2["sub_selected"] == "qwen3.5-instruct"
+
+    # access_scope 键缺失（未迁移旧行）→ 视同 restricted，无 grant 即降级
+    _patch_gateway(monkeypatch, {"model_template_id": "t1", "status": "active",
+                                 "main_model_asset_id": "a-glm", "sub_model_asset_id": "a-qwen"},
+                   has_grant=False)
+    res3 = await model_gateway.resolve_template_models("t1", "u1")
+    assert res3["degraded"][0]["reason"] == "TEMPLATE_NOT_AUTHORIZED"
 
 
 def test_mt_015_child_state_inherits_sub_slot():
@@ -340,7 +420,7 @@ def test_mt_015_child_state_inherits_sub_slot():
 
 
 def test_mt_016_migration_file_idempotent_and_names_fit():
-    """迁移纪律（镜像 test_ddl_007）：幂等、无 DROP、索引名 ≤30。"""
+    """迁移纪律（镜像 test_ddl_007）：幂等、无 DROP、索引名 ≤30；含 38.1 追加段。"""
     from pathlib import Path
 
     sql = (Path(__file__).resolve().parents[1] / "sql" / "migrate-2026-07-29-model-template.sql").read_text(
@@ -349,5 +429,32 @@ def test_mt_016_migration_file_idempotent_and_names_fit():
     assert "ADD COLUMN IF NOT EXISTS selected_sub_model text" in sql
     assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_model_template_name" in sql
     assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_model_template_default" in sql
-    assert max(len(n) for n in ("ux_model_template_name", "ux_model_template_default")) <= 30
+    # 38.1：模板授权范围增量（旧库重跑本文件即补齐）
+    assert "ADD COLUMN IF NOT EXISTS access_scope text" in sql
+    assert "CREATE TABLE IF NOT EXISTS sre_model_template_grant" in sql
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_model_template_grant_user" in sql
+    assert "CREATE INDEX IF NOT EXISTS ix_model_template_grant_user" in sql
+    assert max(len(n) for n in ("ux_model_template_name", "ux_model_template_default",
+                                "ux_model_template_grant_user", "ix_model_template_grant_user")) <= 30
     assert "DROP " not in sql.upper()
+
+
+def test_mt_017_grants_crud_audit_and_404(client):
+    """模板授权端点（38.1，镜像原资产侧 acl_005）：PUT/GET 往返、审计 model_template.grants_updated、
+    all 清空白名单、未知模板 404。"""
+    tid = next(t["model_template_id"] for t in _admin_templates(client) if t["display_name"] == "经济")
+    out = _grants(client, tid, "restricted", ["admin", "admin", "0026demo01"])  # 重复项去重保序
+    assert out["access_scope"] == "restricted" and out["user_ids"] == ["admin", "0026demo01"]
+    got = unwrap(client.get(f"/api/openops/v1/admin/model-templates/{tid}/grants", headers=ADMIN_HEADERS))
+    assert got["user_ids"] == ["admin", "0026demo01"]
+    recent = unwrap(client.get("/api/openops/v1/admin/audit/recent", headers=ADMIN_HEADERS))
+    assert any(e["event_type"] == "model_template.grants_updated" for e in recent)
+
+    back = _grants(client, tid, "all", ["ignored"])  # all 时忽略 user_ids 清空白名单
+    assert back["access_scope"] == "all" and back["user_ids"] == []
+
+    assert client.get("/api/openops/v1/admin/model-templates/00000000-0000-0000-0000-000000000000/grants",
+                      headers=ADMIN_HEADERS).status_code == 404
+    # 非管理员 403
+    assert client.get(f"/api/openops/v1/admin/model-templates/{tid}/grants",
+                      headers=USER_HEADERS).status_code == 403

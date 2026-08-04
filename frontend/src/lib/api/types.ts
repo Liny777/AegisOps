@@ -423,18 +423,19 @@ export interface Template {
 }
 
 /** 模型模板（38 号：管理员编排的 主/子 Agent 模型组合）。
- * 用户侧 GET /models/templates 经 ACL 过滤（主、子槽位都授权才可见），real 模式只回 active 行。 */
+ * 用户侧 GET /models/templates 经模板级 ACL 过滤（38.1：scope=all ∪ 白名单授权），real 模式只回 active 行。 */
 export interface ModelTemplateOption {
   model_template_id: string;
   display_name: string;
   description?: string;
   main_model: { model_id: string; display_name: string };
   sub_model: { model_id: string; display_name: string };
+  access_scope: "all" | "restricted";
   is_default: boolean;
   status: "active" | "disabled";
 }
 
-/** 管理台模型模板行（列表/编辑弹窗共用）：比用户侧多编辑所需的槽位资产 UUID。 */
+/** 管理台模型模板行（列表/编辑弹窗共用）：比用户侧多编辑所需的槽位资产 UUID 与授权信息（38.1）。 */
 export interface AdminModelTemplate {
   model_template_id: string;
   display_name: string;
@@ -445,6 +446,8 @@ export interface AdminModelTemplate {
   sub_model_asset_id: string;
   sub_model_id: string;
   sub_model_name: string;
+  access_scope: "all" | "restricted";
+  grant_count: number;     // active 授权人数（「授权范围」徽标：限 N 人）
   is_default: boolean;
   status: "active" | "disabled";
 }
