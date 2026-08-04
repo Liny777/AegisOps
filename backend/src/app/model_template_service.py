@@ -127,6 +127,18 @@ async def set_status(model_template_id: str, status: str, by: str) -> None:
     )
 
 
+async def delete(model_template_id: str, by: str) -> None:
+    """软删模板（38.2）。允许删默认模板（is_default 只影响选单预选，删后前端回退首个 active）；
+    已绑实例不阻断——下次 start_task 走 TEMPLATE_UNAVAILABLE 降级回平台默认 + 留痕（既有链路）。"""
+    n = await model_templates.soft_delete(model_template_id, by)
+    if n == 0:
+        raise ApiError(Err.NOT_FOUND, "模型模板不存在")
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="model_template.deleted", user_id=by,
+        action="delete", payload_redacted={"model_template_id": model_template_id},
+    )
+
+
 async def set_default(model_template_id: str, by: str) -> dict[str, Any]:
     tpl = await model_templates.get(model_template_id)
     if tpl is None:

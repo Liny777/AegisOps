@@ -231,6 +231,22 @@ test("管理台模型模板页：表格 + 授权（38.1）+ 新建弹窗（主/�
   await expect(page.getByText(/设为全局默认/)).toBeVisible();
 });
 
+test("管理台删除（38.2）：模板可删；被模板引用的资产拒删显横幅", async ({ page }) => {
+  page.on("dialog", (d) => void d.accept()); // 两处 window.confirm 全接受
+  await page.goto("/admin/model-templates?as=admin");
+  await expect(page.getByRole("main").getByText("旧组合（停用）")).toBeVisible({ timeout: 15_000 });
+  // 删「旧组合（停用）」（第 4 行）→ 行消失（mock splice 写闭环）
+  await page.getByRole("main").getByText("删除", { exact: true }).nth(4).click(); // nth(0)=表头
+  await expect(page.getByRole("main").getByText("旧组合（停用）")).toHaveCount(0);
+  // 资产页：GLM-5.1 被 mock 模板引用 → 拒删 + 错误横幅提示先调整模板
+  // exact:true 区分大小写：裸 "GLM-5.1" 会同时命中 model_id 列的小写 glm-5.1（getByText 串匹配大小写不敏感）
+  await page.goto("/admin/model-assets?as=admin");
+  await expect(page.getByRole("main").getByText("GLM-5.1", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("main").getByText("删除", { exact: true }).nth(1).click(); // nth(0)=表头，行序 GLM 第一
+  await expect(page.getByText(/该模型被模型模板引用/)).toBeVisible();
+  await expect(page.getByRole("main").getByText("GLM-5.1", { exact: true })).toBeVisible(); // 未被误删
+});
+
 test("全部 Agents 清单（/agents）", async ({ page }) => {
   await page.goto("/agents");
   await expect(page.getByText("支付域感知快恢").first()).toBeVisible({ timeout: 15_000 });

@@ -86,6 +86,27 @@ async def set_status(model_asset_id: str, status: str, by: str) -> None:
     )
 
 
+async def delete(model_asset_id: str, by: str) -> None:
+    """软删模型资产（38.2）。被未删模板槽位引用则拒删（fail-closed：先调整模板，避免管理台出悬挂槽位）；
+    legacy overlay（platform_model_id）引用不拦——运行时 fail-safe 回平台默认。
+    model_id 唯一索引带 WHERE deleted_at IS NULL，删后同 model_id 可重注册。"""
+    from infra.repositories import model_templates  # 延迟导入：本服务默认不依赖模板仓储
+
+    if await model_assets.get(model_asset_id) is None:
+        raise ApiError(Err.NOT_FOUND, "模型资产不存在")
+    refs = await model_templates.list_referencing_asset(model_asset_id)
+    if refs:
+        names = "、".join(str(r["display_name"]) for r in refs[:5])
+        more = f" 等 {len(refs)} 个" if len(refs) > 5 else ""
+        raise ApiError(Err.VALIDATION_FAILED,
+                       f"该模型被模型模板引用（{names}{more}），请先在模板中更换主/子槽位或删除对应模板")
+    await model_assets.soft_delete(model_asset_id, by)
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="model_asset.deleted", user_id=by,
+        action="delete", payload_redacted={"model_asset_id": model_asset_id},
+    )
+
+
 def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
     """与 [[model_gateway.resolve_runtime_model]] 完全同口径的平台默认解析：
     优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个带 `secret_env_var` 的模型。

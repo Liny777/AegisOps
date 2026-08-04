@@ -64,6 +64,18 @@ async def set_status(model_asset_id: str, status: str, by: str) -> int:
     )
 
 
+async def soft_delete(model_asset_id: str, by: str) -> int:
+    """软删（38.2）：model_id 唯一索引带 WHERE deleted_at IS NULL，删后同 model_id 可重注册。
+    服务层先做模板引用检查（被槽位引用则拒删）；legacy overlay 引用不拦（运行时 fail-safe 回默认）。"""
+    return await exec1(
+        """
+        update sre_model_asset set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where model_asset_id=%(i)s and deleted_at is null
+        """,
+        {"i": model_asset_id, "b": by},
+    )
+
+
 # 可经 PUT /model-assets/{id} 改写的列。model_id 不在内（实例 overlay.platform_model_id 的绑定键）；
 # status 亦不在（专用 :status 端点）；access_scope 已废弃（38.1 授权迁模板维度）。
 _UPDATABLE = ("display_name", "base_url", "secret_env_var", "context_window_tokens")

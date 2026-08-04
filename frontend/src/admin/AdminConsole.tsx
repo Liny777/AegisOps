@@ -157,6 +157,19 @@ export function AdminConsole() {
       void api.adminSetModelTemplateDefault(rowId)
         .then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "mt-delete") {
+      // 软删（38.2）：已绑实例走既有降级链（下次任务回退平台默认 + 审计留痕），不阻断删除
+      if (!window.confirm(
+        `确认删除模型模板「${rowName}」？已绑定该模板的实例将在下次任务回退平台默认模型；如为默认模板，删除后用户选单回退首个模板。`)) return;
+      setActionErr("");
+      void api.adminDeleteModelTemplate(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
+    else if (key === "ma-delete") {
+      // 软删（38.2）：被模板槽位引用时后端 400（错误横幅提示先调整模板）；同 model_id 删后可重注册
+      if (!window.confirm(`确认删除模型资产「${rowName}」？被模型模板引用时将拒绝删除（需先调整模板槽位）。`)) return;
+      setActionErr("");
+      void api.adminDeleteModelAsset(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "user-tags") {
       // 行内编辑领域标签（prompt 交互与「销毁容器 reason」同风格）：当前值从「标签」列单元格取（「设标签」=空）
       const ti = table?.cols.findIndex((c) => c.label === "标签") ?? -1;
