@@ -160,7 +160,8 @@ export interface OpenOpsApi {
   renameRun(runId: string, title: string): Promise<void>;
   deleteRun(runId: string): Promise<void>;
   getRunState(runId: string, options?: RequestOptions): Promise<Record<string, unknown>>;
-  startTask(runId: string, text: string): Promise<{ task_id: string }>;
+  /** 名额满时后端不再 429，而是入队：status="queued" + queue_position（前端显示排队条）。 */
+  startTask(runId: string, text: string): Promise<{ task_id: string; status?: string; queue_position?: number }>;
   cancelTask(taskId: string): Promise<void>;
   closeRun(runId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
@@ -1221,7 +1222,7 @@ const mockApi: OpenOpsApi = {
     return delay(undefined as unknown as void).then(() => invalidateConversationHistory());
   },
   getRunState: (_runId, options) => waitWithSignal(delay({}), options?.signal),
-  startTask: () => delay({ task_id: "tsk_demo" }),
+  startTask: () => delay({ task_id: "tsk_demo", status: "running" }),
   cancelTask: () => delay(undefined as unknown as void),
   closeRun: () => delay(undefined as unknown as void).then(() => invalidateConversationHistory()),
   decideApproval: () => delay(undefined as unknown as void),

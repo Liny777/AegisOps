@@ -15,6 +15,14 @@ class TaskState:
     instance_id: str
     input_text: str
     status: str = "running"  # running/cancel_requested/cancelled/completed/failed
+    # 任务来源池：user=交互（占 per_user_running_task_limit）/ alert=告警自动诊断（闸门在 alerts
+    # dispatcher 的并发闸，不占用户交互额度）。HTTP StartTaskRequest 刻意无此字段（防伪造绕闸），
+    # 仅内部派发方（alerts dispatcher）经 getattr 缝隙传入——同 skill_hint 的 _TaskReq 先例。
+    origin: str = "user"
+    # 沙箱容器寻址键（**单一事实源**，执行期/自愈重建/管理台反查一律走它）：
+    # alert-origin=共享告警沙箱伪用户键（executor.ALERT_SANDBOX_UID）；user-origin=本人工号。
+    # 空串=旧路径兜底（使用方 getattr(st,"sandbox_uid","") or st.user_id）。
+    sandbox_uid: str = ""
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     orchestrator: asyncio.Task[None] | None = None
     rca: dict[str, Any] | None = None  # RCA 快照（/state 恢复用）
@@ -97,8 +105,11 @@ def get_by_task(task_id: str) -> TaskState | None:
     return _subtasks.get(task_id)  # E1：主表 miss 再查子表（decide_approval/cancel 路由）
 
 
-def running_count(user_id: str) -> int:
-    return sum(1 for st in _by_run.values() if st.user_id == user_id and st.status == "running")
+def running_count(user_id: str, origin: str | None = None) -> int:
+    """origin=None 数全部（sandbox_admin 展示口径不变）；origin='user' 供并发闸只数交互池。"""
+    return sum(1 for st in _by_run.values()
+               if st.user_id == user_id and st.status == "running"
+               and (origin is None or getattr(st, "origin", "user") == origin))
 
 
 def running_by_user(user_id: str) -> list[TaskState]:
@@ -107,6 +118,13 @@ def running_by_user(user_id: str) -> list[TaskState]:
     只列主任务：子 Agent 活在主 orchestrator 内，主任务 cancel 会级联（同 reset 口径）。
     """
     return [st for st in _by_run.values() if st.user_id == user_id and st.status == "running"]
+
+
+def running_by_sandbox(sandbox_uid: str) -> list[TaskState]:
+    """按容器寻址键反查在跑主任务（管理员销毁共享告警沙箱的连带取消用）：
+    告警诊断任务 user_id=实例 owner ≠ 容器键，按 user 反查会漏——须按本维度补查。"""
+    return [st for st in _by_run.values()
+            if st.status == "running" and getattr(st, "sandbox_uid", "") == sandbox_uid]
 
 
 def running_subtask_count(user_id: str) -> int:

@@ -23,6 +23,10 @@ test = [
 agentscope = [
   "agentscope==2.0.3",
 ]
+# 告警平台 Kafka 消费（7x24 接管，OPENOPS_ALERT=real 时需要）；默认 mock 不装
+kafka = [
+  "aiokafka>=0.11.0",
+]
 # 真 Docker 沙箱后端（B8，OPENOPS_SANDBOX=docker 时需要）；默认 fake 后端不装
 sandbox = [
   "aiodocker>=0.24.0",
@@ -40,7 +44,7 @@ where = ["src"]
 # ⚠ include 是**白名单**：新增顶层包必须登记，否则 `pip install .`（构 wheel）静默漏包。
 # 本地跑 / pytest / run.py 全靠 sys.path 直挂 src，**都逮不到这个错**——唯一抓手是
 # `pip wheel --no-deps` 后查包内容（已加进 scripts/release_check.sh）。
-include = ["api*", "app*", "domain*", "infra*", "runtime*", "sandbox*", "studio*"]
+include = ["api*", "app*", "domain*", "infra*", "runtime*", "sandbox*", "studio*", "alerts*"]
 
 [tool.setuptools.package-dir]
 "" = "src"

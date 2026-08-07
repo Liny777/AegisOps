@@ -6,7 +6,8 @@ import re
 import uuid
 from typing import Any
 
-from app import mcp_tool_annotation_service, model_gateway, runtime_adapter, scope_service
+from app import (interactive_queue, mcp_tool_annotation_service, model_gateway,
+                 runtime_adapter, scope_service)
 from domain import tool_key
 from domain.errors import ApiError, Err
 from domain.skill_alias import resolve_skill_alias
@@ -17,6 +18,7 @@ from infra.repositories import agent_teams, audit, delegations, runs, runtime_co
 from runtime import events, task_registry
 from runtime.emit import activity_context_of_task, expire_stale_approvals_and_audit
 from runtime.task_registry import TaskState
+from sandbox.executor import ALERT_SANDBOX_UID
 from sandbox.executor import executor as sandbox_executor
 
 log = logging.getLogger("openops.run")
@@ -143,10 +145,13 @@ async def _create_run_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
         raise ApiError(Err.FORBIDDEN, "无权在该 AgentTeam 上创建 Run")  # RUN-002
     if inst["status"] != "active":
         raise ApiError(Err.CONFIG_VERSION_INVALID, "实例不可用（disabled）")
-    # 会话期常驻（B8）：run 开启边界做沙箱容量准入并确保用户容器（在写 run 前——满则 fail-closed 不建空 run）
+    # 会话期常驻（B8）：run 开启边界做沙箱容量准入并确保容器（在写 run 前——满则 fail-closed 不建空 run）。
+    # sandbox_owner 内部缝隙（同 origin/skill_hint 的 getattr 先例，HTTP DTO 无此字段）：
+    # alerts dispatcher 传共享告警沙箱伪用户键（决策⑥），交互路径恒为本人。
     cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
     run_id = str(uuid.uuid4())
-    await sandbox_executor.ensure_user_container(uid, run_id, cfg)  # SANDBOX_CAPACITY_FULL / SANDBOX_CONTAINER_FAILED
+    sandbox_owner = getattr(req, "sandbox_owner", uid)
+    await sandbox_executor.ensure_user_container(sandbox_owner, run_id, cfg)  # SANDBOX_CAPACITY_FULL / SANDBOX_CONTAINER_FAILED
     run = await runs.create_run(
         uid, req.agent_team_instance_id, str(inst["active_config_version_id"]),
         "agentscope-session-" + uuid.uuid4().hex[:8], str(uuid.uuid4()), run_id=run_id,
@@ -164,32 +169,106 @@ async def _create_run_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
     return await idempotency.commit(uid, "create_run", req.client_request_id, result)
 
 
-async def start_task(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
-    uid = user["user_id"]
-    run = await owned_run(uid, run_id)
-    if run["run_status"] == "closed":
-        raise ApiError(Err.RUN_ALREADY_CLOSED, "Run 已关闭，不能启动新任务")  # RUN-005 / CANCEL-006
-    # 并发上限（RUN-004）：读平台运行配置
-    cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+async def _acquire_interactive_slot(uid: str, cfg: dict[str, Any]) -> bool:
+    """交互池名额准入：有名额返回 True。
+
+    ⚠ **这是 v3 分池并发（交互硬保底 + 弹性额度 + 告警硬保底）的唯一替换点**——
+    届时把"每用户计数"换成"全局分池计数"，start_task 与排队逻辑都不用动。
+    """
     limit = int(cfg.get("per_user_running_task_limit", 2))
-    running = task_registry.running_count(uid)
+    running = task_registry.running_count(uid, origin="user")
     try:  # P2：与快照取 max（重启后内存归零时防瞬时超发；旧库未迁移降级内存值）
         running = max(running, await task_states.count_running(uid))
     except Exception:  # noqa: BLE001
         pass
-    if running >= limit:
-        raise ApiError(Err.USER_TASK_CONCURRENCY_LIMIT, f"并发任务数已达上限（{limit}）")
+    return running < limit
+
+
+async def has_interactive_slot(uid: str) -> bool:
+    """出队前的名额复核（interactive_queue 专用）。
+
+    出队路径必须**逐个复核**而不是一次放空：drain() 每次只代表"某个任务结束了"，
+    并不代表队列里所有人都能开跑。少了这道复核，队列会在第一次 drain 时整体放行，
+    并发闸形同虚设（2026-07-31 真链路实测：限额 1 时 6 条排队任务同时启动）。
+    """
+    cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+    return await _acquire_interactive_slot(uid, cfg)
+
+
+async def start_task(user: dict[str, Any], run_id: str, req: Any,
+                     *, _queued_task_id: str | None = None) -> dict[str, Any]:
+    """启动任务。名额满时**入队而非 429**，返回 `status="queued"` + 位次。
+
+    `_queued_task_id` 是排队出队时的内部回调入口（interactive_queue._drain_once 传入）：
+    带它=名额已由出队获得，跳过准入检查并复用原 task_id，其余前置检查照常重跑
+    （run 可能在排队期间被关闭/删除，此时按正常错误路径失败，不启动僵尸任务）。
+    HTTP DTO 无此字段，外部请求无法伪造。
+    """
+    uid = user["user_id"]
+    # 任务来源池（7x24 告警接管）：HTTP StartTaskRequest 刻意无 origin 字段——外部请求恒落 user 池，
+    # 只有内部派发方（alerts dispatcher 的 dataclass 请求）能带 origin='alert'（同 skill_hint 的 getattr 缝隙）。
+    origin = getattr(req, "origin", "user")
+    # 容器寻址键（单一事实源，随 TaskState 贯通执行期/自愈重建）：alert-origin=共享告警沙箱，
+    # user-origin=本人（含在告警 run 里追问——决策⑦切回用户自己容器）。
+    sandbox_uid = ALERT_SANDBOX_UID if origin == "alert" else uid
+    run = await owned_run(uid, run_id)
+    if run["run_status"] == "closed":
+        # 告警 run 的「追问自动复开」：仅系统关闭（idle 回收/告警专属 TTL）可复开——先容量再准入
+        # （refcount 账目必须补，否则 release 时账目错乱），用户主动 close 的会话语义不变。
+        if run.get("run_source") == "alert" and run.get("status_reason_code") in ("idle_timeout", "alert_idle"):
+            _sb_cfg = {c["config_key"]: c["config_value_json"]
+                       for c in await runtime_config.get_domain("sandbox")}
+            await sandbox_executor.ensure_user_container(sandbox_uid, run_id, _sb_cfg)
+            await runs.reopen_alert_run(run_id)
+            run = await runs.get_run(run_id) or run
+        if run["run_status"] == "closed":
+            raise ApiError(Err.RUN_ALREADY_CLOSED, "Run 已关闭，不能启动新任务")  # RUN-005 / CANCEL-006
+    # 并发上限（RUN-004）：读平台运行配置。仅 user 池受限——alert 池的唯一闸门是 alerts dispatcher
+    # 的并发闸（不做双重限制）；反向亦然：告警诊断不挤占用户 2 个交互额度（registry/快照双口径都排除）。
+    cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
+    if origin == "user" and run.get("run_source") == "alert":
+        # 追问 lazy ensure：告警 run 由共享沙箱建号，用户容器可能不存在/已回收——
+        # 容量满的 429 会打在「追问」动作上（决策⑦已知代价）。
+        await sandbox_executor.ensure_user_container(uid, run_id, cfg)
+    # 交互任务名额：满则**排队**（前端显示位次，轮到自动开始），队列也满才 429。
+    # 出队回调（_queued_task_id 非空）已持有名额，跳过本段。alert 池不走这里（唯一闸门是
+    # alerts dispatcher 的并发闸，不做双重限制）。
+    task_id = _queued_task_id or ("tsk_" + uuid.uuid4().hex[:10])
+    if origin != "alert" and _queued_task_id is None:
+        if not await _acquire_interactive_slot(uid, cfg):
+            if not interactive_queue.enabled(cfg):  # 灰度开关关闭 → 退回旧的 429 行为
+                raise ApiError(Err.USER_TASK_CONCURRENCY_LIMIT,
+                               f"并发任务数已达上限（{cfg.get('per_user_running_task_limit', 2)}）")
+            pos = interactive_queue.enqueue(
+                user, run_id, task_id, req, str(run["audit_trace_id"]),
+                max_size=int(cfg.get("interactive_queue_max", interactive_queue.DEFAULT_MAX_SIZE)),
+                timeout_s=int(cfg.get("interactive_queue_timeout_s",
+                                      interactive_queue.DEFAULT_TIMEOUT_S)))
+            if pos is None:  # 连队列都排不下：此时才 429（语义=队列已满）
+                raise ApiError(Err.USER_TASK_CONCURRENCY_LIMIT,
+                               "排队人数已达上限，请稍后再试", retryable=True)
+            return {"task_id": task_id, "status": "queued", "queue_position": pos}
 
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     assert inst is not None
-    task_id = "tsk_" + uuid.uuid4().hex[:10]
     inst = await _derive_if_template_upgraded(user, run, inst)  # 28.7：模板升级 → 边界自动派生（保留 overlay/绑定）
 
-    # Scope resolve（RUN-003：先范围后任务，fail-closed 由 scope_service 抛错）
-    scope = await scope_service.resolve_for_task(uid, inst, run_id, task_id, str(run["audit_trace_id"]))
+    # Scope resolve（RUN-003：先范围后任务，fail-closed 由 scope_service 抛错）。
+    # 夜间降级（决策 7，仅告警派发链）：登录态缺失致 resolve 失败时用最近快照兜底；
+    # EMPTY_SCOPE 不降级（真空范围快照也救不了语义）；无历史快照按原错抛出（dispatcher 记 no_scope）。
+    try:
+        scope = await scope_service.resolve_for_task(uid, inst, run_id, task_id, str(run["audit_trace_id"]))
+    except ApiError as exc:
+        if origin != "alert" or exc.code == Err.EMPTY_SCOPE:
+            raise
+        scope = await scope_service.resolve_from_last_snapshot(
+            uid, inst, run_id, task_id, str(run["audit_trace_id"]))
+        if scope is None:
+            raise
 
     st = TaskState(task_id=task_id, run_id=run_id, user_id=uid,
-                   instance_id=str(run["agent_team_instance_id"]), input_text=req.input_text)
+                   instance_id=str(run["agent_team_instance_id"]), input_text=req.input_text,
+                   origin=origin, sandbox_uid=sandbox_uid)
     # task.started + scope.resolved 事件（审计+SSE）
     trace = str(run["audit_trace_id"])
     task_message = "任务已启动"
@@ -453,6 +532,10 @@ async def _derive_if_template_upgraded(user: dict[str, Any], run: dict[str, Any]
 
 
 async def cancel_task(user: dict[str, Any], task_id: str) -> dict[str, Any]:
+    # 排队中的任务还没有 TaskState（装配在出队后才做）——先查队列，命中即移除。
+    # 必须在 registry 查询之前，否则会误判为「任务不存在」返回 404。
+    if interactive_queue.position(task_id) is not None and interactive_queue.cancel(task_id):
+        return {"task_id": task_id, "status": "cancelled"}
     st = task_registry.get_by_task(task_id)
     if st is None:
         # P2 收敛：内存 miss（进程重启过）→ 按快照收口而非 404，用户可把孤儿任务显式关掉
@@ -496,6 +579,17 @@ async def cancel_task_state(st: TaskState, by_user_id: str) -> bool:
     return True
 
 
+
+def _sandbox_release_keys(run_row: dict[str, Any]) -> list[str]:
+    """告警 run 双键释放（共享沙箱设计难点①）：诊断任务在共享告警沙箱、追问任务在用户容器——
+    同一 run_id 可能同时挂两本容器账；close/delete/idle 回收必须两键都尝试释放
+    （release 幂等，无账目的键是 no-op）。漏一处 = 慢性名额泄漏，tests/alerts 有守卫。"""
+    keys = [str(run_row["user_id"])]
+    if run_row.get("run_source") == "alert":
+        keys.append(ALERT_SANDBOX_UID)
+    return keys
+
+
 async def delete_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     """会话删除（软删）：running task 先取消、释放容器（同 close_run 收尾），再打 deleted_at + 审计。"""
     uid = user["user_id"]
@@ -505,7 +599,8 @@ async def delete_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
         await cancel_task(user, st.task_id)
     if run["run_status"] != "closed":  # 已 close 的 run 容器早已释放，勿重复 release
         cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
-        await sandbox_executor.release_user_container(uid, run_id)
+        for _sb_key in _sandbox_release_keys(run):
+            await sandbox_executor.release_user_container(_sb_key, run_id)
         await sandbox_executor.sweep_idle(cfg)
     await runs.soft_delete_run(run_id, uid)
     message = "会话已删除"
@@ -547,7 +642,8 @@ async def close_run(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     await runs.set_run_status(run_id, "closed")
     # 会话期常驻（B8）：末个活跃 run 关闭后容器置 idle 交 TTL 回收
     cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
-    await sandbox_executor.release_user_container(user["user_id"], run_id)
+    for _sb_key in _sandbox_release_keys(run):
+        await sandbox_executor.release_user_container(_sb_key, run_id)
     await sandbox_executor.sweep_idle(cfg)
     message = "会话已关闭"
     eid = await audit.insert_event(
@@ -590,7 +686,8 @@ async def reclaim_idle_runs(cfg: dict[str, Any]) -> int:
                 await runs.reopen_run(run_id)
                 continue
             # (e) 复用关闭收尾：释放名额 + 回收空容器 + 审计 + 用户可见 SSE
-            await sandbox_executor.release_user_container(uid, run_id)
+            for _sb_key in _sandbox_release_keys(row):
+                await sandbox_executor.release_user_container(_sb_key, run_id)
             await sandbox_executor.sweep_idle(cfg)
             msg = f"会话超过 {ttl} 分钟无活动，已自动关闭并释放沙箱资源；发送新消息将自动开启新会话。"
             eid = await audit.insert_event(
@@ -739,7 +836,10 @@ async def converge_orphan_tasks() -> int:
 
 
 async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
-    return [row_json(r) for r in await runs.list_runs_by_user(user["user_id"])]
+    # 会话历史默认排除告警诊断 run（run_source='alert'）——它们只在告警清单页签可见，
+    # /agent-runs/{id} 直开不受影响（决策 6「不和对话放一起但可继续追问」）。
+    return [row_json(r) for r in await runs.list_runs_by_user(user["user_id"])
+            if r.get("run_source") != "alert"]
 
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:

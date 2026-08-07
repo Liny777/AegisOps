@@ -361,6 +361,7 @@ CREATE TABLE IF NOT EXISTS sre_agent_run (
   audit_trace_id uuid NOT NULL,
   run_title text,
   run_status text NOT NULL DEFAULT 'active',
+  run_source text NOT NULL DEFAULT 'user',
   started_at timestamptz NOT NULL DEFAULT now(),
   ended_at timestamptz,
   status_reason_code text,
@@ -1117,6 +1118,7 @@ CREATE TABLE IF NOT EXISTS sre_task_state (
   user_id text NOT NULL,
   instance_id uuid NOT NULL,
   task_status text NOT NULL DEFAULT 'running',
+  task_origin text NOT NULL DEFAULT 'user',
   input_text text NOT NULL DEFAULT '',
   rca_json jsonb,
   selected_model text,
@@ -1139,6 +1141,7 @@ COMMENT ON COLUMN sre_task_state.run_id IS '所属运行 ID';
 COMMENT ON COLUMN sre_task_state.user_id IS '任务发起人工号';
 COMMENT ON COLUMN sre_task_state.instance_id IS '所属 AgentTeam 实例 ID';
 COMMENT ON COLUMN sre_task_state.task_status IS 'running / completed / failed / cancelled / interrupted（重启收敛态）';
+COMMENT ON COLUMN sre_task_state.task_origin IS '任务来源池：user 占 per_user_running_task_limit；alert 由告警派发并发闸把守，不占用户交互额度';
 COMMENT ON COLUMN sre_task_state.input_text IS '任务输入文本';
 COMMENT ON COLUMN sre_task_state.rca_json IS 'RCA 状态快照 JSON，供任务状态恢复展示';
 COMMENT ON COLUMN sre_task_state.selected_model IS '任务选用的模型标识';

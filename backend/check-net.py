@@ -265,6 +265,60 @@ def check_skill_download() -> None:
         print("[check-net]   ⚠ entrypoint 为空——包内缺 SKILL.md/入口声明，执行会失败（找同事补包规范）")
 
 
+def check_alert_platform() -> None:
+    """⑦ 告警平台（7x24 接管上游，契约 v2）：Kafka 连通（metadata/分区/末位 offset）+ 详情 HTTP 探测。
+    这里 ✅ 而后台消费失败，则问题在消费组授权/offset 侧。"""
+    import asyncio
+
+    mode = os.environ.get("OPENOPS_ALERT", "mock").strip().lower()
+    topic = os.environ.get("OPENOPS_ALERT_KAFKA_TOPIC", "").strip()
+    print(f"[check-net]⑦ alert_platform={mode}  kafka_topic={topic or '(未设)'}  "
+          f"bootstrap={os.environ.get('OPENOPS_ALERT_KAFKA_BOOTSTRAP') or '(未设)'}  "
+          f"detail_token={'SET' if os.environ.get('OPENOPS_ALERT_TOKEN') else 'unset'}")
+    if mode != "real":
+        print("[check-net]   （mock 档跳过——真联调前 export OPENOPS_ALERT=real + KAFKA 六变量）")
+        return
+    from infra.external.alert_platform_client import AlertPlatformError
+
+    async def _probe() -> None:
+        from alerts import kafka_source
+
+        consumer = kafka_source.build_consumer()
+        await consumer.start()
+        try:
+            parts = consumer.partitions_for_topic(topic) or set()
+            if not parts:
+                print(f"[check-net]   ❌ topic 无分区/不存在：{topic}（确认对端已建 topic 并授权消费组）")
+                return
+            from aiokafka import TopicPartition
+
+            tps = [TopicPartition(topic, p) for p in sorted(parts)]
+            ends = await consumer.end_offsets(tps)
+            print(f"[check-net]   ✅ Kafka 连通  分区={sorted(parts)}  末位offset={ {tp.partition: o for tp, o in ends.items()} }")
+        finally:
+            await consumer.stop()
+
+    try:
+        asyncio.run(_probe())
+    except AlertPlatformError as e:
+        hint = {"config": "KAFKA 变量缺配或 aiokafka 未装（pip install -e '.[kafka]'）"}.get(e.kind, "")
+        print(f"[check-net]   ❌ {e.kind}: {str(e)[:300]}" + (f"\n[check-net]      → {hint}" if hint else ""))
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"[check-net]   ❌ Kafka: {type(e).__name__}: {str(e)[:300]}"
+              "\n[check-net]      → 查 bootstrap 可达/SASL 账号/消费组 Read 授权（契约 §5 核对单）")
+        return
+
+    # 详情 HTTP 接口探测（契约 §3）：404 视为可达（探针 id 不存在属预期）
+    from infra.external import alert_platform_client
+
+    try:
+        detail = asyncio.run(alert_platform_client.get_alert("__openops_probe__"))
+        print(f"[check-net]   ✅ 详情接口可达（probe → {'404 预期' if detail is None else '有响应'}）")
+    except AlertPlatformError as e:
+        print(f"[check-net]   ⚠ 详情接口 {e.kind}: {str(e)[:200]}（Kafka 主链路不受影响，回写/详情联调前修）")
+
+
 if __name__ == "__main__":
     check_console()
     print()
@@ -277,3 +331,5 @@ if __name__ == "__main__":
     check_skillhub()
     print()
     check_skill_download()
+    print()
+    check_alert_platform()

@@ -9,6 +9,13 @@
       "port": 5175
     },
     {
+      "name": "openops-mock-alerts",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "VITE_OPENOPS_API_MODE=mock npm run dev -- --port 5199 --strictPort"],
+      "cwd": "frontend",
+      "port": 5199
+    },
+    {
       "name": "openops-copilot-sidecar",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "runtime:start"],

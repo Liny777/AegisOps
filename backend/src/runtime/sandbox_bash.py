@@ -58,7 +58,7 @@ async def run_bash(
             return SkillResult(status="denied", exit_code=-1, stdout="", stderr="用户拒绝执行")
 
     # allow，或 ask 已批准 → 容器内执行（容器缺失自愈重建）
-    res = await sandbox_executor.run_command(st.user_id, command, run_id=st.run_id, cfg=st.sandbox_cfg)
+    res = await sandbox_executor.run_command(getattr(st, "sandbox_uid", "") or st.user_id, command, run_id=st.run_id, cfg=st.sandbox_cfg)
     await emit(st, run, "openops.sandbox.command.executed", action="bash",
                message="命令执行完成", decision="success" if res.status == "success" else res.status,
                payload={"command": command, "exit_code": res.exit_code,
@@ -131,7 +131,7 @@ async def list_container_files(st: TaskState, run: dict[str, Any], path: str = "
     q = shlex.quote(path)
     name = f"-name {shlex.quote(pattern)} " if pattern else ""
     cmd = f"find {q} -maxdepth {_LIST_MAXDEPTH} {name}2>/dev/null | head -n {_LIST_MAX_ENTRIES}"
-    res = await sandbox_executor.run_command(st.user_id, cmd, run_id=st.run_id, cfg=st.sandbox_cfg)
+    res = await sandbox_executor.run_command(getattr(st, "sandbox_uid", "") or st.user_id, cmd, run_id=st.run_id, cfg=st.sandbox_cfg)
     await emit(st, run, "openops.sandbox.file.list", action="list_files",
                message=f"列出容器目录 {path}", decision=res.status,
                payload={"path": path, "pattern": pattern, "status": res.status})

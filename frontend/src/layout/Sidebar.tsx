@@ -7,6 +7,7 @@ import { api } from "../lib/api";
 import type { Conversation } from "../lib/api/types";
 import type { NavItem } from "./navTypes";
 import { STUDIO_ADMIN_NAV, STUDIO_USER_NAV, studioActiveKey } from "../studio/entry";
+import { ALERTS_USER_NAV, alertsActiveKey } from "../alerts/entry";
 
 const EXPANDED = 248;
 const COLLAPSED = 60;
@@ -92,6 +93,7 @@ export function Sidebar() {
   // 32 号导航项：会话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
   // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
   const userNav: NavItem[] = [
+    ALERTS_USER_NAV,                       // 告警清单（7x24 告警接管切片自带；位置归 core，内容归切片）
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
@@ -125,6 +127,9 @@ export function Sidebar() {
     if (isAdmin) return loc.pathname.split("/")[2] ?? "templates";
     const studioKey = studioActiveKey(loc.pathname);   // 切片自己判定高亮
     if (studioKey) return studioKey;
+    const alertsKey = alertsActiveKey(loc.pathname);
+    if (alertsKey) return alertsKey;
+    if (loc.pathname.startsWith("/settings/alerts")) return "settings";  // 底部「设置」入口页，不亮任何一级导航
     if (loc.pathname.startsWith("/settings")) return "ontology";
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";
@@ -312,6 +317,18 @@ export function Sidebar() {
           >
             <Icon name={isAdmin ? "arrow-back-up" : "shield-lock"} size={18} />
             {showText ? <span style={{ flex: 1 }}>{isAdmin ? "返回工作台" : "进入管理台"}</span> : null}
+          </Interactive>
+        ) : null}
+        {/* 设置（2026-08-07 对齐原型：告警接管配置迁入 /settings/alerts，入口在管理台项之下） */}
+        {!isAdmin ? (
+          <Interactive
+            title="设置"
+            onClick={() => nav("/settings/alerts")}
+            baseStyle={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "pointer", fontSize: 13.5, color: color.textNav, fontWeight: 500 }}
+            hoverStyle={{ background: "#e9ecf1" }}
+          >
+            <Icon name="settings" size={18} />
+            {showText ? <span style={{ flex: 1 }}>设置</span> : null}
           </Interactive>
         ) : null}
         <Interactive

@@ -66,7 +66,7 @@ def test_ddl_001_has_core_tables_plus_runtime_config():
     """
     ddl = "\n".join(f.read_text(encoding="utf-8") for f in DDL_FILES)
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 29  # 23 业务核心（含 model_template + model_template_grant） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）
+    assert len(tables) == 35  # 23 业务核心（含 model_template 两表） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）+ alerts 六表（切片）
     assert "sre_platform_runtime_config" in tables
     assert "sre_agent_studio_span" in tables
     assert "sre_agent_team_tpl_version" in tables
@@ -119,7 +119,7 @@ def test_ddl_006_runtime_state_columns_are_all_commented():
         table: _table_columns(ddl, table) for table in COMMENTED_RUNTIME_TABLES
     }
 
-    assert sum(len(columns) for columns in table_columns.values()) == 55  # +1：task_state.selected_sub_model（模型模板 sub 槽）
+    assert sum(len(columns) for columns in table_columns.values()) == 56  # +2：task_state.selected_sub_model（模型模板 sub 槽）+ task_state.task_origin（告警分池）
     for table, columns in table_columns.items():
         assert _commented_columns(ddl, table) == columns, table
 

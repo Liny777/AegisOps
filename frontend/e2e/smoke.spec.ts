@@ -82,8 +82,9 @@ test("设置页往返：回复在后台继续且当前对话无损保留", async
   await expect(page.getByText(/Agent 正在调查/)).toBeVisible();
 
   // 在 900ms mock 回执到来前，通过真实侧栏入口离开对话页。
+  // （2026-08-07 侧栏底部恢复「设置」入口，落点 /settings/alerts=告警接管配置）
   await page.getByTitle("设置").click();
-  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page).toHaveURL(/\/settings\/alerts$/);
   await expect(page.getByRole("main").getByText("设置", { exact: true })).toBeVisible();
 
   // Workbench 仍在 DOM 中继续任务，但消息、连接徽标和 HITL 均不能覆盖设置页。

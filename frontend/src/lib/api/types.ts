@@ -400,6 +400,7 @@ export interface SandboxContainer {
   active_run_count: number;        // 打开中的会话/run 数（session 口径，非并发任务量，可能因 run 未正常关闭虚高）
   running_task_count: number;      // 当前运行的主任务数（对齐 per_user_running_task_limit 限额）
   running_subtask_count?: number;  // 子 Agent 在飞数（fan-out 观测，不计入限额）
+  queued_task_count?: number;      // 名额满后在交互队列等待的任务数（持续>0=对话侧拥堵）
   idle_seconds: number | null;
 }
 export interface SandboxDestroyResult {

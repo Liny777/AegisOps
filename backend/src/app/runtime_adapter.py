@@ -34,6 +34,12 @@ def _resolve_backend() -> RunTaskFn:
 
 def _log_failure(st: TaskState) -> None:
     def cb(t: asyncio.Task[None]) -> None:
+        # 任务协程结束 = 交互名额释放 → 唤醒排队队首（cancelled/异常路径同样释放）。
+        # 这是最准的时机：比"收到终态事件"更贴近真实的资源释放点。
+        if getattr(st, "origin", "user") != "alert":
+            from app import interactive_queue
+
+            interactive_queue.drain()
         if t.cancelled():
             return
         exc = t.exception()

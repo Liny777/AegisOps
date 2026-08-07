@@ -7,6 +7,7 @@ import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
 import { api } from "./lib/api";
 import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
 import { studioRoutes } from "./studio/entry";  // 垂直切片自注册路由（懒加载在切片内部）
+import { alertsRoutes } from "./alerts/entry";  // 7x24 告警接管切片（同律：入口只有 lazy 与常量）
 
 // 外链 ?q= 捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
 captureAutoQuestion();
@@ -112,6 +113,8 @@ export default function App() {
               <Route path="/agent-runs/:runId" element={null} />
               {/* Agent Studio 切片自注册路由（/replay/*）：路径与懒加载都由切片决定 */}
               {studioRoutes}
+              {/* 7x24 告警接管切片自注册路由（/alerts/*） */}
+              {alertsRoutes}
               <Route path="/admin" element={<RoleGuard><Navigate to="/admin/templates" replace /></RoleGuard>} />
               <Route path="/admin/:page" element={<RoleGuard><AdminConsole /></RoleGuard>} />
             </Route>
