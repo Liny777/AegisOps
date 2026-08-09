@@ -151,3 +151,76 @@ async def get_alert(alert_id: str) -> dict[str, Any] | None:
     _check(r, "get_alert")
     body = _safe_json(r)
     return body or None
+
+
+def _query_url() -> str:
+    """历史查询整条 URL（sit/beta/pro 路径差异大，不做拼装）。与 _base 同级 fail-closed：
+    禁模板占位/空白/凭据/query/fragment；允许带 path（29.10 的路径含 enterpriseId 段）。"""
+    raw = os.environ.get("OPENOPS_ALERT_QUERY_URL", "").strip().rstrip("/")
+    if not raw or any(ch in raw for ch in "{}\\") or any(ch.isspace() for ch in raw):
+        raise AlertPlatformError(
+            "config", "OPENOPS_ALERT_QUERY_URL 未配置或含模板占位——历史查询必须写固定完整地址")
+    try:
+        target = urlparse(raw)
+        _ = target.port
+    except ValueError as e:
+        raise AlertPlatformError("config", "OPENOPS_ALERT_QUERY_URL 端口无效") from e
+    if (target.scheme not in ("http", "https") or not target.hostname
+            or not _valid_hostname(target.hostname)
+            or target.username is not None or target.password is not None
+            or target.query or target.fragment or target.params):
+        raise AlertPlatformError(
+            "config", "OPENOPS_ALERT_QUERY_URL 必须是无凭据、查询或片段的固定完整地址")
+    return raw
+
+
+async def list_history(*, start: Any, end: Any, categories: list[str],
+                       severities: list[str], project_ids: list[str] | None,
+                       page_no: int = 1, page_size: int = 20) -> dict[str, Any]:
+    """内网 29.10 alarm_list 查询：内部词表 → wire 词表翻译收敛在此。
+
+    时间按北京时间发（R3：服务端时区解释联调核对，窗口偏 8h 即改 astimezone 一处）；
+    enterpriseId 文档已改非必填——env 配了才带。
+    """
+    from infra.external.alert_inet_contract import CST, SEVERITY_TO_LEVEL, map_history_row
+
+    body: dict[str, Any] = {
+        "startTime": start.astimezone(CST).strftime("%Y-%m-%d %H:%M:%S"),
+        "endTime": end.astimezone(CST).strftime("%Y-%m-%d %H:%M:%S"),
+        "pageNo": int(page_no),
+        "pageSize": int(page_size),
+    }
+    if categories:
+        body["moTypeList"] = list(categories)
+    if severities:
+        body["alarmLevels"] = sorted({SEVERITY_TO_LEVEL[s] for s in severities
+                                      if s in SEVERITY_TO_LEVEL})
+    if project_ids:
+        body["projectIds"] = list(project_ids)
+    ent = os.environ.get("OPENOPS_ALERT_ENTERPRISE_ID", "").strip()
+    if ent:
+        body["enterpriseId"] = ent
+    url = _query_url()
+    try:
+        async with httpx.AsyncClient(timeout=_timeout(), verify=console_tls_verify(),
+                                     trust_env=http_trust_env(),
+                                     headers={"Authorization": f"Bearer {_token()}"}) as client:
+            r = await client.post(url, json=body)  # 整条 URL 直发，不走 base_url 拼装
+    except AlertPlatformError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        raise AlertPlatformError("network", f"list_history: 告警平台不可达 {type(e).__name__}: {e}") from e
+    _check(r, "list_history")
+    env = _safe_json(r)
+    if str(env.get("status") or "") != "OK":
+        raise AlertPlatformError(
+            "http", f"list_history: status={env.get('status')} {str(env.get('message'))[:200]}",
+            status_code=r.status_code)
+    datas = (env.get("data") or {}).get("datas") or []
+    if not isinstance(datas, list):
+        raise AlertPlatformError("http", "list_history: 响应缺 data.datas 数组（契约漂移？）",
+                                 status_code=r.status_code)
+    rows = [map_history_row(d) for d in datas if isinstance(d, dict)]
+    total = int((env.get("data") or {}).get("total") or 0) or len(rows)  # total 有无联调确认（R6）
+    log.info("[alerts][history] window=%s~%s got=%d", body["startTime"], body["endTime"], len(rows))
+    return {"rows": rows, "total": total}

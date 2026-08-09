@@ -30,12 +30,12 @@ export const mockRuleTemplates = [
   { category: "MySQL", name: "资源饱和标准监控", description: "CPU / 内存 / 磁盘 IO 等资源饱和类告警，自动接管并定位瓶颈来源。", keywords: ["cpu_usage", "disk_io"] },
   { category: "MySQL", name: "主从延迟监控", description: "主从复制延迟超阈值告警，自动核对复制链路与大事务。", keywords: ["replication_lag"] },
   { category: "MySQL", name: "慢查询监控", description: "慢查询数量突增告警，自动聚类慢日志并给出索引建议。", keywords: ["slow_query"] },
-  { category: "PGSQL", name: "事务锁等待监控", description: "事务锁等待超阈值告警，自动定位持锁会话与阻塞链。", keywords: ["lock_wait"] },
-  { category: "PGSQL", name: "连接池耗尽监控", description: "连接池耗尽告警，自动排查连接泄漏与慢事务占用。", keywords: ["connection_pool"] },
-  { category: "PGSQL", name: "死锁检测", description: "死锁告警，自动还原死锁环并给出改写建议。", keywords: ["deadlock"] },
-  { category: "ADS Docker", name: "容器重启监控", description: "容器反复重启告警，自动拉取退出码与最近变更。", keywords: ["restart_count"] },
-  { category: "ADS Docker", name: "资源限制监控", description: "容器触及 CPU/内存限额告警，自动核对限额与实际用量。", keywords: ["oom_killed", "cpu_throttle"] },
-  { category: "ADS Docker", name: "健康检查监控", description: "健康检查连续失败告警，自动探测端口与依赖服务。", keywords: ["healthcheck_fail"] },
+  { category: "PostgreSQL", name: "事务锁等待监控", description: "事务锁等待超阈值告警，自动定位持锁会话与阻塞链。", keywords: ["lock_wait"] },
+  { category: "PostgreSQL", name: "连接池耗尽监控", description: "连接池耗尽告警，自动排查连接泄漏与慢事务占用。", keywords: ["connection_pool"] },
+  { category: "PostgreSQL", name: "死锁检测", description: "死锁告警，自动还原死锁环并给出改写建议。", keywords: ["deadlock"] },
+  { category: "Docker", name: "容器重启监控", description: "容器反复重启告警，自动拉取退出码与最近变更。", keywords: ["restart_count"] },
+  { category: "Docker", name: "资源限制监控", description: "容器触及 CPU/内存限额告警，自动核对限额与实际用量。", keywords: ["oom_killed", "cpu_throttle"] },
+  { category: "Docker", name: "健康检查监控", description: "健康检查连续失败告警，自动探测端口与依赖服务。", keywords: ["healthcheck_fail"] },
 ];
 
 /** 新建规则默认预填的诊断提示词（五步法口径，用户可在编辑器里改）。 */
@@ -78,7 +78,7 @@ const GW_ID = "agt_gateway_watch";
 export const mockEvents: MockEventRow[] = [
   {
     alert_no: "ALM-20260730-000110",
-    category: "ADS Docker",
+    category: "Docker",
     alert_object: "ads-node-12",
     appid: "00000000000000000000000000000601",
     title: "ADS 容器内存限额触顶",
@@ -101,10 +101,10 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000106",
-    category: "PGSQL",
+    category: "PostgreSQL",
     alert_object: "pg-prod-02",
     appid: "00000000000000000000000000000602",
-    title: "PGSQL 事务锁等待超阈值",
+    title: "PostgreSQL 事务锁等待超阈值",
     description: "pg-prod-02 出现事务锁等待超过 30s 的会话，疑似批处理与在线事务互锁。",
     alert_status: "unassigned",
     severity: "warning",
@@ -147,10 +147,10 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000102",
-    category: "PGSQL",
+    category: "PostgreSQL",
     alert_object: "pg-prod-01",
     appid: "00000000000000000000000000000602",
-    title: "PGSQL 连接池耗尽",
+    title: "PostgreSQL 连接池耗尽",
     description: "pg-prod-01 连接池 active 200/200，等待队列 84，订单写入受阻。",
     alert_status: "assigned",
     severity: "fatal",
@@ -170,10 +170,10 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000112",
-    category: "PGSQL",
+    category: "PostgreSQL",
     alert_object: "pg-gw-02",
     appid: "00000000000000000000000000000425",
-    title: "PGSQL 死锁频发",
+    title: "PostgreSQL 死锁频发",
     description: "pg-gw-02 十分钟内出现 7 次死锁回滚，涉及网关配置表。",
     alert_status: "unassigned",
     severity: "fatal",
@@ -239,7 +239,7 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000107",
-    category: "ADS Docker",
+    category: "Docker",
     alert_object: "ads-node-7",
     appid: "00000000000000000000000000000423",
     title: "ADS 容器健康检查抖动",
@@ -262,10 +262,10 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000109",
-    category: "PGSQL",
+    category: "PostgreSQL",
     alert_object: "pg-prod-01",
     appid: "00000000000000000000000000000602",
-    title: "PGSQL 慢事务堆积",
+    title: "PostgreSQL 慢事务堆积",
     description: "pg-prod-01 出现 12 个超过 60s 的长事务，来自订单批处理任务未释放游标，已受控恢复。",
     alert_status: "closed",
     severity: "critical",
@@ -285,7 +285,7 @@ export const mockEvents: MockEventRow[] = [
   },
   {
     alert_no: "ALM-20260730-000103",
-    category: "ADS Docker",
+    category: "Docker",
     alert_object: "ads-node-7",
     appid: "00000000000000000000000000000423",
     title: "ADS 容器反复重启",
@@ -452,8 +452,8 @@ export const mockIncidents: AlertIncidentDetail[] = [
   {
     incident_id: "inc_pg_pool_exhausted",
     ...PAY,
-    category: "PGSQL",
-    title: "PGSQL 连接池耗尽（active 200/200）",
+    category: "PostgreSQL",
+    title: "PostgreSQL 连接池耗尽（active 200/200）",
     severity: "critical",
     status: "completed",
     agent_result: "recovered",
@@ -486,7 +486,7 @@ export const mockIncidents: AlertIncidentDetail[] = [
   {
     incident_id: "inc_docker_restart_loop",
     ...GW,
-    category: "ADS Docker",
+    category: "Docker",
     title: "容器 gateway-edge-2 反复重启（5 次/10min）",
     severity: "critical",
     status: "failed",
@@ -607,9 +607,9 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
       },
       {
         rule_id: "rule_pay_pg_order",
-        name: "PGSQL 订单库接管",
+        name: "PostgreSQL 订单库接管",
         description: "2 条监控策略",
-        categories: ["PGSQL"],
+        categories: ["PostgreSQL"],
         enabled: true,
         source: "custom",
         severities: ["fatal", "critical"],
@@ -623,7 +623,7 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
         rule_id: "rule_pay_ads_edge",
         name: "ADS 边缘容器接管",
         description: "1 条监控策略",
-        categories: ["ADS Docker"],
+        categories: ["Docker"],
         enabled: false,
         source: "custom",
         severities: ["fatal", "critical", "warning"],
@@ -642,7 +642,7 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
         rule_id: "rule_gw_docker",
         name: "网关容器接管",
         description: "2 条监控策略",
-        categories: ["ADS Docker"],
+        categories: ["Docker"],
         enabled: true,
         source: "custom",
         severities: ["fatal", "critical"],
@@ -852,4 +852,34 @@ export const mockBatchRules = (ruleIds: string[], action: AlertRuleBatchAction):
 export const mockSetTakeoverEnabled = (instanceId: string, enabled: boolean): void => {
   ensureRules(instanceId).enabled = enabled;
   changeSeq += 1;
+};
+
+
+/* ------------------------- 历史告警预览（第二步弹窗） ------------------------- */
+
+/** mock 档历史预览：镜像后端 alert_platform_mock.list_history 的语义——
+ *  平台真历史（未命中/未接管的也在），按 类别多选/级别/近 N 天窗 过滤。
+ *  数据源直接复用本文件事件样本（相对日期已保证 D1/D2 落 3 天窗、D5/D6 只落 7 天窗），
+ *  行形态即 AlertEventWire；source 恒 "platform"（mock 不模拟平台故障，降级路径归后端测试）。 */
+export const mockHistoryPreview = (params: {
+  categories: string[];
+  severity: string[];
+  sinceDays: number;
+  pageSize?: number;
+}): { items: AlertEventWire[]; total: number; page: number; page_size: number; source: "platform" } => {
+  const cutoff = Date.now() - params.sinceDays * 86_400_000;
+  const rows = mockEvents
+    .filter((e) =>
+      (!params.categories.length || params.categories.includes(e.category))
+      && (!params.severity.length || params.severity.includes(e.severity))
+      && new Date(e.started_at).getTime() >= cutoff)
+    .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
+  const size = params.pageSize ?? 20;
+  return {
+    items: rows.slice(0, size).map((e) => ({ ...e })),
+    total: rows.length,
+    page: 1,
+    page_size: size,
+    source: "platform",
+  };
 };

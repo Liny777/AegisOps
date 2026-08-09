@@ -100,3 +100,10 @@
 3. owner 容器常驻：占位数=启用接管的 owner 数（26 上限），admin overview 展示供容量规划。
 4. 多实例命中同一告警各自诊断，放大被 per-instance 上限兜住。
 5. 对方排期：Pull 两端点是 Phase1 唯一硬依赖，契约文档先行交付；mock 保证我方不被阻塞。
+
+## 2026-08-09 内网契约切换（决策追加）
+
+1. **上游切内网真实契约**：Kafka 消息体（29.11）经 `infra/external/alert_inet_contract.map_kafka_alarm` 译成内部 AlertDTO（双格式缝：探测 alarmId/alarmCode 键，内部形状照旧透传）；映射词表与 R1–R12 联调清单见 `backend/docs/ALERT-PLATFORM-CONTRACT.md` v3。
+2. **app_id ← appIdList**（元素=omodel projectId，混合口径纯串比较）；首元素参与本地匹配，全列表存 annotations.app_id_list。
+3. **规则预览切平台历史接口**（29.10 alarm_list，`GET /alerts/history-preview`）：真全量历史（未命中/未接管可见），平台故障自动降级本地库（source 标记）；scope 快照 projectIds 收窄到该 Agent 管的应用。
+4. **类别口径改内网 moType**：PGSQL→PostgreSQL、ADS Docker→Docker（存量迁移 `sql/migrate-2026-08-09-alert-category-motype.sql`，含可选 strategies 清空段——metricName 与本地策略名词表不齐，R10）。

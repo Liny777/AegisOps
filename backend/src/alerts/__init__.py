@@ -10,9 +10,10 @@
    facade 不背 fastapi/httpx。
 
 alerts → core 方向只用公开 API：`infra.db.{q_all,q_one,exec1,row_json,jsonb}`、
-`infra.idempotency`、`infra.external.alert_platform_client`、`infra.repositories.runs` 的
-公开函数、`app.run_state_service.{create_run,start_task}`、`domain.errors`、
-`api.deps.{User,Admin}`、`api.responses.ok`。不碰任何下划线私有名。
+`infra.idempotency`、`infra.external.alert_platform_client`、
+`infra.external.alert_inet_contract`（内网 29.11/29.10 契约映射，kafka_source 消费侧用）、
+`infra.repositories.runs` 的公开函数、`app.run_state_service.{create_run,start_task}`、
+`domain.errors`、`api.deps.{User,Admin}`、`api.responses.ok`。不碰任何下划线私有名。
 """
 from __future__ import annotations
 

@@ -582,7 +582,7 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
                       scope_appids: list[str] | None,
                       alert_status: str | None, severities: list[str] | None,
                       takeover: str | None, category: str | None, search: str | None,
-                      since_days: int | None = None,
+                      since_days: int | None = None, categories: list[str] | None = None,
                       page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
     """事件 LEFT JOIN LATERAL「该视角下最新聚合单」。
 
@@ -612,6 +612,9 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
     if category:
         where.append("e.category = %(cat)s")
         params["cat"] = category
+    elif categories:  # 预览降级路径的多类别过滤（历史预览类型多选；单值调用零改动）
+        where.append("e.category = any(%(cats)s::text[])")
+        params["cats"] = categories
     if search:
         where.append("(e.external_alert_id ilike %(q)s or e.category ilike %(q)s "
                      "or e.alert_object ilike %(q)s)")

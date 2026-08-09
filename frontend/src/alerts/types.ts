@@ -7,7 +7,7 @@
 
 /** 告警等级四档：致命 / 严重 / 普通 / 提示。 */
 export type AlertSeverity = "fatal" | "critical" | "warning" | "info";
-/** 告警类型是**开放枚举**（上游告警平台可扩展）：Phase1 模板仅 MySQL/PGSQL/ADS Docker 三类。 */
+/** 告警类型是**开放枚举**（上游告警平台可扩展）：Phase1 模板仅 MySQL/PostgreSQL/Docker 三类（2026-08-09 起对齐内网 moType 词表）。 */
 export type AlertCategory = string;
 /** 事件六态（DB 即队列）：排队中 → 诊断中 → 已完成/失败；溢出丢弃=已跳过；人工忽略=已忽略。 */
 export type IncidentStatus = "queued" | "diagnosing" | "completed" | "failed" | "skipped" | "ignored";
@@ -64,6 +64,14 @@ export interface AlertEventsPage {
   total: number;
   page: number;
   page_size: number;
+}
+
+/** 历史预览数据来源：platform=内网 alarm_list 真历史；local_fallback=平台不可用时的本地落库降级。 */
+export type AlertPreviewSource = "platform" | "local_fallback";
+
+/** GET /alerts/history-preview 的返回（规则编辑器第二步）。 */
+export interface AlertHistoryPreviewPage extends AlertEventsPage {
+  source: AlertPreviewSource;
 }
 
 /** 告警事件（聚合后的接管单元）：一条 = 同指纹/同 group_key 的一簇原始告警。 */

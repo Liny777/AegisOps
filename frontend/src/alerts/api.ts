@@ -12,6 +12,7 @@ import * as M from "./mockData";
 import type {
   AlertEventRow,
   AlertEventsPage,
+  AlertHistoryPreviewPage,
   AlertEventStatus,
   AlertEventWire,
   AlertIncidentDetail,
@@ -84,6 +85,15 @@ export interface AlertsApi {
   setTakeoverEnabled(instanceId: string, enabled: boolean): Promise<void>;
   /** 模板 payload：templates + 可选级别 + 默认提示词。 */
   getRuleTemplates(): Promise<AlertRuleTemplatesPayload>;
+  /** 规则编辑器第二步预览：平台历史接口主路径（真全量历史），失败降级本地库（source 区分）。 */
+  historyPreview(params: {
+    instanceId: string;
+    categories: string[];
+    severity: AlertSeverity[];
+    sinceDays: number;
+    pageSize?: number;
+    signal?: AbortSignal;
+  }): Promise<AlertHistoryPreviewPage>;
 }
 
 /** duration_s(int) → "N秒/N分"（<60s 秒、否则四舍五入到分；展示语义归前端投影层）。 */
@@ -245,6 +255,18 @@ const realAlertsApi: AlertsApi = {
   async getRuleTemplates() {
     return apiFetch<AlertRuleTemplatesPayload>(`/openops/v1/alerts/rule-templates`);
   },
+  async historyPreview(params) {
+    const s = new URLSearchParams({
+      instance_id: params.instanceId,
+      categories: params.categories.join(","),
+      since_days: String(params.sinceDays),
+      page_size: String(params.pageSize ?? 20),
+    });
+    if (params.severity.length) s.set("severity", params.severity.join(","));
+    const page = await apiFetch<Omit<AlertHistoryPreviewPage, "items"> & { items: AlertEventWire[] }>(
+      `/openops/v1/alerts/history-preview?${s.toString()}`, { signal: params.signal });
+    return { ...page, items: page.items.map(projectEvent) };
+  },
 };
 
 const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
@@ -301,6 +323,10 @@ const mockAlertsApi: AlertsApi = {
   setTakeoverEnabled: (instanceId, enabled) =>
     delay(undefined).then(() => { M.mockSetTakeoverEnabled(instanceId, enabled); invalidateAlerts(instanceId); }),
   getRuleTemplates: () => delay(M.mockGetRuleTemplates()),
+  historyPreview: (params) => delay(undefined).then(() => {
+    const page = M.mockHistoryPreview(params);
+    return { ...page, items: page.items.map(projectEvent) };
+  }),
 };
 
 export const alertsApi: AlertsApi = API_MODE === "real" ? realAlertsApi : mockAlertsApi;

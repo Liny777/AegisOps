@@ -109,6 +109,21 @@ async def admin_list_events(
         page=page, page_size=page_size))
 
 
+# ---- 历史告警预览（规则编辑器第二步；主路径=平台 alarm_list，失败降级本地库） ----
+@user_router.get("/history-preview")
+async def history_preview(
+    user: User,
+    instance_id: str = Query(min_length=1),
+    categories: str = Query(min_length=1, description="逗号分隔，开放枚举（MySQL,PostgreSQL,Docker,…）"),
+    severity: str | None = Query(default=None, description="逗号分隔：fatal,critical,warning（缺省=三档全选）"),
+    since_days: int = Query(default=7, ge=1, le=30, description="近 N 天窗口（编辑器下拉 3|7）"),
+    page_size: int = Query(default=20, ge=1, le=100),
+):
+    return ok(await service.history_preview(
+        user, instance_id=instance_id, categories=categories, severities=severity,
+        since_days=since_days, page_size=page_size))
+
+
 # ---- 接管清单（incidents） ----
 @user_router.get("/incidents")
 async def list_incidents(

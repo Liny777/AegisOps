@@ -64,9 +64,18 @@ def build_consumer() -> Any:
 
 
 def _parse(value: bytes | str) -> dict[str, Any] | None:
+    """消息体 → 内部 AlertDTO。双格式缝：内网 29.11 体（探测 alarmId/alarmCode 键）走
+    `alert_inet_contract.map_kafka_alarm`；否则视为内部 DTO 原样透传（mock/测试注入缝，
+    也给未来第二上游留位）。坏 JSON / 映射炸均返回 None，由调用方计数跳过。"""
     try:
         body = json.loads(value if isinstance(value, str) else value.decode("utf-8"))
-        return body if isinstance(body, dict) else None
+        if not isinstance(body, dict):
+            return None
+        if "alarmId" in body or "alarmCode" in body:  # 内网真实契约体
+            from infra.external import alert_inet_contract
+
+            return alert_inet_contract.map_kafka_alarm(body)
+        return body
     except Exception:  # noqa: BLE001 —— 坏消息跳过不阻塞分区
         return None
 

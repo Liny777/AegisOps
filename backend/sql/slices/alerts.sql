@@ -90,7 +90,7 @@ COMMENT ON COLUMN sre_alert_event.external_alert_id IS '对端告警 ID（Phase2
 COMMENT ON COLUMN sre_alert_event.fingerprint IS '同类事件指纹：对端提供；缺省时 ingest 按 sha256(source+alert_name+规范化labels) 计算';
 COMMENT ON COLUMN sre_alert_event.alert_status IS 'firing / resolved（resolved Phase1 只落库不驱动状态机）';
 COMMENT ON COLUMN sre_alert_event.severity IS '严重度：fatal(致命)/critical(严重)/warning(普通)/info(提示)，对端映射到此四档';
-COMMENT ON COLUMN sre_alert_event.category IS '告警类型（开放枚举：MySQL/PGSQL/OpenGauss/Redis/ADS Docker/K8s/Nginx…），一级匹配与展示维度';
+COMMENT ON COLUMN sre_alert_event.category IS '告警类型（开放枚举：MySQL/PostgreSQL/OpenGauss/Redis/Docker/K8s/Nginx…），一级匹配与展示维度';
 COMMENT ON COLUMN sre_alert_event.alert_name IS '告警名称/标题（截断至 512B）';
 COMMENT ON COLUMN sre_alert_event.alert_object IS '告警对象（实例/主机/集群标识，如 mysql-prod-03）——清单列与搜索维度';
 COMMENT ON COLUMN sre_alert_event.strategy_name IS '触发本告警的监控策略名（对端字段）——规则 strategies 维度的匹配键';

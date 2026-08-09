@@ -8,6 +8,7 @@ cookie 三档在这里全部不适用）。callers（alerts 切片 poller/ingest
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from typing import Any
 
 
@@ -54,3 +55,19 @@ async def list_changes(cursor: str = "", limit: int = 200) -> dict[str, Any]:
 async def get_alert(alert_id: str) -> dict[str, Any] | None:
     """单条详情；超出保留期或不存在返回 None。"""
     return await _impl().get_alert(alert_id)
+
+
+async def list_history(*, start: datetime, end: datetime, categories: list[str],
+                       severities: list[str], project_ids: list[str] | None,
+                       page_no: int = 1, page_size: int = 20) -> dict[str, Any]:
+    """平台历史告警查询（规则编辑器第二步预览的主路径，对接内网 29.10 alarm_list）。
+
+    入参全用**内部词表**：aware datetime / 开放类别串（moType 口径）/ 英文四档 severity；
+    wire 词表（"yyyy-MM-dd HH:mm:ss" 北京时间、alarmLevels 数字、moTypeList、projectIds）
+    由 real 实现内部翻译（infra.external.alert_inet_contract）。
+    返回 {"rows": [预览行（与 GET /alerts/events 行口径同键）...], "total": int}——
+    上游响应若无总数字段，total 退化为本页行数（R6 联调确认）。
+    """
+    return await _impl().list_history(start=start, end=end, categories=categories,
+                                      severities=severities, project_ids=project_ids,
+                                      page_no=page_no, page_size=page_size)

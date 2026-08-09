@@ -78,6 +78,38 @@ async def test_commit_after_persist_and_bad_message_skip(monkeypatch):
     assert [a["alert_id"] for a in received] == ["a1"]  # 坏消息跳过不阻塞分区
 
 
+async def test_inet_body_mapped_and_mixed_batch(monkeypatch):
+    """内网 29.11 体（探测 alarmId 键）→ 映射为内部 DTO；与内部形状消息混批共存（双格式缝）。"""
+    received: list[dict] = []
+
+    async def fake_get_config():
+        return {"alert_enabled": True, "alert_pull_batch_limit": 200}
+
+    async def fake_ingest_batch(alerts, cfg=None, rules=None):
+        received.extend(alerts)
+        return {}
+
+    monkeypatch.setattr("alerts.service.get_config", fake_get_config)
+    monkeypatch.setattr("alerts.ingest.ingest_batch", fake_ingest_batch)
+
+    inet = {"alarmId": "20260618xyz", "alarmLevel": "2", "alarmTitle": "【MySQL】主库延迟",
+            "alarmDesc": "延迟 6s", "moType": "MySQL", "ciName": "mysql-prod-01",
+            "metricName": "主从延迟", "status": "1", "alarmTimeStamp": 1781774960000,
+            "appIdList": ["00000000000000000000000000000144"]}
+    fake = _FakeConsumer([[_Rec(json.dumps(inet, ensure_ascii=False).encode()),
+                           _Rec(json.dumps({"alert_id": "a1", "title": "t"}).encode())]])
+    task = asyncio.create_task(kafka_source.consume_loop(consumer=fake))
+    await _run_briefly(task, lambda: fake.commits >= 1)
+
+    assert len(received) == 2
+    mapped, passthru = received
+    assert mapped["alert_id"] == "20260618xyz" and mapped["fingerprint"] == "20260618xyz"
+    assert mapped["severity"] == "critical" and mapped["category"] == "MySQL"
+    assert mapped["app_id"] == "00000000000000000000000000000144"
+    assert mapped["source"] == "inet" and "detail_url" not in mapped
+    assert passthru == {"alert_id": "a1", "title": "t"}  # 内部形状原样透传
+
+
 async def test_batch_failure_means_no_commit(monkeypatch):
     async def fake_get_config():
         return {"alert_enabled": True, "alert_pull_batch_limit": 200}

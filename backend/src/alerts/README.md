@@ -72,7 +72,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 
 ```bash
 OPENOPS_ALERT=mock OPENOPS_ALERT_MOCK_SEED=1 OPENOPS_ALERT_PULL_INTERVAL_S=15 python run.py
-# 设置页(告警接管 tab)建规则(类型 MySQL/PGSQL 任选+默认全选策略) → 15s 内清单出现 → 点「查看处理会话」追问
+# 设置页(告警接管 tab)建规则(类型 MySQL/PostgreSQL 任选+默认全选策略) → 15s 内清单出现 → 点「查看处理会话」追问
 # 手动驱动：POST /api/openops/v1/admin/alerts:pull → :dispatch → GET /alerts/events
 # 坑：mock 种子只播一次且游标持久化；重放需拨回 sre_alert_pull_state 游标并热调 alert_dedup_window_s=0
 ```

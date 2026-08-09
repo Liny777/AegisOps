@@ -1,145 +1,94 @@
-# 告警平台对接契约（OpenOps 7x24 告警接管 · v2 Kafka 版）
+# 告警平台对接契约 v3（内网真实契约版，2026-08-09）
 
-> 角色：告警平台为数据源（已存在），本契约由 OpenOps 定义、告警平台实现。
-> **主链路 = Kafka topic 消费**（v2 起替代 HTTP 增量拉取；无带外对账通道，回补依赖
-> retention 内重放——见 §2.4）。Phase 1 需就绪 **§2 topic + §3 详情接口**；§4 回写
-> 先定契约、Phase 2 实现。
-> OpenOps 侧对接代码：`backend/src/alerts/kafka_source.py`（消费）与
-> `backend/src/infra/external/alert_platform_real.py`（详情）；联调自检 `check-net.py` ⑦。
-> 所有时间 RFC3339 带时区；消息与响应 UTF-8 JSON。
+> v2（自拟契约）已废弃。v3 以内网两份真实文档为准：**29.11 告警 Kafka 消息体**、
+> **29.10 历史告警查询接口**（Obsidian `学习/OpenOps/`）。本文件是映射的**单一事实源**，
+> 代码实现在 `src/infra/external/alert_inet_contract.py`（纯函数，Kafka 消费与历史查询共用词表），
+> 逐字段回归在 `tests/alerts/test_inet_contract.py`（样本取契约文档原文）。
 
-## 1. 通用约定
+## 0. 架构：映射层放哪
 
-- **鉴权**：
-  - Kafka：为 OpenOps 签发消费账号（SASL，机制以对方集群为准，默认 PLAIN/SCRAM），
-    授权 `Read` 目标 topic + 消费组 `openops-alert-takeover`（组名可配）。凭证轮换需
-    新旧重叠窗口 ≥7 天。
-  - 详情/回写 HTTP：`Authorization: Bearer <service-token>`，同样支持轮换重叠 ≥7 天。
-    凭证仅代表 OpenOps 平台身份，不承载终端用户身份。
-- **错误格式（HTTP 面）**：`{"error": {"code": "...", "message": "..."}}` + 标准状态码；
-  `429` 必带 `Retry-After` 秒数。
+```
+Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
+                          （探测 alarmId/alarmCode）  ├─→ map_kafka_alarm ─→ 内部 AlertDTO ─→ ingest
+内部形状消息（mock/测试注入）──────────────────────────┘        （原样透传）
 
-## 2. Kafka topic（Phase 1 主链路）
+规则预览 ─→ service.history_preview ─→ client.list_history ─→ real: POST alarm_list → map_history_row
+                                              └────────────→ mock: 内部形状样本（不认识内网体）
+```
 
-### 2.1 Topic 与消息
+- **内部 AlertDTO 契约不变**：mock、ingest、matcher、全部 `_inject` 测试零改动。
+- 双格式缝：消息体含 `alarmId`/`alarmCode` 键 → 内网映射；否则视为内部 DTO 透传。
 
-| 项 | 约定 |
+## 1. 环境与配置
+
+| env | 说明 |
 |---|---|
-| topic | 建议 `ops-alert-changes`（最终名以对方命名规范为准，写入联调纪要） |
-| 分区数 | 建议 ≥3（OpenOps 当前单消费者，分区数为未来扩展预留） |
-| **key** | **`alert_id`**（必须）——保证同一告警的变更（firing→resolved）落同分区**有序**，update-log 语义依赖此项 |
-| value | AlertDTO JSON（UTF-8，字段见 §2.2）；单条消息 ≤1MB |
-| **retention** | **≥7 天（硬性条款）**——OpenOps 放弃带外对账通道后，漏消费/offset 事故的**唯一**回补手段是 retention 窗口内按时间戳 seek 重放 |
-| 压缩 | 建议 producer 侧 lz4/zstd，不做 log compaction（需要完整变更史，非最终态） |
-| 投递语义 | at-least-once（重复投递安全：OpenOps 按 fingerprint 幂等合并）；**禁止**有损的 at-most-once |
+| `OPENOPS_ALERT=real` | 启用真实对接（Kafka 消费 + 历史查询）；默认 mock |
+| `OPENOPS_ALERT_KAFKA_BOOTSTRAP/TOPIC/GROUP/USERNAME/PASSWORD/SECURITY_PROTOCOL/SASL` | Kafka 六变量（GROUP 默认 openops-alert-takeover） |
+| `OPENOPS_ALERT_QUERY_URL` | **历史查询完整 URL**（含路径；sit/beta/pro 路径不同，不做拼装）：sit `http://wesee.console.hissit/observe/unifieduery/api/v1/{eid}/{sid}/alarm_list_for_sreagent`、pro `https://console.his-op/...alarm_list`（R7：三环境 URL 联调时抄部署手册） |
+| `OPENOPS_ALERT_TOKEN` | Bearer token（Kafka 详情/历史查询共用；R4：对端若要 cookie/自定义头，改 `alert_platform_real.list_history` headers 一处） |
+| `OPENOPS_ALERT_ENTERPRISE_ID` | 可选；历史查询 body.enterpriseId（对端文档 2026-08-09 已改非必填，缺省不传） |
 
-**变更流语义**：update-log——同一 alert 的每次状态/字段变化（含 firing→resolved）都发一条
-新消息（`updated_at` 前进）。OpenOps 按 `(alert_id, updated_at)` 与 fingerprint 幂等消费，
-乱序跨 alert 无所谓、同 alert 内靠 key 分区保序。
+## 2. Kafka 消息体（29.11）→ 内部 AlertDTO 映射表
 
-### 2.2 AlertDTO 字段（消息 value；必填 ✱）
-
-| 字段 | 类型 | 说明 |
+| 内部字段 | 取自 | 规则 |
 |---|---|---|
-| alert_id ✱ | string | 全局唯一且稳定（分区 key；回写契约用它定位）；建议 `ALM-` 前缀编号 |
-| fingerprint ✱ | string | 同类事件指纹（OpenOps 据此去重与风暴聚合；缺省时 OpenOps 按 source+title+labels 自算） |
-| status ✱ | enum | `firing` \| `resolved` |
-| severity ✱ | enum | `fatal`(致命) \| `critical`(严重) \| `warning`(普通) \| `info`(提示)——内部等级映射表附实现文档；**本期 OpenOps 仅消费前三档**（info 保留字段） |
-| category ✱ | string | 告警类型（策略类型）：**本期消费 `MySQL` / `PGSQL` / `ADS Docker`**；枚举开放，其余值照收暂不参与规则匹配 |
-| **strategy_name ✱** | string | **触发本告警的监控策略名**（如「MySQL 主从延迟监控」）——OpenOps 接管规则的核心匹配维度，须与告警平台策略管理的展示名一致 |
-| **alert_object ✱** | string | **告警对象**：实例/主机/集群标识（如 `mysql-prod-03`）——清单展示列与搜索维度 |
-| **detail_url ✱** | string | **告警平台详情页链接**——OpenOps 清单「告警编号」一律外跳此地址（缺失时前端退化为纯文本，视为对端缺陷） |
-| title ✱ | string | ≤512B |
-| description | string | ≤8KB |
-| app_id ✱ | string | 与内网 APPID 对齐（oModel/工作空间同一口径）；无法归属填 `"unknown"` |
-| labels ✱ | object | ≤64 键；key ≤128B、value ≤1KB（service/idc/env 等） |
-| annotations | object | 大文本类（runbook_url、dashboard_url） |
-| started_at ✱ | string | 首次触发时间 |
-| resolved_at | string\|null | resolved 时非空 |
-| updated_at ✱ | string | 本次变更时间 |
-| source ✱ | string | 监控源标识（zabbix/prom/自研名） |
+| alert_id | `alarmId` → `alarmCode` | 回退链；两者都缺 → 空串（ingest 兜底） |
+| fingerprint | `alarmId` | 同 alarmId 重复推送 = upsert（seen_count++）；跨 alarmId 不去重，风暴由 group_key 聚合承接 |
+| status | `status` | **"5"→resolved，其余（"1"–"4"）全归 firing**——误当 firing 可被去重兜底，误归 resolved 丢诊断不可逆（R5：中间态语义联调后细分） |
+| severity | `alarmLevel` | "1"→fatal "2"→critical "3"→warning "4"→info；**"0"(SLO)/未知→warning**；原始值恒存 `labels.alarm_level` |
+| category | `moType` | 原样透传（开放枚举：MySQL/PostgreSQL/OpenGauss/Docker/Kafka/…）；**UI 模板三类已对齐该词表** |
+| title / description | `alarmTitle` / `alarmDesc` | 直取 |
+| strategy_name | `metricName` | R10：与本地「监控策略名」不是同一词表——存量勾选 strategies 的规则将失配，见迁移 SQL 可选段 |
+| alert_object | `ciName` → `displayName` | 回退链 |
+| app_id | `appIdList[0]` | 元素=omodel projectId（包名风格与 32 位 hex 混合口径，纯字符串比较）；**全列表存 `annotations.app_id_list`**（R9：本地 appids 匹配/可见性仅首元素参与；本期 UI 未暴露该维度） |
+| labels | 白名单 11 键 | alarm_level/alarm_status/mo_subtype/metric/policy_id/ci_policy_id/data_source/source_category/monitor_tool/event_tool/enterprise_id；**有意丢弃** prodTreeList/extraInfo（大对象防 64 键裁剪噪声）、isFilter/isAdmin、三个 modify 时间戳 |
+| annotations | 派生三键 | app_id_list（JSON 数组串）、display_name（≠ciName 时）、alarm_code（≠alert_id 时）；**无 detail_url**（内网无详情外链，UI 编号列退纯文本） |
+| started_at | `alarmTimeStamp` → `alarmTime` | epoch ms 优先；无时区串按 **+08:00**（R1，改 `CST` 常量一处） |
+| source | 固定 `"inet"` | 参与 fingerprint fallback 的去重域 |
 
-**消息示例**：
+## 3. 历史告警查询（29.10 alarm_list）
 
-```json
-// key: "ALM-20260730-000117"
-{
-  "alert_id": "ALM-20260730-000117",
-  "fingerprint": "fp_mysql_prod03_replica_lag",
-  "status": "firing",
-  "severity": "fatal",
-  "category": "MySQL",
-  "strategy_name": "MySQL 主从延迟监控",
-  "alert_object": "mysql-prod-03",
-  "detail_url": "https://alert.example.internal/alarm/ALM-20260730-000117",
-  "title": "MySQL 主库延迟>5s",
-  "description": "pay-core 主从延迟 6.8s > 5s (5m)",
-  "app_id": "APP-A",
-  "labels": { "service": "pay-core", "idc": "sz-3", "env": "prod" },
-  "annotations": { "runbook_url": "https://runbook.example.com/mysql-lag" },
-  "started_at": "2026-07-30T10:00:30+08:00",
-  "resolved_at": null,
-  "updated_at": "2026-07-30T10:00:31+08:00",
-  "source": "prom-internal"
-}
-```
+**请求**（`list_history` 内部词表 → wire 翻译）：POST `OPENOPS_ALERT_QUERY_URL`，body：
+`startTime/endTime`（`"yyyy-MM-dd HH:mm:ss"` 北京时间，R3）、`moTypeList`←categories、
+`alarmLevels`←severities 数字反查（R8：SLO=0 是否收待确认）、`projectIds`←实例 scope 快照
+（空=不传全量）、`pageNo/pageSize`、`enterpriseId`（env 有才带）。
 
-### 2.3 Schema 演进
+**响应**：`{status:"OK", data:{datas:[...]}, message}`；`status!="OK"` → AlertPlatformError("http")。
+行 → 预览行（`map_history_row`，与 `GET /alerts/events` 行口径同键）：
 
-只允许**新增可选字段**（向后兼容）；改名/删字段/改枚举语义须走版本化 topic（`-v2` 后缀）
-并保留旧 topic 双写 ≥30 天。OpenOps 消费端对未知字段忽略、对缺失必填字段记日志跳过
-（不阻塞分区）。
+| 预览行 | 取自 | 规则 |
+|---|---|---|
+| alert_no | `alarmCode` | 历史行**无 alarmId** |
+| appid | `projectId` | 历史行是单值 |
+| alert_status | `status` | "5"→closed，其余→unassigned（"已分派"值待 R5） |
+| ended_at | `incidentClosedTime` | 仅 closed 时取（epoch ms 串） |
+| duration_s | `duration` | 非纯数字→None（R11：单位待确认） |
+| 其余 | 同 §2 词表 | takeover/run 等本地字段置空占位 |
 
-### 2.4 消费与回补（OpenOps 侧承诺，供对方容量评估）
+**消费方**：`GET /alerts/history-preview`（规则编辑器第二步）——平台主路径失败自动降级本地
+`sre_alert_event`（响应 `source: platform|local_fallback`，前端提示数据来源）。
 
-- 单消费组 `openops-alert-takeover`，当前单实例消费；批量 `max_records` 默认 200。
-- **手动 commit、落库后提交**：at-least-once + fingerprint 幂等 = 恰好一次效果。
-- 回补：事故后在 retention 窗口内按时间戳 `seek` 重放（重放无副作用）；因此 §2.1 的
-  retention ≥7 天为硬性条款，缩短需提前 30 天知会。
+## 4. 回写接口
 
-## 3. 告警详情接口（HTTP，Phase 1）
+内网暂无对应端点（v2 自拟的 ack/comment 回写作废）。诊断结论回填告警平台待对方提供接口后另立契约。
 
-`GET {BASE}/openapi/alerts/v1/alerts/{alert_id}`
-`Authorization: Bearer <token>`
+## 5. 联调待确认清单（R1–R12）
 
-→ §2.2 全字段，另附可选 `events: [{at, type, note}]`（该告警升级/恢复轨迹）。
-404 = 超出保留期或不存在。限流：对 OpenOps token 保障 ≥10 rps。
+| # | 事项 | 现方案 | 改动点 |
+|---|---|---|---|
+| R1 | Kafka `alarmTime` 无时区 | 按 +08:00 | `alert_inet_contract.CST` |
+| R2 | 历史行 alarmTime "+00:00" 真伪 | 保留原偏移 | 同上 |
+| R3 | startTime 服务端时区解释 | 按北京时间发 | `list_history` astimezone |
+| R4 | 鉴权 header | Bearer OPENOPS_ALERT_TOKEN | real.list_history headers |
+| R5 | status 2/3/4 语义、"已分派"值 | 全归 firing / unassigned | 词表 + map_history_row |
+| R6 | 响应有无 total | 缺省=本页行数 | real.list_history 取数 |
+| R7 | 三环境完整 URL | env 化 | 部署手册 |
+| R8 | alarmLevels 是否收 0（SLO） | UI 三档只传 [1,2,3] | SEVERITY_TO_LEVEL |
+| R9 | appIdList 仅 [0] 参与本地匹配 | 接受（UI 未暴露 appids 维度） | 全列表在 annotations 可升级 |
+| R10 | metricName vs 监控策略名 | 存量 strategies 失配 | 迁移 SQL 可选段（清空 strategies） |
+| R11 | duration 单位 | 非纯数字置 None | map_history_row |
+| R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测 | alert_pull_batch_limit 可调 |
 
-## 4. 结论回写（Phase 2，OpenOps → 告警平台；契约先行、暂不实现）
-
-三个端点，鉴权同 §1 HTTP；全部以 `client_request_id` 幂等（24h 去重；对已处于目标态的
-告警返回 200 幂等成功而非 409）：
-
-```json
-// 1) 认领：OpenOps 接管该告警时
-POST /openapi/alerts/v1/alerts/{alert_id}:ack
-{ "actor": "openops:agt_pay_fast_recovery",
-  "comment": "已由感知快恢 Agent 接管，自动诊断中", "client_request_id": "crid_x1" }
-→ { "alert_id": "ALM-20260730-000117", "acked": true }
-
-// 2) 备注（诊断结论回流）
-POST /openapi/alerts/v1/alerts/{alert_id}:annotate
-{ "comment": "根因：CHG-88121 连接池 max 64→8 回退，建议回滚。",
-  "links": [ { "type": "diagnosis", "title": "OpenOps 诊断会话",
-               "url": "https://{openops-host}/agent-runs/run_xxx" } ],
-  "client_request_id": "crid_x2" }
-→ { "alert_id": "ALM-20260730-000117", "annotated": true }
-
-// 3) 关闭
-POST /openapi/alerts/v1/alerts/{alert_id}:close
-{ "resolution": "fixed",   // fixed | auto_recovered | false_positive
-  "comment": "已回滚 CHG-88121，指标恢复", "client_request_id": "crid_x3" }
-→ { "alert_id": "ALM-20260730-000117", "status": "resolved" }
-```
-
-## 5. 联调核对单（给双方）
-
-1. Kafka：topic 建立、分区/retention 确认（≥7d）、SASL 消费账号 + 消费组授权下发；
-   OpenOps 配 `OPENOPS_ALERT=real` + `OPENOPS_ALERT_KAFKA_*` 六变量。
-2. `check-net.py` ⑦ 通过（metadata/分区/末位 offset + 详情接口探测）。
-3. **key=alert_id 抽检**：同一告警 firing→resolved 两条消息落同分区且有序。
-4. severity 四档映射表评审；category 本期三类确认；strategy_name 与策略管理展示名
-   一致性抽检；app_id 与内网 APPID 抽样比对；detail_url 可达性抽检。
-5. 风暴演练：同 fingerprint 高频重复、同 app 多指纹并发，确认 OpenOps 去重/聚合/
-   消费 lag 表现；演练中途重启 OpenOps 验证 offset 续传与幂等。
-6. 回补演练：人为回拨消费组 offset 2 小时，确认重放零副作用。
+**联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
+→ 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。

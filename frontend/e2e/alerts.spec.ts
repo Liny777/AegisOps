@@ -95,10 +95,10 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
   await expect(editor.getByText("监控策略", { exact: true })).toHaveCount(0);
   await editor.getByPlaceholder("规则名称（必填）").fill("MySQL 核心库接管");
 
-  // 策略类型可多选：加选 PGSQL → 全取消时「下一步」禁用 + 警示 → 回到只选 MySQL（保住下方预览计数断言）
-  await editor.getByText("PGSQL", { exact: true }).click();
-  await editor.getByText("MySQL", { exact: true }).click();  // 取消 MySQL，只剩 PGSQL
-  await editor.getByText("PGSQL", { exact: true }).click();  // 再取消 → 空
+  // 策略类型可多选：加选 PostgreSQL → 全取消时「下一步」禁用 + 警示 → 回到只选 MySQL（保住下方预览计数断言）
+  await editor.getByText("PostgreSQL", { exact: true }).click();
+  await editor.getByText("MySQL", { exact: true }).click();  // 取消 MySQL，只剩 PostgreSQL
+  await editor.getByText("PostgreSQL", { exact: true }).click();  // 再取消 → 空
   await expect(editor.getByText("至少选择一个策略类型")).toBeVisible();
   await expect(editor.getByRole("button", { name: "下一步" })).toBeDisabled();
   await editor.getByText("MySQL", { exact: true }).click();  // 重选 MySQL

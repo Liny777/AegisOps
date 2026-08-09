@@ -26,7 +26,7 @@ const EVENT_STATUS_META: Record<AlertEventStatus, { label: string; tone: Tone }>
   closed: { label: "已关闭", tone: "good" },
 };
 /** payload 未到位时类型下拉的兜底档（与模板三类一致）。 */
-const FALLBACK_CATEGORIES = ["MySQL", "PGSQL", "ADS Docker"];
+const FALLBACK_CATEGORIES = ["MySQL", "PostgreSQL", "Docker"];
 
 /** 表格网格列：☑ | 规则名称 | 策略类型 | 告警级别 | 提示词 | 操作 | 启用 */
 const GRID_COLS = "30px minmax(150px, 1.1fr) 104px 158px minmax(170px, 1.5fr) 96px 56px";
@@ -372,24 +372,20 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
   const [step, setStep] = useState<1 | 2>(1);
   const [windowDays, setWindowDays] = useState<3 | 7>(7);  // 原型默认「近7天告警」
 
-  // 第二步预览：该策略（类型×级别）近 N 天命中的告警，复用事件清单端点与可见性口径；
+  // 第二步预览：主路径=平台历史接口（2026-08-09 切内网 alarm_list，真全量历史——
+  // 未命中规则/未接管的告警也可见），平台不可用时后端自动降级本地落库（source 区分，
+  // 前端提示数据来源）。多类别 CSV 一次下传（不再按类别并发合并）。
   // 只在第二步拉取（第一步零请求），窗口/条件变化 latest-wins 防连点竞态。
-  // 类型多选：事件端点 category 参数是单值 → 按选中类型并发查再合并（事件单类型互斥，
-  // 无需去重；total 求和、按时间倒序、展示截前 20）——不动事件端点契约。
-  const [preview, setPreview] = useState<{ rows: AlertEventRow[]; total: number } | null>(null);
+  const [preview, setPreview] =
+    useState<{ rows: AlertEventRow[]; total: number; source: "platform" | "local_fallback" } | null>(null);
   useEffect(() => {
     if (step !== 2) return;
     const ctl = new AbortController();
     setPreview(null);
-    Promise.all(catSel.map((c) =>
-      alertsApi.listEvents({ instanceId, category: c, severity: sevSel, sinceDays: windowDays, pageSize: 20, signal: ctl.signal })))
-      .then((pages) => {
-        const rows = pages.flatMap((p) => p.items)
-          .sort((a, b) => (a.started_at < b.started_at ? 1 : -1))
-          .slice(0, 20);
-        setPreview({ rows, total: pages.reduce((n, p) => n + p.total, 0) });
-      })
-      .catch((err) => { if (!isAbortError(err)) setPreview({ rows: [], total: 0 }); });
+    alertsApi.historyPreview({ instanceId, categories: catSel, severity: sevSel,
+                               sinceDays: windowDays, pageSize: 20, signal: ctl.signal })
+      .then((page) => setPreview({ rows: page.items, total: page.total, source: page.source }))
+      .catch((err) => { if (!isAbortError(err)) setPreview({ rows: [], total: 0, source: "platform" }); });
     return () => ctl.abort();
   }, [step, windowDays, instanceId, catSel, sevSel]);
 
@@ -545,6 +541,12 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
                 </select>
                 {preview ? (
                   <span style={{ fontSize: 12.5, color: color.textNav }}>共 <b>{preview.total}</b> 条告警</span>
+                ) : null}
+                {preview?.source === "local_fallback" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: color.textSubtle }}>
+                    <Icon name="cloud-off" size={13} color={color.textFaint} />
+                    平台历史接口暂不可用，以下为本地缓存告警
+                  </span>
                 ) : null}
               </div>
               <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, overflow: "hidden" }}>

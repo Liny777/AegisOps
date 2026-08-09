@@ -266,7 +266,8 @@ def check_skill_download() -> None:
 
 
 def check_alert_platform() -> None:
-    """⑦ 告警平台（7x24 接管上游，契约 v2）：Kafka 连通（metadata/分区/末位 offset）+ 详情 HTTP 探测。
+    """⑦ 告警平台（7x24 接管上游，契约 v3 内网）：Kafka 连通（metadata/分区/末位 offset）
+    + 历史查询接口探测（29.10 alarm_list，规则预览主路径）。
     这里 ✅ 而后台消费失败，则问题在消费组授权/offset 侧。"""
     import asyncio
 
@@ -274,7 +275,8 @@ def check_alert_platform() -> None:
     topic = os.environ.get("OPENOPS_ALERT_KAFKA_TOPIC", "").strip()
     print(f"[check-net]⑦ alert_platform={mode}  kafka_topic={topic or '(未设)'}  "
           f"bootstrap={os.environ.get('OPENOPS_ALERT_KAFKA_BOOTSTRAP') or '(未设)'}  "
-          f"detail_token={'SET' if os.environ.get('OPENOPS_ALERT_TOKEN') else 'unset'}")
+          f"token={'SET' if os.environ.get('OPENOPS_ALERT_TOKEN') else 'unset'}  "
+          f"query_url={'SET' if os.environ.get('OPENOPS_ALERT_QUERY_URL') else 'unset'}")
     if mode != "real":
         print("[check-net]   （mock 档跳过——真联调前 export OPENOPS_ALERT=real + KAFKA 六变量）")
         return
@@ -309,14 +311,22 @@ def check_alert_platform() -> None:
               "\n[check-net]      → 查 bootstrap 可达/SASL 账号/消费组 Read 授权（契约 §5 核对单）")
         return
 
-    # 详情 HTTP 接口探测（契约 §3）：404 视为可达（探针 id 不存在属预期）
+    # 历史查询接口探测（29.10 alarm_list，规则预览主路径）：近 1h 窗口 pageSize=1 最小查询
+    from datetime import datetime, timedelta, timezone
+
     from infra.external import alert_platform_client
 
     try:
-        detail = asyncio.run(alert_platform_client.get_alert("__openops_probe__"))
-        print(f"[check-net]   ✅ 详情接口可达（probe → {'404 预期' if detail is None else '有响应'}）")
+        end = datetime.now(timezone.utc)
+        page = asyncio.run(alert_platform_client.list_history(
+            start=end - timedelta(hours=1), end=end, categories=[], severities=[],
+            project_ids=None, page_no=1, page_size=1))
+        print(f"[check-net]   ✅ 历史查询可达（近1h 共 {page['total']} 条）")
     except AlertPlatformError as e:
-        print(f"[check-net]   ⚠ 详情接口 {e.kind}: {str(e)[:200]}（Kafka 主链路不受影响，回写/详情联调前修）")
+        hint = {"config": "OPENOPS_ALERT_QUERY_URL 未配（三环境 URL 见契约文档 §1）"}.get(e.kind, "")
+        print(f"[check-net]   ⚠ 历史查询 {e.kind}: {str(e)[:200]}"
+              "（Kafka 主链路不受影响；规则预览将走本地降级）"
+              + (f"\n[check-net]      → {hint}" if hint else ""))
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 """快速配置的内置监控策略模板 + 默认诊断提示词（单一事实源：前端 GET /alerts/rule-templates 也吃这份）。
 
-v2 需求口径：策略类型本期仅 MySQL / PGSQL / ADS Docker 三类（各 3 条，与原型逐字对齐）；
+v2 需求口径：策略类型本期仅 MySQL / PostgreSQL / Docker 三类（各 3 条，与原型逐字对齐）；
 告警级别 UI 仅 致命/严重/普通 三档（info 保留在 schema 不出 UI）。
 模板 name 即告警平台的「监控策略名」（契约 strategy_name 字段的取值域），
 配置弹窗按所选类型列出供勾选（默认全选），落库进 rule.match_json.strategies。
@@ -17,19 +17,19 @@ RULE_TEMPLATES: list[dict[str, Any]] = [
      "keywords": ["主从", "延迟"]},
     {"category": "MySQL", "name": "MySQL 慢查询监控", "description": "检测慢查询数量",
      "keywords": ["慢查询"]},
-    # PGSQL
-    {"category": "PGSQL", "name": "PGSQL 事务锁等待监控", "description": "检测锁等待事件",
+    # PostgreSQL
+    {"category": "PostgreSQL", "name": "PostgreSQL 事务锁等待监控", "description": "检测锁等待事件",
      "keywords": ["锁等待", "lock"]},
-    {"category": "PGSQL", "name": "PGSQL 连接池耗尽监控", "description": "检测连接池使用率",
+    {"category": "PostgreSQL", "name": "PostgreSQL 连接池耗尽监控", "description": "检测连接池使用率",
      "keywords": ["连接池"]},
-    {"category": "PGSQL", "name": "PGSQL 死锁检测", "description": "检测死锁事件",
+    {"category": "PostgreSQL", "name": "PostgreSQL 死锁检测", "description": "检测死锁事件",
      "keywords": ["死锁", "deadlock"]},
-    # ADS Docker
-    {"category": "ADS Docker", "name": "ADS Docker 容器重启监控", "description": "检测容器异常重启",
+    # Docker
+    {"category": "Docker", "name": "Docker 容器重启监控", "description": "检测容器异常重启",
      "keywords": ["重启", "restart"]},
-    {"category": "ADS Docker", "name": "ADS Docker 资源限制监控", "description": "监控CPU/内存限制",
+    {"category": "Docker", "name": "Docker 资源限制监控", "description": "监控CPU/内存限制",
      "keywords": ["资源", "limit"]},
-    {"category": "ADS Docker", "name": "ADS Docker 健康检查监控", "description": "检测健康检查失败",
+    {"category": "Docker", "name": "Docker 健康检查监控", "description": "检测健康检查失败",
      "keywords": ["健康检查", "health"]},
 ]
 

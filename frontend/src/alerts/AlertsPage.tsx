@@ -16,7 +16,7 @@ import type {
 
 const PAGE_SIZE = 20;
 /** 告警类型筛选的固定档（与模板三类一致；开放枚举的其余类型走「全部」）。 */
-const CATEGORY_OPTIONS = ["MySQL", "PGSQL", "ADS Docker"];
+const CATEGORY_OPTIONS = ["MySQL", "PostgreSQL", "Docker"];
 
 const fmtTime = (v: string | null): string => {
   if (!v) return "—";

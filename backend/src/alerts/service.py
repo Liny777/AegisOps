@@ -5,7 +5,9 @@ infra.idempotency；配置更新照 runtime_config_service 的「整批校验 + 
 """
 from __future__ import annotations
 
+import logging
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from alerts import repository as repo
@@ -21,7 +23,11 @@ from alerts.schemas import (
 from domain.errors import ApiError, Err
 from infra import idempotency
 from infra.db import row_json
+from infra.external import alert_platform_client
+from infra.external.alert_platform_client import AlertPlatformError
 from infra.repositories import agent_teams, audit, runs, runtime_config
+
+log = logging.getLogger("openops.alerts.service")
 
 DOMAIN_ALERT = "alert"
 SEVERITIES = ("fatal", "critical", "warning", "info")
@@ -615,6 +621,42 @@ async def list_alert_events(user: dict[str, Any], *, instance_id: str | None,
         page=page, page_size=page_size)
     return {"items": [event_row_out(r, uid) for r in rows], "total": total,
             "page": page, "page_size": page_size}
+
+
+async def history_preview(user: dict[str, Any], *, instance_id: str, categories: str,
+                          severities: str | None, since_days: int,
+                          page_size: int) -> dict[str, Any]:
+    """规则编辑器第二步预览：主路径=平台历史接口（29.10 alarm_list，真全量历史，
+    未命中规则的告警也可见），平台不可用时降级本地事件库（只剩已落库面）。
+
+    响应恒带 source ∈ platform|local_fallback，前端据此提示数据来源。
+    scope 快照的 projectIds 非空则下传收窄到该 Agent 管的应用（与 appIdList 同口径），
+    空=不传（全量）——从未 resolve 过 scope 的新实例也能看到预览（比本地库口径更宽）。
+    mock 档 _impl() 走 mock 样本，不会触发降级。
+    """
+    uid = user["user_id"]
+    _owner_instance(await agent_teams.get_instance(instance_id), uid)
+    cats = _check_categories([c for c in categories.split(",")])
+    sevs = _parse_severities(severities) or list(UI_SEVERITIES)
+    appids = await _viewer_scope_appids(uid, instance_id)
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=int(since_days))
+    try:
+        page = await alert_platform_client.list_history(
+            start=start, end=end, categories=cats, severities=sevs,
+            project_ids=appids or None, page_no=1, page_size=page_size)
+        return {"items": page["rows"], "total": page["total"],
+                "page": 1, "page_size": page_size, "source": "platform"}
+    except AlertPlatformError as e:
+        log.warning("[alerts][preview] 平台历史接口不可用（%s: %s），回落本地事件库",
+                    e.kind, e.message[:200])
+        rows, total = await repo.list_events(
+            lateral_owner=uid, lateral_instance=instance_id, scope_appids=appids,
+            alert_status=None, severities=sevs, takeover=None,
+            category=None, categories=cats, search=None,
+            since_days=since_days, page=1, page_size=page_size)
+        return {"items": [event_row_out(r, uid) for r in rows], "total": total,
+                "page": 1, "page_size": page_size, "source": "local_fallback"}
 
 
 async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,

@@ -1,4 +1,4 @@
-"""告警平台客户端三件套：mock 变更流语义 + real 对齐契约（stub-httpx，照 test_external_real 范式）。"""
+"""告警平台客户端：mock 变更流语义 + real 对齐契约 + 历史查询（stub-httpx，照 test_external_real 范式）。"""
 from __future__ import annotations
 
 import pytest
@@ -127,3 +127,105 @@ async def test_real_config_fail_closed(monkeypatch):
     with pytest.raises(AlertPlatformError) as e2:
         await alert_platform_client.list_changes("")
     assert e2.value.kind == "config"
+
+
+# ============================ list_history（29.10 历史告警查询） ============================
+
+def _hist_env(monkeypatch):
+    _real_env(monkeypatch)
+    monkeypatch.setenv(
+        "OPENOPS_ALERT_QUERY_URL",
+        "http://wesee.console.hissit/observe/unifieduery/api/v1/e888/p232/alarm_list_for_sreagent")
+
+
+def _dt(s: str):
+    from datetime import datetime
+    return datetime.fromisoformat(s)
+
+
+async def test_real_list_history_body_url_bearer(monkeypatch):
+    """wire 词表翻译全景：北京时间串 / alarmLevels 数字 / moTypeList / projectIds / enterpriseId 有无两态。"""
+    _hist_env(monkeypatch)
+    monkeypatch.delenv("OPENOPS_ALERT_ENTERPRISE_ID", raising=False)
+    payload = {"status": "OK", "message": "success!",
+               "data": {"columns": [], "datas": [{
+                   "alarmCode": "ac1", "alarmLevel": "1", "moType": "MySQL",
+                   "ciName": "mysql-01", "projectId": "p144", "alarmTitle": "t",
+                   "alarmDesc": "d", "status": "5", "incidentClosedTime": "1786071740000",
+                   "alarmTime": "2026-08-06T21:59:29.000+00:00", "duration": 60}]}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
+
+    res = await alert_platform_client.list_history(
+        start=_dt("2026-08-02T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+        categories=["MySQL", "Docker"], severities=["fatal", "critical"],
+        project_ids=["p144"], page_no=1, page_size=20)
+
+    method, url, kwargs = cap[0]
+    assert (method, url) == ("POST", "http://wesee.console.hissit/observe/unifieduery/api/v1/e888/p232/alarm_list_for_sreagent")
+    body = kwargs["json"]
+    assert body["startTime"] == "2026-08-02 10:00:00" and body["endTime"] == "2026-08-09 10:00:00"
+    assert body["moTypeList"] == ["MySQL", "Docker"]
+    assert body["alarmLevels"] == [1, 2]          # fatal/critical → 数字反查
+    assert body["projectIds"] == ["p144"]
+    assert body["pageNo"] == 1 and body["pageSize"] == 20
+    assert "enterpriseId" not in body             # env 未配不带（文档已改非必填）
+    assert kwargs["_ctor"]["headers"]["Authorization"] == "Bearer svc-tkn-1"
+    # 行已映射为预览行（内部形状）
+    row = res["rows"][0]
+    assert row["alert_no"] == "ac1" and row["severity"] == "fatal"
+    assert row["alert_status"] == "closed" and row["appid"] == "p144"
+    assert res["total"] == 1                      # 无 total 字段退化为本页行数（R6）
+
+
+async def test_real_list_history_enterprise_and_failed_status(monkeypatch):
+    _hist_env(monkeypatch)
+    monkeypatch.setenv("OPENOPS_ALERT_ENTERPRISE_ID", "e888")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, {"status": "OK", "data": {"datas": []}}))
+    await alert_platform_client.list_history(
+        start=_dt("2026-08-08T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+        categories=[], severities=[], project_ids=None)
+    assert cap[0][2]["json"]["enterpriseId"] == "e888"
+    assert "moTypeList" not in cap[0][2]["json"] and "projectIds" not in cap[0][2]["json"]
+
+    _install(monkeypatch, lambda m, u, k: _Resp(200, {"status": "FAILED", "message": "bad"}))
+    with pytest.raises(AlertPlatformError) as e1:
+        await alert_platform_client.list_history(
+            start=_dt("2026-08-08T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+            categories=[], severities=[], project_ids=None)
+    assert e1.value.kind == "http"
+
+
+async def test_real_list_history_query_url_fail_closed(monkeypatch):
+    _real_env(monkeypatch)
+    monkeypatch.delenv("OPENOPS_ALERT_QUERY_URL", raising=False)
+    with pytest.raises(AlertPlatformError) as e1:
+        await alert_platform_client.list_history(
+            start=_dt("2026-08-08T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+            categories=[], severities=[], project_ids=None)
+    assert e1.value.kind == "config"
+
+    monkeypatch.setenv("OPENOPS_ALERT_QUERY_URL", "http://{host}/alarm_list")
+    with pytest.raises(AlertPlatformError) as e2:
+        await alert_platform_client.list_history(
+            start=_dt("2026-08-08T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+            categories=[], severities=[], project_ids=None)
+    assert e2.value.kind == "config"
+
+
+async def test_mock_list_history_window_and_filters():
+    """mock 样本：7 天窗计数 > 3 天窗计数（切窗有差可断言）；类别/级别过滤生效。"""
+    from datetime import datetime, timedelta, timezone
+
+    end = datetime.now(timezone.utc)
+
+    async def count(days: int, cats: list[str], sevs: list[str]) -> int:
+        page = await alert_platform_client.list_history(
+            start=end - timedelta(days=days), end=end,
+            categories=cats, severities=sevs, project_ids=None, page_size=50)
+        return page["total"]
+
+    n3 = await count(3, ["MySQL"], ["fatal", "critical"])
+    n7 = await count(7, ["MySQL"], ["fatal", "critical"])
+    assert 0 < n3 < n7                                  # D5 的 MySQL 行只落 7 天窗
+    assert await count(7, ["PostgreSQL"], []) >= 1
+    assert await count(7, ["MySQL"], ["warning"]) == 0  # 样本 MySQL 无 warning
