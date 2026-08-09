@@ -107,9 +107,11 @@ async def soft_delete_rule(rule_id: str, by: str) -> int:
 
 
 async def list_enabled_rules() -> list[dict[str, Any]]:
-    """matcher 用：全部「订阅开 + 规则开」的规则（内存匹配的加载面）。
+    """matcher 用：全部「白名单内 + 订阅开 + 规则开」的规则（内存匹配的加载面）。
 
-    inner join 订阅表 = 「无订阅行的实例视为未开通接管」，与 service 的开通语义一致。
+    inner join 订阅表 = 「无订阅行的实例视为未开通接管」；inner join 白名单 =
+    名单外用户的存量规则**不参与匹配**（算力保护 fail-closed：被移出名单即刻断流，
+    不必去关他的订阅/规则）。
     """
     return await q_all(
         """
@@ -117,9 +119,47 @@ async def list_enabled_rules() -> list[dict[str, Any]]:
         join sre_alert_subscription s
           on s.agent_team_instance_id = r.agent_team_instance_id
          and s.deleted_at is null and s.enabled
+        join sre_alert_user_grant g
+          on g.user_id = r.owner_user_id and g.deleted_at is null
         where r.enabled and r.deleted_at is null
         """,
     )
+
+
+# ============================ 用户白名单（算力保护） ============================
+
+
+async def is_user_granted(user_id: str) -> bool:
+    row = await q_one(
+        "select 1 as x from sre_alert_user_grant where user_id=%(u)s and deleted_at is null",
+        {"u": user_id})
+    return row is not None
+
+
+async def list_user_grants() -> list[dict[str, Any]]:
+    return await q_all(
+        "select user_id, granted_by, creation_date, last_update_date "
+        "from sre_alert_user_grant where deleted_at is null order by creation_date desc")
+
+
+async def set_user_grant(user_id: str, granted: bool, by: str) -> None:
+    """开通=插入或复活软删行；关闭=软删（保留 granted_by 审计链）。幂等。"""
+    if granted:
+        await exec1(
+            """
+            insert into sre_alert_user_grant (user_id, granted_by, created_by, last_updated_by)
+            values (%(u)s, %(by)s, %(by)s, %(by)s)
+            on conflict (user_id) do update
+              set deleted_at = null, granted_by = %(by)s,
+                  last_update_date = now(), last_updated_by = %(by)s
+            """,
+            {"u": user_id, "by": by})
+    else:
+        await exec1(
+            "update sre_alert_user_grant set deleted_at = now(), "
+            "last_update_date = now(), last_updated_by = %(by)s "
+            "where user_id = %(u)s and deleted_at is null",
+            {"u": user_id, "by": by})
 
 
 # ============================ subscription ============================

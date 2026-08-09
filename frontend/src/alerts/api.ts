@@ -85,6 +85,8 @@ export interface AlertsApi {
   setTakeoverEnabled(instanceId: string, enabled: boolean): Promise<void>;
   /** 模板 payload：templates + 可选级别 + 默认提示词。 */
   getRuleTemplates(): Promise<AlertRuleTemplatesPayload>;
+  /** 功能开通探询（白名单闸）：false 时设置页/清单页渲染「未开通」引导空态。 */
+  getAccess(signal?: AbortSignal): Promise<{ granted: boolean }>;
   /** 规则编辑器第二步预览：平台历史接口主路径（真全量历史），失败降级本地库（source 区分）。 */
   historyPreview(params: {
     instanceId: string;
@@ -255,6 +257,9 @@ const realAlertsApi: AlertsApi = {
   async getRuleTemplates() {
     return apiFetch<AlertRuleTemplatesPayload>(`/openops/v1/alerts/rule-templates`);
   },
+  async getAccess(signal) {
+    return apiFetch<{ granted: boolean }>(`/openops/v1/alerts/access`, { signal });
+  },
   async historyPreview(params) {
     const s = new URLSearchParams({
       instance_id: params.instanceId,
@@ -323,6 +328,8 @@ const mockAlertsApi: AlertsApi = {
   setTakeoverEnabled: (instanceId, enabled) =>
     delay(undefined).then(() => { M.mockSetTakeoverEnabled(instanceId, enabled); invalidateAlerts(instanceId); }),
   getRuleTemplates: () => delay(M.mockGetRuleTemplates()),
+  // mock 缝：localStorage['openops.mock.alertGranted']='0' 可演示未开通态（默认开通）
+  getAccess: () => delay({ granted: localStorage.getItem("openops.mock.alertGranted") !== "0" }),
   historyPreview: (params) => delay(undefined).then(() => {
     const page = M.mockHistoryPreview(params);
     return { ...page, items: page.items.map(projectEvent) };

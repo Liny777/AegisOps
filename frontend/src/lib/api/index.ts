@@ -230,6 +230,8 @@ export interface OpenOpsApi {
   disableTemplateVersion(versionId: string): Promise<void>;
   // admin B7·三：白名单管理动作 + 审计 Trace 串联
   adminAddWhitelist(userId: string, displayName: string, tags?: string[]): Promise<void>;
+  /** 告警接管白名单开关（算力保护；管理台用户表「告警接管」列）。 */
+  adminSetAlertGrant(userId: string, granted: boolean): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
   /** 改领域标签（整体替换，[] 清空）——「标签」单元格行内编辑用。 */
@@ -775,7 +777,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "用户与白名单",
         primary: { label: "加入白名单", icon: "plus", actionKey: "add-user" },
-        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "标签" }, { label: "role" }, { label: "白名单" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }, { label: "删除", width: "56px" }],
+        cols: [{ label: "user_id" }, { label: "展示名" }, { label: "标签" }, { label: "role" }, { label: "白名单" }, { label: "告警接管", width: "88px" }, { label: "最近登录" }, { label: "操作", width: "72px" }, { label: "角色", width: "110px" }, { label: "删除", width: "56px" }],
         rows: d.items.map((r) => {
           const tags = Array.isArray(r.tags_json) ? r.tags_json.map(String) : [];
           return {
@@ -787,6 +789,10 @@ const realApi: OpenOpsApi = {
               { text: tags.length ? tags.join("、") : "设标签", kind: "action" as const, onClickKey: "user-tags" },
               { text: String(r.role) },
               { text: String(r.whitelist_status), kind: "badge" as const, tone: r.whitelist_status === "active" ? "good" as const : "neutral" as const },
+              // 告警接管白名单（算力有限按需开通）：双态 action，点击即切换（同 wl 列模式）
+              r.alert_takeover_granted
+                ? { text: "已开通·关", kind: "action" as const, onClickKey: "alert-revoke" }
+                : { text: "未开通·开", kind: "action" as const, onClickKey: "alert-grant" },
               { text: fmtLocalTime(r.last_login_at) || "—" },
               r.whitelist_status === "active"
                 ? { text: "移出", kind: "action" as const, onClickKey: "wl-revoke" }
@@ -940,6 +946,12 @@ const realApi: OpenOpsApi = {
       method: "POST",
       // tags 省略时不带键（后端 None=不动已有标签），与传 [] 清空语义区分
       body: { client_request_id: crid(), user_id: userId, display_name: displayName, ...(tags ? { tags } : {}) },
+    });
+  },
+  async adminSetAlertGrant(userId, granted) {
+    await apiFetch<void>(`/openops/v1/admin/alerts/grants:update`, {
+      method: "POST",
+      body: { client_request_id: crid(), user_id: userId, granted },
     });
   },
   async adminRevokeWhitelist(userId) {
@@ -1308,6 +1320,7 @@ const mockApi: OpenOpsApi = {
   adminAddWhitelist: () => delay(undefined as unknown as void),
   adminSetTags: () => delay(undefined as unknown as void),
   adminRevokeWhitelist: () => delay(undefined as unknown as void),
+  adminSetAlertGrant: () => delay(undefined as unknown as void),
   adminSetRole: () => delay(undefined as unknown as void),
   adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),

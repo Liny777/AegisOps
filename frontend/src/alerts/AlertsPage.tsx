@@ -158,6 +158,14 @@ export function AlertsPage() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<AlertEventsPage | null>(null);
   const [err, setErr] = useState("");
+  const [granted, setGranted] = useState<boolean | null>(null);  // 2026-08-09 算力白名单
+
+  useEffect(() => {
+    let alive = true;
+    alertsApi.getAccess().then((a) => { if (alive) setGranted(a.granted); })
+      .catch(() => { if (alive) setGranted(true); });  // 探询失败不拦（清单只读，无数据自然空）
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 300);
@@ -217,6 +225,22 @@ export function AlertsPage() {
   const settingsTarget = instanceId;
   const items = data?.items ?? [];
   const agentName = agents.find((a) => a.instance_id === currentAgentId)?.name;
+
+  if (granted === false) {
+    return (
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ textAlign: "center", maxWidth: 440, padding: 24 }} data-testid="alerts-not-granted">
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#fff", border: `1px solid ${color.border}`, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+            <Icon name="lock" size={26} color={color.textFaint} />
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>告警接管功能未开通</div>
+          <div style={{ fontSize: 12.5, color: color.textMuted, lineHeight: 1.7 }}>
+            算力资源有限，该功能按管理员白名单开放。<br />如需使用，请联系平台管理员为你开通。
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>

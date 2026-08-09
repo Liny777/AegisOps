@@ -178,3 +178,12 @@ test("批量：勾选两行批量禁用后 Toggle 灭，再批量删除减行数
   await expect(page.getByText(/共 1 条策略/)).toBeVisible();
   await expect(page.getByRole("button", { name: /批量操作/ })).toHaveCount(0);
 });
+
+test("白名单未开通：清单页与设置页均显引导空态（mock 缝切换）", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("openops.mock.alertGranted", "0"));
+  await page.goto("/alerts");
+  await expect(page.getByTestId("alerts-not-granted")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("请联系平台管理员为你开通")).toBeVisible();
+  await page.goto("/settings/alerts");
+  await expect(page.getByTestId("alerts-not-granted")).toBeVisible({ timeout: 15_000 });
+});

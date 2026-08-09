@@ -119,6 +119,19 @@ def _owner_instance(row: dict[str, Any] | None, user_id: str) -> dict[str, Any]:
     return row
 
 
+async def _require_takeover_grant(user: dict[str, Any]) -> None:
+    """告警接管功能白名单闸（2026-08-09 算力保护）：写路径（订阅/规则/预览）统一入口。
+
+    fail-closed：名单空 = 全员关闭；platform_admin 天然豁免（管理员开名单前得能自测）。
+    读路径（清单/规则列表）不拦——名单外用户自然无数据，前端靠 /alerts/access 显示引导。
+    """
+    if user.get("role") == "platform_admin":
+        return
+    if not await repo.is_user_granted(user["user_id"]):
+        raise ApiError(Err.FORBIDDEN,
+                       "告警接管功能未开通：算力资源有限按需开放，请联系平台管理员开通")
+
+
 UI_SEVERITIES = ("fatal", "critical", "warning")  # 本期口径三档（info 保留在 schema 不出 UI）
 
 
@@ -178,6 +191,7 @@ async def list_rules(user: dict[str, Any], instance_id: str) -> dict[str, Any]:
 
 
 async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str, Any]:
+    await _require_takeover_grant(user)
     uid = user["user_id"]
     inst = _owner_instance(await agent_teams.get_instance(req.agent_team_instance_id), uid)
     cached = await idempotency.begin(uid, "alert_rule_create", req.client_request_id,
@@ -212,6 +226,7 @@ async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str,
 
 async def batch_rules(user: dict[str, Any], req: BatchRulesRequest) -> dict[str, Any]:
     """批量启用/禁用/删除（配置列表复选框）。全部行须归属本人实例，任一越权整批拒绝。"""
+    await _require_takeover_grant(user)
     uid = user["user_id"]
     rows = await repo.list_rules_by_ids(req.rule_ids)
     if len(rows) != len(set(req.rule_ids)):
@@ -240,6 +255,7 @@ async def _owned_rule(user: dict[str, Any], rule_id: str) -> dict[str, Any]:
 
 
 async def update_rule(user: dict[str, Any], rule_id: str, req: UpdateRuleRequest) -> dict[str, Any]:
+    await _require_takeover_grant(user)
     rule = await _owned_rule(user, rule_id)
     instance_id = str(rule["agent_team_instance_id"])
     match = dict(rule.get("match_json") or {})
@@ -278,6 +294,7 @@ async def update_rule(user: dict[str, Any], rule_id: str, req: UpdateRuleRequest
 
 
 async def delete_rule(user: dict[str, Any], rule_id: str, _req: DeleteRuleRequest) -> dict[str, Any]:
+    await _require_takeover_grant(user)
     rule = await _owned_rule(user, rule_id)
     instance_id = str(rule["agent_team_instance_id"])
     await repo.soft_delete_rule(rule_id, user["user_id"])
@@ -299,6 +316,7 @@ async def get_subscription(user: dict[str, Any], instance_id: str) -> dict[str, 
 
 
 async def update_subscription(user: dict[str, Any], req: SubscriptionUpdateRequest) -> dict[str, Any]:
+    await _require_takeover_grant(user)
     uid = user["user_id"]
     _owner_instance(await agent_teams.get_instance(req.agent_team_instance_id), uid)
     await repo.upsert_subscription(
@@ -634,6 +652,7 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
     空=不传（全量）——从未 resolve 过 scope 的新实例也能看到预览（比本地库口径更宽）。
     mock 档 _impl() 走 mock 样本，不会触发降级。
     """
+    await _require_takeover_grant(user)
     uid = user["user_id"]
     _owner_instance(await agent_teams.get_instance(instance_id), uid)
     cats = _check_categories([c for c in categories.split(",")])
@@ -657,6 +676,32 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
             since_days=since_days, page=1, page_size=page_size)
         return {"items": [event_row_out(r, uid) for r in rows], "total": total,
                 "page": 1, "page_size": page_size, "source": "local_fallback"}
+
+
+async def takeover_access(user: dict[str, Any]) -> dict[str, Any]:
+    """用户侧探询：告警接管功能对我是否开通（前端设置页/清单页据此渲染引导空态）。"""
+    granted = user.get("role") == "platform_admin" or await repo.is_user_granted(user["user_id"])
+    return {"granted": granted}
+
+
+async def admin_list_grants(_admin: dict[str, Any]) -> dict[str, Any]:
+    return {"items": [row_json(r) for r in await repo.list_user_grants()]}
+
+
+async def admin_set_grant(admin: dict[str, Any], *, target_user_id: str,
+                          granted: bool, client_request_id: str) -> dict[str, Any]:
+    """开通/关闭某用户的告警接管（幂等；审计必落）。关闭即刻断流：匹配加载面 join 白名单。"""
+    target = (target_user_id or "").strip()
+    if not target:
+        raise ApiError(Err.VALIDATION_FAILED, "user_id 不能为空")
+    await repo.set_user_grant(target, granted, admin["user_id"])
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="alert.grant_updated",
+        user_id=admin["user_id"], instance_id=None, action="grant" if granted else "revoke",
+        actor_type="admin",
+        payload_redacted={"target_user_id": target, "granted": granted,
+                          "client_request_id": client_request_id})
+    return {"user_id": target, "granted": granted}
 
 
 async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,

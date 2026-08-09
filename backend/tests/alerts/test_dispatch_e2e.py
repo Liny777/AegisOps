@@ -260,6 +260,9 @@ def test_alert_pool_bypasses_user_gate_both_ways(client):
 def test_converge_requeues_interrupted_diagnosis():
     """真实重启语义：TestClient 关（worker 取消，单停 diagnosing）→ 开（core converge 打断
     task → alerts converge 预算内 requeue，复用同一 run）。"""
+    import asyncio as _aio
+
+    from alerts import repository as _grant_repo
     from app import asset_reconcile_service, asset_registry_service, scope_service
     from conftest import reset_database
     from infra import idempotency
@@ -283,6 +286,9 @@ def test_converge_requeues_interrupted_diagnosis():
     iid = None
     try:
         with TestClient(app) as c1:
+            # 本用例不走 client fixture（自管 TestClient 生命周期），autouse 的白名单
+            # 补种不生效——手动给测试用户开通（与 conftest._grant_alert_takeover 同口径）
+            _aio.run(_grant_repo.set_user_grant("0026demo01", True, "test"))
             iid = _setup_instance(c1)
             alert_platform_mock._inject(title="重启前的告警", category="MySQL", severity="critical")
             assert _pull(c1)["queued"] == 1

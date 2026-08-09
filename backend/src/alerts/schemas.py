@@ -55,6 +55,13 @@ class SubscriptionUpdateRequest(BaseModel):
     max_open_incidents: int | None = Field(default=None, ge=1, le=100)
 
 
+class GrantUpdateRequest(BaseModel):
+    """管理员开通/关闭某用户的告警接管（算力保护白名单）。"""
+    client_request_id: str = Field(min_length=1)
+    user_id: str = Field(min_length=1, max_length=64)
+    granted: bool
+
+
 class IncidentActionRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
 

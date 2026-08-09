@@ -15,6 +15,7 @@ from alerts.schemas import (
     CreateRuleRequest,
     DeleteRuleRequest,
     FeedbackRequest,
+    GrantUpdateRequest,
     IncidentActionRequest,
     SubscriptionUpdateRequest,
     UpdateRuleRequest,
@@ -109,6 +110,12 @@ async def admin_list_events(
         page=page, page_size=page_size))
 
 
+# ---- 功能开通探询（白名单闸；算力保护） ----
+@user_router.get("/access")
+async def takeover_access(user: User):
+    return ok(await service.takeover_access(user))
+
+
 # ---- 历史告警预览（规则编辑器第二步；主路径=平台 alarm_list，失败降级本地库） ----
 @user_router.get("/history-preview")
 async def history_preview(
@@ -191,6 +198,18 @@ async def manual_dispatch(_admin: Admin):
     from alerts import dispatcher
 
     return ok({"started": await dispatcher.dispatch_once()})
+
+
+@admin_router.get("/grants")
+async def admin_list_grants(admin: Admin):
+    return ok(await service.admin_list_grants(admin))
+
+
+@admin_router.post("/grants:update")
+async def admin_set_grant(req: GrantUpdateRequest, admin: Admin):
+    return ok(await service.admin_set_grant(
+        admin, target_user_id=req.user_id, granted=req.granted,
+        client_request_id=req.client_request_id))
 
 
 @admin_router.get("/overview")

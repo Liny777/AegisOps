@@ -118,6 +118,12 @@ async def dispatch_once() -> int:
         if inc is None:
             return started
         iid = str(inc["alert_incident_id"])
+        # 白名单双保险（主闸在 list_enabled_rules 的匹配面）：owner 在排队后被移出名单，
+        # 存量 queued 单派发前再拦一道——置 skipped 留痕，不白耗诊断名额。
+        if not await repo.is_user_granted(str(inc["owner_user_id"])):
+            await repo.transition(iid, from_states=["queued"], to_state="skipped", set_ended=True,
+                                  state_reason="grant_revoked：属主的告警接管开通已被管理员关闭")
+            continue
         # 条件 UPDATE 抢占：并发 dispatch_once / 多 worker 竞态下只有一个赢家
         if not await repo.transition(iid, from_states=["queued"], to_state="diagnosing",
                                      set_started=True):

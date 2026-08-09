@@ -19,6 +19,7 @@ EXPECTED_TABLES = [
     "sre_alert_incident_event",
     "sre_alert_subscription",
     "sre_alert_pull_state",
+    "sre_alert_user_grant",
 ]
 
 
@@ -26,13 +27,13 @@ def _ddl() -> str:
     return DDL.read_text(encoding="utf-8")
 
 
-def test_slice_declares_exactly_six_tables():
+def test_slice_declares_exactly_seven_tables():
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", _ddl())
     assert tables == EXPECTED_TABLES
 
 
 def test_every_column_has_comment():
-    """列注释是本仓库的 DDL 铁律（core 的 test_ddl 同口径），六表逐一核。"""
+    """列注释是本仓库的 DDL 铁律（core 的 test_ddl 同口径），七表逐一核。"""
     ddl = _ddl()
     for table in EXPECTED_TABLES:
         m = re.search(

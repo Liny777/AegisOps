@@ -51,6 +51,7 @@ const PickChip = ({ label, active, onToggle }: { label: string; active: boolean;
 /** Agent 设置第三 tab「告警接管」：总开关 + 策略表（搜索/类型筛选/批量操作）+ 新建/编辑弹窗。
  *  对齐 PluginPane 的交互律：动作即时生效 + 重拉，无「保存」按钮。 */
 export function AlertRulesPane({ instanceId }: { instanceId: string }) {
+  const [granted, setGranted] = useState<boolean | null>(null);  // null=探询中（2026-08-09 算力白名单）
   const [cfg, setCfg] = useState<AlertRulesConfig | null>(null);
   const [payload, setPayload] = useState<AlertRuleTemplatesPayload | null>(null);
   const [err, setErr] = useState("");
@@ -64,6 +65,8 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
 
   useEffect(() => {
     let alive = true;
+    alertsApi.getAccess().then((a) => { if (alive) setGranted(a.granted); })
+      .catch(() => { if (alive) setGranted(true); });  // 探询失败不拦（写路径后端仍有闸）
     const load = () => {
       alertsApi.getRules(instanceId).then((next) => {
         if (!alive) return;
@@ -129,6 +132,23 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
   };
 
   const closeEditor = () => setEditor({ open: false, rule: null });
+
+  // 未开通：整页替换成引导空态（算力资源有限按需开放；后端写路径 403 同文案兜底）
+  if (granted === false) {
+    return (
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: color.surfaceAlt }}>
+        <div style={{ textAlign: "center", maxWidth: 440, padding: 24 }} data-testid="alerts-not-granted">
+          <div style={{ width: 56, height: 56, borderRadius: 16, background: "#fff", border: `1px solid ${color.border}`, display: "inline-flex", alignItems: "center", justifyContent: "center", marginBottom: 14 }}>
+            <Icon name="lock" size={26} color={color.textFaint} />
+          </div>
+          <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>告警接管功能未开通</div>
+          <div style={{ fontSize: 12.5, color: color.textMuted, lineHeight: 1.7 }}>
+            算力资源有限，该功能按管理员白名单开放。<br />如需使用，请联系平台管理员为你开通。
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: color.surfaceAlt, padding: "22px 30px 40px" }}>

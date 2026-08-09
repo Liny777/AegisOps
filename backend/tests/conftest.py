@@ -78,6 +78,31 @@ def client() -> TestClient:
     asset_registry_service._reset_user_skill_sync()
 
 
+@pytest.fixture(autouse=True)
+def _grant_alert_takeover(request):
+    """tests/alerts/ 下自动给测试身份开通告警接管白名单（2026-08-09 算力保护 fail-closed）。
+
+    存量 alerts 用例都以「功能已开通」为前提写就；白名单自身语义由
+    tests/alerts/test_takeover_grant.py 显式关 grant 后专测。
+    不放 tests/alerts/conftest.py：同名模块会遮蔽顶层 `from conftest import ...`。
+    仅当用例自身请求了 client（有 DB）才补种——纯函数用例（inet_contract/matcher 等）零开销；
+    getfixturevalue 拿到的是**已实例化**的 client，保证晚于 reset_database，grant 不被清。
+    """
+    if "tests/alerts" in str(getattr(request.node, "fspath", "")) and "client" in request.fixturenames:
+        import asyncio as _aio
+
+        from alerts import repository as _repo
+
+        request.getfixturevalue("client")
+
+        async def _apply() -> None:
+            await _repo.set_user_grant("0026demo01", True, "conftest")
+            await _repo.set_user_grant("0099other", True, "conftest")
+
+        _aio.run(_apply())
+    yield
+
+
 def _runtime_params() -> list[str]:
     """fail-closed 类用例跑双 runtime（B6-RT-001）；无 agentscope 环境自动降级只跑 mock。"""
     try:

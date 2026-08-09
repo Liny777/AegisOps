@@ -126,6 +126,12 @@ export function AdminConsole() {
     else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
     else if (key === "mt-grants") setGrantsFor({ id: rowId, name: rowName });
     else if (key === "toggle-bind" && tplDrill) void toggleBind(rowId);
+    else if (key === "alert-grant" || key === "alert-revoke") {
+      // 告警接管白名单（算力有限按需开通）：即点即切，错误进动作横幅
+      setActionErr("");
+      void api.adminSetAlertGrant(rowId, key === "alert-grant")
+        .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "wl-revoke" || key === "wl-add") {
       setActionErr("");
       const op = key === "wl-revoke" ? api.adminRevokeWhitelist(rowId) : api.adminAddWhitelist(rowId, "");

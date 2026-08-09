@@ -271,3 +271,24 @@ COMMENT ON COLUMN sre_alert_pull_state.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN sre_alert_pull_state.created_by IS '创建人（恒 system）';
 COMMENT ON COLUMN sre_alert_pull_state.last_updated_by IS '最后更新人（恒 system）';
 COMMENT ON COLUMN sre_alert_pull_state.deleted_at IS '软删除时间，NULL 表示未删除';
+
+-- 2026-08-09 算力保护：告警接管按管理员白名单开放（fail-closed：名单外用户配置面 403、
+-- 匹配面不加载其规则、派发面置 skipped；platform_admin 天然豁免）。
+CREATE TABLE IF NOT EXISTS sre_alert_user_grant (
+  user_id text NOT NULL PRIMARY KEY,
+  granted_by text NOT NULL DEFAULT 'system',
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  deleted_at timestamptz
+);
+
+COMMENT ON TABLE sre_alert_user_grant IS '7x24 告警接管功能白名单（算力有限按需开通）：在名单=可配置订阅/规则并参与匹配派发；revoke 用软删（deleted_at），重开通复活同行保留 granted_by 审计链';
+COMMENT ON COLUMN sre_alert_user_grant.user_id IS '被授权用户 id（一行一人）';
+COMMENT ON COLUMN sre_alert_user_grant.granted_by IS '最近一次开通操作的管理员 id';
+COMMENT ON COLUMN sre_alert_user_grant.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_alert_user_grant.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_alert_user_grant.created_by IS '创建人';
+COMMENT ON COLUMN sre_alert_user_grant.last_updated_by IS '最后更新人';
+COMMENT ON COLUMN sre_alert_user_grant.deleted_at IS '软删除时间（=已关闭开通），NULL 表示在名单';

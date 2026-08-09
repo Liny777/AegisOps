@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["routers", "start", "stop", "status_label", "ensure_defaults"]
+__all__ = ["routers", "start", "stop", "status_label", "ensure_defaults", "granted_user_ids"]
 
 
 def routers() -> list[Any]:
@@ -34,10 +34,27 @@ def routers() -> list[Any]:
 
 
 async def ensure_defaults() -> None:
-    """补种 runtime_config `alert` 域缺失键（只补缺失，保护管理员改过的值）。"""
+    """补种 runtime_config `alert` 域缺失键（只补缺失，保护管理员改过的值）。
+
+    dev 档顺带给演示用户开通告警接管白名单（2026-08-09 算力保护 fail-closed：
+    名单空=全关；生产不种，管理员在管理台按需开通）。
+    """
+    import os
+
     from alerts import service
 
     await service.ensure_config_defaults()
+    if os.environ.get("OPENOPS_BUILD", "dev").strip().lower() == "dev":
+        from alerts import repository as repo
+
+        await repo.set_user_grant("0026demo01", True, "dev-seed")
+
+
+async def granted_user_ids() -> set[str]:
+    """告警接管白名单用户集（管理台用户表「告警接管」列用；core 只准经本 facade 取）。"""
+    from alerts import repository as repo
+
+    return {str(r["user_id"]) for r in await repo.list_user_grants()}
 
 
 async def start() -> Any | None:
