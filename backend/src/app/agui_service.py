@@ -18,7 +18,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, AsyncGenerator
 
-from app import run_state_service
+from app import interactive_queue, run_state_service
 from domain.errors import ApiError, Err
 from infra.repositories import agent_session_states, runs
 from runtime import events, task_registry
@@ -109,10 +109,14 @@ def _schedule_cancel_on_disconnect(ctx: dict[str, Any]) -> None:
     """客户端断流（CopilotChat 停止按钮 / 关页）→ 停止 Agent 运行（取消桥，Part B）。
 
     只在本 task 仍 running 时取消（正常终态在 return 前已推进状态，不会误伤）。
+    **排队中的任务同样要取消**：它还没有 TaskState，光看 registry 会当成"已终态"放过，
+    结果是人已经关页、队列却还留着它，轮到时启动一个没人听的幽灵任务（正是 interactive_queue
+    模块头要避免的）。cancel_task 的队列分支会处理这种没有 TaskState 的情况。
     GeneratorExit 处理器内禁止 await —— fire-and-forget 到事件循环。
     """
     st = task_registry.get_by_task(ctx["task_id"])
-    if st is None or st.status != "running":
+    queued = interactive_queue.position(ctx["task_id"]) is not None
+    if not queued and (st is None or st.status != "running"):
         return
 
     async def _do() -> None:

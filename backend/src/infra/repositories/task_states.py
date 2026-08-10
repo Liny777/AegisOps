@@ -19,6 +19,7 @@ def _params(st: Any, status: str, audit_trace_id: str) -> dict[str, Any]:
         "m": st.selected_model, "sm": st.selected_sub_model,
         "sc": jsonb(st.scope_ctx) if st.scope_ctx else None,
         "a": st.approval_id, "sa": st.started_at, "tr": audit_trace_id,
+        "o": getattr(st, "origin", "user"),  # 并发分池标记（getattr：手搓 st 的旧单测无此字段）
     }
 
 
@@ -29,10 +30,10 @@ async def upsert_snapshot(st: Any, status: str, audit_trace_id: str) -> None:
         await exec1(
             """
             insert into sre_task_state
-              (task_id, run_id, user_id, instance_id, task_status, input_text, rca_json,
+              (task_id, run_id, user_id, instance_id, task_status, task_origin, input_text, rca_json,
                selected_model, selected_sub_model, scope_ctx_json, approval_id, started_at,
                audit_trace_id, created_by, last_updated_by)
-            values (%(t)s, %(r)s, %(u)s, %(i)s, %(s)s, %(x)s, %(rc)s, %(m)s, %(sm)s, %(sc)s,
+            values (%(t)s, %(r)s, %(u)s, %(i)s, %(s)s, %(o)s, %(x)s, %(rc)s, %(m)s, %(sm)s, %(sc)s,
                     %(a)s, %(sa)s, %(tr)s, %(u)s, %(u)s)
             """,
             p,
@@ -68,9 +69,10 @@ async def get_by_task(task_id: str) -> dict[str, Any] | None:
 async def count_running(user_id: str) -> int:
     # 并发限额只数主任务：子 Agent task_id 形如 {leader}.{key}-{hash8}（含 '.'），主任务 tsk_<hex> 无 '.'。
     # 这条谓词也让进程内此前已泄漏的子行下次 start_task 立即不再计入（无需等重启 converge）。
+    # task_origin<>'alert'：告警自动诊断走 alerts dispatcher 并发闸，不占用户交互额度（分池）。
     row = await q_one(
         "select count(*) as n from sre_task_state where user_id=%(u)s and task_status='running' "
-        "and deleted_at is null and strpos(task_id, '.') = 0",
+        "and deleted_at is null and strpos(task_id, '.') = 0 and task_origin <> 'alert'",
         {"u": user_id},
     )
     return int(row["n"]) if row else 0

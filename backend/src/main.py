@@ -102,6 +102,10 @@ async def lifespan(_app: FastAPI):
         f"trust_env={'on' if os.environ.get('OPENOPS_HTTP_TRUST_ENV') == '1' else 'off'}  "
         f"skillhub={os.environ.get('OPENOPS_SKILLHUB', 'mock')}  "
         f"skillhub_cookie={_cookie_disp('OPENOPS_SKILLHUB_COOKIE')}  "
+        f"alert={os.environ.get('OPENOPS_ALERT', 'mock')}  "
+        f"alert_kafka={os.environ.get('OPENOPS_ALERT_KAFKA_TOPIC') or 'unset'}  "
+        f"alert_pull={os.environ.get('OPENOPS_ALERT_PULL_INTERVAL_S', '0')}s  "
+        f"alert_token={'SET' if os.environ.get('OPENOPS_ALERT_TOKEN') else 'unset'}  "
         f"sandbox={os.environ.get('OPENOPS_SANDBOX', 'fake')}  "
         f"sandbox_sweep={os.environ.get('OPENOPS_SANDBOX_SWEEP_INTERVAL_S', '60')}s  "
         f"studio={studio.status_label(studio_handle)}"
@@ -130,14 +134,21 @@ async def lifespan(_app: FastAPI):
     reconciler = asyncio.create_task(asset_reconcile_service.background_loop(interval)) if interval > 0 else None
     sweep_s = float(os.environ.get("OPENOPS_SANDBOX_SWEEP_INTERVAL_S", "60"))
     sweeper = asyncio.create_task(sandbox_admin_service.background_sweep_loop(sweep_s)) if sweep_s > 0 else None
+    # 7x24 告警接管：先收敛重启孤儿 incident（须在上面 converge_orphan_tasks 之后），
+    # OPENOPS_ALERT_PULL_INTERVAL_S>0 才起 poller/dispatcher 循环（默认 0=关）
+    alerts_handle = await alerts.start()
     yield
     if reconciler:
         reconciler.cancel()
     if sweeper:
         sweeper.cancel()
+    await alerts.stop(alerts_handle)  # 须在 close_pool() 之前（worker 收口落库走同一个池）
     await studio.stop(studio_handle)  # 须在 close_pool() 之前（drain 落库走同一个池）
     # 先收口 runtime 任务（取消 + 短等审计写完），再关池——避免关闭期 PoolClosed 噪声（B5-BE-001）
+    from app import interactive_queue
     from runtime import task_registry
+
+    interactive_queue.shutdown()  # 须在 cancel 之前：否则 done_callback 会 drain 出新任务撞上关池
 
     pending = [st.orchestrator for st in task_registry._by_run.values()
                if st.orchestrator and not st.orchestrator.done()]
@@ -201,4 +212,10 @@ for r in (identity, templates, agent_teams, assets, secrets, runs, approvals, au
 
 # 垂直切片自带路由（Agent Studio：/admin/studio/* 与 /agent-runs/{id}/replay）
 for _slice_router in studio.routers():
+    app.include_router(_slice_router)
+
+# 垂直切片自带路由（7x24 告警接管：/alerts/* 与 /admin/alerts/*）
+import alerts  # noqa: E402 —— facade-only import（与 studio 同款铁律）
+
+for _slice_router in alerts.routers():
     app.include_router(_slice_router)

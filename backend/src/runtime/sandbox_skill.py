@@ -67,7 +67,7 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             abs_dir: str | None = None  # 成功投递才有值；截断标记按有无落盘正文分别指引
             try:
                 abs_dir, names = await sandbox_executor.stage_files(
-                    st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
+                    getattr(st, "sandbox_uid", "") or st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
                     files=files, expected_checksum=pkg["checksum"],
                     run_id=st.run_id, cfg=st.sandbox_cfg,
                 )
@@ -97,7 +97,7 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             raise ApiError(Err.SKILL_PACKAGE_INVALID,
                            f"Skill 包缺少 entrypoint 指向的脚本（entrypoint={pkg['entrypoint']}），请检查包结构")
         res: SkillResult = await sandbox_executor.run_skill(
-            st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
+            getattr(st, "sandbox_uid", "") or st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
             entrypoint=pkg["entrypoint"], files=pkg["files"],
             expected_checksum=pkg["checksum"],  # 传输完整性（29.3 X-Checksum-SHA256）
             run_id=st.run_id, cfg=st.sandbox_cfg,  # 容器缺失自愈重建（进程重启/idle 回收后）
@@ -127,7 +127,7 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
     body = res.result_json if res.result_json is not None else res.stdout[:1000]
     # 统一进容器口径：脚本型的包（含 references/ 等）本就随 run_skill 投递在容器里——把目录告知模型，
     # 需要时可 run_container_command 查阅参考文件（与手册型同一指引）
-    c = sandbox_executor.get(st.user_id)
+    c = sandbox_executor.get(getattr(st, "sandbox_uid", "") or st.user_id)
     note = (f"\n（Skill 包已投递至容器目录 {c.backend.workdir}/skills/{st.task_id}/{tool_call_id}/，"
             f"含 {len(pkg['files'])} 个文件，需要时可用 Read / run_container_command 查阅）") if c else ""
     return f"Skill 「{skill_name}」结果：{body}{note}"

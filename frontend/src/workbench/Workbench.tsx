@@ -147,6 +147,8 @@ export function Workbench({
   const [titleDraft, setTitleDraft] = useState("");
   const [taskId, setTaskId] = useState<string | null>(null);
   const [taskStatus, setTaskStatus] = useState<string | null>(null);
+  // 排队位次（1-based）：名额满时后端入队并下推，null=未排队
+  const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
@@ -306,6 +308,14 @@ export function Workbench({
     switch (e.event_type) {
       case "openops.task.started":
         setTaskStatus("running");
+        setQueuePosition(null);           // 轮到自己了，排队条撤下
+        if (e.task_id) setTaskId(e.task_id);
+        break;
+      // 名额满时入队：位次随队列变化实时下推（复用本 run 的 SSE 通道，无需额外轮询）
+      case "openops.task.queued":
+      case "openops.task.queue_position":
+        setTaskStatus("queued");
+        setQueuePosition(Number(p.queue_position ?? 0) || null);
         if (e.task_id) setTaskId(e.task_id);
         break;
       case "openops.approval.required": {
@@ -342,14 +352,17 @@ export function Workbench({
       }
       case "openops.task.completed":
         setTaskStatus("completed");
+        setQueuePosition(null);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
         break;
       case "openops.task.failed":
         setTaskStatus("failed");
+        setQueuePosition(null);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.task.cancelled":
         setTaskStatus("cancelled");
+        setQueuePosition(null);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.rca.updated": {
@@ -715,7 +728,13 @@ export function Workbench({
       const r = await api.startTask(actionRunId, text);
       if (!isCurrentRunAction(activeRunRef.current, actionRunId)) return;
       setTaskId(r.task_id);
-      setTaskStatus("running");
+      if (r.status === "queued") {        // 名额满：显示排队条，轮到时 SSE 推 task.started
+        setTaskStatus("queued");
+        setQueuePosition(r.queue_position ?? 1);
+      } else {
+        setTaskStatus("running");
+        setQueuePosition(null);
+      }
     } catch (err) {
       if (!isCurrentRunAction(activeRunRef.current, actionRunId)) return;
       setMessages((m) => [...m, { id: `e${m.length}`, role: "bot", text: `无法启动任务：${(err as Error).message}` }]);
@@ -822,6 +841,31 @@ export function Workbench({
   // 新 URL 恢复失败时页面仍展示上一 Run，但任何输入都必须保持禁用；否则用户会在
   // 侧栏高亮新会话的同时，把操作误发到旧 thread。
 
+  /** 名额满时的排队条：位次由后端经 SSE 实时下推，轮到自动开始（不必重发）。
+   *
+   *  ⚠ **必须两条渲染路径都挂**：真实产品走 copilotChat（CopilotChatPanel），fallbackChat 只在
+   *  `VITE_OPENOPS_COPILOT_CHAT=0` 或 mock 下出现。只挂 fallback 的话，线上永远看不见这条。
+   *  两边共用同一份状态——`handleOpenOpsEvent` 是共享的（copilot 路径经 onOpenOps 传入），
+   *  agui 侧同样调 start_task，队列事件照常以 CUSTOM 透传。 */
+  const queueBanner = taskStatus === "queued" && queuePosition !== null ? (
+    <div data-testid="queue-banner" style={{
+      display: "flex", alignItems: "center", gap: 10, margin: "0 24px 8px",
+      padding: "8px 12px", borderRadius: radius.lg,
+      background: color.warningBg, border: `1px solid ${color.warningBorder}`,
+      fontSize: 12.5, color: color.warningText,
+    }}>
+      <Icon name="hourglass" size={14} color={color.warningText} />
+      <span style={{ flex: 1 }}>
+        正在排队，前面还有 <b>{Math.max(0, queuePosition - 1)}</b> 个——轮到你时会自动开始，不用重发。
+      </span>
+      <button onClick={() => { if (taskId) void api.cancelTask(taskId); }}
+        style={{ border: "none", background: "transparent", color: color.warningText,
+                 fontSize: 12.5, fontWeight: 600, cursor: "pointer", padding: 0 }}>
+        取消排队
+      </button>
+    </div>
+  ) : null;
+
   const fallbackChat = (
     <div
       inert={workbenchInputBlocked}
@@ -857,7 +901,10 @@ export function Workbench({
           <Icon name="lock" size={14} /> 会话已关闭：只读查看历史与审计，不能再启动新任务。
         </div>
       ) : (
-        <Composer skills={skills} onSend={send} modelLabel={modelLabel} />
+        <>
+          {queueBanner}
+          <Composer skills={skills} onSend={send} modelLabel={modelLabel} />
+        </>
       )}
     </div>
   );
@@ -878,6 +925,8 @@ export function Workbench({
         onOpenOps={handleOpenOpsEvent}
         onRetryConnection={() => setCopilotConnectionGeneration((generation) => generation + 1)}
       />
+      {/* 面板 flex:1 → 排队条挂在其后即贴着输入框下沿（用户刚打完字，视线就在这儿） */}
+      {queueBanner}
       {runStatus === "active" && shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
         ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
         : null}

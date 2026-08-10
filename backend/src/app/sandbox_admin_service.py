@@ -27,13 +27,18 @@ async def list_containers() -> list[dict[str, Any]]:
 
     active_run_count=打开中的会话（open run）数，属 session 口径、非并发任务量；running_task_count=当前
     运行的主任务数，与 per_user_running_task_limit 同源（task_registry.running_count），管理台据此区分
-    「会话」与「并发任务」，避免把「活跃 run」误读成越过 running task 限额。子 Agent 属任务内部，单列展示不计入限额。
+    「会话」与「并发任务」，避免把「打开中的会话」误读成越过 running task 限额。子 Agent 属任务内部，
+    单列展示不计入限额。queued_task_count=名额满后在交互队列里等待的任务数。
     """
+    from app import interactive_queue
+
     items = executor.list_containers()
+    queued = interactive_queue.depth()["by_user"]   # 对话侧排队水位（此前只能靠用户反馈发现拥堵）
     for it in items:
         uid = it["user_id"]
         it["running_task_count"] = task_registry.running_count(uid)
         it["running_subtask_count"] = task_registry.running_subtask_count(uid)
+        it["queued_task_count"] = queued.get(uid, 0)
     return items
 
 
@@ -78,7 +83,11 @@ async def _cancel_running_tasks(target_user_id: str, by: str) -> list[str]:
     """
     from app.run_state_service import cancel_task_state
 
-    states = task_registry.running_by_user(target_user_id)
+    # 双维度反查（共享告警沙箱设计难点③）：销毁 sys-alert-sandbox 时，其中在跑的诊断任务
+    # user_id=实例 owner ≠ 容器键——按 user 反查会漏，必须按 sandbox_uid 补查（去重合并）。
+    merged = {st.task_id: st for st in [*task_registry.running_by_user(target_user_id),
+                                        *task_registry.running_by_sandbox(target_user_id)]}
+    states = list(merged.values())
     cancelled = [st for st in states if await cancel_task_state(st, by)]
     # cancel() 只是**请求**取消：不等落地的话，任务可能正好在两个 await 之间再发一次
     # run_command 把容器建回来。等一小会把这个竞态窗口关掉；超时也继续销毁——status

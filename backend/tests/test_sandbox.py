@@ -1103,8 +1103,12 @@ def test_admin_sandbox_put_rejects_bad_values(client):
                       json={"client_request_id": "s5", "updates": {"capacity_full_policy": "strict_ttl"}, "reason": "固定策略"}))
 
 
-def test_run_004_per_user_running_task_limit_rejects(client):
-    """RUN-004（设计 R5）：每用户 running task 达 per_user_running_task_limit → 新 task 拒 429。
+def test_run_004_per_user_running_task_limit_queues(client):
+    """RUN-004（设计 R5）：每用户 running task 达 per_user_running_task_limit → 新 task **排队**。
+
+    ⚠ 行为变更（2026-07-31）：原为直接 429，现改为入队并返回位次——对话场景下"被拒绝且
+    不知等多久"的体验太差，且告警侧本就是排队。429 只在**队列也满**时出现，见
+    tests/test_interactive_queue.py。
 
     与开 run 的 SANDBOX_CAPACITY_FULL 是两道独立闸门：这道只管该用户并发任务数，不碰容器名额。
     """
@@ -1126,8 +1130,13 @@ def test_run_004_per_user_running_task_limit_rejects(client):
 
     r = client.post(f"/api/openops/v1/agent-runs/{run2['agent_run_id']}/tasks", headers=USER_HEADERS,
                     json={"client_request_id": f"cc{time.time_ns()}", "input_text": "第二个任务"})
-    assert r.status_code == 429
-    assert r.json()["error"]["code"] == "USER_TASK_CONCURRENCY_LIMIT"
+    assert r.status_code == 200, r.text
+    body = r.json()["data"]
+    assert body["status"] == "queued" and body["queue_position"] == 1
+    from app import interactive_queue
+
+    assert interactive_queue.depth()["total"] == 1
+    interactive_queue.reset()  # 本用例不驱动出队，显式清干净避免泄漏到后续用例
 
     # 占位 task 结束 → 名额释放，新 task 放行（证明拒绝来自限额而非其他 fail-closed）
     task_registry.get_by_task("tk_busy").status = "completed"

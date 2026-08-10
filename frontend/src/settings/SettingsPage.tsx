@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { Icon, Interactive, Pill, Button, TextInput, Toggle, Pagination } from "../ui";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
@@ -216,10 +216,19 @@ function CardAction({ icon, label, color: c, hoverBg, bold, disabled, onClick }:
   );
 }
 
-/* ---------------- per-agent 插件配置（仅 Skill / MCP；模型与提示词在创建/编辑向导里管）---------------- */
+/* ------- per-agent 插件配置（Skill / MCP；模型与提示词在创建/编辑向导里管）------- */
 function AgentDetail({ instance }: { instance: AgentInstance }) {
+  // 「告警接管」tab 已迁入设置页 /settings/alerts（2026-08-07 用户拍板）；
+  // 旧深链 ?tab=alerts（告警清单页历史入口/外部收藏）重定向兼容，不留断链。
+  const nav = useNavigate();
+  const [sp] = useSearchParams();
+  const legacyAlerts = sp.get("tab") === "alerts";
+  useEffect(() => {
+    if (legacyAlerts) nav("/settings/alerts", { replace: true });
+  }, [legacyAlerts, nav]);
   const [tab, setTab] = useState<Tab>("skill");
   const instanceId = instance.instance_id;
+  if (legacyAlerts) return null;  // 重定向在途，别闪一帧 Skill 页
   return (
     <>
       <div style={{ flex: "0 0 auto", background: "#fff", borderBottom: `1px solid ${color.border}`, padding: "0 24px", display: "flex", gap: 6 }}>

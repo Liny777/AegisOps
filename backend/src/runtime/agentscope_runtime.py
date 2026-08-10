@@ -813,7 +813,8 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 容器内文件读取/搜索（B8·补3）：官方 Read/Grep 绑「指向本用户容器」的后端适配器——在容器内读文件
     # （带行号+分页）/ ripgrep 搜内容，绕开 run_container_command 的字符上限，解决 Skill 手册/references
     # 大文件被截断读不全。默认 LocalBackend 会读宿主机（越权），故必须显式传容器后端。均只读、tool 级 allow。
-    _tool_backend = SandboxToolBackend(st.user_id, st.run_id, st.sandbox_cfg)
+    _tool_backend = SandboxToolBackend(getattr(st, "sandbox_uid", "") or st.user_id,
+                                       st.run_id, st.sandbox_cfg)
     tools.append(Read(backend=_tool_backend))
     tools.append(Grep(backend=_tool_backend))
     # 容器内 LS/Glob（find 可移植；官方无 LS，Glob 本轮未启用）

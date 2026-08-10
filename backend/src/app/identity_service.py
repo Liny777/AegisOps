@@ -55,11 +55,15 @@ async def list_users(*, page: int = 1, page_size: int = 20, q: str | None = None
                      tag: str | None = None) -> dict[str, Any]:
     """分页 + 关键字搜索（q 按 user_id/display_name 模糊）+ 标签过滤（tag 精确，与 q 为 AND）
     → {items,total,page,page_size}。均服务端过滤。"""
+    import alerts  # facade（切片纪律：core 只准 import alerts 顶层）
+
     rows, total = await users.list_users_with_whitelist(
         q=(q.strip() or None) if q else None, tag=(tag.strip() or None) if tag else None,
         limit=page_size, offset=(page - 1) * page_size,
     )
-    return {"items": [dict(r) for r in rows], "total": total, "page": page, "page_size": page_size}
+    granted = await alerts.granted_user_ids()  # 「告警接管」列（2026-08-09 算力白名单）
+    items = [dict(r) | {"alert_takeover_granted": str(r["user_id"]) in granted} for r in rows]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 async def list_user_tags() -> list[str]:

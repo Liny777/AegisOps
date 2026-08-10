@@ -75,7 +75,12 @@ class SkillResult:
 
 
 # 重导出（tests / 调用方用 executor.package_checksum；真定义在 domain.skill_package）
-__all__ = ["SkillResult", "SandboxExecutor", "executor", "package_checksum"]
+__all__ = ["SkillResult", "SandboxExecutor", "executor", "package_checksum", "ALERT_SANDBOX_UID"]
+
+# 7x24 告警接管的平台共享沙箱伪用户键（设计 v2.1 决策⑥）：全员告警诊断共用这一只容器，
+# 计入主机名额恒 1 个；追问任务切回用户自己容器（决策⑦）。前缀 sys- 保证不与真实工号冲撞。
+# 容器寻址一律走 TaskState.sandbox_uid 单一事实源，本常量是它在 alert-origin 下的取值。
+ALERT_SANDBOX_UID = "sys-alert-sandbox"
 
 
 @dataclass

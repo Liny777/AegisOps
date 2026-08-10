@@ -121,3 +121,35 @@ async def resolve_for_task(
     if new_rev != instance_rev:  # 下次以新 revision 为 key 也能命中
         _cache[(ws_id, new_rev, user_id)] = (expires, ctx)
     return ctx
+
+
+async def resolve_from_last_snapshot(
+    user_id: str, instance: dict[str, Any], run_id: str, task_id: str, audit_trace_id: str
+) -> dict[str, Any] | None:
+    """夜间降级（仅告警派发链调用）：登录态缺失致 resolve 失败时，复用实例最近一次快照。
+
+    插入**新**快照行（compute_reason='alert_snapshot_fallback'，task_id 对得上）保持审计链完整；
+    ctx 带 degraded=True 随 task 快照落盘留痕，omodel_request_id='snapshot-fallback' 让
+    start_task 的 scope.resolved 审计一眼可辨降级。无历史快照/快照为空 → None（调用方按原错抛）。
+    不写 _cache：降级结果不该被交互任务命中复用。
+    """
+    _ = audit_trace_id  # 审计由 start_task 的 scope.resolved 统一记录（external_request_id 可辨）
+    instance_id = str(instance["agent_team_instance_id"])
+    last = await runs.latest_scope_snapshot_by_instance(instance_id)
+    if last is None:
+        return None
+    appids = list(last.get("effective_appids_snapshot") or [])
+    if not appids:
+        return None
+    ws_id = instance["workspace_id"]
+    rev = str(last.get("scope_revision") or instance["scope_revision"] or "")
+    snapshot_id = await runs.insert_scope_snapshot(
+        user_id, instance_id, run_id, task_id, ws_id, rev, appids,
+        "snapshot-fallback", "alert_snapshot_fallback",
+    )
+    return {
+        "scope_snapshot_id": snapshot_id, "effective_appids": appids,
+        "scope_apps": [],  # 降级无名字装饰来源；工具面只吃 effective_appids
+        "scope_revision": rev, "workspace_id": ws_id,
+        "omodel_request_id": "snapshot-fallback", "cache_hit": False, "degraded": True,
+    }
