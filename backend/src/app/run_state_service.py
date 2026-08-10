@@ -215,7 +215,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any,
     if run["run_status"] == "closed":
         # 告警 run 的「追问自动复开」：仅系统关闭（idle 回收/告警专属 TTL）可复开——先容量再准入
         # （refcount 账目必须补，否则 release 时账目错乱），用户主动 close 的会话语义不变。
-        if run.get("run_source") == "alert" and run.get("status_reason_code") in ("idle_timeout", "alert_idle"):
+        if run.get("entry_source") == "alert" and run.get("status_reason_code") in ("idle_timeout", "alert_idle"):
             _sb_cfg = {c["config_key"]: c["config_value_json"]
                        for c in await runtime_config.get_domain("sandbox")}
             await sandbox_executor.ensure_user_container(sandbox_uid, run_id, _sb_cfg)
@@ -226,7 +226,7 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any,
     # 并发上限（RUN-004）：读平台运行配置。仅 user 池受限——alert 池的唯一闸门是 alerts dispatcher
     # 的并发闸（不做双重限制）；反向亦然：告警诊断不挤占用户 2 个交互额度（registry/快照双口径都排除）。
     cfg = {c["config_key"]: c["config_value_json"] for c in await runtime_config.get_domain("sandbox")}
-    if origin == "user" and run.get("run_source") == "alert":
+    if origin == "user" and run.get("entry_source") == "alert":
         # 追问 lazy ensure：告警 run 由共享沙箱建号，用户容器可能不存在/已回收——
         # 容量满的 429 会打在「追问」动作上（决策⑦已知代价）。
         await sandbox_executor.ensure_user_container(uid, run_id, cfg)
@@ -585,7 +585,7 @@ def _sandbox_release_keys(run_row: dict[str, Any]) -> list[str]:
     同一 run_id 可能同时挂两本容器账；close/delete/idle 回收必须两键都尝试释放
     （release 幂等，无账目的键是 no-op）。漏一处 = 慢性名额泄漏，tests/alerts 有守卫。"""
     keys = [str(run_row["user_id"])]
-    if run_row.get("run_source") == "alert":
+    if run_row.get("entry_source") == "alert":
         keys.append(ALERT_SANDBOX_UID)
     return keys
 
@@ -836,10 +836,10 @@ async def converge_orphan_tasks() -> int:
 
 
 async def list_runs(user: dict[str, Any]) -> list[dict[str, Any]]:
-    # 会话历史默认排除告警诊断 run（run_source='alert'）——它们只在告警清单页签可见，
+    # 会话历史默认排除告警诊断 run（entry_source='alert'）——它们只在告警清单页签可见，
     # /agent-runs/{id} 直开不受影响（决策 6「不和对话放一起但可继续追问」）。
     return [row_json(r) for r in await runs.list_runs_by_user(user["user_id"])
-            if r.get("run_source") != "alert"]
+            if r.get("entry_source") != "alert"]
 
 
 async def select_model(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:

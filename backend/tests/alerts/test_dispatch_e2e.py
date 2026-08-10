@@ -1,7 +1,7 @@
 """派发器端到端链（mock 客户端 + mock runtime）：
 
 inject → :pull(queued) → :dispatch(diagnosing+建 run) → ASK 审批 → 收割 completed。
-另测：alert 池绕开 user 并发闸（且反向不挤占）、run_source 会话历史过滤、
+另测：alert 池绕开 user 并发闸（且反向不挤占）、entry_source 会话历史过滤、
 重启收敛（TestClient 关开两次 = 一次真实重启）。
 """
 from __future__ import annotations
@@ -105,7 +105,7 @@ def test_full_diagnosis_chain(client):
     inc = _wait_diagnosing_with_run(client, iid)
     run_id = inc["run_id"]
 
-    # run_source='alert'：会话历史不出现，但 /state 直开可读（决策 6）
+    # entry_source='alert'：会话历史不出现，但 /state 直开可读（决策 6）
     conv_ids = [r["agent_run_id"] for r in unwrap(client.get("/api/openops/v1/agent-runs",
                                                              headers=USER_HEADERS))]
     assert run_id not in conv_ids

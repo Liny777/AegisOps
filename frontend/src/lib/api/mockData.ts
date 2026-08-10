@@ -54,7 +54,7 @@ export const mockAgents: AgentInstance[] = [
   },
 ];
 
-// ⚠ 不得加入 run_alert_* 会话——镜像后端 GET /agent-runs 默认过滤 run_source='alert' 的语义；告警诊断会话只出现在 alerts 切片清单里
+// ⚠ 不得加入 run_alert_* 会话——镜像后端 GET /agent-runs 默认过滤 entry_source='alert' 的语义；告警诊断会话只出现在 alerts 切片清单里
 export const mockConversations: Conversation[] = [
   { id: "conv_1", title: "支付延迟突增诊断" },
   { id: "conv_2", title: "对账任务超时排查" },

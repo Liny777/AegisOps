@@ -18,7 +18,7 @@ ingest.ingest_batch()（传输无关入口）
   ⑤ 有界队列（实例/全局上限 → skipped 留痕；高 severity 可踢队尾低者）
   → sre_alert_incident(queued)  ——DB 即队列，重启天然存活
 dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 UPDATE 抢占）
-  worker: create_run(owner, run_source='alert', 容器=共享告警沙箱) → start_task(origin='alert',
+  worker: create_run(owner, entry_source='alert', 容器=共享告警沙箱) → start_task(origin='alert',
           提示词=规则 prompt 或 DEFAULT_RULE_PROMPT) → await orchestrator → 收割 → completed/failed
 ```
 
@@ -40,7 +40,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 | **共享告警沙箱** `TaskState.sandbox_uid` 单一事实源（alert=`sys-alert-sandbox`，追问=本人） | start_task / runtime 5 处寻址 / `_AlertCreateRunReq.sandbox_owner` 缝隙 | test_core_seams（DTO 无 sandbox_owner + 反查维度）+ e2e 双账断言 |
 | **双键幂等释放**（close/delete/idle 回收对 alert run 释放 owner+共享键两本账） | run_state_service `_sandbox_release_keys` ×3 调用点 | dispatch e2e：close 后两账归零 |
 | 销毁反查 `running_by_sandbox`（告警任务 user_id≠容器键） | sandbox_admin_service 强制销毁 | test_core_seams |
-| scope 夜间降级 / 追问自动复开 / 会话历史过滤 run_source | start_task / list_runs / runs repo | e2e + 联调 |
+| scope 夜间降级 / 追问自动复开 / 会话历史过滤 entry_source | start_task / list_runs / runs repo | e2e + 联调 |
 | lifespan：converge 恒执行；real=Kafka 消费，mock=轮询 | main.py + dispatcher.start_background | e2e 重启收敛 + test_kafka_source |
 
 ## 运行旋钮

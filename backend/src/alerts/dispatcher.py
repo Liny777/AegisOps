@@ -1,7 +1,7 @@
 """队列消费与诊断收割：DB 即队列（incident_state 驱动），进程内并发闸。
 
 - dispatch_once()：并发闸内尽量多地抢占 queued 单（条件 UPDATE，重启/并发安全），
-  每单一个 worker 协程：建/复用 run（owner 身份，run_source='alert'）→ start_task(origin='alert')
+  每单一个 worker 协程：建/复用 run（owner 身份，entry_source='alert'）→ start_task(origin='alert')
   → await orchestrator 收割 result_summary → incident 终态。
 - converge_incidents()：启动收敛（在 core converge_orphan_tasks 之后跑）——diagnosing 的单
   按 task 快照分流：completed 补收割 / interrupted 按预算 requeue / 陈旧打 failed。
@@ -178,7 +178,7 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
                                  agent_team_instance_id=instance_id)
         result = await run_state_service.create_run(owner, req)
         run_id = str(result["run"]["agent_run_id"])
-        await runs_repo.set_run_source(run_id, "alert")
+        await runs_repo.set_entry_source(run_id, "alert")
         await runs_repo.set_run_title(run_id, f"[告警] {inc.get('title')}"[:60], "system")
 
     events, _total = await repo.list_incident_events(iid, limit=10)

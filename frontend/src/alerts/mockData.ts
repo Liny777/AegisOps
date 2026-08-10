@@ -2,7 +2,7 @@
  *
  * 实例 id 复用 core mockData 的两只 mock Agent（agt_pay_fast_recovery / agt_gateway_watch），
  * 与会话/活动数据同源同调。诊断会话 id 一律 `run_alert_` 前缀——镜像后端语义：这些 run 被
- * GET /agent-runs 默认过滤（run_source='alert'），**绝不**加进 core 的 mockConversations。
+ * GET /agent-runs 默认过滤（entry_source='alert'），**绝不**加进 core 的 mockConversations。
  *
  * 写操作直接改本模块内存数组；invalidateAlerts 的触发在 api.ts 的 mock 实现里（本文件不
  * 回引 api.ts，避免模块环）。
