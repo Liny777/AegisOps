@@ -1,7 +1,7 @@
 """7x24 告警接管垂直切片 —— core 唯一允许 import 的入口（facade）。
 
 告警接管 = 轮询拉取告警平台增量 → 规则匹配 → 附着式聚合成 incident（DB 即队列）
-→ dispatcher 并发闸消费 → 以实例 owner 身份自动建诊断 run（run_source='alert'）。
+→ dispatcher 并发闸消费 → 以实例 owner 身份自动建诊断 run（entry_source='alert'）。
 设计定稿见 docs/plans/alert-takeover-7x24.md 与 Obsidian 39 号设计文档。
 
 铁律与 studio 切片一致（tests/studio/test_facade_isolation.py 的同款约束）：

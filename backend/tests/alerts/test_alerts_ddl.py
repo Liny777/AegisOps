@@ -1,7 +1,7 @@
 """7x24 告警接管切片自有 DDL 的守护测试。
 
 切片表结构变更只需改 `sql/slices/alerts.sql` + 本文件，**零 core 文件**
-（core 侧仅 run_source/task_origin 两列走 migrate-2026-07-30-alert-run-source.sql）。
+（core 侧仅 entry_source/task_origin 两列走 migrate-2026-07-30-alert-entry-source.sql）。
 平台级不变式（无外键/无 trigger、对象名长度、全列注释）切片同样必须遵守——
 与 tests/studio/test_studio_ddl.py 同口径，免得切片成了绕开平台规矩的后门。
 """
@@ -78,11 +78,11 @@ def test_incident_state_machine_documented():
 
 def test_migration_is_idempotent_and_covers_both_columns():
     """core 两列迁移：幂等（ADD COLUMN IF NOT EXISTS）、带注释、无破坏性语句。"""
-    migration = DDL.parents[1] / "migrate-2026-07-30-alert-run-source.sql"
+    migration = DDL.parents[1] / "migrate-2026-07-30-alert-entry-source.sql"
     sql = migration.read_text(encoding="utf-8")
-    assert "ADD COLUMN IF NOT EXISTS run_source text NOT NULL DEFAULT 'user'" in sql
+    assert "ADD COLUMN IF NOT EXISTS entry_source text NOT NULL DEFAULT 'user'" in sql
     assert "ADD COLUMN IF NOT EXISTS task_origin text NOT NULL DEFAULT 'user'" in sql
-    assert "COMMENT ON COLUMN sre_agent_run.run_source" in sql
+    assert "COMMENT ON COLUMN sre_agent_run.entry_source" in sql
     assert "COMMENT ON COLUMN sre_task_state.task_origin" in sql
     assert "DROP " not in sql.upper()
 
@@ -104,7 +104,7 @@ def test_tables_exist_after_conftest_apply(client):
                 "where table_name='sre_agent_run'"
             ).fetchall()
         }
-        assert "run_source" in run_cols
+        assert "entry_source" in run_cols
         task_cols = {
             r[0]
             for r in conn.execute(

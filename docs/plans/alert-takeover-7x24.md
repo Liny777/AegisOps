@@ -13,7 +13,7 @@
 | 3 | 规则归属 | OpenOps 自建匹配规则（上游只供原始告警）；Phase1 快速配置=类型×级别×模板，自定义条件归 Phase2 |
 | 4 | 量级 | 中档：风暴百条/分钟、模型并发 3~10 → 去重+聚合+有界队列+溢出丢弃 |
 | 5 | 接入方式 | Phase1 轮询拉增量（背压天然、无需入站鉴权）；webhook 契约先行、Phase2 实现 |
-| 6 | 会话展示 | 复用聊天工作台 `/agent-runs/:runId` 可追问；会话历史按 `run_source` 过滤告警 run |
+| 6 | 会话展示 | 复用聊天工作台 `/agent-runs/:runId` 可追问；会话历史按 `entry_source` 过滤告警 run |
 | 7 | 夜间身份 | Phase1 降级：scope 用实例最近快照、需登录态工具失败留痕；B9 服务态凭证立项推进 |
 | 8 | 结论回流 | ack/annotate/close 回写契约先行、Phase2 实现 |
 | 9 | 清单落点 | 侧边栏一级导航「告警清单」全宽表格页（原型形态）；ActivityRail 方案否决（per-run 重挂） |
@@ -26,7 +26,7 @@
 - `backend/src/alerts/`：`__init__.py`(facade: routers/start/stop/ensure_defaults) / `router.py` / `service.py` / `ingest.py` / `matcher.py` / `dispatcher.py` / `repository.py` / `README.md`
 - `backend/src/infra/external/alert_platform_{client,real,mock}.py`（`OPENOPS_ALERT=mock|real` 三件套，real 走固定绝对 BASE_URL + Bearer `OPENOPS_ALERT_TOKEN`）
 - `backend/sql/slices/alerts.sql`：六表 `sre_alert_rule` / `sre_alert_event` / `sre_alert_incident` / `sre_alert_incident_event` / `sre_alert_subscription` / `sre_alert_pull_state`（DB 即队列：incident_state 驱动，六态 queued/diagnosing/completed/failed/skipped/ignored）
-- `backend/sql/migrate-2026-07-30-alert-run-source.sql`：`sre_agent_run.run_source`、`sre_task_state.task_origin` 两列（幂等，core.sql 同步改）
+- `backend/sql/migrate-2026-07-30-alert-entry-source.sql`：`sre_agent_run.entry_source`、`sre_task_state.task_origin` 两列（幂等，core.sql 同步改）
 - `backend/tests/alerts/`：切片测试
 - `frontend/src/alerts/`：`entry.tsx`(lazy+导航常量) / `types.ts` / `api.ts`(real+mock 双实现) / `mockData.ts` / `AlertsPage.tsx`(清单表格+SlideIn 详情抽屉) / `AlertRulesPane.tsx`(「设置 → 告警接管配置」/settings/alerts；配置弹窗为**两步向导**——第一步 名称/类型（**多选**，任一命中即匹配；match_json.categories[]，存量单值兼容读）/级别/提示词（"/" 呼出用户 skill 插入，后端 dispatcher 提取首个 /token 作 skill_hint），第二步 近3/7天命中预览确认；监控策略勾选 UI 已移除，新建落空数组=该类型全部)
 - `frontend/e2e/alerts.spec.ts`
@@ -36,9 +36,9 @@
 1. `app/run_state_service.py` start_task 三分支 ≈20 行：origin 分池闸（alert 不占 per_user=2）、scope 快照降级（仅 origin=alert）、closed 告警 run 定向 reopen（先 ensure_user_container 补 refcount）
 2. `runtime/task_registry.py`：`TaskState.origin` + `running_count(uid, origin=None)`
 3. `infra/repositories/task_states.py`：落 `task_origin`；`count_running` 排除 alert
-4. `infra/repositories/runs.py`：`set_run_source()` / `reopen_alert_run()`
+4. `infra/repositories/runs.py`：`set_entry_source()` / `reopen_alert_run()`
 5. `app/scope_service.py`：`resolve_from_last_snapshot()`（插入新快照行 compute_reason=alert_snapshot_fallback，ctx 带 degraded）
-6. `run_state_service.list_runs`：过滤 `run_source='alert'` 一行
+6. `run_state_service.list_runs`：过滤 `entry_source='alert'` 一行
 7. `domain/errors.py`：`ALERT_INCIDENT_STATE_INVALID: 409`
 8. `main.py`：import + include_router + lifespan start/stop 各一行
 9. `pyproject.toml` include 加 `"alerts*"`；`tests/test_ddl.py` 表数 27→33、task_state 列数 54→55
@@ -79,7 +79,7 @@
 | B2 | repository + rules/subscription/rule-templates API | CRUD/越权 403/幂等重放/同名 409 |
 | B3 | matcher + ingest | 匹配矩阵（severity/category/appid/label/keyword/组合/禁用）；注入→event→incident 创建/附着→overflow skipped |
 | B4 | core 四处小改（origin 闸/task_origin/scope fallback/reopen） | 双池互不挤占；scope 降级（omodel_mock 置败+预置快照→alert 成功且 degraded、user 照抛）；test_run_task/test_ask 回归；守卫测试断言 StartTaskRequest 无 origin |
-| B5 | dispatcher（worker/收割/超时/重试/converge） | E2E：`_inject → ingest.run_once() → incident(queued) → dispatcher.run_once() → diagnosing+run_source/task_origin='alert' → 处理 ASK（approve 或免审批专测模板）→ completed+result_summary 非空+GET /agent-runs 不含该 run`；converge 两分支 |
+| B5 | dispatcher（worker/收割/超时/重试/converge） | E2E：`_inject → ingest.run_once() → incident(queued) → dispatcher.run_once() → diagnosing+entry_source/task_origin='alert' → 处理 ASK（approve 或免审批专测模板）→ completed+result_summary 非空+GET /agent-runs 不含该 run`；converge 两分支 |
 | B6 | incidents/summary/feedback API + list_runs 过滤 + admin | test_incidents_api；/agent-runs 列表不含、/state 可读 |
 | B7 | 文档：alerts/README、对外契约文档、EXTERNAL-INTEGRATION、发布说明（夜间降级+并发换算式） | 评审 |
 
@@ -88,7 +88,7 @@
 | 步 | 内容 | 验证 |
 |---|---|---|
 | F-A | 切片脚手架 + 注册三处 + AlertsPage + AlertRulesPane（全 mock） | `npm run build` 独立 chunk、主 chunk 不涨；mock 下三落点可走通 |
-| F-B | 联调：rules CRUD → incidents/summary → 动作 → run_source 过滤验收 | 真实告警建 run 后侧栏不出现、`/agent-runs/:id` 直开、诊断完成 run 仍 active 可追问 |
+| F-B | 联调：rules CRUD → incidents/summary → 动作 → entry_source 过滤验收 | 真实告警建 run 后侧栏不出现、`/agent-runs/:id` 直开、诊断完成 run 仍 active 可追问 |
 | F-C | Playwright `e2e/alerts.spec.ts`（testid：alerts-incident-row 等，文案避开 smoke 精确串） | 三态行/风暴 ×N 徽标/会话跳转 `run_alert_*`/`?tab=alerts` 直达/快速配置预览/conversation-row 仍 3/smoke 全绿 |
 
 **环境坑位**：worktree 跑 pytest 必须钉 `PYTHONPATH`；并行会话按会话建独立库 + `OPENOPS_DATABASE_URL`；前端 mock 必设 `VITE_OPENOPS_API_MODE=mock`。本地全链路演示：`OPENOPS_ALERT=mock OPENOPS_ALERT_PULL_INTERVAL_S=15` 起后端 → 设置页配规则 → 清单看流转 → 点开会话追问。

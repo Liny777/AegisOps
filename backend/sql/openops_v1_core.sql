@@ -361,7 +361,7 @@ CREATE TABLE IF NOT EXISTS sre_agent_run (
   audit_trace_id uuid NOT NULL,
   run_title text,
   run_status text NOT NULL DEFAULT 'active',
-  run_source text NOT NULL DEFAULT 'user',
+  entry_source text NOT NULL DEFAULT 'user',
   started_at timestamptz NOT NULL DEFAULT now(),
   ended_at timestamptz,
   status_reason_code text,
@@ -1006,6 +1006,7 @@ COMMENT ON COLUMN sre_agent_run.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN sre_agent_run.created_by IS '创建人工号';
 COMMENT ON COLUMN sre_agent_run.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_agent_run.deleted_at IS '软删除时间，NULL 表示未删除';
+COMMENT ON COLUMN sre_agent_run.entry_source IS '会话来源（与内网 entry_source 共用列）：alert=告警自动诊断（会话历史默认排除）；其余取值（user 及内网各入口标记）一律按用户会话处理';
 
 COMMENT ON TABLE sre_scope_snapshot IS '运行时范围快照，只用于审计回放';
 COMMENT ON COLUMN sre_scope_snapshot.scope_snapshot_id IS '范围快照主键';

@@ -81,7 +81,7 @@ async def list_idle_active_runs(ttl_minutes: int) -> list[dict[str, Any]]:
     走 ix_audit_event_run_time (agent_run_id, occurred_at DESC) 子查询取最新事件，代价低。"""
     return await q_all(
         """
-        select r.agent_run_id, r.user_id, r.agent_team_instance_id, r.audit_trace_id, r.run_source
+        select r.agent_run_id, r.user_id, r.agent_team_instance_id, r.audit_trace_id, r.entry_source
         from sre_agent_run r
         where r.run_status='active' and r.deleted_at is null
           and coalesce(
@@ -119,22 +119,22 @@ async def reopen_run(run_id: str) -> int:
     )
 
 
-async def set_run_source(run_id: str, source: str) -> int:
+async def set_entry_source(run_id: str, source: str) -> int:
     """run 来源打标（alerts dispatcher 建诊断 run 后调用）：user=交互 / alert=告警自动诊断。"""
     return await exec1(
-        "update sre_agent_run set run_source=%(s)s, last_update_date=now() where agent_run_id=%(r)s",
+        "update sre_agent_run set entry_source=%(s)s, last_update_date=now() where agent_run_id=%(r)s",
         {"r": run_id, "s": source},
     )
 
 
 async def reopen_alert_run(run_id: str) -> int:
     """告警 run 的「追问自动复开」：仅系统关闭（idle 回收 / 告警专属 TTL）可复开，
-    用户主动 close 的守卫外——放宽 reason 范围但收紧 run_source，二者都不满足绝不翻状态。"""
+    用户主动 close 的守卫外——放宽 reason 范围但收紧 entry_source，二者都不满足绝不翻状态。"""
     return await exec1(
         """
         update sre_agent_run
         set run_status='active', ended_at=null, status_reason_code=null, last_update_date=now()
-        where agent_run_id=%(r)s and run_status='closed' and run_source='alert'
+        where agent_run_id=%(r)s and run_status='closed' and entry_source='alert'
           and status_reason_code in ('idle_timeout', 'alert_idle')
         """,
         {"r": run_id},

@@ -1,6 +1,6 @@
 -- OpenOps 垂直切片 DDL：7x24 告警接管（alerts）。
 --
--- 发布顺序：migrate-2026-07-30-alert-run-source.sql（core 两列）-> 本文件 -> 更新后的
+-- 发布顺序：migrate-2026-07-30-alert-entry-source.sql（core 两列）-> 本文件 -> 更新后的
 -- openops_v1_core.sql -> 后端 -> 前端。幂等、无损、可重复执行。
 -- `OPENOPS_PG_SCHEMA` 用户先切 search_path 再执行，与其余 migrate 文件同规矩。
 --
@@ -163,7 +163,7 @@ COMMENT ON COLUMN sre_alert_incident.severity IS '组内最高严重度（附着
 COMMENT ON COLUMN sre_alert_incident.category IS '告警类型（取首条告警 category）';
 COMMENT ON COLUMN sre_alert_incident.incident_state IS 'queued(排队)/diagnosing(诊断中)/completed(完成)/failed(失败)/skipped(溢出或冷却丢弃留痕)/ignored(人工忽略)';
 COMMENT ON COLUMN sre_alert_incident.state_reason IS '状态补充原因：overflow/cooldown/timeout/interrupted_by_restart/stale/no_scope/disabled…';
-COMMENT ON COLUMN sre_alert_incident.agent_run_id IS '诊断会话 run ID（run_source=alert；前端跳 /agent-runs/{id} 可追问）';
+COMMENT ON COLUMN sre_alert_incident.agent_run_id IS '诊断会话 run ID（entry_source=alert；前端跳 /agent-runs/{id} 可追问）';
 COMMENT ON COLUMN sre_alert_incident.diagnosis_task_id IS '诊断任务 ID（task_origin=alert）';
 COMMENT ON COLUMN sre_alert_incident.result_summary IS '诊断结论摘要（≤500 字：rca 结论或 transcript 末条 assistant 截取）';
 COMMENT ON COLUMN sre_alert_incident.agent_result IS '接管结果：recovered(已恢复)/escalated(已升级)/failed(失败)；可结构化提取时回填，NULL 时 UI 显「已完成」';
