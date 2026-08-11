@@ -16,6 +16,7 @@ captureAutoQuestion();
 // 低频面（设置/管理台/初始化向导）按需加载——主 chunk 曾 >500KB。
 const SettingsPage = lazy(() => import("./settings/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 const SettingsHome = lazy(() => import("./settings/SettingsHome").then((m) => ({ default: m.SettingsHome })));
+const OmodelPage = lazy(() => import("./settings/OmodelPage").then((m) => ({ default: m.OmodelPage })));
 const AdminConsole = lazy(() => import("./admin/AdminConsole").then((m) => ({ default: m.AdminConsole })));
 const InitWizard = lazy(() => import("./init/InitWizard").then((m) => ({ default: m.InitWizard })));
 const ProductIntro = lazy(() => import("./pages/intro/ProductIntro").then((m) => ({ default: m.ProductIntro })));
@@ -109,6 +110,7 @@ export default function App() {
               <Route path="/agents" element={<SettingsPage />} />
               {/* 设置（侧栏「设置」入口）：用户级配置二级菜单，V1 仅 OModel 占位（禁用） */}
               <Route path="/settings/:section?" element={<SettingsHome />} />
+              <Route path="/omodel" element={<OmodelPage />} />
               {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
               <Route path="/agent-runs/:runId" element={null} />
               {/* Agent Studio 切片自注册路由（/replay/*）：路径与懒加载都由切片决定 */}
