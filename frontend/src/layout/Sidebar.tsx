@@ -98,7 +98,7 @@ export function Sidebar() {
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },
     STUDIO_USER_NAV,                       // 回放（Agent Studio 切片自带；位置归 core，内容归切片）
-    { key: "ontology",  label: "OModel", icon: "sitemap", to: "/settings" },
+    { key: "ontology",  label: "OModel", icon: "sitemap", to: "/omodel" },  // 2026-08-10 从设置迁出为一级页
   ];
 
   const newChat = async () => {
@@ -129,8 +129,8 @@ export function Sidebar() {
     if (studioKey) return studioKey;
     const alertsKey = alertsActiveKey(loc.pathname);
     if (alertsKey) return alertsKey;
-    if (loc.pathname.startsWith("/settings/alerts")) return "settings";  // 底部「设置」入口页，不亮任何一级导航
-    if (loc.pathname.startsWith("/settings")) return "ontology";
+    if (loc.pathname.startsWith("/omodel")) return "ontology";
+    if (loc.pathname.startsWith("/settings")) return "settings";  // 底部「设置」入口页（OModel 已迁出），不亮任何一级导航
     if (loc.pathname.includes("/settings")) return "plugins";  // /agent-teams/:id/settings = 插件（Agent 配置）
     return "chat";
   })();
