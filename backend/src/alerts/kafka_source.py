@@ -80,6 +80,23 @@ def _parse(value: bytes | str) -> dict[str, Any] | None:
         return None
 
 
+# 消费健康心跳（admin overview 消费；2026-08-11 观测补强——此前 real 档消费死活无处可看）。
+# 进程内单消费循环，普通 dict 无并发写者；reset 供测试隔离。
+health: dict[str, Any] = {"started_at": None, "last_batch_at": None, "last_counters": None,
+                          "batches": 0, "consumed": 0, "skipped_bad": 0}
+
+
+def reset_health() -> None:
+    health.update({"started_at": None, "last_batch_at": None, "last_counters": None,
+                   "batches": 0, "consumed": 0, "skipped_bad": 0})
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
 async def consume_loop(consumer: Any | None = None) -> None:
     """消费循环：getmany → ingest_batch → commit。CancelledError 优雅退出；
     其余异常记日志退避 1s 继续（不 commit 的批次由 Kafka 重投）。"""
@@ -90,6 +107,7 @@ async def consume_loop(consumer: Any | None = None) -> None:
         consumer = build_consumer()
         await consumer.start()
         log.warning("[alerts][kafka] 消费已启动 group=%s", kafka_config()["group_id"])
+    health["started_at"] = _now_iso()
     try:
         while True:
             try:
@@ -112,8 +130,17 @@ async def consume_loop(consumer: Any | None = None) -> None:
                         alerts.append(body)
                 if skipped_bad:
                     log.warning("[alerts][kafka] 跳过坏消息 %d 条（非 JSON 对象）", skipped_bad)
+                counters = None
                 if alerts:
-                    await ingest.ingest_batch(alerts, cfg=cfg)
+                    counters = await ingest.ingest_batch(alerts, cfg=cfg)
+                    # warning 级批摘要：默认部署 root 无 handler、info 不可见——unmatched 全靠它
+                    # 现形（此前零日志，排查只能直查 DB）。空轮不打，风暴期一批一行可接受。
+                    log.warning("[alerts][kafka] 本批 %d 条：%s", len(alerts),
+                                {k: v for k, v in (counters or {}).items() if v})
+                health.update({"last_batch_at": _now_iso(), "last_counters": counters,
+                               "batches": health["batches"] + 1,
+                               "consumed": health["consumed"] + len(alerts),
+                               "skipped_bad": health["skipped_bad"] + skipped_bad})
                 await consumer.commit()  # 落库成功才走到这——批级异常在上面抛出即不 commit
             except asyncio.CancelledError:
                 raise

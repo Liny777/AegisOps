@@ -754,8 +754,8 @@ async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
 
 
 async def admin_overview() -> dict[str, Any]:
-    """管理台概览：队列水位、24h 丢弃、游标健康、派发器活跃 worker 数。"""
-    from alerts import dispatcher
+    """管理台概览：队列水位、24h 丢弃、游标健康、Kafka 消费心跳、派发器活跃 worker 数。"""
+    from alerts import dispatcher, kafka_source
     from alerts.ingest import SOURCE_KEY
 
     pull = await repo.get_pull_state(SOURCE_KEY)
@@ -768,6 +768,9 @@ async def admin_overview() -> dict[str, Any]:
     return {
         "counts": await repo.global_overview_counts(),
         "pull_state": pull_out,
+        # Kafka 消费心跳（2026-08-11 观测补强）：real 档 pull_state 恒 null（那是 HTTP 游标
+        # 链路的），消费死活以此为准——started_at 空=循环没起，last_batch_at 停走=消费停了
+        "kafka": dict(kafka_source.health),
         "active_workers": sum(1 for w in getattr(dispatcher, "_workers", set()) if not w.done()),
         "config": await get_config(),
     }

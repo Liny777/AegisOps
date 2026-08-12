@@ -108,3 +108,12 @@ def test_queued_incident_skipped_after_revoke(client):
                               params={"instance_id": iid}))["items"]
     assert items and items[0]["status"] == "skipped"
     _set_grant("0026demo01", True)
+
+
+def test_admin_overview_exposes_kafka_health(client):
+    """观测补强：overview 带 kafka 消费心跳段（初始态 started_at=None=循环未起）。"""
+    got = unwrap(client.get("/api/openops/v1/admin/alerts/overview", headers=ADMIN_HEADERS))
+    assert "kafka" in got
+    for key in ("started_at", "last_batch_at", "last_counters", "batches", "consumed", "skipped_bad"):
+        assert key in got["kafka"]
+    assert got["kafka"]["started_at"] is None  # 测试环境不起真消费循环
