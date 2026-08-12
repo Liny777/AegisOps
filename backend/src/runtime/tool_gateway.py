@@ -20,6 +20,7 @@ from typing import Any
 
 from domain import tool_key
 from infra import host_ip
+from infra.iam_headers import iam_auth_headers
 from infra.external import http_mcp_client
 from infra.external.mcp_registry_client import _BROWSER_UA
 from infra.redact import redact_args
@@ -65,7 +66,9 @@ def _extract_appid(arguments: dict[str, Any], path: str | None) -> str | None:
 
 
 def _platform_headers(st: TaskState, run: dict[str, Any]) -> dict[str, str]:
-    """28.2 平台 MCP 出站上下文 header + 用户登录态透传（IAM 保护的内网 MCP 靠用户 Cookie 鉴权）。"""
+    """28.2 平台 MCP 出站上下文 header + 用户登录态透传（IAM 保护的内网 MCP 靠用户 Cookie 鉴权）。
+
+    服务态 IAM Authorization 不在此注入——在调用点以 setdefault 合并（secret 工具的专属 token 优先）。"""
     scope = st.scope_ctx or {}
     h = {
         "X-OpenOps-User-Id": st.user_id,
@@ -228,6 +231,8 @@ async def invoke(
                 raise await _blocked(st, run, tool_name, "SECRET_REQUIRED", f"{tool_name} 需要凭证但未配置")
             headers["Authorization"] = f"Bearer {token}"
         headers.update(_platform_headers(st, run))
+        for k, v in iam_auth_headers().items():  # 服务态 IAM（内网 j2c_utils）：setdefault——is_secret_required 的专属 token 优先，不覆盖
+            headers.setdefault(k, v)
         # 28.2：恢复类/ASK tool 批准后透传 approval id（可空）——仅当本 tool 需 ASK（避免带上无关审批）
         if ann.get("is_approval_required") and st.approval_id:
             headers["X-OpenOps-Approval-Request-Id"] = str(st.approval_id)
@@ -245,10 +250,12 @@ async def invoke(
                         "arguments": _args_for_event(arguments)})
     try:
         # 握手头显式按 source_type 传（非从 headers 反查）：direct 路由下 initialize 与 tools/call
-        # 必须同带 x-ec2-ip，否则对端若在握手阶段就按 IP 准入会握手即失败（见 call_tool docstring）。
+        # 必须同带 x-ec2-ip 与服务态 IAM 头——对端若在握手阶段就做 IP 准入/IAM 校验，缺头会握手即失败
+        # （见 call_tool docstring；IAM 网关拦在 server 前，initialize 无 Authorization 连会话都建不起）。
         result = await http_mcp_client.call_tool(
             tool_name, arguments, headers=headers, server_url=server_url,
-            handshake_headers=host_ip.ec2_ip_headers() if source_type == "platform" else None)
+            handshake_headers=({**host_ip.ec2_ip_headers(), **iam_auth_headers()}
+                               if source_type == "platform" else None))
     except Exception as e:
         await emit(st, run, "openops.tool.call.failed", severity="error", action=tool_name,
                    message=f"工具 {tool_name} 调用失败", reason_code="TOOL_CALL_FAILED",

@@ -20,6 +20,7 @@ import uuid
 from typing import Any
 
 from infra import host_ip
+from infra.iam_headers import iam_auth_headers
 from infra.external import mcp_registry_client, skill_hub_client
 from infra.repositories import assets, audit, mcp_tools
 
@@ -176,8 +177,9 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                 summary.setdefault("tools_skipped_guard", []).append(str(m.get("display_name")))
                 continue
             try:
-                # 平台支路（上面 list_platform_mcps 已按 source_type='platform' 过滤）：带 x-ec2-ip
-                for t in await mcp_registry_client.discover_tools(server_url, host_ip.ec2_ip_headers()):
+                # 平台支路（上面 list_platform_mcps 已按 source_type='platform' 过滤）：带 x-ec2-ip + 服务态 IAM
+                for t in await mcp_registry_client.discover_tools(
+                        server_url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()}):
                     res = await mcp_tools.sync_catalog_tool(
                         str(m["mcp_version_id"]), t["tool_name"], t["description"],
                         t["input_schema"], t["schema_hash"],
