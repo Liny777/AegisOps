@@ -135,6 +135,9 @@ def console_client_kwargs(base: str, cookie_env: str, timeout: float = 15) -> di
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Dest": "empty",
         })
+    from infra.iam_headers import iam_auth_headers
+    for k, v in iam_auth_headers().items():  # 服务态 IAM（内网 j2c_utils，缺失即空）：console 系皆内网平台服务，setdefault 防未来占用者被覆盖
+        headers.setdefault(k, v)
     kwargs["headers"] = headers
     if _http_debug():
         src = ("passthrough" if user_cookie()
@@ -142,8 +145,9 @@ def console_client_kwargs(base: str, cookie_env: str, timeout: float = 15) -> di
                else f"env:{cookie_env}" if os.getenv(cookie_env)
                else "env:shared" if cookie
                else "none")
-        log.warning("[OpenOps][mcpreg][debug] cookie_src=%s cookie_len=%d client_ip=%s",
-                    src, len(cookie or ""), "set" if ip else "missing")
+        log.warning("[OpenOps][mcpreg][debug] cookie_src=%s cookie_len=%d client_ip=%s iam=%s",
+                    src, len(cookie or ""), "set" if ip else "missing",
+                    "set" if headers.get("Authorization") else "missing")
         kwargs["event_hooks"] = {"request": [_log_outbound_request],
                                  "response": [_log_outbound_response]}
     return kwargs

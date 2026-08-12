@@ -33,10 +33,16 @@ def check_console() -> None:
     #  cookie 含 `;`，bash export 引号不当会被静默截断——长度+分段数即可识破（不打印值）
     print(f"[check-net]   cookie: len={len(cookie)} 段数={len([p for p in cookie.split(';') if p.strip()])}"
           f"{'（⚠未设，console 会拒绝）' if not cookie else ''}")
+    from infra.iam_headers import iam_auth_headers
+
+    hdrs = dict(iam_auth_headers())  # 服务态 IAM（内网 j2c_utils，缺失即空）——与后端出站同口径
+    if cookie:
+        hdrs["Cookie"] = cookie
+    print(f"[check-net]   iam: {'len=' + str(len(hdrs.get('Authorization', ''))) if hdrs.get('Authorization') else '未取到（j2c_utils 缺失或取 token 失败）'}")
     url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops"},
-                       headers={"Cookie": cookie} if cookie else {}, timeout=15,
+                       headers=hdrs, timeout=15,
                        verify=console_tls_verify(), trust_env=http_trust_env())
         print(f"[check-net]   HTTP {r.status_code}；响应前 300 字：{r.text[:300]}")
         print("[check-net]   → 200+code:0=通；504=复现（cookie 失效/截断或网关问题）；401/403=cookie 不被认")
@@ -104,9 +110,14 @@ def check_omodel() -> None:
         return
     from infra.external.mcp_registry_client import console_cookie
 
+    from infra.iam_headers import iam_auth_headers
+
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
-    hdrs = {"Cookie": cookie} if cookie else {}
-    print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（29.7 workspace 端点匿名可用）'}")
+    hdrs = dict(iam_auth_headers())  # 服务态 IAM（内网 j2c_utils，缺失即空）——与 omodel_real._client_kwargs 同口径
+    if cookie:
+        hdrs["Cookie"] = cookie
+    print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（29.7 workspace 端点匿名可用）'}"
+          f"  iam: {'len=' + str(len(hdrs.get('Authorization', ''))) if hdrs.get('Authorization') else '未取到（j2c_utils 缺失或取 token 失败）'}")
     kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
     try:
         r = httpx.get(f"{base}/healthz", **kw)

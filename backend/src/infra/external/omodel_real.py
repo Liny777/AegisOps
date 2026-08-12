@@ -105,6 +105,8 @@ def _client_kwargs(base: str) -> dict[str, Any]:
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")
     if cookie:
         headers["Cookie"] = cookie
+    from infra.iam_headers import iam_auth_headers
+    headers.update(iam_auth_headers())  # 服务态 IAM（内网 j2c_utils，缺失即空）：后台链路（告警 peek/resolve）无用户 cookie 时的鉴权正解
     from infra.request_context import client_ip as _client_ip
     ip = _client_ip()
     if ip:  # 华为 IAM 会话绑客户端 IP：带真实浏览器 IP，否则服务器 IP 会被判「Not logged in」
@@ -125,8 +127,8 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
-        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d",
-                    src, len(cookie or ""))
+        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d iam=%s",
+                    src, len(cookie or ""), "set" if headers.get("Authorization") else "missing")
         kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 

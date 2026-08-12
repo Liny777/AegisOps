@@ -49,8 +49,9 @@ async def call_tool(
     由 Tool Gateway 按 source_type **显式**传入（平台=host_ip.ec2_ip_headers()，用户=None）——**不**从
     `headers` 里按名过滤反推来源：那等于把「某个头在场」当作平台身份判据，未配置 OPENOPS_EC2_IP 时
     平台支路会被误判成用户支路，而 direct 路由下这类错判只表现为对端 4xx，极难定位。
-    ⚠仅限对端可能在 initialize 阶段就校验的头（当前只有 x-ec2-ip）；**不得**用它把 Cookie / X-OpenOps-*
-    扩散到握手——握手的凭据口径保持现状不变。
+    ⚠仅限对端可能在 initialize 阶段就校验的头（当前是 x-ec2-ip 与服务态 IAM Authorization——
+    两者都是平台自身准入凭据，IAM 网关拦在 server 前、握手缺 Authorization 会直接 401）；
+    **不得**用它把 Cookie / X-OpenOps-* 这类**用户**身份头扩散到握手——那部分口径保持现状不变。
     """
     if os.getenv("OPENOPS_MCP", "mock").lower() == "real":
         import httpx

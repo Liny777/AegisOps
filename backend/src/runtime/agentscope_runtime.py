@@ -289,9 +289,11 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
         if not surl:
             continue
         try:
-            # 平台支路：发现面与调用面头对称，同带 x-ec2-ip（后端主机 IP）。对照 _user_mcp_specs——
-            # 那边不传，默认 None 即不带。
-            tools = await mcp_registry_client.discover_tools(surl, host_ip.ec2_ip_headers())
+            # 平台支路：发现面与调用面头对称，同带 x-ec2-ip（后端主机 IP）+ 服务态 IAM 头。
+            # 对照 _user_mcp_specs——那边不传，默认 None 即不带（用户支路零平台凭据）。
+            from infra.iam_headers import iam_auth_headers
+            tools = await mcp_registry_client.discover_tools(
+                surl, {**host_ip.ec2_ip_headers(), **iam_auth_headers()})
         except Exception as e:  # noqa: BLE001
             log.warning("发现 MCP 工具失败 server=%s：%s", srv.get("server_id"), _redact(str(e)))
             continue
