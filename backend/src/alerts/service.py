@@ -641,6 +641,18 @@ async def list_alert_events(user: dict[str, Any], *, instance_id: str | None,
             "page": page, "page_size": page_size}
 
 
+async def _local_preview(uid: str, instance_id: str, appids: list[str], cats: list[str],
+                         sevs: list[str], since_days: int, page_size: int) -> dict[str, Any]:
+    """预览的本地降级面（只剩已落库事件）：平台不可用与拿不到 projectIds 两处共用。"""
+    rows, total = await repo.list_events(
+        lateral_owner=uid, lateral_instance=instance_id, scope_appids=appids,
+        alert_status=None, severities=sevs, takeover=None,
+        category=None, categories=cats, search=None,
+        since_days=since_days, page=1, page_size=page_size)
+    return {"items": [event_row_out(r, uid) for r in rows], "total": total,
+            "page": 1, "page_size": page_size, "source": "local_fallback"}
+
+
 async def history_preview(user: dict[str, Any], *, instance_id: str, categories: str,
                           severities: str | None, since_days: int,
                           page_size: int) -> dict[str, Any]:
@@ -648,34 +660,36 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
     未命中规则的告警也可见），平台不可用时降级本地事件库（只剩已落库面）。
 
     响应恒带 source ∈ platform|local_fallback，前端据此提示数据来源。
-    scope 快照的 projectIds 非空则下传收窄到该 Agent 管的应用（与 appIdList 同口径），
-    空=不传（全量）——从未 resolve 过 scope 的新实例也能看到预览（比本地库口径更宽）。
-    mock 档 _impl() 走 mock 样本，不会触发降级。
+    projectIds 走 **omodel 实时探询**（scope_service.peek_effective_appids：override 缝
+    → 30s 缓存 → resolve；2026-08-10 内网实证对端「应用/产品/子产品/Hrn 四选一必填」，
+    不能不传）——预览是用户在线操作，请求上下文有认证，实时链成立；快照口径
+    （_viewer_scope_appids）只是任务边界的审计残影，新实例恒为空，弃用。
+    **peek 拿不到范围时不打必败请求**，直接落本地降级。
     """
+    from app import scope_service  # 局部导入：service 顶层不背 core app 依赖
+
     await _require_takeover_grant(user)
     uid = user["user_id"]
-    _owner_instance(await agent_teams.get_instance(instance_id), uid)
+    inst = _owner_instance(await agent_teams.get_instance(instance_id), uid)
     cats = _check_categories([c for c in categories.split(",")])
     sevs = _parse_severities(severities) or list(UI_SEVERITIES)
-    appids = await _viewer_scope_appids(uid, instance_id)
+    appids = await scope_service.peek_effective_appids(uid, inst)
+    if not appids:
+        log.info("[alerts][preview] 实例 %s 拿不到 effective_appids（omodel 不可达或空范围），"
+                 "跳过平台查询直接本地降级", instance_id)
+        return await _local_preview(uid, instance_id, appids, cats, sevs, since_days, page_size)
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=int(since_days))
     try:
         page = await alert_platform_client.list_history(
             start=start, end=end, categories=cats, severities=sevs,
-            project_ids=appids or None, page_no=1, page_size=page_size)
+            project_ids=appids, page_no=1, page_size=page_size)
         return {"items": page["rows"], "total": page["total"],
                 "page": 1, "page_size": page_size, "source": "platform"}
     except AlertPlatformError as e:
         log.warning("[alerts][preview] 平台历史接口不可用（%s: %s），回落本地事件库",
                     e.kind, e.message[:200])
-        rows, total = await repo.list_events(
-            lateral_owner=uid, lateral_instance=instance_id, scope_appids=appids,
-            alert_status=None, severities=sevs, takeover=None,
-            category=None, categories=cats, search=None,
-            since_days=since_days, page=1, page_size=page_size)
-        return {"items": [event_row_out(r, uid) for r in rows], "total": total,
-                "page": 1, "page_size": page_size, "source": "local_fallback"}
+        return await _local_preview(uid, instance_id, appids, cats, sevs, since_days, page_size)
 
 
 async def takeover_access(user: dict[str, Any]) -> dict[str, Any]:
