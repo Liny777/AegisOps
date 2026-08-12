@@ -40,8 +40,11 @@ export interface AlertEventRow {
   agent_result: AlertEventAgentResult | null;
   user_feedback: UserFeedback | null;
   feedback_note: string;
-  /** 告警平台详情外链；空串=缺失（编号列退纯文本）。 */
+  /** 告警平台详情外链；空串=缺失（编号列退纯文本）。历史预览/清单行由后端按
+   *  enterpriseId 分发拼接（32×8→ALARM_OP_URL、32×1→ALARM_KWE_URL，?alarmCode=编号）。 */
   detail_url: string;
+  /** 企业 ID（29.10 enterpriseId；预览表展示列 + 跳转分发键）。清单存量行可缺省。 */
+  enterprise_id?: string;
   incident_id: string | null;
   /** 诊断会话 id（run_alert_* 前缀）；未接管时为 null。 */
   run_id: string | null;

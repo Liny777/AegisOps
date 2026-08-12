@@ -23,9 +23,30 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import quote
 
 # 内网无时区时间串的钦定口径（R1：联调用 alarmTimeStamp 对表核实；不符只改这一处）
 CST = timezone(timedelta(hours=8))
+
+# 企业 ID → 告警平台跳转分发（2026-08-10 拍板）：OP=32 个 8，KWE=32 个 1；
+# 其余企业不拼链（编号列退纯文本）。URL 根来自环境变量 ALARM_OP_URL / ALARM_KWE_URL
+# （用户指定裸名，不套 OPENOPS_ 前缀），读取在调用方（real 层 / alerts service）。
+ENTERPRISE_OP = "8" * 32
+ENTERPRISE_KWE = "1" * 32
+
+
+def alarm_detail_url(enterprise_id: str, alarm_code: str, *, op_url: str, kwe_url: str) -> str:
+    """按企业分发拼告警平台详情跳转：{base}?alarmCode={code}（base 已带 query 用 & 续接）。
+
+    未命中两企业 / 对应 base 为空 / alarm_code 为空 → 返回 ""（前端编号列自动退纯文本）。
+    纯函数零 IO：env 由调用方读好传入。
+    """
+    base = {ENTERPRISE_OP: op_url, ENTERPRISE_KWE: kwe_url}.get(str(enterprise_id or "").strip(), "")
+    base = (base or "").strip().rstrip("&?")
+    if not base or not alarm_code:
+        return ""
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}alarmCode={quote(str(alarm_code), safe='')}"
 
 # alarmLevel（字符串数字）→ 内部四档；"0"=SLO 与未知值一律降 warning
 LEVEL_TO_SEVERITY = {"1": "fatal", "2": "critical", "3": "warning", "4": "info"}
@@ -125,6 +146,7 @@ def map_history_row(row: dict[str, Any]) -> dict[str, Any]:
         "description": str(row.get("alarmDesc") or ""),
         "alert_status": "closed" if closed else "unassigned",
         "severity": LEVEL_TO_SEVERITY.get(str(row.get("alarmLevel") or ""), "warning"),
+        "enterprise_id": str(row.get("enterpriseId") or ""),  # 展示列 + 跳转分发键
         "takeover_status": "none",
         "agent_result": None,
         "user_feedback": None,

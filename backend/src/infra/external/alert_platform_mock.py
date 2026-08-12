@@ -101,14 +101,25 @@ def _history_samples() -> list[dict[str, Any]]:
         d = datetime.now(cst) - timedelta(days=days_ago)
         return d.strftime(f"%Y-%m-%dT{hm}:00+08:00")
 
+    from infra.external.alert_inet_contract import ENTERPRISE_KWE, ENTERPRISE_OP, alarm_detail_url
+
+    # 企业分布：APP-A→OP(32个8)、APP-B→KWE(32个1)、APP-C→其他值（演示"不可跳"纯文本态）。
+    # detail_url 用与 real 同一纯函数拼 mock 常量根（不读 env，演示确定性）。
+    ent_of = {"APP-A": ENTERPRISE_OP, "APP-B": ENTERPRISE_KWE}
+
     def row(no: str, cat: str, obj: str, appid: str, sev: str, closed: bool,
             desc: str, days_ago: int, hm: str) -> dict[str, Any]:
+        ent = ent_of.get(appid, "e-other-000000000000000000000000")
         return {
             "alert_no": no, "category": cat, "alert_object": obj, "appid": appid,
             "title": f"【{cat}】{obj} {desc[:18]}", "description": desc,
             "alert_status": "closed" if closed else "unassigned", "severity": sev,
             "takeover_status": "none", "agent_result": None, "user_feedback": None,
-            "feedback_note": "", "detail_url": "", "incident_id": None,
+            "feedback_note": "",
+            "enterprise_id": ent,
+            "detail_url": alarm_detail_url(ent, no, op_url="https://alarm-op.example/detail",
+                                           kwe_url="https://alarm-kwe.example/detail"),
+            "incident_id": None,
             "run_id": None, "run_clickable": False,
             "started_at": iso(days_ago, hm), "ended_at": iso(days_ago, "10:30") if closed else None,
             "duration_s": 1800 if closed else None, "seen_count": 1,

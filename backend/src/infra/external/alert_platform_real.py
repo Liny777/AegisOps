@@ -182,7 +182,8 @@ async def list_history(*, start: Any, end: Any, categories: list[str],
     时间按北京时间发（R3：服务端时区解释联调核对，窗口偏 8h 即改 astimezone 一处）；
     enterpriseId 文档已改非必填——env 配了才带。
     """
-    from infra.external.alert_inet_contract import CST, SEVERITY_TO_LEVEL, map_history_row
+    from infra.external.alert_inet_contract import (CST, SEVERITY_TO_LEVEL,
+                                                    alarm_detail_url, map_history_row)
 
     body: dict[str, Any] = {
         "startTime": start.astimezone(CST).strftime("%Y-%m-%d %H:%M:%S"),
@@ -220,7 +221,17 @@ async def list_history(*, start: Any, end: Any, categories: list[str],
     if not isinstance(datas, list):
         raise AlertPlatformError("http", "list_history: 响应缺 data.datas 数组（契约漂移？）",
                                  status_code=r.status_code)
-    rows = [map_history_row(d) for d in datas if isinstance(d, dict)]
+    op_url = os.environ.get("ALARM_OP_URL", "").strip()
+    kwe_url = os.environ.get("ALARM_KWE_URL", "").strip()
+    rows = []
+    for d in datas:
+        if not isinstance(d, dict):
+            continue
+        row = map_history_row(d)
+        # 编号跳转：按 enterpriseId 分发 OP/KWE 平台（env 未配或企业未知 → 空串退纯文本）
+        row["detail_url"] = alarm_detail_url(row["enterprise_id"], row["alert_no"],
+                                             op_url=op_url, kwe_url=kwe_url)
+        rows.append(row)
     total = int((env.get("data") or {}).get("total") or 0) or len(rows)  # total 有无联调确认（R6）
     log.info("[alerts][history] window=%s~%s got=%d", body["startTime"], body["endTime"], len(rows))
     return {"rows": rows, "total": total}

@@ -875,8 +875,16 @@ export const mockHistoryPreview = (params: {
       && new Date(e.started_at).getTime() >= cutoff)
     .sort((a, b) => (a.started_at < b.started_at ? 1 : -1));
   const size = params.pageSize ?? 20;
+  // 补预览专属字段（不动 mockEvents 契约）：企业 ID 交替 OP(32×8)/KWE(32×1)，
+  // detail_url 按同分发规则拼假链（与后端 alarm_detail_url 同形，演示可点）。
+  const ENT_OP = "8".repeat(32);
+  const ENT_KWE = "1".repeat(32);
   return {
-    items: rows.slice(0, size).map((e) => ({ ...e })),
+    items: rows.slice(0, size).map((e, i) => {
+      const ent = i % 2 === 0 ? ENT_OP : ENT_KWE;
+      const base = ent === ENT_OP ? "https://alarm-op.example/detail" : "https://alarm-kwe.example/detail";
+      return { ...e, enterprise_id: ent, detail_url: `${base}?alarmCode=${encodeURIComponent(e.alert_no)}` };
+    }),
     total: rows.length,
     page: 1,
     page_size: size,

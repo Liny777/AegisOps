@@ -174,7 +174,30 @@ async def test_real_list_history_body_url_bearer(monkeypatch):
     row = res["rows"][0]
     assert row["alert_no"] == "ac1" and row["severity"] == "fatal"
     assert row["alert_status"] == "closed" and row["appid"] == "p144"
+    assert row["detail_url"] == ""                # 未配 ALARM_*_URL：不拼链（编号退纯文本）
     assert res["total"] == 1                      # 无 total 字段退化为本页行数（R6）
+
+
+async def test_real_list_history_detail_url_by_enterprise(monkeypatch):
+    """ALARM_OP_URL/ALARM_KWE_URL 配置后按 enterpriseId 分发拼 ?alarmCode=。"""
+    _hist_env(monkeypatch)
+    monkeypatch.setenv("ALARM_OP_URL", "https://op.example/detail")
+    monkeypatch.setenv("ALARM_KWE_URL", "https://kwe.example/detail")
+    payload = {"status": "OK", "data": {"datas": [
+        {"alarmCode": "acO", "alarmLevel": "1", "moType": "MySQL", "ciName": "m1",
+         "enterpriseId": "8" * 32, "status": "1"},
+        {"alarmCode": "acK", "alarmLevel": "2", "moType": "MySQL", "ciName": "m2",
+         "enterpriseId": "1" * 32, "status": "1"},
+        {"alarmCode": "acX", "alarmLevel": "3", "moType": "MySQL", "ciName": "m3",
+         "enterpriseId": "e-other", "status": "1"}]}}
+    _install(monkeypatch, lambda m, u, k: _Resp(200, payload))
+    res = await alert_platform_client.list_history(
+        start=_dt("2026-08-08T10:00:00+08:00"), end=_dt("2026-08-09T10:00:00+08:00"),
+        categories=[], severities=[], project_ids=None)
+    urls = {r["alert_no"]: r["detail_url"] for r in res["rows"]}
+    assert urls["acO"] == "https://op.example/detail?alarmCode=acO"
+    assert urls["acK"] == "https://kwe.example/detail?alarmCode=acK"
+    assert urls["acX"] == ""
 
 
 async def test_real_list_history_enterprise_and_failed_status(monkeypatch):

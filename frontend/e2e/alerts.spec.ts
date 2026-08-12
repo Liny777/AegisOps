@@ -123,6 +123,10 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
   const count7 = await editor.getByTestId("alerts-rule-preview-row").count();
   await expect(editor.getByText(`共 ${count7} 条告警`)).toBeVisible();
   await expect(editor.getByText("未分派").first()).toBeVisible();          // 状态徽标列在位
+  await expect(editor.getByText("企业ID")).toBeVisible();                  // 企业 ID 展示列（2026-08-10）
+  // 编号跳转：mock 假链按企业分发拼 ?alarmCode=（首行应为可点 <a>）
+  const firstNo = editor.getByTestId("alerts-rule-preview-row").first().locator("a").first();
+  await expect(firstNo).toHaveAttribute("href", /alarmCode=/);
   await editor.getByTestId("alerts-rule-window").selectOption("3");
   await expect
     .poll(async () => editor.getByTestId("alerts-rule-preview-row").count())
