@@ -1,7 +1,9 @@
-"""规则编辑器第二步「历史告警预览」端点：平台主路径 / 参数校验 / 归属 / 降级本地库。
+"""规则编辑器第二步「历史告警预览」端点：平台主路径 / 参数校验 / 归属 / 降级本地库 /
+projectIds 实时探询（scope_service.peek_effective_appids，2026-08-10 内网 [Required] 实证）。
 
-mock 档 `_impl()` 走 alert_platform_mock.list_history 样本（相对日期 D1/D2 vs D5/D6），
-降级路径用 monkeypatch 把 client.list_history 打炸模拟平台故障。
+mock 档 `_impl()` 走 alert_platform_mock.list_history 样本（相对日期 D1/D2 vs D5/D6，
+appid=APP-A/B/C 与 omodel mock ws_pay_abc 同词表——peek 出的 projectIds 过滤后命中）；
+降级路径用 monkeypatch 打炸对应环节模拟故障。
 """
 from __future__ import annotations
 
@@ -102,3 +104,49 @@ def test_platform_down_falls_back_to_local(client, monkeypatch):
     got = unwrap(_preview(client, iid, categories="MySQL,PostgreSQL", since_days=7))
     assert got["source"] == "local_fallback"
     assert any(r["alert_no"] == "ALM-FB1" for r in got["items"]), "降级应回落到本地落库事件"
+
+
+def test_omodel_down_falls_back_without_platform_call(client, monkeypatch):
+    """peek 拿不到范围（omodel 不可达）→ 不打必败的平台请求，直接 local_fallback。"""
+    from infra.external import alert_platform_client
+
+    iid = _setup_instance(client)
+
+    async def _no_scope(*a, **k):
+        raise RuntimeError("omodel down")
+
+    calls = {"n": 0}
+
+    async def _count_history(**k):
+        calls["n"] += 1
+        return {"rows": [], "total": 0}
+
+    monkeypatch.setattr("infra.external.omodel_client.resolve_scope", _no_scope)
+    monkeypatch.setattr(alert_platform_client, "list_history", _count_history)
+    from app import scope_service
+    scope_service._reset_cache()  # 防上例缓存穿透
+
+    got = unwrap(_preview(client, iid, categories="MySQL", since_days=7))
+    assert got["source"] == "local_fallback"
+    assert calls["n"] == 0, "拿不到 projectIds 时不应调用平台历史接口（对端四选一必填必败）"
+
+
+def test_scope_override_seam_narrows_platform_rows(client, monkeypatch):
+    """联调缝：OPENOPS_SCOPE_OVERRIDE_APPIDS 直通 peek → 平台样本按 projectIds 收窄。"""
+    iid = _setup_instance(client)
+    monkeypatch.setenv("OPENOPS_SCOPE_OVERRIDE_APPIDS", "APP-B")
+    got = unwrap(_preview(client, iid, categories="MySQL,PostgreSQL,Docker", since_days=7))
+    assert got["source"] == "platform"
+    assert got["items"] and all(r["appid"] == "APP-B" for r in got["items"])
+
+
+def test_peek_writes_no_scope_snapshot(client):
+    """守卫：预览的 peek 是只读探询，绝不产生 scope 快照（快照只属于任务边界）。"""
+    import asyncio as _aio
+
+    from infra.repositories import runs as runs_repo
+
+    iid = _setup_instance(client)
+    unwrap(_preview(client, iid, categories="MySQL", since_days=7))
+    snap = _aio.run(runs_repo.latest_scope_snapshot_by_instance(iid))
+    assert snap is None, "peek 不该写 scope_snapshot"

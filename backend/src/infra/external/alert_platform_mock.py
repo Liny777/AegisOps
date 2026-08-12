@@ -92,7 +92,8 @@ def _history_samples() -> list[dict[str, Any]]:
     """历史查询样本（预览行形状，与 real 档 map_history_row 产出同键）。
 
     相对日期生成：D1/D2 落 3 天窗、D5/D6 只落 7 天窗——切窗有计数差可演示可断言
-    （分布对齐前端 mockData 的口径）。类别用内网 moType 词表。
+    （分布对齐前端 mockData 的口径）。类别用内网 moType 词表；appid 用 APP-A/B/C（与 omodel mock ws_pay_abc 样本同词表——
+    peek 出的 projectIds 过滤后仍能命中，演示链路自洽）。
     """
     cst = timezone(timedelta(hours=8))
 
@@ -114,17 +115,17 @@ def _history_samples() -> list[dict[str, Any]]:
         }
 
     return [
-        row("ALM-HIS-000001", "MySQL", "mysql-prod-01", "00000000000000000000000000000144",
+        row("ALM-HIS-000001", "MySQL", "mysql-prod-01", "APP-A",
             "fatal", False, "MySQL 主库连接数超过阈值", 1, "09:10"),
-        row("ALM-HIS-000002", "MySQL", "mysql-prod-02", "00000000000000000000000000000144",
+        row("ALM-HIS-000002", "MySQL", "mysql-prod-02", "APP-A",
             "critical", True, "MySQL 从库延迟超过 5 秒", 2, "08:20"),
-        row("ALM-HIS-000003", "PostgreSQL", "pg-prod-01", "00000000000000000000000000000602",
+        row("ALM-HIS-000003", "PostgreSQL", "pg-prod-01", "APP-B",
             "critical", False, "PostgreSQL 连接池耗尽", 1, "07:40"),
-        row("ALM-HIS-000004", "Docker", "ads-node-12", "00000000000000000000000000000601",
+        row("ALM-HIS-000004", "Docker", "ads-node-12", "APP-C",
             "fatal", False, "容器 CPU 利用率超过 95%", 2, "06:50"),
-        row("ALM-HIS-000005", "MySQL", "mysql-prod-07", "00000000000000000000000000000144",
+        row("ALM-HIS-000005", "MySQL", "mysql-prod-07", "APP-A",
             "critical", True, "MySQL 事务锁等待超时", 5, "05:30"),
-        row("ALM-HIS-000006", "PostgreSQL", "pg-prod-02", "00000000000000000000000000000602",
+        row("ALM-HIS-000006", "PostgreSQL", "pg-prod-02", "APP-B",
             "warning", True, "PostgreSQL 慢查询数量异常", 6, "04:10"),
     ]
 

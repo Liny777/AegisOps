@@ -49,6 +49,35 @@ def _scope_override() -> list[str] | None:
     return [a.strip() for a in raw.split(",") if a.strip()] or None
 
 
+async def peek_effective_appids(user_id: str, instance: dict[str, Any]) -> list[str]:
+    """只读探询（告警历史预览用）：override 缝 → 30s 缓存命中 → omodel 实时 resolve。
+
+    与 resolve_for_task 的三点**刻意**差异，别顺手"统一"：
+    ① 不写 scope_snapshot——快照表 run_id NOT NULL，且快照语义是任务边界的审计证据，
+      预览没有任务边界（tests/alerts 有"peek 不产生快照"守卫用例）；
+    ② 不发 scope.blocked 审计/SSE——没有 run 通道可推；
+    ③ 失败/空一律返回 []（调用方自行降级本地数据）——预览不是执行边界，拿不到范围
+      不该拦住用户看页面；执行边界的 fail-closed 语义只归 resolve_for_task。
+    只读缓存**不写**缓存：_cache 值是含 scope_snapshot_id 的完整 ScopeContext，
+    peek 写半截 ctx 会污染 resolve_for_task 的命中消费面（audit 要读 snapshot_id）。
+    """
+    ws_id = instance["workspace_id"]
+    key = (ws_id, instance["scope_revision"], user_id)
+    override = _scope_override()
+    if override is not None:
+        return list(override)
+    cached = _cache.get(key)
+    if cached is not None and cached[0] > time.monotonic():
+        return list(cached[1].get("effective_appids") or [])
+    try:
+        res = await omodel_client.resolve_scope(ws_id, instance["scope_revision"], user_id)
+    except Exception:  # noqa: BLE001 —— OModelError/网络等：预览降级，不放大为 500
+        return []
+    if str(res.get("status") or "") != "ok":
+        return []
+    return sorted(a for a in (res.get("effective_appids") or []) if a)
+
+
 async def resolve_for_task(
     user_id: str, instance: dict[str, Any], run_id: str, task_id: str, audit_trace_id: str
 ) -> dict[str, Any]:

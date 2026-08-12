@@ -51,8 +51,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 
 **请求**（`list_history` 内部词表 → wire 翻译）：POST `OPENOPS_ALERT_QUERY_URL`，body：
 `startTime/endTime`（`"yyyy-MM-dd HH:mm:ss"` 北京时间，R3）、`moTypeList`←categories、
-`alarmLevels`←severities 数字反查（R8：SLO=0 是否收待确认）、`projectIds`←实例 scope 快照
-（空=不传全量）、`pageNo/pageSize`、`enterpriseId`（env 有才带）。
+`alarmLevels`←severities 数字反查（R8：SLO=0 是否收待确认）、`projectIds`←**omodel 实时探询**（`scope_service.peek_effective_appids`：override 缝→30s 缓存→workspace projects 解析；**必传**——拿不到时不打请求直接本地降级）、`pageNo/pageSize`、`enterpriseId`（env 有才带）。
 
 **响应**：`{status:"OK", data:{datas:[...]}, message}`；`status!="OK"` → AlertPlatformError("http")。
 行 → 预览行（`map_history_row`，与 `GET /alerts/events` 行口径同键）：
@@ -89,6 +88,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R10 | metricName vs 监控策略名 | 存量 strategies 失配 | 迁移 SQL 可选段（清空 strategies） |
 | R11 | duration 单位 | 非纯数字置 None | map_history_row |
 | R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测 | alert_pull_batch_limit 可调 |
+| R13 | ~~projectIds 等四选一必填~~（2026-08-10 内网实证 `[Required]:必须输入应用或产品或子产品或模块或Hrn列表`） | **已解决**：peek 实时取 projectIds，空则本地降级不打请求 | scope_service.peek_effective_appids |
 
 **联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
 → 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。
