@@ -76,10 +76,10 @@ def test_ingest_queues_matching_and_counts_unmatched(client):
 def test_dedup_window_bumps_counts_without_new_incident(client):
     iid = _setup_instance(client)
     alert_platform_mock._inject(title="Redis 内存>85%", category="MySQL", severity="critical",
-                                fingerprint="fp_same")
+                                app_id="APP-A", fingerprint="fp_same")
     assert _pull(client)["queued"] == 1
     alert_platform_mock._inject(title="Redis 内存>85%", category="MySQL", severity="critical",
-                                fingerprint="fp_same")
+                                app_id="APP-A", fingerprint="fp_same")
     counters = _pull(client)
     assert counters["deduped"] == 1 and counters["queued"] == 0
 
@@ -110,8 +110,8 @@ def test_attach_same_group_and_escalate_severity(client):
 
 def test_instance_overflow_creates_skipped_with_reason(client):
     iid = _setup_instance(client, max_open=1)
-    alert_platform_mock._inject(title="告警一", category="MySQL", fingerprint="fp_o1")
-    alert_platform_mock._inject(title="告警二", category="MySQL", fingerprint="fp_o2")  # 不同组
+    alert_platform_mock._inject(title="告警一", category="MySQL", app_id="APP-A", fingerprint="fp_o1")
+    alert_platform_mock._inject(title="告警二", category="MySQL", app_id="APP-A", fingerprint="fp_o2")  # 不同组
     counters = _pull(client)
     assert counters["queued"] == 1 and counters["skipped"] == 1
 
@@ -126,7 +126,7 @@ def test_instance_overflow_creates_skipped_with_reason(client):
 
 def test_ignore_retry_feedback_state_machine(client):
     iid = _setup_instance(client)
-    alert_platform_mock._inject(title="待忽略", category="MySQL", fingerprint="fp_ig")
+    alert_platform_mock._inject(title="待忽略", category="MySQL", app_id="APP-A", fingerprint="fp_ig")
     _pull(client)
     inc = _incidents(client, iid)[0]
     iid_inc = inc["incident_id"]
@@ -150,7 +150,7 @@ def test_ignore_retry_feedback_state_machine(client):
 
 def test_summary_counts_and_change_seq(client):
     iid = _setup_instance(client)
-    alert_platform_mock._inject(title="s1", category="MySQL", fingerprint="fp_s1")
+    alert_platform_mock._inject(title="s1", category="MySQL", app_id="APP-A", fingerprint="fp_s1")
     _pull(client)
     s = unwrap(client.get(f"{BASE}/summary", headers=USER_HEADERS, params={"instance_id": iid}))
     assert s["queued"] == 1 and s["attention"] == 1 and s["latest_change_seq"] > 0

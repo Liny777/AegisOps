@@ -14,6 +14,9 @@ interface AppCtx {
   conversations: Conversation[];
   conversationsLoading: boolean;
   currentAgentId: string;
+  /** 告警接管白名单（2026-08-11 导航锁定）：false=侧栏「告警清单」与设置菜单锁定。
+   *  默认 true——加载中/探询失败不锁（后端写路径有 403 闸兜底）。 */
+  alertGranted: boolean;
   setCurrentAgentId: (id: string) => void;
   loading: boolean;
   refresh: () => void;
@@ -29,6 +32,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationsLoading, setConversationsLoading] = useState(false);
   const [currentAgentId, setCurrentAgentId] = useState<string>("agt_pay_fast_recovery");
+  const [alertGranted, setAlertGranted] = useState(true);
   const [loading, setLoading] = useState(true);
   const [bootError, setBootError] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -54,7 +58,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // 已开通但列表瞬断也不阻塞进壳（各页面自兜底）
         if (m.whitelisted) {
           try {
-            const a = await api.listAgents();
+            api.getAlertAccess().then((r) => { if (alive) setAlertGranted(r.granted); })
+          .catch(() => { /* 探询失败不锁 */ });
+        const a = await api.listAgents();
             if (alive) setAgents(a);
           } catch { /* 列表失败不阻塞 */ }
         }
@@ -131,6 +137,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       conversations,
       conversationsLoading,
       currentAgentId,
+      alertGranted,
       setCurrentAgentId,
       loading,
       refresh,

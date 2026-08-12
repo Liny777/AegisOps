@@ -38,8 +38,8 @@ function NavRow({
         cursor: item.locked ? "not-allowed" : "pointer",
         fontSize: 13.5,
         fontWeight: active ? 700 : 500,
-        color: active ? color.brand : item.locked ? color.textFaint : color.textNav,
-        background: active ? color.brandTintBg : "transparent",
+        color: item.locked ? color.textFaint : active ? color.brand : color.textNav,
+        background: !item.locked && active ? color.brandTintBg : "transparent",
       }}
       hoverStyle={item.locked || active ? {} : { background: "#e9ecf1" }}
     >
@@ -64,6 +64,7 @@ export function Sidebar() {
     conversationsLoading,
     currentAgentId,
     setCurrentAgentId,
+    alertGranted,
   } = useApp();
   const [collapsed, setCollapsed] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -93,7 +94,8 @@ export function Sidebar() {
   // 32 号导航项：会话（主操作）+ 知识 / 插件 / 自动化 / 本体（V1 除插件外置灰，无对应页面）。
   // 插件=当前 Agent 的配置视图（Skill/MCP/模型/提示词，原「设置」内容迁此）；「设置」改挂 /settings（OModel 占位）。
   const userNav: NavItem[] = [
-    ALERTS_USER_NAV,                       // 告警清单（7x24 告警接管切片自带；位置归 core，内容归切片）
+    // 告警清单（切片自带；位置与可用性归 core，内容归切片）：白名单未开通 → 锁定置灰（2026-08-11）
+    { ...ALERTS_USER_NAV, locked: !alertGranted },
     { key: "knowledge", label: "知识", icon: "book-2", locked: true },
     { key: "plugins", label: "插件", icon: "puzzle", to: currentAgentId ? `/agent-teams/${currentAgentId}/settings` : undefined, locked: !currentAgentId },
     { key: "automation", label: "自动化", icon: "robot", locked: true },

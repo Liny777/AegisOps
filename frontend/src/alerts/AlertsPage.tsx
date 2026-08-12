@@ -141,8 +141,7 @@ const feedbackDim: React.CSSProperties = { opacity: 0.4, filter: "grayscale(1)" 
  *  v2 起不再有行内详情抽屉/忽略/重试——事件详情归告警平台外链，处理过程看诊断会话。 */
 export function AlertsPage() {
   const nav = useNavigate();
-  const { me, agents, currentAgentId } = useApp();
-  const isAdmin = me?.role === "platform_admin";
+  const { agents, currentAgentId } = useApp();
 
   // 清单跟随侧栏「选择 Agent」（不设本页的 Agent 筛选下拉）：每个 Agent 只看自己的
   // 接管清单（自己接管的 + 尚未被接管的）。切 Agent 由侧栏统一完成，本页自动重拉。
@@ -153,8 +152,6 @@ export function AlertsPage() {
   const [catF, setCatF] = useState<string>("");
   const [search, setSearch] = useState("");
   const [q, setQ] = useState("");            // 防抖后的搜索词（real 档下沉服务端，mock 档本地过滤）
-  const [userIdInput, setUserIdInput] = useState(""); // 管理员「按用户查看」
-  const [userId, setUserId] = useState("");
   const [page, setPage] = useState(1);
   const [data, setData] = useState<AlertEventsPage | null>(null);
   const [err, setErr] = useState("");
@@ -172,11 +169,6 @@ export function AlertsPage() {
     return () => clearTimeout(t);
   }, [search]);
 
-  useEffect(() => {
-    const t = setTimeout(() => { setUserId(userIdInput.trim()); setPage(1); }, 300);
-    return () => clearTimeout(t);
-  }, [userIdInput]);
-
   // 挂载即拉 + 15s 轮询 + 写操作失效广播重拉；筛选/翻页切换用 AbortController latest-wins
   useEffect(() => {
     let alive = true;
@@ -186,8 +178,7 @@ export function AlertsPage() {
       controller = new AbortController();
       const signal = controller.signal;
       const params = {
-        // 管理员「按用户查看」时不能再按自己的实例过滤（目标用户的告警不属于我的 Agent）
-        instanceId: userId ? undefined : instanceId || undefined,
+        instanceId: instanceId || undefined,
         alertStatus: statusF || undefined,
         severity: sevF || undefined,
         takeover: takeF || undefined,
@@ -197,11 +188,7 @@ export function AlertsPage() {
         pageSize: PAGE_SIZE,
         signal,
       };
-      // 管理员填了 user_id 才切 admin 端点；留空走普通端点
-      const p = userId
-        ? alertsApi.adminListEvents({ ...params, userId })
-        : alertsApi.listEvents(params);
-      p.then((next) => {
+      alertsApi.listEvents(params).then((next) => {
         if (alive && !signal.aborted) { setData(next); setErr(""); }
       }).catch((error) => {
         if (alive && !isAbortError(error)) setErr((error as Error).message || "加载失败");
@@ -216,7 +203,7 @@ export function AlertsPage() {
       clearInterval(timer);
       unsubscribe();
     };
-  }, [instanceId, statusF, sevF, takeF, catF, q, page, userId]);
+  }, [instanceId, statusF, sevF, takeF, catF, q, page]);
 
   const activeFilters = [statusF, sevF, takeF, catF].filter(Boolean).length;
   const clearFilters = () => { setStatusF(""); setSevF(""); setTakeF(""); setCatF(""); setPage(1); };
@@ -253,11 +240,6 @@ export function AlertsPage() {
           </span>
         ) : null}
         <span style={{ fontSize: 11, color: color.textSubtle }}>命中本 Agent 订阅规则的告警自动排队诊断</span>
-        {isAdmin ? (
-          <div style={{ width: 190 }} title="平台管理员：填 user_id 查看该用户视角，留空看自己">
-            <TextInput value={userIdInput} onChange={setUserIdInput} icon="user-search" mono placeholder="按用户查看（user_id）" style={{ height: 34, fontSize: 12 }} />
-          </div>
-        ) : null}
         <div style={{ flex: 1 }} />
         <Button
           variant="secondary"

@@ -13,7 +13,7 @@ import { AlertRulesPane } from "../alerts/entry";  // 懒组件（entry 只 lazy
  * 旧链接 /settings（无 section，原 OModel 落点）一律落告警接管配置。 */
 export function SettingsHome() {
   const nav = useNavigate();
-  const { agents, currentAgentId } = useApp();
+  const { agents, currentAgentId, alertGranted } = useApp();
   const currentAgent = agents.find((a) => a.instance_id === currentAgentId);
 
   return (
@@ -31,10 +31,19 @@ export function SettingsHome() {
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         {/* 二级菜单：告警接管配置（常驻选中）/ 通知配置（占位锁定） */}
         <div style={{ flex: "0 0 250px", borderRight: `1px solid ${color.border}`, background: "#fff", padding: "14px 10px", display: "flex", flexDirection: "column", gap: 2 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "default", fontSize: 13.5, fontWeight: 600, color: color.brand, background: color.brandTintBg }}>
-            <Icon name="shield-bolt" size={18} />
-            <span style={{ flex: 1 }}>告警接管配置</span>
-          </div>
+          {alertGranted ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "default", fontSize: 13.5, fontWeight: 600, color: color.brand, background: color.brandTintBg }}>
+              <Icon name="shield-bolt" size={18} />
+              <span style={{ flex: 1 }}>告警接管配置</span>
+            </div>
+          ) : (
+            /* 白名单未开通：锁定置灰（样式同「通知配置」占位；主区由 AlertRulesPane 空态兜底） */
+            <div title="未开通：算力资源有限按白名单开放，请联系平台管理员" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "not-allowed", fontSize: 13.5, fontWeight: 500, color: color.textFaint }}>
+              <Icon name="shield-bolt" size={18} />
+              <span style={{ flex: 1 }}>告警接管配置</span>
+              <Icon name="lock" size={13} />
+            </div>
+          )}
           <div title="V1 未开放" style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 11px", borderRadius: radius.lg, cursor: "not-allowed", fontSize: 13.5, fontWeight: 500, color: color.textFaint }}>
             <Icon name="bell" size={18} />
             <span style={{ flex: 1 }}>通知配置</span>

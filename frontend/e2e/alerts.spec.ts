@@ -183,11 +183,21 @@ test("批量：勾选两行批量禁用后 Toggle 灭，再批量删除减行数
   await expect(page.getByRole("button", { name: /批量操作/ })).toHaveCount(0);
 });
 
-test("白名单未开通：清单页与设置页均显引导空态（mock 缝切换）", async ({ page }) => {
+test("白名单未开通：导航层锁定 + 直链空态兜底（mock 缝切换）", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("openops.mock.alertGranted", "0"));
+  // 侧栏「告警清单」锁定：置灰不可点，点击不发生跳转
+  await page.goto("/");
+  const lockedNav = page.locator('[title="告警清单"]');
+  await expect(lockedNav).toBeVisible({ timeout: 15_000 });
+  await expect(lockedNav).toHaveCSS("cursor", "not-allowed");
+  await lockedNav.click();
+  await expect(page).not.toHaveURL(/\/alerts/);
+  // 直链仍可达（导航锁不是权限闸），页面级空态兜底
   await page.goto("/alerts");
   await expect(page.getByTestId("alerts-not-granted")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("请联系平台管理员为你开通")).toBeVisible();
+  // 设置页：菜单项锁定 + 主区空态兜底
   await page.goto("/settings/alerts");
-  await expect(page.getByTestId("alerts-not-granted")).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('div[title^="未开通"]', { hasText: "告警接管配置" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("alerts-not-granted")).toBeVisible();
 });

@@ -366,7 +366,6 @@ export interface MockListEventsParams {
   /** 只看最近 N 天（配置弹窗预览）。⚠ mock 行日期为静态样本，久置会自然老化出窗。 */
   sinceDays?: number;
   /** admin 变体透传；mock 不区分用户，仅保留参数语义。 */
-  userId?: string;
 }
 
 /** mock 档的筛选/搜索/分页都在本地完成（real 档同名参数下沉服务端）。
