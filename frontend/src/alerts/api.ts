@@ -55,14 +55,9 @@ export interface ListEventsParams {
   signal?: AbortSignal;
 }
 
-/** admin 变体多一个 user_id（平台管理员按用户查看）。 */
-export type AdminListEventsParams = ListEventsParams & { userId?: string };
-
 export interface AlertsApi {
   /** 告警事件清单（事件视角主表；服务端分页/筛选，mock 档本地完成同名筛选）。 */
   listEvents(params?: ListEventsParams): Promise<AlertEventsPage>;
-  /** admin 变体：平台管理员可带 user_id 查看任意用户视角。 */
-  adminListEvents(params?: AdminListEventsParams): Promise<AlertEventsPage>;
   /** incident 系列端点保留（页面暂不消费，契约不删）。 */
   listIncidents(params?: ListIncidentsParams): Promise<AlertIncidentsPage>;
   getIncident(id: string, signal?: AbortSignal): Promise<AlertIncidentDetail>;
@@ -126,7 +121,7 @@ interface AlertEventsWirePage {
   page_size: number;
 }
 
-const eventsQuery = (params?: AdminListEventsParams): URLSearchParams => {
+const eventsQuery = (params?: ListEventsParams): URLSearchParams => {
   const s = new URLSearchParams();
   if (params?.instanceId) s.set("instance_id", params.instanceId);
   if (params?.alertStatus) s.set("alert_status", params.alertStatus);
@@ -135,7 +130,6 @@ const eventsQuery = (params?: AdminListEventsParams): URLSearchParams => {
   if (params?.category) s.set("category", params.category);
   if (params?.search) s.set("search", params.search);
   if (params?.sinceDays) s.set("since_days", String(params.sinceDays));
-  if (params?.userId) s.set("user_id", params.userId);
   s.set("page", String(params?.page ?? 1));
   s.set("page_size", String(params?.pageSize ?? 20));
   return s;
@@ -145,11 +139,6 @@ const realAlertsApi: AlertsApi = {
   async listEvents(params) {
     const page = await apiFetch<AlertEventsWirePage>(
       `/openops/v1/alerts/events?${eventsQuery(params).toString()}`, { signal: params?.signal });
-    return { ...page, items: page.items.map(projectEvent) };
-  },
-  async adminListEvents(params) {
-    const page = await apiFetch<AlertEventsWirePage>(
-      `/openops/v1/admin/alerts/events?${eventsQuery(params).toString()}`, { signal: params?.signal });
     return { ...page, items: page.items.map(projectEvent) };
   },
   async listIncidents(params) {
@@ -276,7 +265,7 @@ const realAlertsApi: AlertsApi = {
 
 const delay = <T,>(v: T, ms = 120): Promise<T> => new Promise((r) => setTimeout(() => r(v), ms));
 
-const mockEventsPage = (params?: AdminListEventsParams): AlertEventsPage => {
+const mockEventsPage = (params?: ListEventsParams): AlertEventsPage => {
   const page = M.mockListEvents({
     instanceId: params?.instanceId,
     alertStatus: params?.alertStatus,
@@ -287,15 +276,12 @@ const mockEventsPage = (params?: AdminListEventsParams): AlertEventsPage => {
     sinceDays: params?.sinceDays,  // 此前漏传：规则弹窗预览的时间窗在 mock 档从未生效
     page: params?.page,
     pageSize: params?.pageSize,
-    userId: params?.userId,
   });
   return { ...page, items: page.items.map(projectEvent) };
 };
 
 const mockAlertsApi: AlertsApi = {
   listEvents: (params) => delay(undefined).then(() => mockEventsPage(params)),
-  // mock 不区分用户：admin 变体等价普通端点（user_id 仅透传语义）
-  adminListEvents: (params) => delay(undefined).then(() => mockEventsPage(params)),
   listIncidents: (params) =>
     delay(M.mockListIncidents({
       instanceId: params?.instanceId,

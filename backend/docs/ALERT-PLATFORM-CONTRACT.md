@@ -74,7 +74,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 
 内网暂无对应端点（v2 自拟的 ack/comment 回写作废）。诊断结论回填告警平台待对方提供接口后另立契约。
 
-## 5. 联调待确认清单（R1–R12）
+## 5. 联调待确认清单（R1–R14）
 
 | # | 事项 | 现方案 | 改动点 |
 |---|---|---|---|
@@ -91,6 +91,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R11 | duration 单位 | 非纯数字置 None | map_history_row |
 | R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测 | alert_pull_batch_limit 可调 |
 | R13 | ~~projectIds 等四选一必填~~（2026-08-10 内网实证 `[Required]:必须输入应用或产品或子产品或模块或Hrn列表`） | **已解决**：peek 实时取 projectIds，空则本地降级不打请求 | scope_service.peek_effective_appids |
+| R14 | **app_id（appIdList 首元素）缺失的告警会被匹配面拦截**（2026-08-11 宁漏勿越权：无法判定归属即不接管）。内网消息若普遍缺 appIdList，`out_of_scope` 计数会异常高 | 联调期观察批摘要 warning 里的 out_of_scope；缺失面大则找告警平台补字段，或临时用 OPENOPS_SCOPE_OVERRIDE_APPIDS 放行验证 | ingest._instance_scope + 批摘要计数 |
 
 **联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
 → 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。

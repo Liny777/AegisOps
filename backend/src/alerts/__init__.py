@@ -14,7 +14,7 @@ alerts → core 方向只用公开 API：`infra.db.{q_all,q_one,exec1,row_json,j
 `infra.external.alert_inet_contract`（内网 29.11/29.10 契约映射，kafka_source 消费侧用）、
 `infra.repositories.{runs,agent_teams,audit,runtime_config,agent_session_states,task_states}`
 的公开函数、`app.run_state_service.{create_run,start_task}`、
-`app.scope_service.peek_effective_appids`（历史预览的 projectIds 实时探询，2026-08-10）、
+`app.scope_service.peek_effective_appids`（历史预览 + ingest 匹配面范围过滤共用，2026-08-10/08-11）、
 `app.agui_service.project_transcript`、`domain.errors`、`domain.schemas.CreateRunRequest`、
 `sandbox.executor.ALERT_SANDBOX_UID`、`api.deps.{User,Admin}`、`api.responses.ok`。
 不碰任何下划线私有名。

@@ -23,7 +23,8 @@ from alerts import repository as repo
 from alerts import service
 from infra.external import alert_platform_client
 from infra.external.alert_platform_client import AlertPlatformError
-from infra.repositories import audit
+from infra.repositories import agent_teams, audit
+from infra.repositories import runs as runs_repo
 
 log = logging.getLogger("openops.alerts.ingest")
 
@@ -86,8 +87,32 @@ def _normalize(alert: dict[str, Any]) -> dict[str, Any]:
 
 
 def _new_counters() -> dict[str, Any]:
-    return {"pulled": 0, "deduped": 0, "unmatched": 0, "attached": 0,
+    return {"pulled": 0, "deduped": 0, "unmatched": 0, "out_of_scope": 0, "attached": 0,
             "queued": 0, "skipped": 0, "cooldown": 0, "resolved": 0}
+
+
+async def _instance_scope(instance_id: str, owner_uid: str,
+                          scope_cache: dict[str, list[str] | None]) -> list[str] | None:
+    """实例的应用范围（omodel projectIds）：peek（override→30s 缓存→实时）→ scope 快照兜底。
+
+    返回 None = 范围不可得（实例不存在/omodel 不可达且无历史快照）——调用方按
+    「宁漏勿越权」fail-closed 处理（2026-08-11 拍板）。批内 memo（scope_cache）保证
+    风暴期同实例每批只解析一次；跨批由 peek 的 30s 缓存兜住频率。
+    """
+    if instance_id in scope_cache:
+        return scope_cache[instance_id]
+    appids: list[str] | None = None
+    inst = await agent_teams.get_instance(instance_id)
+    if inst is not None:
+        from app import scope_service  # 白名单函数（facade docstring 记录在案）
+
+        appids = await scope_service.peek_effective_appids(owner_uid, inst) or None
+        if appids is None:  # omodel 拿不到：退最近任务边界的审计快照
+            snap = await runs_repo.latest_scope_snapshot_by_instance(instance_id)
+            snap_appids = [a for a in ((snap or {}).get("effective_appids_snapshot") or []) if a]
+            appids = snap_appids or None
+    scope_cache[instance_id] = appids
+    return appids
 
 
 async def ingest_batch(alerts: list[dict[str, Any]], *, cfg: dict[str, Any] | None = None,
@@ -103,10 +128,11 @@ async def ingest_batch(alerts: list[dict[str, Any]], *, cfg: dict[str, Any] | No
         counters["disabled"] = True
         return counters
     rules = rules if rules is not None else await repo.list_enabled_rules()
+    scope_cache: dict[str, list[str] | None] = {}  # 批内 memo：风暴期同实例只解析一次范围
     for alert in alerts:
         counters["pulled"] += 1
         try:
-            await _ingest_alert(_normalize(alert), rules, cfg, counters)
+            await _ingest_alert(_normalize(alert), rules, cfg, counters, scope_cache)
         except Exception:  # noqa: BLE001 —— 单条坏数据只跳过，不拖垮整批
             log.warning("[alerts][ingest] 单条告警处理失败 alert_id=%s",
                         alert.get("alert_id"), exc_info=True)
@@ -161,7 +187,8 @@ async def run_once() -> dict[str, Any]:
 
 
 async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
-                        cfg: dict[str, Any], counters: dict[str, Any]) -> None:
+                        cfg: dict[str, Any], counters: dict[str, Any],
+                        scope_cache: dict[str, list[str] | None] | None = None) -> None:
     existing = await repo.get_event_by_fingerprint(SOURCE_KEY, alert["fingerprint"])
     if existing is not None:
         within_window = _age_s(existing["last_seen_at"]) < float(cfg["alert_dedup_window_s"])
@@ -194,7 +221,25 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
     if not by_instance:
         counters["unmatched"] += 1
         return
+    # 应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
+    # 匹配，还须 alert.app_id ∈ 实例的 omodel 应用范围——否则一条 MySQL 规则会接管全网
+    # MySQL 告警，诊断越权读别人应用的数据。范围不可得（omodel 挂且无快照）整实例拦截并
+    # warning 留痕；app_id 缺失同拦（无法判定归属即越权风险，R14 联调观察计数）。
+    # 正常越权过滤不打日志（风暴期会刷屏），计数走批摘要 warning。
+    scope_cache = scope_cache if scope_cache is not None else {}
+    routed = False
     for instance_id, matched_rules in by_instance.items():
+        appids = await _instance_scope(instance_id, str(matched_rules[0]["owner_user_id"]),
+                                       scope_cache)
+        if appids is None:
+            counters["out_of_scope"] += 1
+            log.warning("[alerts][ingest] 范围不可得，宁漏勿越权跳过 instance=%s alert=%s"
+                        "（omodel 不可达且无 scope 快照——核对 OPENOPS_OMODEL_* 或让属主先跑一次任务）",
+                        instance_id, alert["external_alert_id"])
+            continue
+        if not alert["app_id"] or alert["app_id"] not in appids:
+            counters["out_of_scope"] += 1
+            continue
         await _route_to_instance(event_id, alert, instance_id, matched_rules, cfg, counters)
 
 

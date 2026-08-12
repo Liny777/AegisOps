@@ -83,7 +83,7 @@ def test_revoked_user_rules_leave_matching_plane(client):
 
     _set_grant("0026demo01", False)
     alert_platform_mock._reset()
-    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL", severity="fatal")
+    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL", severity="fatal", app_id="APP-A")
     counters = unwrap(client.post("/api/openops/v1/admin/alerts:pull",
                                   headers=ADMIN_HEADERS))["counters"]
     assert counters["queued"] == 0, "名单外用户的规则不应参与匹配"
@@ -96,7 +96,7 @@ def test_queued_incident_skipped_after_revoke(client):
     assert _subscribe(client, iid).status_code < 400
     assert _mk_rule(client, iid, "MySQL 接管").status_code < 400
     alert_platform_mock._reset()
-    alert_platform_mock._inject(title="MySQL 磁盘满", category="MySQL", severity="critical")
+    alert_platform_mock._inject(title="MySQL 磁盘满", category="MySQL", severity="critical", app_id="APP-A")
     assert unwrap(client.post("/api/openops/v1/admin/alerts:pull",
                               headers=ADMIN_HEADERS))["counters"]["queued"] == 1
 

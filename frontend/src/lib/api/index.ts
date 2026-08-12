@@ -232,6 +232,8 @@ export interface OpenOpsApi {
   adminAddWhitelist(userId: string, displayName: string, tags?: string[]): Promise<void>;
   /** 告警接管白名单开关（算力保护；管理台用户表「告警接管」列）。 */
   adminSetAlertGrant(userId: string, granted: boolean): Promise<void>;
+  /** 用户侧探询：告警接管对我是否开通（侧栏/设置导航锁定用；页面级空态由切片自查）。 */
+  getAlertAccess(): Promise<{ granted: boolean }>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
   /** 改领域标签（整体替换，[] 清空）——「标签」单元格行内编辑用。 */
@@ -948,6 +950,9 @@ const realApi: OpenOpsApi = {
       body: { client_request_id: crid(), user_id: userId, display_name: displayName, ...(tags ? { tags } : {}) },
     });
   },
+  async getAlertAccess() {
+    return apiFetch<{ granted: boolean }>(`/openops/v1/alerts/access`);
+  },
   async adminSetAlertGrant(userId, granted) {
     await apiFetch<void>(`/openops/v1/admin/alerts/grants:update`, {
       method: "POST",
@@ -1321,6 +1326,8 @@ const mockApi: OpenOpsApi = {
   adminSetTags: () => delay(undefined as unknown as void),
   adminRevokeWhitelist: () => delay(undefined as unknown as void),
   adminSetAlertGrant: () => delay(undefined as unknown as void),
+  // 与切片 mock 同一演示缝：localStorage['openops.mock.alertGranted']='0' 演示未开通
+  getAlertAccess: () => delay({ granted: localStorage.getItem("openops.mock.alertGranted") !== "0" }),
   adminSetRole: () => delay(undefined as unknown as void),
   adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),

@@ -184,7 +184,7 @@ def test_rule_prompt_slash_skill_sets_hint(client):
     start_task 的 resolve_skill_alias 按属主 available_skills 解析为 canonical key。
     """
     iid = _setup_instance(client, prompt="优先 /inspection 巡检定界，再按五步法输出结论。")
-    alert_platform_mock._inject(title="MySQL 连接飙升", category="MySQL", severity="critical")
+    alert_platform_mock._inject(title="MySQL 连接飙升", category="MySQL", severity="critical", app_id="APP-A")
     assert _pull(client)["queued"] == 1
     assert _dispatch(client) == 1
     inc = _wait_diagnosing_with_run(client, iid)
@@ -199,7 +199,7 @@ def test_rule_prompt_slash_skill_sets_hint(client):
 def test_rule_prompt_unknown_slash_token_ignored(client):
     """/token 不在 available_skills → fail-safe 忽略（skill_hint None，诊断照常启动）。"""
     iid = _setup_instance(client, prompt="/no-such-skill 先看这个，再按五步法。")
-    alert_platform_mock._inject(title="MySQL 磁盘满", category="MySQL", severity="critical")
+    alert_platform_mock._inject(title="MySQL 磁盘满", category="MySQL", severity="critical", app_id="APP-A")
     assert _pull(client)["queued"] == 1
     assert _dispatch(client) == 1
     inc = _wait_diagnosing_with_run(client, iid)
@@ -233,7 +233,7 @@ def test_alert_pool_bypasses_user_gate_both_ways(client):
     queued_task = blocked["task_id"]
 
     # user 池满不挡告警派发（alert 池闸门独立）
-    alert_platform_mock._inject(title="MySQL 连接数超限", category="MySQL", severity="critical")
+    alert_platform_mock._inject(title="MySQL 连接数超限", category="MySQL", severity="critical", app_id="APP-A")
     assert _pull(client)["queued"] == 1
     assert _dispatch(client) == 1
     inc = _wait_diagnosing_with_run(client, iid)
@@ -290,7 +290,7 @@ def test_converge_requeues_interrupted_diagnosis():
             # 补种不生效——手动给测试用户开通（与 conftest._grant_alert_takeover 同口径）
             _aio.run(_grant_repo.set_user_grant("0026demo01", True, "test"))
             iid = _setup_instance(c1)
-            alert_platform_mock._inject(title="重启前的告警", category="MySQL", severity="critical")
+            alert_platform_mock._inject(title="重启前的告警", category="MySQL", severity="critical", app_id="APP-A")
             assert _pull(c1)["queued"] == 1
             assert _dispatch(c1) == 1
             inc = _wait_diagnosing_with_run(c1, iid)
