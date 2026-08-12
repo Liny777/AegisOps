@@ -59,6 +59,8 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | 预览行 | 取自 | 规则 |
 |---|---|---|
 | alert_no | `alarmCode` | 历史行**无 alarmId** |
+| enterprise_id | `enterpriseId` | 展示列 + 跳转分发键（32×8=OP、32×1=KWE） |
+| detail_url | 拼接 | `alarm_detail_url`：按企业分发 `ALARM_OP_URL`/`ALARM_KWE_URL`（裸名 env）+ `?alarmCode=`；未命中/未配→空串退纯文本。本地降级行同规则（labels.enterprise_id + external_alert_id） |
 | appid | `projectId` | 历史行是单值 |
 | alert_status | `status` | "5"→closed，其余→unassigned（"已分派"值待 R5） |
 | ended_at | `incidentClosedTime` | 仅 closed 时取（epoch ms 串） |

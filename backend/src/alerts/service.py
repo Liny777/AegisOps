@@ -576,9 +576,26 @@ def _takeover_of(inc_state: Any) -> str:
     return "done"  # completed / failed（结果列区分 已恢复/失败）
 
 
+def _alarm_urls() -> tuple[str, str]:
+    """告警平台跳转根（用户指定裸名 env，2026-08-10）：OP=32 个 8 企业，KWE=32 个 1 企业。"""
+    import os
+
+    return (os.environ.get("ALARM_OP_URL", "").strip(),
+            os.environ.get("ALARM_KWE_URL", "").strip())
+
+
 def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
+    from infra.external.alert_inet_contract import alarm_detail_url
+
     j = row_json(row)
     annotations = row.get("annotations_json") or {}
+    labels = row.get("labels_json") or {}
+    enterprise_id = str(labels.get("enterprise_id") or "")
+    detail_url = str(annotations.get("detail_url") or "")
+    if not detail_url and enterprise_id:  # 内网体无外链：按企业分发拼（env 未配→仍空，编号退纯文本）
+        op_url, kwe_url = _alarm_urls()
+        detail_url = alarm_detail_url(enterprise_id, str(row.get("external_alert_id") or ""),
+                                      op_url=op_url, kwe_url=kwe_url)
     takeover = _takeover_of(row.get("inc_state"))
     resolved = row.get("alert_status") == "resolved"
     alert_status = "closed" if resolved else ("assigned" if takeover != "none" else "unassigned")
@@ -601,7 +618,8 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
             "processing" if takeover == "processing" else None),
         "user_feedback": row.get("inc_user_feedback"),
         "feedback_note": row.get("inc_feedback_note") or "",
-        "detail_url": str(annotations.get("detail_url") or ""),
+        "detail_url": detail_url,
+        "enterprise_id": enterprise_id,
         "incident_id": str(row["inc_id"]) if row.get("inc_id") else None,
         "run_id": run_id,
         "run_clickable": bool(run_id) and row.get("inc_owner") == viewer_uid,

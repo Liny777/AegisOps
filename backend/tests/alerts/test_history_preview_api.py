@@ -47,9 +47,12 @@ def test_platform_source_seven_columns_and_window(client):
     assert got7["total"] > 0 and got7["items"]
     row = got7["items"][0]
     for key in ("alert_no", "category", "alert_object", "appid", "severity",
-                "alert_status", "description", "started_at", "detail_url"):
+                "alert_status", "description", "started_at", "detail_url", "enterprise_id"):
         assert key in row, f"预览行缺 {key}"
     assert row["category"] == "MySQL"
+    # 企业分发拼链（mock 样本：APP-A→OP 32×8、APP-B→KWE 32×1、APP-C→其他不可跳）
+    ent_urls = {r["enterprise_id"]: r["detail_url"] for r in got7["items"]}
+    assert all(("alarmCode=" in u) for e, u in ent_urls.items() if e in ("8" * 32, "1" * 32))
 
     got3 = unwrap(_preview(client, iid, categories="MySQL", severity="fatal,critical",
                            since_days=3))

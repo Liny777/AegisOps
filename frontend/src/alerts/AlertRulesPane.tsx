@@ -464,7 +464,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
   const fieldTitle: React.CSSProperties = { fontSize: 12.5, fontWeight: 700, marginBottom: 8 };
   const th: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, color: color.textSubtle, padding: "8px 10px", background: color.surfaceAlt, whiteSpace: "nowrap" };
   const td: React.CSSProperties = { fontSize: 12, padding: "8px 10px", borderTop: `1px solid ${color.borderFaint}`, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
-  const previewGrid = "150px 90px minmax(90px, 130px) minmax(90px, 140px) 60px 64px minmax(140px, 1fr)";
+  const previewGrid = "150px 84px minmax(84px, 120px) minmax(84px, 130px) minmax(90px, 130px) 56px 64px minmax(130px, 1fr)";
 
   return (
     <Modal open onClose={onClose} maxWidth={step === 1 ? 640 : 860}>
@@ -572,7 +572,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
               <div style={{ border: `1px solid ${color.border}`, borderRadius: radius.lg, overflow: "hidden" }}>
                 <div style={{ display: "grid", gridTemplateColumns: previewGrid, gap: 8, padding: "0 2px" }}>
                   <span style={th}>告警编号</span><span style={th}>告警类型</span><span style={th}>告警对象</span>
-                  <span style={th}>APPID</span><span style={th}>告警等级</span><span style={th}>告警状态</span><span style={th}>告警描述</span>
+                  <span style={th}>APPID</span><span style={th}>企业ID</span><span style={th}>告警等级</span><span style={th}>告警状态</span><span style={th}>告警描述</span>
                 </div>
                 {preview === null ? (
                   <div style={{ padding: "12px", fontSize: 12, color: color.textSubtle }}>加载中…</div>
@@ -589,6 +589,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
                       <span style={td}>{ev.category}</span>
                       <span style={td} title={ev.alert_object}>{ev.alert_object}</span>
                       <span style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 11, color: color.textSubtle }} title={ev.appid}>{ev.appid}</span>
+                      <span style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 11, color: color.textSubtle }} title={ev.enterprise_id || ""}>{ev.enterprise_id || "—"}</span>
                       <span style={{ ...td, overflow: "visible" }}>
                         <Pill tone={SEVERITY_TONE[ev.severity] ?? "neutral"}>{SEVERITY_LABEL[ev.severity] ?? ev.severity}</Pill>
                       </span>

@@ -9,8 +9,11 @@ import json
 
 from infra.external.alert_inet_contract import (
     CST,
+    ENTERPRISE_KWE,
+    ENTERPRISE_OP,
     LEVEL_TO_SEVERITY,
     SEVERITY_TO_LEVEL,
+    alarm_detail_url,
     map_history_row,
     map_kafka_alarm,
     to_iso8601,
@@ -185,6 +188,19 @@ def test_kafka_fallbacks():
 # ============================ map_history_row ============================
 
 
+def test_alarm_detail_url_dispatch():
+    """企业分发四态：OP(32×8)/KWE(32×1)/未知企业/URL 未配；含 & 续接与编码转义。"""
+    kw = dict(op_url="https://op.example/d", kwe_url="https://kwe.example/d")
+    assert alarm_detail_url(ENTERPRISE_OP, "ac1", **kw) == "https://op.example/d?alarmCode=ac1"
+    assert alarm_detail_url(ENTERPRISE_KWE, "ac1", **kw) == "https://kwe.example/d?alarmCode=ac1"
+    assert alarm_detail_url("e-other", "ac1", **kw) == ""            # 未知企业不拼
+    assert alarm_detail_url(ENTERPRISE_OP, "ac1", op_url="", kwe_url="x") == ""  # 对应 env 空
+    assert alarm_detail_url(ENTERPRISE_OP, "", **kw) == ""           # 编号空
+    # base 已带 query → & 续接；alarmCode 特殊字符转义
+    assert alarm_detail_url(ENTERPRISE_OP, "a/b c", op_url="https://op.example/d?src=openops",
+                            kwe_url="") == "https://op.example/d?src=openops&alarmCode=a%2Fb%20c"
+
+
 def test_history_row_closed_state():
     row = map_history_row(HISTORY_ROW)
     assert row["alert_no"] == "axxx"                    # 历史行无 alarmId，用 alarmCode
@@ -192,6 +208,7 @@ def test_history_row_closed_state():
     assert row["alert_status"] == "closed"              # status "5"
     assert row["severity"] == "fatal"                   # "1"
     assert row["category"] == "Kafka"
+    assert row["enterprise_id"] == "88888888888888888888888888888888"  # 29.10 样本值透传
     assert row["started_at"] == "2026-08-06T21:59:29+00:00"    # 保留原偏移
     assert row["ended_at"] == to_iso8601(1786071740000)        # incidentClosedTime（epoch ms 串）
     assert row["duration_s"] == 18171000                # 数字原样；单位联调确认（R11）
