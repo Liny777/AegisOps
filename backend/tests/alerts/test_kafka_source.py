@@ -9,8 +9,17 @@ import json
 
 import pytest
 
+import pytest as _pytest
+
 from alerts import kafka_source
 from infra.external.alert_platform_client import AlertPlatformError
+
+
+@_pytest.fixture(autouse=True)
+def _clean_health():
+    kafka_source.reset_health()
+    yield
+    kafka_source.reset_health()
 
 
 class _Rec:
@@ -76,6 +85,10 @@ async def test_commit_after_persist_and_bad_message_skip(monkeypatch):
     await _run_briefly(task, lambda: fake.commits >= 1)
     assert order[:2] == ["persist", "commit"]  # 先落库后 commit（at-least-once 铁律）
     assert [a["alert_id"] for a in received] == ["a1"]  # 坏消息跳过不阻塞分区
+    # 消费健康心跳（观测补强）：批后更新，admin overview 消费
+    h = kafka_source.health
+    assert h["started_at"] and h["last_batch_at"], "心跳未更新"
+    assert h["batches"] == 1 and h["consumed"] == 1 and h["skipped_bad"] == 1
 
 
 async def test_inet_body_mapped_and_mixed_batch(monkeypatch):
