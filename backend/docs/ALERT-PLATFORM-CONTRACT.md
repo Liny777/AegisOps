@@ -86,7 +86,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R6 | 响应有无 total | 缺省=本页行数 | real.list_history 取数 |
 | R7 | 三环境完整 URL | env 化 | 部署手册 |
 | R8 | alarmLevels 是否收 0（SLO） | UI 三档只传 [1,2,3] | SEVERITY_TO_LEVEL |
-| R9 | appIdList 仅 [0] 参与本地匹配 | 接受（UI 未暴露 appids 维度） | 全列表在 annotations 可升级 |
+| R9 | appIdList 首元素做 app_id 展示/分组；**范围过滤自 2026-08-13 起用全列表交集**（多 projectId 消息只看首值会误拦） | 接受（UI 未暴露 appids 维度） | ingest._alert_appids（annotations.app_id_list 全集） |
 | R10 | metricName vs 监控策略名 | 存量 strategies 失配 | 迁移 SQL 可选段（清空 strategies） |
 | R11 | duration 单位 | 非纯数字置 None | map_history_row |
 | R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测 | alert_pull_batch_limit 可调 |
@@ -94,4 +94,8 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R14 | **app_id（appIdList 首元素）缺失的告警会被匹配面拦截**（2026-08-11 宁漏勿越权：无法判定归属即不接管）。内网消息若普遍缺 appIdList，`out_of_scope` 计数会异常高 | 联调期观察批摘要 warning 里的 out_of_scope；缺失面大则找告警平台补字段，或临时用 OPENOPS_SCOPE_OVERRIDE_APPIDS 放行验证 | ingest._instance_scope + 批摘要计数 |
 
 **联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
+
+**单条告警去向定位**（2026-08-13）：批摘要 `apps={...}` 分布先确认应用 ID 进没进批（`无`=appIdList 缺失量）；
+再配 `OPENOPS_ALERT_TRACE=<alarmId或应用ID>` 重启，`grep "[alerts][trace]"` 看决策链逐站：
+消费到（appIdList 解析结果）→ 未命中/去重/恢复 → 范围过滤（实例范围 vs 归属并排打出）→ 入队/附着/冷却/skip。定位完删 env。
 → 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。

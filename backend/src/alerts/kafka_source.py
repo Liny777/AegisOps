@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import Counter
 from typing import Any
 
 from infra.external.alert_platform_client import AlertPlatformError
@@ -121,22 +122,35 @@ async def consume_loop(consumer: Any | None = None) -> None:
                     continue
                 alerts: list[dict[str, Any]] = []
                 skipped_bad = 0
+                bad_sample: str | None = None
                 for _tp, records in batches.items():
                     for record in records:
                         body = _parse(record.value)
                         if body is None:
                             skipped_bad += 1
+                            if bad_sample is None:  # 追踪开启时留首条原文，防「要找的恰好是解析失败那条」盲区
+                                raw = record.value
+                                bad_sample = (raw if isinstance(raw, str)
+                                              else raw.decode("utf-8", "replace"))[:120]
                             continue
                         alerts.append(body)
                 if skipped_bad:
-                    log.warning("[alerts][kafka] 跳过坏消息 %d 条（非 JSON 对象）", skipped_bad)
+                    sample = (f" 首条样本：{bad_sample!r}"
+                              if os.environ.get("OPENOPS_ALERT_TRACE", "").strip() else "")
+                    log.warning("[alerts][kafka] 跳过坏消息 %d 条（非 JSON 对象）%s",
+                                skipped_bad, sample)
                 counters = None
                 if alerts:
                     counters = await ingest.ingest_batch(alerts, cfg=cfg)
                     # warning 级批摘要：默认部署 root 无 handler、info 不可见——unmatched 全靠它
                     # 现形（此前零日志，排查只能直查 DB）。空轮不打，风暴期一批一行可接受。
-                    log.warning("[alerts][kafka] 本批 %d 条：%s", len(alerts),
-                                {k: v for k, v in (counters or {}).items() if v})
+                    # apps 分布（top6+其余）回答「我的应用 ID 有没有进这批」，「无」= appIdList 缺失量。
+                    apps = Counter(str(a.get("app_id") or "") or "无" for a in alerts)
+                    top = dict(apps.most_common(6))
+                    if (rest := len(alerts) - sum(top.values())):
+                        top["其余"] = rest
+                    log.warning("[alerts][kafka] 本批 %d 条：%s apps=%s", len(alerts),
+                                {k: v for k, v in (counters or {}).items() if v}, top)
                 health.update({"last_batch_at": _now_iso(), "last_counters": counters,
                                "batches": health["batches"] + 1,
                                "consumed": health["consumed"] + len(alerts),
