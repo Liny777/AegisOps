@@ -29,7 +29,7 @@ async def create_llm_config(user: dict[str, Any], req: Any) -> dict[str, Any]:
     if s is None or s["user_id"] != user["user_id"] or s["status"] != "active":
         raise ApiError(Err.SECRET_REQUIRED, "密钥不可用，请重新选择或创建")
     api_key = crypto.decrypt(s["ciphertext"])  # 仅探测瞬时使用，不出网关
-    probe = await llm_provider_client.probe(req.base_url, req.model_name, api_key)
+    probe = await llm_provider_client.probe(req.base_url, req.model_name, api_key, req.extra_headers)
     if not probe["ok"] or not probe["supports_tool_calling"]:
         raise ApiError(Err.MODEL_PROBE_FAILED, "模型探测失败或不支持 tool calling，不能设为 active")
     return await secrets.create_llm_config(user["user_id"], req.model_dump(), probe)
@@ -47,7 +47,8 @@ async def test_connection(req: Any) -> dict[str, Any]:
         egress.check_llm_egress(req.base_url)  # 拦 localhost/metadata/内网基础设施
     except ApiError as e:
         return {"ok": False, "supports_tool_calling": False, "reason": e.message}
-    probe = await llm_provider_client.probe(req.base_url, req.model_name, req.api_key or None)
+    probe = await llm_provider_client.probe(req.base_url, req.model_name, req.api_key or None,
+                                            req.extra_headers)
     return {"ok": bool(probe["ok"] and probe["supports_tool_calling"]),
             "supports_tool_calling": bool(probe["supports_tool_calling"]),
             "reason": probe.get("reason"),

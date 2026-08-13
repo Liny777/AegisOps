@@ -6,7 +6,7 @@ import { api } from "../lib/api";
 import { useApp } from "../lib/appState";
 import type { ModelTemplateOption, Template, Workspace, OmodelStatistics } from "../lib/api/types";
 import { WorkspaceDialog } from "./WorkspaceDialog";
-import { submitCustomLlm, useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
+import { submitCustomLlm, useConnTest, ConnTestResult, HeadersEditor, headersToRecord, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
 import { PendingQuestionNotice } from "../pages/states";
 
 // 2026-07-14 改版：删「选择模板」页（感知快恢是唯一模板，默认用它）。三步=配置 → 确认能力清单
@@ -737,14 +737,16 @@ function InlineAddModel({ onCancel, onCreated }: {
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const test = useConnTest();
 
-  // 探测相关字段一改即让上次「测试连接」失效，须重测才能保存
+  // 探测相关字段（含自定义 Header）一改即让上次「测试连接」失效，须重测才能保存
   const onBaseUrl = (v: string) => { setBaseUrl(v); test.reset(); };
   const onModelName = (v: string) => { setModelName(v); test.reset(); };
   const onApiKey = (v: string) => { setApiKey(v); test.reset(); };
+  const onHeaders = (rows: HeaderRow[]) => { setHeaderRows(rows); test.reset(); };
 
   const fieldsOk = displayName.trim().length > 0 && /^https?:\/\/.+/.test(baseUrl.trim())
     && modelName.trim().length > 0 && apiKey.trim().length > 0 && contextWindow > 0;
@@ -752,14 +754,14 @@ function InlineAddModel({ onCancel, onCreated }: {
 
   const runTest = () => {
     if (!fieldsOk || test.state === "testing") return;
-    void test.run(() => api.testLlmConnection({ base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey.trim() }));
+    void test.run(() => api.testLlmConnection({ base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey.trim(), extra_headers: headersToRecord(headerRows) }));
   };
 
   const submit = () => {
     if (!canSave || busy) return;
     setBusy(true);
     setError("");
-    submitCustomLlm({ displayName, baseUrl, modelName, apiKey, contextWindow })
+    submitCustomLlm({ displayName, baseUrl, modelName, apiKey, contextWindow, extraHeaders: headersToRecord(headerRows) })
       .then((r) => onCreated(r.id, r.label, { modelName: modelName.trim(), baseUrl: baseUrl.trim() }))
       .catch((e: unknown) => { setError(e instanceof Error ? e.message : "创建失败"); setBusy(false); });
   };
@@ -797,6 +799,9 @@ function InlineAddModel({ onCancel, onCreated }: {
             </InlineField>
           </div>
         </div>
+        <InlineField label="自定义 Header（可选）">
+          <HeadersEditor rows={headerRows} onChange={onHeaders} disabled={busy} />
+        </InlineField>
         <div style={{ fontSize: 11, color: color.textSubtle }}>须先「测试连接」通过（须支持 tool calling）才能添加；Key 明文仅此刻提交、加密存 user_secret，接口永不回显。</div>
         {error ? <div style={{ fontSize: 12, color: color.dangerText }}>{error}</div> : null}
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>

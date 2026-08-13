@@ -48,6 +48,7 @@ export function ConnTestResult({ state, reason, mock }: { state: "idle" | "testi
 /** 提交链共享（本弹窗与初始化向导内联表单共用）：录 Secret → 建 llm-config → 回传 id+label。 */
 export async function submitCustomLlm(f: {
   displayName: string; baseUrl: string; modelName: string; apiKey: string; contextWindow?: number;
+  extraHeaders?: Record<string, string>;
 }): Promise<{ id: string; label: string }> {
   const sec = await api.createSecret(`${f.displayName.trim()} Key`, f.apiKey.trim());
   const cfg = await api.createLlmConfig({
@@ -56,8 +57,56 @@ export async function submitCustomLlm(f: {
     model_name: f.modelName.trim(),
     secret_ref_id: sec.secret_ref_id,
     context_window_tokens: f.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    extra_headers: f.extraHeaders ?? {},
   });
   return { id: cfg.llm_config_id, label: f.displayName.trim() };
+}
+
+/** 自定义出站 Header 行（高级选项）：提交/探测前经 headersToRecord 过滤空行。 */
+export type HeaderRow = { name: string; value: string };
+
+/** KV 行 → Record：忽略名或值为空的行（半填行不阻塞保存，视为未生效）；同名后者覆盖前者。 */
+export function headersToRecord(rows: HeaderRow[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const r of rows) {
+    const n = r.name.trim(), v = r.value.trim();
+    if (n && v) out[n] = v;
+  }
+  return out;
+}
+
+/** 自定义 Header KV 编辑器（初始化向导内联表单与设置页弹窗共用，防两处 UI 漂移）。
+ *  鉴权不在这里配：Authorization 由 API Key 自动携带且服务端禁止自定义；值明文保存，UI 已提示勿放密钥。 */
+export function HeadersEditor({ rows, onChange, disabled }: {
+  rows: HeaderRow[]; onChange: (rows: HeaderRow[]) => void; disabled?: boolean;
+}) {
+  const inputStyle: React.CSSProperties = {
+    height: 32, border: `1px solid ${color.borderInput}`, borderRadius: radius.md,
+    padding: "0 9px", fontSize: 12.5, outline: "none", boxSizing: "border-box", minWidth: 0,
+  };
+  const set = (i: number, patch: Partial<HeaderRow>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input value={r.name} onChange={(e) => set(i, { name: e.target.value })} placeholder="Header 名，如 X-Tenant-Id" disabled={disabled}
+            style={{ ...inputStyle, flex: 1, fontFamily: "ui-monospace, monospace" }} />
+          <input value={r.value} onChange={(e) => set(i, { value: e.target.value })} placeholder="值" disabled={disabled}
+            style={{ ...inputStyle, flex: 1.4, fontFamily: "ui-monospace, monospace" }} />
+          <Icon name="x" size={15} color={color.textSubtle} onClick={disabled ? undefined : () => onChange(rows.filter((_, j) => j !== i))} />
+        </div>
+      ))}
+      <button type="button" disabled={disabled} onClick={() => onChange([...rows, { name: "", value: "" }])}
+        style={{ alignSelf: "flex-start", border: "none", background: "none", padding: 0, cursor: disabled ? "default" : "pointer", color: color.brand, fontSize: 12, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5, fontFamily: "inherit" }}>
+        <Icon name="plus" size={13} color={color.brand} />添加 Header
+      </button>
+      {rows.length > 0 ? (
+        <div style={{ fontSize: 11, color: color.textSubtle, lineHeight: 1.5 }}>
+          随每次模型请求附带（内网网关路由/租户标识等）。鉴权走上方 API Key（自动作为 Authorization，此处禁配）；值明文保存，请勿放密钥。
+        </div>
+      ) : null}
+    </div>
+  );
 }
 export function AddCustomModelDialog({
   open,
@@ -73,20 +122,22 @@ export function AddCustomModelDialog({
   const [modelName, setModelName] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const test = useConnTest();
 
   const reset = () => {
     setDisplayName(""); setBaseUrl("https://"); setModelName(""); setApiKey("");
-    setContextWindow(DEFAULT_CONTEXT_WINDOW); setBusy(false); setError(null); test.reset();
+    setContextWindow(DEFAULT_CONTEXT_WINDOW); setHeaderRows([]); setBusy(false); setError(null); test.reset();
   };
   const close = () => { if (!busy) { reset(); onClose(); } };
 
-  // 探测相关字段（base_url/模型名/Key）一改即让上次「测试连接」失效，必须重测才能保存。
+  // 探测相关字段（base_url/模型名/Key/自定义 Header）一改即让上次「测试连接」失效，必须重测才能保存。
   const onBaseUrl = (v: string) => { setBaseUrl(v); test.reset(); };
   const onModelName = (v: string) => { setModelName(v); test.reset(); };
   const onApiKey = (v: string) => { setApiKey(v); test.reset(); };
+  const onHeaders = (rows: HeaderRow[]) => { setHeaderRows(rows); test.reset(); };
 
   const fieldsOk =
     displayName.trim().length > 0 &&
@@ -98,7 +149,7 @@ export function AddCustomModelDialog({
 
   const runTest = () => {
     if (!fieldsOk || test.state === "testing") return;
-    void test.run(() => api.testLlmConnection({ base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey.trim() }));
+    void test.run(() => api.testLlmConnection({ base_url: baseUrl.trim(), model_name: modelName.trim(), api_key: apiKey.trim(), extra_headers: headersToRecord(headerRows) }));
   };
 
   const submit = async () => {
@@ -106,7 +157,7 @@ export function AddCustomModelDialog({
     setBusy(true);
     setError(null);
     try {
-      const created = await submitCustomLlm({ displayName, baseUrl, modelName, apiKey, contextWindow });
+      const created = await submitCustomLlm({ displayName, baseUrl, modelName, apiKey, contextWindow, extraHeaders: headersToRecord(headerRows) });
       onCreated(created.id, created.label);
       reset();
       onClose();
@@ -159,6 +210,9 @@ export function AddCustomModelDialog({
               fontFamily: "ui-monospace, monospace",
             }}
           />
+        </Field>
+        <Field label="自定义 Header（可选）">
+          <HeadersEditor rows={headerRows} onChange={onHeaders} disabled={busy} />
         </Field>
 
         {/* 测试连接：必须测通才能保存 */}

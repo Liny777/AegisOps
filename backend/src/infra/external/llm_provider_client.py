@@ -28,10 +28,13 @@ _PROBE_TOOL = {
 }
 
 
-async def probe(base_url: str, model_name: str, api_key: str | None) -> dict[str, Any]:
+async def probe(
+    base_url: str, model_name: str, api_key: str | None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     # 「非 mock 即 real」：拼错的值往安全方向倒（真探测），绝不静默退回假通过
     if os.getenv("OPENOPS_LLM_PROBE", "real").lower() != "mock":
-        return await _probe_real(base_url, model_name, api_key)
+        return await _probe_real(base_url, model_name, api_key, extra_headers)
     supports_tool = "no-tool" not in model_name.lower()
     return {
         "ok": supports_tool,
@@ -42,11 +45,17 @@ async def probe(base_url: str, model_name: str, api_key: str | None) -> dict[str
     }
 
 
-async def _probe_real(base_url: str, model_name: str, api_key: str | None) -> dict[str, Any]:
+async def _probe_real(
+    base_url: str, model_name: str, api_key: str | None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict[str, Any]:
     import httpx
 
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Content-Type": "application/json"}
+    # 用户自定义 Header 与真实调用（agentscope_runtime default_headers）同源；schema 层已禁
+    # Authorization/Content-Type 等保留头，故后设的 Authorization 不会被覆盖。值不进日志/reason。
+    headers.update(extra_headers or {})
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     payload = {

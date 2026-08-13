@@ -215,9 +215,11 @@ async def _build_model(st: TaskState) -> Any:
         from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
 
         # 构建目标一眼可见（同 [db]/[startup] 模式；不含 key 值）——DB base_url 错时这行即诊断
+        # 自定义 header 只打条数不打名值（值可能是租户/路由凭据，SEC-001 同口径）
+        extra_headers: dict[str, str] = spec.get("extra_headers") or {}
         print(f"[OpenOps][model] building {spec['model_id']} "
               f"base_url={spec.get('base_url') or 'default(api.openai.com)'} key={key_src} "
-              f"trust_env={http_trust_env()}", flush=True)
+              f"extra_headers={len(extra_headers)} trust_env={http_trust_env()}", flush=True)
         # 自定义 http_client：trust_env 默认 False——openai SDK 默认信任环境/Windows 注册表代理，
         # 内网 GLM 会被公司 SWG 劫走（实测返回 HIS Proxy 错误页而非模型响应）。超时对齐推理耗时。
         # max_retries 默认 0：openai SDK 默认重试 2 次，坏 base_url（内网实测 DB 里填了占位假地址）
@@ -233,6 +235,10 @@ async def _build_model(st: TaskState) -> Any:
         }
         if spec.get("base_url"):
             client_kwargs["base_url"] = spec["base_url"]
+        if extra_headers:
+            # 用户高级选项自定义 Header（内网网关路由/租户标识等）：openai SDK 每请求附带。
+            # 与「测试连接」探测（llm_provider_client）同源，避免测通了但真跑缺头。
+            client_kwargs["default_headers"] = dict(extra_headers)
         return OpenAIChatModel(
             credential=OpenAICredential(api_key=api_key),
             model=spec["model_id"],

@@ -48,7 +48,7 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - `GET /api/openops/v1/secrets`
 - `GET /api/openops/v1/llm-configs`
 - `GET /api/openops/v1/models/platform`
-- `POST /api/openops/v1/llm-configs`
+- `POST /api/openops/v1/llm-configs` — 可选 `extra_headers`（自定义出站 Header，随每次 LLM 请求附带；禁 `Authorization`/`Host` 等保留头，鉴权走 `secret_ref_id`）；`POST /llm-configs:test-connection` 同参同源携带
 - `POST /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs/{agent_run_id}/state`

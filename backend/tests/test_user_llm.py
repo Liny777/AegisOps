@@ -215,3 +215,80 @@ def test_register_model_asset_persists_context_window(client):
     rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
     row = next(r for r in rows if r["display_name"] == "CtxTest")
     assert row["context_window_tokens"] == 200000
+
+
+def test_user_llm_006_extra_headers_forbidden_names_rejected(client):
+    """高级选项自定义 Header：Authorization/Host 等保留头在 schema 层被拒（400/422），不落库。
+    鉴权只走 secret 加密链，禁止经 extra_params_json 明文旁路（SEC-001 口径）。"""
+    sec = _mk_secret(client)
+    for bad in ({"Authorization": "Bearer sneaky"}, {"Host": "evil.internal"}, {"X-Forwarded-For": "127.0.0.1"}):
+        r = client.post("/api/openops/v1/llm-configs", headers=USER_HEADERS,
+                        json={"client_request_id": f"l_{time.time_ns()}", "display_name": "带非法Header",
+                              "provider": "openai_compatible", "base_url": _BASE, "model_name": "gpt-4o",
+                              "secret_ref_id": sec["secret_ref_id"], "extra_headers": bad})
+        assert r.status_code in (400, 422), f"{bad} 应被拒，实际 {r.status_code}"
+    listed = unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS))
+    assert all(c["display_name"] != "带非法Header" for c in listed)
+    # 值含 CR/LF（header 注入）同样拒
+    r = client.post("/api/openops/v1/llm-configs:test-connection", headers=USER_HEADERS,
+                    json={"base_url": _BASE, "model_name": "gpt-4o", "api_key": "sk",
+                          "extra_headers": {"X-Tenant-Id": "a\r\nX-Evil: b"}})
+    assert r.status_code in (400, 422)
+
+
+async def test_user_llm_007_extra_headers_persist_and_reach_spec(client):
+    """自定义 Header 全链（存→取）：创建时落 extra_params_json，_user_llm_spec 原样带出——
+    spec 整体透传 runtime/_build_model 与子 Agent，此处即出站生效的事实来源。"""
+    from app import model_gateway, secret_model_gateway
+    from domain.schemas import CreateLlmConfigRequest, CreateSecretRequest
+    from infra.repositories import secrets as secrets_repo
+
+    # async 测试内不走 TestClient（anyio portal 会互卡），直接驱动网关层；client fixture 仅用于重置 DB
+    user = {"user_id": "0026demo01"}
+    sec = await secret_model_gateway.create_secret(user, CreateSecretRequest(
+        client_request_id="s_hdr", secret_name="hdr key", secret_value="sk-user-key"))
+    hdrs = {"X-Tenant-Id": "t-001", "X-Route-Env": "prod"}
+    cfg = await secret_model_gateway.create_llm_config(user, CreateLlmConfigRequest(
+        client_request_id="l_hdr", display_name="带Header模型", base_url=_BASE, model_name="gpt-4o",
+        secret_ref_id=sec["secret_ref_id"], extra_headers=hdrs))
+    row = await secrets_repo.get_llm_config(cfg["llm_config_id"])
+    assert (row["extra_params_json"] or {}).get("extra_headers") == hdrs
+    spec = await model_gateway._user_llm_spec(cfg["llm_config_id"], "0026demo01")
+    assert spec is not None and spec["extra_headers"] == hdrs
+
+
+async def test_user_llm_008_probe_real_sends_extra_headers(monkeypatch):
+    """real 探测与真实调用同源携带自定义 Header：探测请求带上 extra_headers，
+    且 Authorization 仍由 api_key 生成（自定义头被 schema 禁配，不可能覆盖鉴权）。"""
+    import httpx
+
+    from infra.external import llm_provider_client
+
+    monkeypatch.setenv("OPENOPS_LLM_PROBE", "real")
+    seen: dict[str, str] = {}
+
+    class _SpyClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            seen.update(headers or {})
+
+            class _R:
+                status_code = 200
+                text = ""
+
+            return _R()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SpyClient)
+    ok = await llm_provider_client.probe("https://api.example.com/v1", "gpt-4o", "sk-secret",
+                                         {"X-Tenant-Id": "t-001"})
+    assert ok["ok"]
+    assert seen["X-Tenant-Id"] == "t-001"
+    assert seen["Authorization"] == "Bearer sk-secret"
