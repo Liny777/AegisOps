@@ -13,6 +13,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from collections import Counter
 from typing import Any
 
@@ -90,6 +91,35 @@ health: dict[str, Any] = {"started_at": None, "last_batch_at": None, "last_count
 def reset_health() -> None:
     health.update({"started_at": None, "last_batch_at": None, "last_counters": None,
                    "batches": 0, "consumed": 0, "skipped_bad": 0})
+    _summary.update({"last_flush": None, "batches": 0, "alerts": 0,
+                     "counters": Counter(), "apps": Counter()})
+
+
+# 批摘要 30s 聚合（2026-08-13 吞吐调优：批量 1000 后 2-3 批/s，逐批 warning 一天 20 万+行）。
+# 首批立打（启动即有反馈，单批场景语义不变），之后满窗才打一行累计。单消费循环无并发写者。
+SUMMARY_WINDOW_S = 30.0
+_summary: dict[str, Any] = {"last_flush": None, "batches": 0, "alerts": 0,
+                            "counters": Counter(), "apps": Counter()}
+
+
+def _summarize(alerts: list[dict[str, Any]], counters: dict[str, Any] | None) -> None:
+    """累加本批并按窗口打聚合行。apps 分布（top6+其余）回答「我的应用 ID 有没有进来」，
+    「无」= appIdList 缺失量。warning 级：默认部署 root 无 handler、info 不可见。"""
+    _summary["batches"] += 1
+    _summary["alerts"] += len(alerts)
+    _summary["counters"].update(
+        {k: v for k, v in (counters or {}).items() if isinstance(v, int) and v})
+    _summary["apps"].update(str(a.get("app_id") or "") or "无" for a in alerts)
+    now = time.monotonic()
+    if _summary["last_flush"] is not None and now - _summary["last_flush"] < SUMMARY_WINDOW_S:
+        return
+    top = dict(_summary["apps"].most_common(6))
+    if (rest := _summary["alerts"] - sum(top.values())):
+        top["其余"] = rest
+    log.warning("[alerts][kafka] 汇总 %d 批 %d 条：%s apps=%s",
+                _summary["batches"], _summary["alerts"], dict(_summary["counters"]), top)
+    _summary.update({"last_flush": now, "batches": 0, "alerts": 0,
+                     "counters": Counter(), "apps": Counter()})
 
 
 def _now_iso() -> str:
@@ -142,15 +172,7 @@ async def consume_loop(consumer: Any | None = None) -> None:
                 counters = None
                 if alerts:
                     counters = await ingest.ingest_batch(alerts, cfg=cfg)
-                    # warning 级批摘要：默认部署 root 无 handler、info 不可见——unmatched 全靠它
-                    # 现形（此前零日志，排查只能直查 DB）。空轮不打，风暴期一批一行可接受。
-                    # apps 分布（top6+其余）回答「我的应用 ID 有没有进这批」，「无」= appIdList 缺失量。
-                    apps = Counter(str(a.get("app_id") or "") or "无" for a in alerts)
-                    top = dict(apps.most_common(6))
-                    if (rest := len(alerts) - sum(top.values())):
-                        top["其余"] = rest
-                    log.warning("[alerts][kafka] 本批 %d 条：%s apps=%s", len(alerts),
-                                {k: v for k, v in (counters or {}).items() if v}, top)
+                    _summarize(alerts, counters)  # 30s 聚合批摘要（首批立打）
                 health.update({"last_batch_at": _now_iso(), "last_counters": counters,
                                "batches": health["batches"] + 1,
                                "consumed": health["consumed"] + len(alerts),

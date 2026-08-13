@@ -1,4 +1,4 @@
-"""摄入管线：拉取 → 指纹去重 → 内存匹配（未命中即丢，不存档）→ 落库 → 范围过滤 → 聚合/上限/冷却 → incident(queued)。
+"""摄入管线：拉取 → 内存匹配（未命中零 DB 即丢）→ 指纹去重 → 落库 → 范围过滤 → 聚合/上限/冷却 → incident(queued)。
 
 单轮入口 `run_once()` 供 pytest 与管理端 `POST /admin/alerts:pull` 直调（对齐
 asset_reconcile 的 reconcile() 可直调先例）；后台循环由 dispatcher.start_background
@@ -6,9 +6,9 @@ asset_reconcile 的 reconcile() 可直调先例）；后台循环由 dispatcher.
 
 削峰分层（与设计文档编号一致）：
 ① 拉取批量背压（单批 alert_pull_batch_limit、单轮 ≤5 批）
-② fingerprint 去重（dedup_window_s 内同指纹只 seen_count++，不触发匹配）
-②' 未命中丢弃（2026-08-13 内网反馈：全网 Kafka 流量全存档会灌爆 event 表——
-   未命中任何规则的告警只计数不落库；命中的才存，被范围过滤拦下的也存作排查留痕）
+⓪ 匹配前置零 DB（2026-08-13 内网吞吐：全网 ≈3000 条/s、99.9% 未命中——纯内存匹配
+   先行，未命中只计数不查库不存档；命中的才存，被范围过滤拦下的也存作排查留痕）
+② fingerprint 去重（dedup_window_s 内同指纹只 seen_count++，仅命中者到达此层）
 ③ 附着式聚合（group_key 有未完结 incident → 附着不新建）
 ④ 组冷却（group_cooldown_s 内同组不建新单，event 留痕）
 ⑤ 有界队列 + 溢出丢弃（实例/全局上限 → skipped 留痕；高 severity 可踢队尾低者）
@@ -231,6 +231,21 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
                         cfg: dict[str, Any], counters: dict[str, Any],
                         scope_cache: dict[str, list[str] | None] | None = None) -> None:
     trace, alarm = _trace_hit(alert), alert["external_alert_id"]
+    # ⓪ 匹配前置（2026-08-13 吞吐反馈：全网 ≈3000 条/s、99.9% 未命中，先做纯内存匹配，
+    # 未命中零 DB 直接丢——指纹查询/落库只为命中者花，消费吞吐才追得上流量）。代价仅
+    # 「未命中告警不再 touch 同指纹旧行」：旧行只可能来自曾命中后规则删改，last_seen 停更无碍。
+    by_instance: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        if matcher.match(alert, rule.get("match_json") or {}):
+            by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
+    if not by_instance:
+        counters["unmatched"] += 1  # 未命中：不查库不存档直接丢
+        if trace:
+            log.warning("[alerts][trace] %s 未命中任何启用规则（当前启用 %d 条）——核对规则"
+                        "类别/级别与消息 moType/alarmLevel、订阅是否开启、属主是否在白名单",
+                        alarm, len(rules))
+        return
+
     existing = await repo.get_event_by_fingerprint(SOURCE_KEY, alert["fingerprint"])
     if existing is not None:
         within_window = _age_s(existing["last_seen_at"]) < float(cfg["alert_dedup_window_s"])
@@ -250,21 +265,6 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             return
         event_id = str(existing["alert_event_id"])
     else:
-        event_id = None  # ②' 落库延后到规则命中之后：未命中的全网告警不存档
-
-    by_instance: dict[str, list[dict[str, Any]]] = {}
-    for rule in rules:
-        if matcher.match(alert, rule.get("match_json") or {}):
-            by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
-    if not by_instance:
-        counters["unmatched"] += 1  # 未命中：新告警不落库直接丢；老告警上面 touch 已留痕
-        if trace:
-            log.warning("[alerts][trace] %s 未命中任何启用规则（当前启用 %d 条）——核对规则"
-                        "类别/级别与消息 moType/alarmLevel、订阅是否开启、属主是否在白名单",
-                        alarm, len(rules))
-        return
-
-    if event_id is None:
         event_id = await repo.insert_event(
             source_key=SOURCE_KEY, external_alert_id=alert["external_alert_id"],
             fingerprint=alert["fingerprint"], alert_status=alert["status"],
@@ -272,11 +272,11 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             alert_object=alert["alert_object"], strategy_name=alert["strategy_name"],
             appid=alert["app_id"], labels=alert["labels"], annotations=alert["annotations"],
             starts_at=alert["started_at"], payload=None)
-    if alert["status"] == "resolved":
-        counters["resolved"] += 1  # 命中规则的 resolved 落库供「已关闭」投影，不建单
-        if trace:
-            log.warning("[alerts][trace] %s 恢复消息：命中规则落库为已恢复，不建单", alarm)
-        return
+        if alert["status"] == "resolved":
+            counters["resolved"] += 1  # 命中规则的 resolved 落库供「已关闭」投影，不建单
+            if trace:
+                log.warning("[alerts][trace] %s 恢复消息：命中规则落库为已恢复，不建单", alarm)
+            return
 
     # 应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
     # 匹配，还须 告警归属应用 ∩ 实例的 omodel 应用范围 非空——否则一条 MySQL 规则会接管

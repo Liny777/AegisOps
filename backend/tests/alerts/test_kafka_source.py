@@ -210,3 +210,17 @@ async def test_bad_message_sample_when_trace_enabled(monkeypatch, caplog):
         task = asyncio.create_task(kafka_source.consume_loop(consumer=fake))
         await _run_briefly(task, lambda: fake.commits >= 1)
     assert "首条样本" in caplog.text and "bad json PRJ-1" in caplog.text
+
+
+def test_batch_summary_window_aggregates(monkeypatch, caplog):
+    """30s 聚合：首批立打；窗口内静默累计；满窗一行带累计批数/条数（防 2-3 批/s 刷屏）。"""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="openops.alerts.kafka"):
+        kafka_source._summarize([{"app_id": "P1"}], {"pulled": 1})
+        kafka_source._summarize([{"app_id": "P1"}], {"pulled": 1})
+        assert caplog.text.count("apps=") == 1  # 第二批在窗口内：不打
+        monkeypatch.setattr(kafka_source, "SUMMARY_WINDOW_S", 0.0)
+        kafka_source._summarize([{"app_id": "P2"}], {"pulled": 1})
+    assert caplog.text.count("apps=") == 2
+    assert "汇总 2 批 2 条" in caplog.text and "'P2': 1" in caplog.text

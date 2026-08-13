@@ -186,3 +186,26 @@ def test_disabled_subscription_means_no_match(client):
     alert_platform_mock._inject(title="x", category="MySQL", fingerprint="fp_d1")
     counters = _pull(client)
     assert counters["unmatched"] == 1 and _incidents(client, iid) == []
+
+
+def test_unmatched_batch_zero_fingerprint_lookups(client, monkeypatch):
+    """⓪ 匹配前置守卫：未命中批零指纹查询（吞吐硬语义——全网 ≈3000 条/s 靠它追平）。"""
+    import asyncio as _aio
+
+    from alerts import ingest
+    from alerts import repository as _repo
+
+    _setup_instance(client)  # 有启用规则在场，未命中仍零查询才算数
+    calls = {"n": 0}
+    real = _repo.get_event_by_fingerprint
+
+    async def counting(*a, **k):
+        calls["n"] += 1
+        return await real(*a, **k)
+
+    monkeypatch.setattr(_repo, "get_event_by_fingerprint", counting)
+    alerts = [{"alert_id": f"zz{i}", "title": f"其他应用告警{i}", "category": "Nginx",
+               "severity": "warning", "fingerprint": f"fp_zz{i}"} for i in range(50)]
+    counters = _aio.run(ingest.ingest_batch(alerts))
+    assert counters["unmatched"] == 50 and counters["queued"] == 0
+    assert calls["n"] == 0, "未命中告警不应触达指纹查询（零 DB 粗滤被破坏）"
