@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -135,7 +136,13 @@ async def ingest_batch(alerts: list[dict[str, Any]], *, cfg: dict[str, Any] | No
     for alert in alerts:
         counters["pulled"] += 1
         try:
-            await _ingest_alert(_normalize(alert), rules, cfg, counters, scope_cache)
+            norm = _normalize(alert)
+            if _trace_hit(norm):  # 追踪首站：证明 Kafka 消费到了 + appIdList 解析成了什么
+                log.warning("[alerts][trace] 消费到 alarmId=%s status=%s category=%s "
+                            "severity=%s app_id=%s 归属=%s",
+                            norm["external_alert_id"], norm["status"], norm["category"],
+                            norm["severity"], norm["app_id"], _alert_appids(norm))
+            await _ingest_alert(norm, rules, cfg, counters, scope_cache)
         except Exception:  # noqa: BLE001 —— 单条坏数据只跳过，不拖垮整批
             log.warning("[alerts][ingest] 单条告警处理失败 alert_id=%s",
                         alert.get("alert_id"), exc_info=True)
@@ -189,6 +196,18 @@ async def run_once() -> dict[str, Any]:
     return counters  # kick 已在 ingest_batch 内完成
 
 
+def _trace_hit(alert: dict[str, Any]) -> bool:
+    """定向追踪缝（联调定位「我这条告警为什么没出现在清单」）：OPENOPS_ALERT_TRACE
+    逗号分隔值命中 alarmId 或归属应用任一 → 该条在每个决策点打 [alerts][trace] warning。
+    不配置零噪音；每次读 env（集合极小，热路径开销可忽略），改配重启即生效。"""
+    raw = os.environ.get("OPENOPS_ALERT_TRACE", "")
+    targets = {t.strip() for t in raw.split(",") if t.strip()}
+    if not targets:
+        return False
+    return (alert.get("external_alert_id") in targets
+            or bool(targets.intersection(_alert_appids(alert))))
+
+
 def _alert_appids(alert: dict[str, Any]) -> list[str]:
     """告警的归属应用全集：annotations.app_id_list（29.11 appIdList 多值 JSON）∪ app_id 首值。
 
@@ -211,6 +230,7 @@ def _alert_appids(alert: dict[str, Any]) -> list[str]:
 async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
                         cfg: dict[str, Any], counters: dict[str, Any],
                         scope_cache: dict[str, list[str] | None] | None = None) -> None:
+    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
     existing = await repo.get_event_by_fingerprint(SOURCE_KEY, alert["fingerprint"])
     if existing is not None:
         within_window = _age_s(existing["last_seen_at"]) < float(cfg["alert_dedup_window_s"])
@@ -218,10 +238,15 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
                                severity=alert["severity"], bump_seen=True)
         if alert["status"] == "resolved":
             counters["resolved"] += 1  # Phase1：resolved 只落库不驱动状态机
+            if trace:
+                log.warning("[alerts][trace] %s 恢复消息：更新既有事件为已恢复，不建单", alarm)
             return
         if within_window:
             counters["deduped"] += 1  # ② 去重窗口内：计数前进 + 所在未完结单 alert_count 同步前进
             await repo.bump_open_incident_counts(str(existing["alert_event_id"]))
+            if trace:
+                log.warning("[alerts][trace] %s 去重窗口内合并（同指纹 %s），不重复建单",
+                            alarm, alert["fingerprint"])
             return
         event_id = str(existing["alert_event_id"])
     else:
@@ -233,6 +258,10 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
     if not by_instance:
         counters["unmatched"] += 1  # 未命中：新告警不落库直接丢；老告警上面 touch 已留痕
+        if trace:
+            log.warning("[alerts][trace] %s 未命中任何启用规则（当前启用 %d 条）——核对规则"
+                        "类别/级别与消息 moType/alarmLevel、订阅是否开启、属主是否在白名单",
+                        alarm, len(rules))
         return
 
     if event_id is None:
@@ -245,6 +274,8 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             starts_at=alert["started_at"], payload=None)
     if alert["status"] == "resolved":
         counters["resolved"] += 1  # 命中规则的 resolved 落库供「已关闭」投影，不建单
+        if trace:
+            log.warning("[alerts][trace] %s 恢复消息：命中规则落库为已恢复，不建单", alarm)
         return
 
     # 应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
@@ -265,6 +296,10 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             continue
         if not alert_apps or not alert_apps.intersection(appids):
             counters["out_of_scope"] += 1
+            if trace:
+                log.warning("[alerts][trace] %s 范围过滤拦截 instance=%s 实例范围=%s "
+                            "归属=%s 交集空——核对 Agent 圈选的应用与消息 appIdList 口径",
+                            alarm, instance_id, appids, sorted(alert_apps))
             continue
         await _route_to_instance(event_id, alert, instance_id, matched_rules, cfg, counters)
 
@@ -272,6 +307,7 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
 async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: str,
                              matched_rules: list[dict[str, Any]], cfg: dict[str, Any],
                              counters: dict[str, Any]) -> None:
+    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
     owner = str(matched_rules[0]["owner_user_id"])
     rule_ids = [str(r["alert_rule_id"]) for r in matched_rules]
     gk = matcher.group_key(instance_id, alert["app_id"], alert["title"])
@@ -284,11 +320,16 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
             await repo.escalate_severity(iid, alert["severity"])
         await repo.link_event(iid, event_id, rule_ids)
         counters["attached"] += 1
+        if trace:
+            log.warning("[alerts][trace] %s 附着到未完结单 incident=%s（同组不新建）", alarm, iid)
         return
 
     last = await repo.latest_ended_at_by_group(gk)
     if last is not None and _age_s(last["ended_at"]) < float(cfg["alert_group_cooldown_s"]):
         counters["cooldown"] += 1  # ④ 组冷却：event 有痕，清单不刷屏
+        if trace:
+            log.warning("[alerts][trace] %s 组冷却中（窗口 %ss）不建新单", alarm,
+                        cfg["alert_group_cooldown_s"])
         return
 
     async def _skip(reason: str) -> None:
@@ -301,6 +342,9 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
             first_alert_at=alert["started_at"])
         await repo.link_event(iid, event_id, rule_ids)
         counters["skipped"] += 1
+        if trace:
+            log.warning("[alerts][trace] %s 建单即跳过 reason=%s incident=%s（清单可见留痕）",
+                        alarm, reason, iid)
 
     sub = await repo.get_subscription(instance_id)
     max_open = (sub or {}).get("max_open_incidents") or int(cfg["alert_max_open_incidents_per_instance"])
@@ -329,3 +373,6 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
         first_alert_at=alert["started_at"])
     await repo.link_event(iid, event_id, rule_ids)
     counters["queued"] += 1
+    if trace:
+        log.warning("[alerts][trace] %s 入队成功 incident=%s instance=%s（等待派发诊断）",
+                    alarm, iid, instance_id)

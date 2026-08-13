@@ -169,3 +169,44 @@ def test_kafka_config_fail_closed(monkeypatch):
     monkeypatch.setenv("OPENOPS_ALERT_KAFKA_PASSWORD", "secret")
     cfg = kafka_source.kafka_config()
     assert cfg["sasl_mechanism"] == "PLAIN" and cfg["security_protocol"] == "SASL_PLAINTEXT"
+
+
+async def test_batch_summary_logs_app_distribution(monkeypatch, caplog):
+    """批摘要 apps 分布（top6+其余；「无」=appIdList 缺失量）：回答「我的应用有没有进这批」。"""
+    import logging
+
+    async def fake_get_config():
+        return {"alert_enabled": True, "alert_pull_batch_limit": 200}
+
+    async def fake_ingest_batch(alerts, cfg=None, rules=None):
+        return {"pulled": len(alerts)}
+
+    monkeypatch.setattr("alerts.service.get_config", fake_get_config)
+    monkeypatch.setattr("alerts.ingest.ingest_batch", fake_ingest_batch)
+
+    msgs = [{"alert_id": "a1", "title": "t", "app_id": "PRJ-1"},
+            {"alert_id": "a2", "title": "t", "app_id": "PRJ-1"},
+            {"alert_id": "a3", "title": "t"}]  # 无 app_id
+    fake = _FakeConsumer([[_Rec(json.dumps(m).encode()) for m in msgs]])
+    with caplog.at_level(logging.WARNING, logger="openops.alerts.kafka"):
+        task = asyncio.create_task(kafka_source.consume_loop(consumer=fake))
+        await _run_briefly(task, lambda: fake.commits >= 1)
+    assert "apps=" in caplog.text
+    assert "'PRJ-1': 2" in caplog.text and "'无': 1" in caplog.text
+
+
+async def test_bad_message_sample_when_trace_enabled(monkeypatch, caplog):
+    """OPENOPS_ALERT_TRACE 开启时坏消息 warning 附原文样本——防「要找的恰好解析失败」盲区。"""
+    import logging
+
+    async def fake_get_config():
+        return {"alert_enabled": True, "alert_pull_batch_limit": 200}
+
+    monkeypatch.setattr("alerts.service.get_config", fake_get_config)
+    monkeypatch.setenv("OPENOPS_ALERT_TRACE", "PRJ-1")
+
+    fake = _FakeConsumer([[_Rec(b"{bad json PRJ-1 ...")]])
+    with caplog.at_level(logging.WARNING, logger="openops.alerts.kafka"):
+        task = asyncio.create_task(kafka_source.consume_loop(consumer=fake))
+        await _run_briefly(task, lambda: fake.commits >= 1)
+    assert "首条样本" in caplog.text and "bad json PRJ-1" in caplog.text

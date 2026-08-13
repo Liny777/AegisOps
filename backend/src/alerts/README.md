@@ -75,6 +75,7 @@ OPENOPS_ALERT=mock OPENOPS_ALERT_MOCK_SEED=1 OPENOPS_ALERT_PULL_INTERVAL_S=15 py
 # 设置页(告警接管 tab)建规则(类型 MySQL/PostgreSQL 任选+默认全选策略) → 15s 内清单出现 → 点「查看处理会话」追问
 # 手动驱动：POST /api/openops/v1/admin/alerts:pull → :dispatch → GET /alerts/events
 # 坑：mock 种子只播一次且游标持久化；重放需拨回 sre_alert_pull_state 游标并热调 alert_dedup_window_s=0
+# 单条定位：OPENOPS_ALERT_TRACE=<alarmId或应用ID> 后 grep "[alerts][trace]" 看决策链（消费到→匹配→范围→去向）
 ```
 
 ## 测试
