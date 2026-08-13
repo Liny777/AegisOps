@@ -89,7 +89,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R9 | appIdList 首元素做 app_id 展示/分组；**范围过滤自 2026-08-13 起用全列表交集**（多 projectId 消息只看首值会误拦） | 接受（UI 未暴露 appids 维度） | ingest._alert_appids（annotations.app_id_list 全集） |
 | R10 | metricName vs 监控策略名 | 存量 strategies 失配 | 迁移 SQL 可选段（清空 strategies） |
 | R11 | duration 单位 | 非纯数字置 None | map_history_row |
-| R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测 | alert_pull_batch_limit 可调 |
+| R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测；内网实测全网 ≈3000 条/s（2026-08-13），匹配前置零 DB 后单循环可扛 4000+/s，追不上先把 alert_pull_batch_limit 调到 1000（admin config:update 运行时生效） | alert_pull_batch_limit 可调 |
 | R13 | ~~projectIds 等四选一必填~~（2026-08-10 内网实证 `[Required]:必须输入应用或产品或子产品或模块或Hrn列表`） | **已解决**：peek 实时取 projectIds，空则本地降级不打请求 | scope_service.peek_effective_appids |
 | R14 | **app_id（appIdList 首元素）缺失的告警会被匹配面拦截**（2026-08-11 宁漏勿越权：无法判定归属即不接管）。内网消息若普遍缺 appIdList，`out_of_scope` 计数会异常高 | 联调期观察批摘要 warning 里的 out_of_scope；缺失面大则找告警平台补字段，或临时用 OPENOPS_SCOPE_OVERRIDE_APPIDS 放行验证 | ingest._instance_scope + 批摘要计数 |
 
