@@ -155,3 +155,29 @@ def test_admin_config_validation_and_update(client):
     assert ok_resp["alert_enabled"] is False
     assert client.get("/api/openops/v1/admin/alerts/config",
                       headers=USER_HEADERS).status_code == 403
+
+
+def test_config_env_override_pins_key(client, monkeypatch):
+    """OPENOPS_<配置键大写> env 钉死缝：最高优先级（盖 DB/接口）；越界收敛；非法忽略。"""
+    import asyncio as _aio
+
+    from alerts import service as _svc
+
+    monkeypatch.setenv("OPENOPS_ALERT_PULL_BATCH_LIMIT", "1000")
+    assert _aio.run(_svc.get_config())["alert_pull_batch_limit"] == 1000
+    # 接口写 DB 成功，但读侧仍被 env 盖住（管理台回显 env 值，语义自洽）
+    got = unwrap(client.post("/api/openops/v1/admin/alerts/config:update", headers=ADMIN_HEADERS,
+                             json={"client_request_id": f"crid_{time.time_ns()}",
+                                   "updates": {"alert_pull_batch_limit": 300},
+                                   "reason": "env 钉死验证"}))["config"]
+    assert got["alert_pull_batch_limit"] == 1000
+
+    monkeypatch.setenv("OPENOPS_ALERT_PULL_BATCH_LIMIT", "9999")   # 越界 → 收敛上界
+    assert _aio.run(_svc.get_config())["alert_pull_batch_limit"] == 1000
+    monkeypatch.setenv("OPENOPS_ALERT_PULL_BATCH_LIMIT", "abc")    # 非法 → 忽略回落 DB 值
+    assert _aio.run(_svc.get_config())["alert_pull_batch_limit"] == 300
+    monkeypatch.delenv("OPENOPS_ALERT_PULL_BATCH_LIMIT")
+    # 清回默认，别污染后续用例（DB 已被上面写成 300）
+    unwrap(client.post("/api/openops/v1/admin/alerts/config:update", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"crid_{time.time_ns()}",
+                             "updates": {"alert_pull_batch_limit": 200}, "reason": "复位"}))
