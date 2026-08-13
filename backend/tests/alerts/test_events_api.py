@@ -53,13 +53,17 @@ def _events(client, headers=USER_HEADERS, **params) -> list[dict]:
 
 
 def _seed_three(client) -> None:
+    """三态种子（2026-08-13 未命中不存档拍板后：全部命中 MySQL 规则，用状态/归属区分）：
+    E1 firing APP-A → 接管中；E2 resolved APP-B → 范围内已恢复（未接管形态）；
+    E3 firing APP-ZZ → 范围外被拦（out_of_scope 留痕行，用户面不可见仅 admin 可见）。"""
     alert_platform_mock._inject(alert_id="ALM-E1", title="MySQL 主库延迟>5s", category="MySQL",
                                 severity="fatal", app_id="APP-A", alert_object="mysql-prod-03",
                                 strategy_name="MySQL 主从延迟监控",
                                 detail_url="https://alert.example/e1")
-    alert_platform_mock._inject(alert_id="ALM-E2", title="Nginx 4xx 升高", category="Nginx",
-                                severity="warning", app_id="APP-B", alert_object="ngx-edge-1")
-    alert_platform_mock._inject(alert_id="ALM-E3", title="范围外告警", category="Nginx",
+    alert_platform_mock._inject(alert_id="ALM-E2", title="MySQL 慢查询升高", category="MySQL",
+                                severity="warning", app_id="APP-B", status="resolved",
+                                alert_object="mysql-prod-05")
+    alert_platform_mock._inject(alert_id="ALM-E3", title="范围外告警", category="MySQL",
                                 severity="warning", app_id="APP-ZZ", alert_object="zz-host")
     assert _pull(client)["pulled"] == 3
 
@@ -71,17 +75,17 @@ def test_visibility_matrix_and_projection(client):
     # 2026-07-31 拍板：未命中规则的告警丢弃不进用户清单——普通清单只见本人接管过的 E1
     rows = _events(client, instance_id=iid)
     by_no = {r["alert_no"]: r for r in rows}
-    assert set(by_no) == {"ALM-E1"}, "未命中的 E2/E3 不应进用户清单"
+    assert set(by_no) == {"ALM-E1"}, "无本人单的 E2/E3 不应进用户清单"
     e1 = by_no["ALM-E1"]
     assert e1["takeover_status"] == "processing" and e1["alert_status"] == "assigned"
     assert e1["detail_url"] == "https://alert.example/e1"
     assert e1["alert_object"] == "mysql-prod-03" and e1["appid"] == "APP-A"
     assert _events(client, instance_id=iid, takeover="none") == []  # 清单无未命中行
 
-    # 弹窗预览（since_days）保留旧口径：scope 内的未命中 E2 可见（订阅面评估），范围外 E3 仍不可见
+    # 弹窗预览（since_days）：scope 内已恢复的 E2 以未接管形态可见，范围外 E3 仍不可见
     pv = {r["alert_no"]: r for r in _events(client, instance_id=iid, since_days=3)}
     assert set(pv) == {"ALM-E1", "ALM-E2"}
-    assert pv["ALM-E2"]["takeover_status"] == "none" and pv["ALM-E2"]["alert_status"] == "unassigned"
+    assert pv["ALM-E2"]["takeover_status"] == "none" and pv["ALM-E2"]["alert_status"] == "closed"
     assert pv["ALM-E2"]["run_clickable"] is False
 
     # 他人视角：未白名单直接 403（比空清单更强的隔离）
@@ -117,11 +121,12 @@ def test_filters_search_and_status_projection(client):
                                 alert_object="mysql-prod-09")
     _pull(client)
 
-    # resolved → 已关闭（未命中行仅预览可见——清单已按拍板丢弃）
+    # resolved → 已关闭（无本人单的行清单不可见，仅预览可见）
     assert _events(client, instance_id=iid, alert_status="closed") == []
     closed = _events(client, instance_id=iid, alert_status="closed", since_days=3)
-    assert [r["alert_no"] for r in closed] == ["ALM-E4"]
-    assert closed[0]["ended_at"] is not None and closed[0]["duration_s"] is not None
+    assert {r["alert_no"] for r in closed} == {"ALM-E2", "ALM-E4"}
+    e4 = next(r for r in closed if r["alert_no"] == "ALM-E4")
+    assert e4["ended_at"] is not None and e4["duration_s"] is not None
 
     # ignored 单 → 接管状态回到 none、告警状态回未分派（留痕单不算接管）
     inc = unwrap(client.get(f"{BASE}/incidents", headers=USER_HEADERS,
@@ -159,8 +164,8 @@ def test_since_days_window_for_rule_preview(client):
     assert "ALM-E1" not in recent and "ALM-E2" in recent  # 窗口外被滤、窗口内保留
     assert "ALM-E1" in {r["alert_no"] for r in _events(client, instance_id=iid)}  # 不带窗口仍可见
 
-    # 预览的典型调用形态：类型 + 级别组 + 3 天窗
-    pv = _events(client, instance_id=iid, since_days=3, category="Nginx", severity="warning")
+    # 预览的典型调用形态：类型 + 级别组 + 3 天窗（E3 同为 warning 但范围外，不可见）
+    pv = _events(client, instance_id=iid, since_days=3, category="MySQL", severity="warning")
     assert {r["alert_no"] for r in pv} == {"ALM-E2"}
     assert client.get(f"{BASE}/events", headers=USER_HEADERS,
                       params={"since_days": 99}).status_code == 422  # 上限 30 由 Query 校验

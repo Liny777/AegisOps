@@ -1,6 +1,7 @@
 """匹配面应用范围过滤（宁漏勿越权 fail-closed，2026-08-11 拍板）。
 
-规则命中只代表类型/级别匹配，还须 alert.app_id ∈ 实例的 omodel 应用范围：
+规则命中只代表类型/级别匹配，还须 告警归属应用（appIdList 全集，2026-08-13 改交集
+判定——内网多 projectId 消息只看首元素会误拦）与实例的 omodel 应用范围有交集：
 peek（override 缝→30s 缓存→实时）→ scope 快照兜底 → 都拿不到 = 整实例拦截。
 测试实例绑 ws_pay_abc → mock omodel 范围 APP-A/B/C。
 """
@@ -58,12 +59,27 @@ def _incidents(client, iid: str) -> list[dict]:
 def test_out_of_scope_app_blocked(client):
     """规则命中但 app 不在实例范围（APP-ZZ ∉ APP-A/B/C）→ 拦截计数，不建单。"""
     iid = _setup_instance(client)
-    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL",
-                                severity="fatal", app_id="APP-ZZ")
+    alert_platform_mock._inject(alert_id="ALM-SCOPE-1", title="MySQL 主库延迟>5s",
+                                category="MySQL", severity="fatal", app_id="APP-ZZ")
     counters = _pull(client)
     assert counters["out_of_scope"] == 1 and counters["queued"] == 0
     assert counters["unmatched"] == 0  # 语义区分：命中了规则但越权 ≠ 未命中
     assert _incidents(client, iid) == []
+    # 被拦的行仍落库留痕（未命中不存档的例外面）：排查抓手 = 查 event.appid 对照范围
+    stored = unwrap(client.get("/api/openops/v1/admin/alerts/events",
+                               headers=ADMIN_HEADERS))["items"]
+    assert any(r["alert_no"] == "ALM-SCOPE-1" for r in stored)
+
+
+def test_appid_list_intersection_allows(client):
+    """29.11 多值 appIdList：首元素范围外但列表含 APP-A → 交集非空放行（只看首值会误拦）。"""
+    iid = _setup_instance(client)
+    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL",
+                                severity="fatal", app_id="APP-ZZ",
+                                annotations={"app_id_list": '["APP-ZZ", "APP-A"]'})
+    counters = _pull(client)
+    assert counters["queued"] == 1 and counters["out_of_scope"] == 0
+    assert len(_incidents(client, iid)) == 1
 
 
 def test_missing_app_id_blocked(client):

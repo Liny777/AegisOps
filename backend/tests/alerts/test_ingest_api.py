@@ -156,6 +156,18 @@ def test_summary_counts_and_change_seq(client):
     assert s["queued"] == 1 and s["attention"] == 1 and s["latest_change_seq"] > 0
 
 
+def test_unmatched_alert_not_archived(client):
+    """②' 未命中不存档（2026-08-13 内网反馈：全网 Kafka 流量全存会灌爆 event 表）。"""
+    _setup_instance(client)
+    alert_platform_mock._inject(alert_id="ALM-UNM1", title="Nginx 4xx 升高", category="Nginx",
+                                severity="warning", app_id="APP-A")
+    counters = _pull(client)
+    assert counters["unmatched"] == 1
+    stored = unwrap(client.get("/api/openops/v1/admin/alerts/events",
+                               headers=ADMIN_HEADERS))["items"]
+    assert not any(r["alert_no"] == "ALM-UNM1" for r in stored), "未命中告警不应存档"
+
+
 def test_resolved_only_lands_event_without_incident(client):
     iid = _setup_instance(client)
     alert_platform_mock._inject(title="已恢复的告警", category="MySQL", status="resolved",

@@ -1,4 +1,4 @@
-"""摄入管线：拉取 → 指纹去重 → 内存匹配 → 附着式聚合/上限/冷却 → incident(queued)。
+"""摄入管线：拉取 → 指纹去重 → 内存匹配（未命中即丢，不存档）→ 落库 → 范围过滤 → 聚合/上限/冷却 → incident(queued)。
 
 单轮入口 `run_once()` 供 pytest 与管理端 `POST /admin/alerts:pull` 直调（对齐
 asset_reconcile 的 reconcile() 可直调先例）；后台循环由 dispatcher.start_background
@@ -7,12 +7,15 @@ asset_reconcile 的 reconcile() 可直调先例）；后台循环由 dispatcher.
 削峰分层（与设计文档编号一致）：
 ① 拉取批量背压（单批 alert_pull_batch_limit、单轮 ≤5 批）
 ② fingerprint 去重（dedup_window_s 内同指纹只 seen_count++，不触发匹配）
+②' 未命中丢弃（2026-08-13 内网反馈：全网 Kafka 流量全存档会灌爆 event 表——
+   未命中任何规则的告警只计数不落库；命中的才存，被范围过滤拦下的也存作排查留痕）
 ③ 附着式聚合（group_key 有未完结 incident → 附着不新建）
 ④ 组冷却（group_cooldown_s 内同组不建新单，event 留痕）
 ⑤ 有界队列 + 溢出丢弃（实例/全局上限 → skipped 留痕；高 severity 可踢队尾低者）
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -186,6 +189,25 @@ async def run_once() -> dict[str, Any]:
     return counters  # kick 已在 ingest_batch 内完成
 
 
+def _alert_appids(alert: dict[str, Any]) -> list[str]:
+    """告警的归属应用全集：annotations.app_id_list（29.11 appIdList 多值 JSON）∪ app_id 首值。
+
+    内网消息 appIdList 常带多个 projectId，只看首元素会把「归属列表第 2 个才是
+    你应用」的告警误拦（2026-08-13 内网 incident 断流反馈）——范围过滤按交集判定。
+    JSON 解析失败（截断/脏数据）退回单值口径。
+    """
+    ids: list[str] = []
+    raw = (alert.get("annotations") or {}).get("app_id_list") or ""
+    if raw:
+        try:
+            ids = [str(a) for a in json.loads(raw) if a]
+        except ValueError:
+            ids = []
+    if alert["app_id"] and alert["app_id"] not in ids:
+        ids.insert(0, alert["app_id"])
+    return ids
+
+
 async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
                         cfg: dict[str, Any], counters: dict[str, Any],
                         scope_cache: dict[str, list[str] | None] | None = None) -> None:
@@ -203,6 +225,17 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             return
         event_id = str(existing["alert_event_id"])
     else:
+        event_id = None  # ②' 落库延后到规则命中之后：未命中的全网告警不存档
+
+    by_instance: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        if matcher.match(alert, rule.get("match_json") or {}):
+            by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
+    if not by_instance:
+        counters["unmatched"] += 1  # 未命中：新告警不落库直接丢；老告警上面 touch 已留痕
+        return
+
+    if event_id is None:
         event_id = await repo.insert_event(
             source_key=SOURCE_KEY, external_alert_id=alert["external_alert_id"],
             fingerprint=alert["fingerprint"], alert_status=alert["status"],
@@ -210,24 +243,17 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
             alert_object=alert["alert_object"], strategy_name=alert["strategy_name"],
             appid=alert["app_id"], labels=alert["labels"], annotations=alert["annotations"],
             starts_at=alert["started_at"], payload=None)
-        if alert["status"] == "resolved":
-            counters["resolved"] += 1
-            return
-
-    by_instance: dict[str, list[dict[str, Any]]] = {}
-    for rule in rules:
-        if matcher.match(alert, rule.get("match_json") or {}):
-            by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
-    if not by_instance:
-        counters["unmatched"] += 1
+    if alert["status"] == "resolved":
+        counters["resolved"] += 1  # 命中规则的 resolved 落库供「已关闭」投影，不建单
         return
+
     # 应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
-    # 匹配，还须 alert.app_id ∈ 实例的 omodel 应用范围——否则一条 MySQL 规则会接管全网
-    # MySQL 告警，诊断越权读别人应用的数据。范围不可得（omodel 挂且无快照）整实例拦截并
-    # warning 留痕；app_id 缺失同拦（无法判定归属即越权风险，R14 联调观察计数）。
-    # 正常越权过滤不打日志（风暴期会刷屏），计数走批摘要 warning。
+    # 匹配，还须 告警归属应用 ∩ 实例的 omodel 应用范围 非空——否则一条 MySQL 规则会接管
+    # 全网 MySQL 告警，诊断越权读别人应用的数据。范围不可得（omodel 挂且无快照）整实例
+    # 拦截并 warning 留痕；归属应用缺失同拦（无法判定归属即越权风险，R14 联调观察计数）。
+    # 正常越权过滤不打日志（风暴期会刷屏），计数走批摘要 warning；event 行已落库可查 appid。
     scope_cache = scope_cache if scope_cache is not None else {}
-    routed = False
+    alert_apps = set(_alert_appids(alert))
     for instance_id, matched_rules in by_instance.items():
         appids = await _instance_scope(instance_id, str(matched_rules[0]["owner_user_id"]),
                                        scope_cache)
@@ -237,7 +263,7 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
                         "（omodel 不可达且无 scope 快照——核对 OPENOPS_OMODEL_* 或让属主先跑一次任务）",
                         instance_id, alert["external_alert_id"])
             continue
-        if not alert["app_id"] or alert["app_id"] not in appids:
+        if not alert_apps or not alert_apps.intersection(appids):
             counters["out_of_scope"] += 1
             continue
         await _route_to_instance(event_id, alert, instance_id, matched_rules, cfg, counters)
