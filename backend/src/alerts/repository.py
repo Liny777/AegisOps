@@ -667,9 +667,11 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
     total_row = await q_one(
         f"select count(*) as n from sre_alert_event e {_LATERAL} where {cond}", params)
     params.update({"lim": page_size, "off": (page - 1) * page_size})
+    # 排序键必须稳定（creation_date + id）：last_seen_at 会被 dedup touch 高频前移，
+    # 内网流量下翻页窗口持续洗牌，第 2 页看到的还是刚顶上来的同一批行（2026-08-13 反馈）。
     rows = await q_all(
         f"select e.*, i.* from sre_alert_event e {_LATERAL} where {cond} "
-        f"order by e.last_seen_at desc limit %(lim)s offset %(off)s",
+        f"order by e.creation_date desc, e.alert_event_id desc limit %(lim)s offset %(off)s",
         params,
     )
     return rows, int(total_row["n"]) if total_row else 0

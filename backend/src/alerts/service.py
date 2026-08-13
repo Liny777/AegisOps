@@ -644,7 +644,8 @@ async def list_alert_events(user: dict[str, Any], *, instance_id: str | None,
     uid = user["user_id"]
     if instance_id:
         _owner_instance(await agent_teams.get_instance(instance_id), uid)
-    # 2026-07-31 拍板：未命中规则的告警**不进用户清单**（丢弃；事件仍落库 30 天）。
+    # 2026-07-31 拍板：未命中规则的告警**不进用户清单**（2026-08-13 起未命中根本不落库；
+    # 落库的只剩命中行——含被范围过滤拦下的留痕行）。
     # 空 scope 列表 = 只看本人接管过的单；仅弹窗预览（since_days）保留旧口径
     # 「appid∈该 Agent scope 快照的未命中告警」——预览的存在意义就是看订阅面。
     rows, total = await repo.list_events(
