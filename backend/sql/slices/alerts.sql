@@ -134,6 +134,7 @@ CREATE TABLE IF NOT EXISTS sre_alert_incident (
   started_at timestamptz,
   ended_at timestamptz,
   retry_count integer NOT NULL DEFAULT 0,
+  manual_priority boolean NOT NULL DEFAULT false,
   creation_date timestamptz NOT NULL DEFAULT now(),
   last_update_date timestamptz NOT NULL DEFAULT now(),
   created_by text NOT NULL DEFAULT 'system',
@@ -176,6 +177,7 @@ COMMENT ON COLUMN sre_alert_incident.queued_at IS '入队时间（队列 FIFO �
 COMMENT ON COLUMN sre_alert_incident.started_at IS '诊断开始时间（queued→diagnosing）';
 COMMENT ON COLUMN sre_alert_incident.ended_at IS '终态时间（completed/failed/skipped/ignored）';
 COMMENT ON COLUMN sre_alert_incident.retry_count IS '重试次数（起 run 失败退避重试与重启 requeue 共用计数）';
+COMMENT ON COLUMN sre_alert_incident.manual_priority IS '管理员置顶（§5.3 软插队）：有效优先级恒 -1 排队首；仅 queued 可置顶/取消，不打断在跑诊断';
 COMMENT ON COLUMN sre_alert_incident.creation_date IS '创建时间';
 COMMENT ON COLUMN sre_alert_incident.last_update_date IS '最后更新时间';
 COMMENT ON COLUMN sre_alert_incident.created_by IS '创建人（恒 system）';
@@ -210,37 +212,7 @@ COMMENT ON COLUMN sre_alert_incident_event.created_by IS '创建人（恒 system
 COMMENT ON COLUMN sre_alert_incident_event.last_updated_by IS '最后更新人（恒 system）';
 COMMENT ON COLUMN sre_alert_incident_event.deleted_at IS '软删除时间，NULL 表示未删除';
 
--- 5) 实例级订阅设置（一实例一行）：总开关 + 限额覆盖 + Phase2 通知偏好预留
-CREATE TABLE IF NOT EXISTS sre_alert_subscription (
-  subscription_id uuid NOT NULL PRIMARY KEY,
-  agent_team_instance_id uuid NOT NULL,
-  owner_user_id text NOT NULL,
-  enabled boolean NOT NULL DEFAULT true,
-  max_open_incidents integer,
-  settings_json jsonb NOT NULL DEFAULT '{}'::jsonb,
-  creation_date timestamptz NOT NULL DEFAULT now(),
-  last_update_date timestamptz NOT NULL DEFAULT now(),
-  created_by text NOT NULL DEFAULT 'system',
-  last_updated_by text NOT NULL DEFAULT 'system',
-  deleted_at timestamptz
-);
-CREATE UNIQUE INDEX IF NOT EXISTS ux_alert_sub_inst
-  ON sre_alert_subscription (agent_team_instance_id) WHERE deleted_at IS NULL;
-
-COMMENT ON TABLE sre_alert_subscription IS '实例级告警接管订阅（一实例一行）：总开关一键暂停但保留规则；无行=未开通接管';
-COMMENT ON COLUMN sre_alert_subscription.subscription_id IS '订阅主键';
-COMMENT ON COLUMN sre_alert_subscription.agent_team_instance_id IS 'AgentTeam 实例 ID（唯一）';
-COMMENT ON COLUMN sre_alert_subscription.owner_user_id IS '实例 owner 工号';
-COMMENT ON COLUMN sre_alert_subscription.enabled IS '实例级总开关（三级开关第二级：全局 alert_enabled ＞ 本开关 ＞ 规则 enabled）';
-COMMENT ON COLUMN sre_alert_subscription.max_open_incidents IS '实例未完结聚合单上限覆盖；NULL=用全局 alert_max_open_incidents_per_instance';
-COMMENT ON COLUMN sre_alert_subscription.settings_json IS 'Phase2 预留：通知渠道/风暴策略等实例级覆盖';
-COMMENT ON COLUMN sre_alert_subscription.creation_date IS '创建时间';
-COMMENT ON COLUMN sre_alert_subscription.last_update_date IS '最后更新时间';
-COMMENT ON COLUMN sre_alert_subscription.created_by IS '创建人工号';
-COMMENT ON COLUMN sre_alert_subscription.last_updated_by IS '最后更新人工号';
-COMMENT ON COLUMN sre_alert_subscription.deleted_at IS '软删除时间，NULL 表示未删除';
-
--- 6) 拉取游标（运行态，一源一行；刻意不入 sre_platform_runtime_config——后者有 reason+审计语义）
+-- 5) 拉取游标（运行态，一源一行；刻意不入 sre_platform_runtime_config——后者有 reason+审计语义）
 CREATE TABLE IF NOT EXISTS sre_alert_pull_state (
   pull_state_id uuid NOT NULL PRIMARY KEY,
   source_key text NOT NULL,

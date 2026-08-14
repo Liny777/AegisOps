@@ -11,13 +11,13 @@ from fastapi import APIRouter, Query
 from alerts import service
 from alerts.schemas import (
     AlertConfigUpdateRequest,
+    AlertPrioritizeRequest,
     BatchRulesRequest,
     CreateRuleRequest,
     DeleteRuleRequest,
     FeedbackRequest,
     GrantUpdateRequest,
     IncidentActionRequest,
-    SubscriptionUpdateRequest,
     UpdateRuleRequest,
 )
 from api.deps import Admin, User
@@ -60,16 +60,6 @@ async def delete_rule(rule_id: str, req: DeleteRuleRequest, user: User):
 
 
 # ---- 实例级订阅（总开关） ----
-@user_router.get("/subscription")
-async def get_subscription(user: User, instance_id: str = Query(min_length=1)):
-    return ok(await service.get_subscription(user, instance_id))
-
-
-@user_router.post("/subscription:update")
-async def update_subscription(req: SubscriptionUpdateRequest, user: User):
-    return ok(await service.update_subscription(user, req))
-
-
 # ---- 事件清单（全量告警视角，v2 需求 1.3） ----
 @user_router.get("/events")
 async def list_events(
@@ -174,6 +164,12 @@ async def feedback_incident(incident_id: str, req: FeedbackRequest, user: User):
 
 
 # ---- 管理面：alert 域热更新配置 + 手动拉取 ----
+@admin_router.post("/incidents/{incident_id}:prioritize")
+async def prioritize_incident(incident_id: str, req: AlertPrioritizeRequest, admin: Admin):
+    """置顶处理（§9.3 接口 22）：排队首不杀在跑的；cancel=true 取消置顶。"""
+    return ok(await service.prioritize_incident(admin, incident_id, req))
+
+
 @admin_router.get("/config")
 async def get_config(_admin: Admin):
     # bounds/env_locked 供管理台运行参数面板：渲染输入范围 + 禁用被 env 钉死的键

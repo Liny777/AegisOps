@@ -1,4 +1,4 @@
-"""sre_alert_* 六表仓储（切片自有）。
+"""sre_alert_* 六表仓储（切片自有；2026-08-15 订阅表下线后为六表）。
 
 铁律：本模块只写 sre_alert_* 六表；core 表（sre_agent_run / sre_task_state）的写操作
 一律走 infra.repositories.runs / task_states 的公开函数，切片对 core 表保持只读。
@@ -107,18 +107,15 @@ async def soft_delete_rule(rule_id: str, by: str) -> int:
 
 
 async def list_enabled_rules() -> list[dict[str, Any]]:
-    """matcher 用：全部「白名单内 + 订阅开 + 规则开」的规则（内存匹配的加载面）。
+    """matcher 用：全部「白名单内 + 规则开」的规则（内存匹配的加载面）。
 
-    inner join 订阅表 = 「无订阅行的实例视为未开通接管」；inner join 白名单 =
-    名单外用户的存量规则**不参与匹配**（算力保护 fail-closed：被移出名单即刻断流，
-    不必去关他的订阅/规则）。
+    inner join 白名单 = 名单外用户的存量规则**不参与匹配**（算力保护 fail-closed：
+    被移出名单即刻断流，不必去关他的规则）。2026-08-15 拍板去掉订阅维度：实例总
+    开关下线（三级开关变两级：全局热停 ＞ 规则），批量启停规则即整体暂停。
     """
     return await q_all(
         """
         select r.* from sre_alert_rule r
-        join sre_alert_subscription s
-          on s.agent_team_instance_id = r.agent_team_instance_id
-         and s.deleted_at is null and s.enabled
         join sre_alert_user_grant g
           on g.user_id = r.owner_user_id and g.deleted_at is null
         where r.enabled and r.deleted_at is null
@@ -160,44 +157,6 @@ async def set_user_grant(user_id: str, granted: bool, by: str) -> None:
             "last_update_date = now(), last_updated_by = %(by)s "
             "where user_id = %(u)s and deleted_at is null",
             {"u": user_id, "by": by})
-
-
-# ============================ subscription ============================
-
-
-async def get_subscription(instance_id: str) -> dict[str, Any] | None:
-    return await q_one(
-        "select * from sre_alert_subscription where agent_team_instance_id=%(i)s and deleted_at is null",
-        {"i": instance_id},
-    )
-
-
-async def upsert_subscription(*, instance_id: str, owner: str, enabled: bool,
-                              max_open_incidents: int | None, by: str) -> None:
-    params = {"i": instance_id, "o": owner, "e": enabled, "m": max_open_incidents, "by": by,
-              "id": str(uuid.uuid4())}
-    update_sql = """
-        update sre_alert_subscription
-        set enabled=%(e)s, max_open_incidents=%(m)s, owner_user_id=%(o)s,
-            last_update_date=now(), last_updated_by=%(by)s
-        where agent_team_instance_id=%(i)s and deleted_at is null
-        """
-    if await exec1(update_sql, params):
-        return
-    await exec1(
-        """
-        insert into sre_alert_subscription
-          (subscription_id, agent_team_instance_id, owner_user_id, enabled, max_open_incidents,
-           created_by, last_updated_by)
-        select %(id)s, %(i)s, %(o)s, %(e)s, %(m)s, %(by)s, %(by)s
-        where not exists (
-          select 1 from sre_alert_subscription
-          where agent_team_instance_id=%(i)s and deleted_at is null
-        )
-        """,
-        params,
-    )
-    await exec1(update_sql, params)  # insert 竞争落败方兜底：赢家行上再套一次目标值
 
 
 # ============================ events ============================
@@ -383,25 +342,51 @@ async def count_queued_global() -> int:
     return int(row["n"]) if row else 0
 
 
-async def lowest_queued(severity_order: list[str]) -> dict[str, Any] | None:
-    """队列满时的被踢候选：severity 最低、最晚入队的 queued 单。"""
-    order_expr = "case severity " + " ".join(
-        f"when '{s}' then {i}" for i, s in enumerate(severity_order)
-    ) + " else 99 end"
+def _rank_expr(severity_order: list[str]) -> str:
+    return ("case severity " + " ".join(f"when '{s}' then {i}" for i, s in enumerate(severity_order))
+            + " else 99 end")
+
+
+def _eff_priority_expr(severity_order: list[str]) -> str:
+    """有效优先级（§5.3 三级队列、老化与插队，2026-08-15 落地）：
+
+        manual_priority ? -1 : greatest(0, severity_rank − floor(等待分钟 / aging))
+
+    置顶恒 -1 高于致命；老化每满 alert_aging_minutes 升一档、封顶致命档——普通告警
+    不会被持续流入的高级别永远压住（防饿死）。取队/踢除/位次三处必须同用本表达式。
+    需要绑定参数 %(aging)s（分钟，≥1）。
+    """
+    return (f"case when manual_priority then -1 else greatest(0, {_rank_expr(severity_order)}"
+            f" - floor(extract(epoch from (now() - queued_at)) / 60 / greatest(1, %(aging)s))::int) end")
+
+
+async def lowest_queued(severity_order: list[str], aging_minutes: int) -> dict[str, Any] | None:
+    """队列满时的被踢候选：有效优先级最低、最晚入队的 queued 单（置顶单天然不被踢）。"""
+    eff = _eff_priority_expr(severity_order)
     return await q_one(
         f"select * from sre_alert_incident where incident_state='queued' and deleted_at is null "
-        f"order by {order_expr} desc, queued_at desc limit 1",
+        f"order by {eff} desc, queued_at desc limit 1",
+        {"aging": int(aging_minutes)},
     )
 
 
-async def pick_next_queued(severity_order: list[str]) -> dict[str, Any] | None:
-    """dispatcher 取队首：severity 高优先，同级 FIFO。"""
-    order_expr = "case severity " + " ".join(
-        f"when '{s}' then {i}" for i, s in enumerate(severity_order)
-    ) + " else 99 end"
+async def pick_next_queued(severity_order: list[str], aging_minutes: int) -> dict[str, Any] | None:
+    """dispatcher 取队首：有效优先级 ASC（置顶 -1 最先），同级 FIFO。"""
+    eff = _eff_priority_expr(severity_order)
     return await q_one(
         f"select * from sre_alert_incident where incident_state='queued' and deleted_at is null "
-        f"order by {order_expr} asc, queued_at asc limit 1",
+        f"order by {eff} asc, queued_at asc limit 1",
+        {"aging": int(aging_minutes)},
+    )
+
+
+async def set_manual_priority(incident_id: str, on: bool, by: str) -> int:
+    """置顶/取消（仅 queued；rowcount=0 = 非排队态，调用方转 409）。"""
+    return await exec1(
+        "update sre_alert_incident set manual_priority=%(p)s, last_update_date=now(), "
+        "last_updated_by=%(by)s where alert_incident_id=%(i)s and incident_state='queued' "
+        "and deleted_at is null",
+        {"i": incident_id, "p": on, "by": by},
     )
 
 
@@ -520,19 +505,25 @@ async def list_incidents(*, owner: str, instance_id: str | None, states: list[st
     return rows, int(total_row["n"]) if total_row else 0
 
 
-async def queue_position(row: dict[str, Any], severity_order: list[str]) -> int:
-    """queued 单的队列位次（1-based）：severity 高优先、同级 FIFO，与 pick_next_queued 同序。"""
-    order_expr = "case severity " + " ".join(
-        f"when '{s}' then {i}" for i, s in enumerate(severity_order)
-    ) + " else 99 end"
+async def queue_position(row: dict[str, Any], severity_order: list[str],
+                         aging_minutes: int) -> int:
+    """queued 单的队列位次（1-based）：与 pick_next_queued 同用有效优先级表达式。
+
+    目标单的有效优先级同样在 SQL 里按绑定值现算（老化随 now() 流动，Python 侧
+    预算会与行表达式产生时钟偏差）。
+    """
+    eff = _eff_priority_expr(severity_order)
     my_rank = severity_order.index(str(row["severity"])) if str(row["severity"]) in severity_order else 99
+    my_eff = (f"case when %(mp)s then -1 else greatest(0, %(r)s"
+              f" - floor(extract(epoch from (now() - %(q)s::timestamptz)) / 60 / greatest(1, %(aging)s))::int) end")
     ahead = await q_one(
         f"""
         select count(*) as n from sre_alert_incident
         where incident_state='queued' and deleted_at is null
-          and ({order_expr} < %(r)s or ({order_expr} = %(r)s and queued_at < %(q)s))
+          and ({eff} < ({my_eff}) or ({eff} = ({my_eff}) and queued_at < %(q)s))
         """,
-        {"r": my_rank, "q": row["queued_at"]},
+        {"r": my_rank, "q": row["queued_at"], "mp": bool(row.get("manual_priority")),
+         "aging": int(aging_minutes)},
     )
     return int(ahead["n"]) + 1 if ahead else 1
 
@@ -625,7 +616,7 @@ _LATERAL = """
              x.agent_result as inc_agent_result, x.user_feedback as inc_user_feedback,
              x.feedback_note as inc_feedback_note, x.agent_run_id as inc_run_id,
              x.owner_user_id as inc_owner, x.agent_team_instance_id as inc_instance_id,
-             x.result_summary as inc_summary
+             x.result_summary as inc_summary, x.manual_priority as inc_manual_priority
       from sre_alert_incident x
       join sre_alert_incident_event l
         on l.alert_incident_id = x.alert_incident_id

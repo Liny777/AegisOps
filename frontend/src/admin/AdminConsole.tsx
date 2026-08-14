@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
-import { api } from "../lib/api";
+import { api, alertEventMeta } from "../lib/api";
 import type { AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
@@ -53,8 +53,11 @@ export function AdminConsole() {
   // 用户表标签筛选（服务端 tag 过滤，与 q 为 AND）：tagFilter=""=全部；userTags=下拉候选（标签全集）
   const [tagFilter, setTagFilter] = useState("");
   const [userTags, setUserTags] = useState<string[]>([]);
+  // 告警事件表（管理员全量视角 §3.0 D1）：按用户精确 + 编号/类型/对象模糊，两者 AND
+  const [alertUserQ, setAlertUserQ] = useState("");
+  const [alertSearchQ, setAlertSearchQ] = useState("");
 
-  const isTable = ["templates", "model-assets", "model-templates", "skills", "users"].includes(page);
+  const isTable = ["templates", "model-assets", "model-templates", "skills", "users", "alerts"].includes(page);
 
   const load = useCallback(async () => {
     if (page === "templates") {
@@ -87,15 +90,17 @@ export function AdminConsole() {
         setTable(await api.getAdminTable("templates"));
       }
     } else if (isTable) {
-      setTable(await api.getAdminTable(page, {
+      setTable(await api.getAdminTable(page === "alerts" ? "alert-events" : page, {
         page: tablePage, pageSize: ADMIN_PAGE_SIZE,
-        q: page === "users" ? userQ.trim() || undefined : undefined,
+        q: page === "users" ? userQ.trim() || undefined
+           : page === "alerts" ? alertSearchQ.trim() || undefined : undefined,
         tag: page === "users" ? tagFilter || undefined : undefined,
+        userId: page === "alerts" ? alertUserQ.trim() || undefined : undefined,
       }));
     } else if (page === "audit") {
       setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter, alertUserQ, alertSearchQ]);
 
   // 进用户页拉标签下拉候选（标签全集）；离开或失败置空，不阻断列表
   useEffect(() => {
@@ -103,8 +108,8 @@ export function AdminConsole() {
     api.adminListUserTags().then(setUserTags).catch(() => setUserTags([]));
   }, [page]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); }, [page]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ(""); }, [page]);
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQ, alertSearchQ]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
@@ -127,6 +132,21 @@ export function AdminConsole() {
     else if (key === "annotate") setAnnotRow(toolsRaw.find((r) => String(r.tool_catalog_id) === rowId) ?? null);
     else if (key === "mt-grants") setGrantsFor({ id: rowId, name: rowName });
     else if (key === "toggle-bind" && tplDrill) void toggleBind(rowId);
+    else if (key === "alert-open") {
+      const meta = alertEventMeta[rowId];
+      if (meta?.detailUrl) window.open(meta.detailUrl, "_blank", "noopener");
+    }
+    else if (key === "alert-prioritize" || key === "alert-deprioritize") {
+      // §5.3 软插队：reason 必填写审计（照 destroySandboxContainer 的 prompt 先例）
+      const cancel = key === "alert-deprioritize";
+      const why = window.prompt(cancel ? "取消置顶原因（写审计）：" : "置顶原因（写审计）：");
+      if (!why || !why.trim()) return;
+      const meta = alertEventMeta[rowId];
+      if (!meta?.incidentId) return;
+      setActionErr("");
+      void api.adminPrioritizeIncident(meta.incidentId, why.trim(), cancel)
+        .then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "alert-grant" || key === "alert-revoke") {
       // 告警接管白名单（算力有限按需开通）：即点即切，错误进动作横幅
       setActionErr("");
@@ -247,6 +267,22 @@ export function AdminConsole() {
         {page === "model-templates" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setMtEdit({ id: null })}>{table.primary.label}</Button>
         ) : null}
+        {page === "alerts" ? (
+          <>
+            <input
+              placeholder="按用户查看（user_id 精确）"
+              value={alertUserQ}
+              onChange={(e) => setAlertUserQ(e.target.value)}
+              style={{ width: 200, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
+            />
+            <input
+              placeholder="搜索 编号/类型/对象"
+              value={alertSearchQ}
+              onChange={(e) => setAlertSearchQ(e.target.value)}
+              style={{ width: 200, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
+            />
+          </>
+        ) : null}
         {page === "users" ? (
           <input
             placeholder="搜索 user_id / 展示名"
@@ -330,6 +366,8 @@ export function AdminConsole() {
           ) : null}
 
           {page === "alerts" ? <AlertOpsPanel /> : null}
+          {page === "alerts" ? <div style={{ height: 14 }} /> : null}
+          {page === "alerts" ? <AlertPoolPanel /> : null}
 
           {page === "sandbox" ? <SandboxPanel /> : null}
 
@@ -558,6 +596,109 @@ function ModelGrantsDialog({ target, onClose, onSaved }: {
   );
 }
 
+/** 分池并发（§5.1 两层闸的任务级，2026-08-15 落地）：交互硬保底 + 告警硬保底 + 弹性共享区。
+ * 三键存 sandbox 域（交互准入在 core 读自己域），本卡只是 UI 聚合——编辑走 saveSandboxCfg
+ * 同一套 reason+审计。弹性=total−两保底，派生只读。 */
+const POOL_KEYS: Record<string, string> = {
+  model_total_concurrency: "任务级并发总额 M",
+  reserve_interactive: "交互硬保底（告警永远抢不走）",
+  reserve_alert: "告警硬保底（对话高峰也保留）",
+};
+
+function AlertPoolPanel() {
+  const [cfg, setCfg] = useState<Record<string, string> | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(() => {
+    api.getSandboxCfg().then((rows) => {
+      const picked: Record<string, string> = {};
+      for (const r of rows) if (r.key in POOL_KEYS) picked[r.key] = r.val;
+      setCfg(picked);
+    }).catch((e) => setErr((e as Error).message));
+  }, []);
+  useEffect(load, [load]);
+
+  if (!cfg) {
+    return <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px", fontSize: 12.5, color: err ? color.dangerText : color.textSubtle }}>{err || "加载中…"}</div>;
+  }
+  const num = (v: string | undefined, dflt: number) => { const n = Number(v); return Number.isFinite(n) && v !== undefined && v !== "" ? n : dflt; };
+  const view = editing ? draft : cfg;
+  const total = num(view.model_total_concurrency, 12);
+  const ri = num(view.reserve_interactive, 5);
+  const ra = num(view.reserve_alert, 2);
+  const elastic = Math.max(0, total - ri - ra);
+
+  const startEdit = () => { setDraft({ ...cfg }); setEditing(true); setSaved(false); setErr(""); };
+  const cancel = () => { setEditing(false); setReason(""); setErr(""); };
+  const confirm = async () => {
+    if (!reason.trim()) { setErr("请填写变更原因——配置修改必须写审计。"); return; }
+    const updates: Record<string, unknown> = {};
+    for (const k of Object.keys(POOL_KEYS)) if (draft[k] !== cfg[k]) updates[k] = draft[k];
+    if (!Object.keys(updates).length) { setErr("没有改动。"); return; }
+    try {
+      await api.saveSandboxCfg(updates, reason.trim());
+      setEditing(false); setReason(""); setErr(""); setSaved(true);
+      load();
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 6 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>分池并发（交互 / 告警）</div>
+          <div style={{ fontSize: 12, color: color.textSubtle }}>
+            两池各留硬保底、超出共抢弹性区；保存即生效。运营口径：交互上限 {ri}+{elastic}={ri + elastic}、告警上限 {ra}+{elastic}={ra + elastic}；夜间告警最多 {ra + elastic}（交互 {ri} 恒留给值班）。
+          </div>
+        </div>
+        {!editing ? (
+          <Button variant="secondary" icon="pencil" onClick={startEdit} style={{ fontSize: 12.5, padding: "8px 15px" }}>编辑</Button>
+        ) : (
+          <Pill tone="warning">编辑中</Pill>
+        )}
+      </div>
+      {saved ? <div style={{ fontSize: 12, color: color.goodText, marginBottom: 8 }}>已保存并生效。</div> : null}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {Object.keys(POOL_KEYS).map((k) => (
+          <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px" }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600 }}>{POOL_KEYS[k]}</div>
+              <div style={{ fontSize: 11, color: color.textFaint, fontFamily: "ui-monospace, monospace" }}>{k}</div>
+            </div>
+            {editing ? (
+              <input type="number" value={draft[k] ?? ""} min={0}
+                     onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))}
+                     style={{ width: 110, height: 30, border: `1px solid ${color.border}`, borderRadius: radius.sm, fontSize: 12.5, padding: "0 8px", textAlign: "right" }} />
+            ) : (
+              <span style={{ fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{cfg[k] ?? "—"}</span>
+            )}
+          </div>
+        ))}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", background: color.pageBg, borderRadius: radius.md }}>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600 }}>弹性共享区（派生只读）</div>
+            <div style={{ fontSize: 11, color: color.textFaint, fontFamily: "ui-monospace, monospace" }}>= M − 交互保底 − 告警保底</div>
+          </div>
+          <span style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{elastic}</span>
+        </div>
+      </div>
+      {editing ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${color.border}` }}>
+          <input value={reason} placeholder="变更原因（必填，写审计）" onChange={(e) => setReason(e.target.value)}
+                 style={{ flex: 1, height: 32, border: `1px solid ${color.border}`, borderRadius: radius.sm, fontSize: 12.5, padding: "0 10px" }} />
+          <Button variant="secondary" onClick={cancel} style={{ fontSize: 12.5, padding: "8px 14px" }}>取消</Button>
+          <Button onClick={() => void confirm()} style={{ fontSize: 12.5, padding: "8px 14px" }}>确认生效</Button>
+        </div>
+      ) : null}
+      {err && cfg ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
+    </div>
+  );
+}
+
 /** 告警接管运行参数（2026-08-14）：只读 → 编辑 → reason 必填 → config:update 写审计，
  * 保存即生效（消费/派发循环每轮重读配置，免重启）。env 钉死键（OPENOPS_<键大写>）
  * 禁用输入——env 恒盖 DB，UI 改了「保存成功但回显不变」会像 bug。 */
@@ -575,6 +716,7 @@ const ALERT_KNOB_LABELS: Record<string, string> = {
   alert_run_idle_ttl_minutes: "告警会话空闲回收（分钟，0=跟随平台）",
   alert_pull_batch_limit: "Kafka 单批消费上限",
   alert_queue_max_age_s: "排队超时上限（秒，超过翻「接管失败」）",
+  alert_aging_minutes: "老化步长（分钟：排队每满 N 分钟升一档防饿死；1440≈关）",
 };
 
 function AlertOpsPanel() {

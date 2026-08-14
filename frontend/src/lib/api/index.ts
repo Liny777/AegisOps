@@ -213,7 +213,7 @@ export interface OpenOpsApi {
   reconcileAssets(): Promise<Record<string, unknown>>;
   // admin
   /** 管理台表格；分页/搜索参数由 Skill 基线（key="skills"）与用户表（key="users"）消费（服务端过滤 + 分页）。 */
-  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string; tag?: string }): Promise<AdminTableData>;
+  getAdminTable(key: string, params?: { page?: number; pageSize?: number; q?: string; tag?: string; userId?: string }): Promise<AdminTableData>;
   getSandboxCfg(): Promise<SandboxCfg[]>;
   saveSandboxCfg(updates: Record<string, unknown>, reason: string): Promise<void>;
   getSandboxContainers(): Promise<SandboxContainer[]>;
@@ -238,6 +238,8 @@ export interface OpenOpsApi {
   /** 告警接管运行参数（管理台 /admin/alerts）：读全量旋钮+边界+env 钉死键；改动必填 reason 写审计。 */
   getAlertOpsConfig(): Promise<AlertOpsConfig>;
   saveAlertOpsConfig(updates: Record<string, unknown>, reason: string): Promise<void>;
+  /** 管理员置顶/取消置顶（§5.3 软插队：排队首不杀在跑的；reason 必填写审计）。 */
+  adminPrioritizeIncident(incidentId: string, reason: string, cancel?: boolean): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
   /** 改领域标签（整体替换，[] 清空）——「标签」单元格行内编辑用。 */
@@ -777,6 +779,54 @@ const realApi: OpenOpsApi = {
         })),
       };
     }
+    if (key === "alert-events") {
+      // 管理员全量事件视角（§3.0 D1）：userId 精确=按该用户投影接管状态；q 模糊搜 编号/类型/对象
+      const qs = new URLSearchParams({ page: String(params?.page ?? 1), page_size: String(params?.pageSize ?? 20) });
+      if (params?.userId) qs.set("user_id", params.userId);
+      if (params?.q) qs.set("search", params.q);
+      const d = await apiFetch<{ items: Record<string, unknown>[]; total: number; page: number; page_size: number }>(
+        `/openops/v1/admin/alerts/events?${qs.toString()}`);
+      const sevTone = (v: string) => (v === "fatal" ? "danger" : v === "critical" ? "warning" : "neutral") as "danger" | "warning" | "neutral";
+      const takeText: Record<string, string> = { done: "已完成", processing: "处理中", none: "未接管" };
+      const resultText: Record<string, string> = { recovered: "已恢复", failed: "失败", escalated: "已升级", processing: "…" };
+      for (const k of Object.keys(alertEventMeta)) delete alertEventMeta[k];  // 每次刷新重建行元数据
+      return {
+        title: "告警接管",
+        cols: [{ label: "时间", width: "150px" }, { label: "编号" }, { label: "类型", width: "110px" },
+               { label: "对象" }, { label: "APPID" }, { label: "级别", width: "76px" },
+               { label: "接管", width: "76px" }, { label: "结果", width: "72px" },
+               { label: "接管人", width: "110px" }, { label: "置顶", width: "96px" }],
+        rows: d.items.map((r, i) => {
+          const rowId = String(r.incident_id || `${r.alert_no}-${i}`);
+          alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
+                                    incidentId: r.incident_id ? String(r.incident_id) : undefined,
+                                    prioritized: Boolean(r.manual_priority) };
+          const queued = r.incident_state === "queued";
+          return {
+            id: rowId,
+            cells: [
+              { text: String(r.started_at ?? "").replace("T", " ").slice(0, 16) },
+              r.detail_url ? { text: String(r.alert_no), kind: "action" as const, onClickKey: "alert-open" }
+                           : { text: String(r.alert_no), mono: true },
+              { text: String(r.category ?? "") },
+              { text: String(r.alert_object ?? "") },
+              { text: String(r.appid ?? ""), mono: true },
+              { text: String(r.severity), kind: "badge" as const, tone: sevTone(String(r.severity)) },
+              { text: takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
+                tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
+              { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },
+              { text: String(r.owner_user_id ?? "—"), mono: true },
+              queued
+                ? (r.manual_priority
+                    ? { text: "取消置顶", kind: "action" as const, onClickKey: "alert-deprioritize" }
+                    : { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" })
+                : { text: r.manual_priority ? "已置顶" : "—" },
+            ],
+          };
+        }),
+        total: d.total, page: d.page, pageSize: d.page_size,
+      };
+    }
     if (key === "users") {
       // 服务端分页 + q 搜索（user_id/display_name 模糊）：分页后客户端 filter 会每页数量错乱
       const d = await apiFetch<AssetPageDto>(`/openops/v1/admin/users${assetQs(params)}`);
@@ -956,6 +1006,12 @@ const realApi: OpenOpsApi = {
   },
   async getAlertAccess() {
     return apiFetch<{ granted: boolean }>(`/openops/v1/alerts/access`);
+  },
+  async adminPrioritizeIncident(incidentId, reason, cancel) {
+    await apiFetch<unknown>(`/openops/v1/admin/alerts/incidents/${incidentId}:prioritize`, {
+      method: "POST",
+      body: { client_request_id: crid(), reason, cancel: Boolean(cancel) },
+    });
   },
   async getAlertOpsConfig() {
     return apiFetch<AlertOpsConfig>(`/openops/v1/admin/alerts/config`);
@@ -1315,6 +1371,31 @@ const mockApi: OpenOpsApi = {
   getAdminTable: (key) =>
     key === "model-templates"
       ? delay(M.buildModelTemplateTable([...M.mockModelTemplates]))  // 从可变数组现算：创建/启停后重拉即反映
+      : key === "alert-events"
+      ? delay({
+          title: "告警接管",
+          cols: [{ label: "时间", width: "150px" }, { label: "编号" }, { label: "类型", width: "110px" },
+                 { label: "对象" }, { label: "APPID" }, { label: "级别", width: "76px" },
+                 { label: "接管", width: "76px" }, { label: "结果", width: "72px" },
+                 { label: "接管人", width: "110px" }, { label: "置顶", width: "96px" }],
+          rows: [
+            { id: "mock-inc-1", cells: [
+              { text: "2026-08-15 09:41" }, { text: "ALM-2026081500042", kind: "action" as const, onClickKey: "alert-open" },
+              { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
+              { text: "fatal", kind: "badge" as const, tone: "danger" as const },
+              { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
+              { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
+            ] },
+            { id: "mock-inc-2", cells: [
+              { text: "2026-08-15 09:12" }, { text: "ALM-2026081500017", mono: true },
+              { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
+              { text: "warning", kind: "badge" as const, tone: "neutral" as const },
+              { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },
+              { text: "0099other", mono: true }, { text: "—" },
+            ] },
+          ],
+          total: 2, page: 1, pageSize: 20,
+        })
       : delay(M.adminTables[key] ?? M.adminTables.templates),
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
@@ -1341,13 +1422,14 @@ const mockApi: OpenOpsApi = {
   adminSetAlertGrant: () => delay(undefined as unknown as void),
   // 与切片 mock 同一演示缝：localStorage['openops.mock.alertGranted']='0' 演示未开通
   getAlertAccess: () => delay({ granted: localStorage.getItem("openops.mock.alertGranted") !== "0" }),
+  adminPrioritizeIncident: () => delay(undefined as unknown as void),
   getAlertOpsConfig: () => {
     const defaults: Record<string, number | boolean> = {
       alert_enabled: true, alert_max_concurrent_diagnosis: 2, alert_queue_max: 50,
       alert_max_open_incidents_per_instance: 10, alert_dedup_window_s: 300,
       alert_group_cooldown_s: 900, alert_diagnosis_timeout_s: 900, alert_max_retries: 1,
       alert_retry_backoff_s: 60, alert_requeue_max_age_s: 3600, alert_run_idle_ttl_minutes: 0,
-      alert_pull_batch_limit: 200, alert_queue_max_age_s: 86400,
+      alert_pull_batch_limit: 200, alert_queue_max_age_s: 86400, alert_aging_minutes: 10,
     };
     const saved = JSON.parse(localStorage.getItem("openops.mock.alertOpsCfg") || "{}") as Record<string, number | boolean>;
     return delay({
@@ -1359,6 +1441,7 @@ const mockApi: OpenOpsApi = {
         alert_max_retries: [0, 5], alert_retry_backoff_s: [1, 3600],
         alert_requeue_max_age_s: [60, 604800], alert_run_idle_ttl_minutes: [0, 1440],
         alert_pull_batch_limit: [1, 1000], alert_queue_max_age_s: [300, 604800],
+        alert_aging_minutes: [1, 1440],
       } as AlertOpsConfig["bounds"],
       env_locked: JSON.parse(localStorage.getItem("openops.mock.alertOpsEnvLocked") || "[]") as string[],
     });
@@ -1566,6 +1649,9 @@ const mockApi: OpenOpsApi = {
   },
   demoState: () => M.mockWorkbenchState(),
 };
+
+/** admin 告警事件表行元数据（detail_url 外跳 / incident 置顶态）：每次拉表重建，仅当页行。 */
+export const alertEventMeta: Record<string, { detailUrl?: string; incidentId?: string; prioritized?: boolean }> = {};
 
 export const api: OpenOpsApi = API_MODE === "real" ? realApi : mockApi;
 export { demoIdentity };

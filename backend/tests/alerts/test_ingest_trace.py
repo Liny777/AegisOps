@@ -38,9 +38,6 @@ def _pull(client) -> dict:
 
 def _setup_instance(client) -> str:
     iid = create_instance(client)["instance_id"]
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 接管", "categories": ["MySQL"]}))

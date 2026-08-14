@@ -585,10 +585,9 @@ export const mockIncidents: AlertIncidentDetail[] = [
 ];
 
 /* ----------------------------- 规则清单（内存态） ----------------------------- */
-/** 实例 → 规则配置（含总开关）。未知实例首次读取时懒初始化为空配置。 */
+/** 实例 → 规则配置。未知实例首次读取时懒初始化为空配置。 */
 export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
   agt_pay_fast_recovery: {
-    enabled: true,
     rules: [
       {
         rule_id: "rule_pay_mysql_core",
@@ -635,7 +634,6 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
     ],
   },
   agt_gateway_watch: {
-    enabled: true,
     rules: [
       {
         rule_id: "rule_gw_docker",
@@ -672,7 +670,7 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
 const ensureRules = (instanceId: string): AlertRulesConfig => {
   let cfg = mockRulesByInstance[instanceId];
   if (!cfg) {
-    cfg = { enabled: true, rules: [] };
+    cfg = { rules: [] };
     mockRulesByInstance[instanceId] = cfg;
   }
   return cfg;
@@ -737,7 +735,6 @@ export const mockGetSummary = (instanceId: string): AlertSummary => {
 export const mockGetRules = (instanceId: string): AlertRulesConfig => {
   const cfg = ensureRules(instanceId);
   return {
-    enabled: cfg.enabled,
     rules: cfg.rules.map((r) => ({ ...r, severities: [...r.severities], strategies: [...r.strategies], app_ids: [...r.app_ids], keywords: [...r.keywords] })),
   };
 };
@@ -847,12 +844,6 @@ export const mockBatchRules = (ruleIds: string[], action: AlertRuleBatchAction):
   }
   changeSeq += 1;
 };
-
-export const mockSetTakeoverEnabled = (instanceId: string, enabled: boolean): void => {
-  ensureRules(instanceId).enabled = enabled;
-  changeSeq += 1;
-};
-
 
 /* ------------------------- 历史告警预览（第二步弹窗） ------------------------- */
 

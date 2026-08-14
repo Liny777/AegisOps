@@ -80,7 +80,7 @@ test("筛选：状态+接管联动过滤、计数徽标与清除、搜索收敛"
 
 test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第二步窗口预览后确认建规则", async ({ page }) => {
   await page.goto("/settings/alerts");
-  await expect(page.getByText("自动接管告警").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "添加告警策略" }).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("alerts-rule-row").first()).toBeVisible();
   const rulesBefore = await page.getByTestId("alerts-rule-row").count();
 

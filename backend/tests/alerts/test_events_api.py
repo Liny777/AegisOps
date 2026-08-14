@@ -33,9 +33,6 @@ def _setup_with_scope(client) -> str:
     """A 用户：建实例+订阅+MySQL 规则，并跑一次任务产生 scope 快照（APP-A/B/C）后取消。"""
     inst = create_instance(client, f"事件清单 Agent {time.time_ns()}")
     iid = inst["instance_id"]
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 接管", "categories": ["MySQL"]}))

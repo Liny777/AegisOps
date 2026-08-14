@@ -113,8 +113,22 @@ async def dispatch_once() -> int:
         if not cfg["alert_enabled"]:
             return started
         if _active_workers() >= int(cfg["alert_max_concurrent_diagnosis"]):
+            return started  # 告警池硬上限（原旋钮语义保留；与分池闸双闸取严）
+        # v3 分池闸（§5.2，2026-08-15）：超出告警硬保底后要与交互池共抢弹性额度。
+        # 计数单一事实源=task_registry（origin 区分两池）；n_alert 取本地 worker 数与
+        # registry 的 max——worker 从起跑到 TaskState 注册有窗口期，取严防超发。
+        from app import run_state_service
+        from infra.repositories import runtime_config
+        from runtime import task_registry
+
+        pool_cfg = {c["config_key"]: c["config_value_json"]
+                    for c in await runtime_config.get_domain(runtime_config.DOMAIN_SANDBOX)}
+        n_alert = max(_active_workers(), task_registry.running_total("alert"))
+        if not run_state_service.pool_admit("alert", task_registry.running_total("user"),
+                                            n_alert, pool_cfg):
             return started
-        inc = await repo.pick_next_queued(matcher.SEVERITY_ORDER)
+        inc = await repo.pick_next_queued(matcher.SEVERITY_ORDER,
+                                          int(cfg["alert_aging_minutes"]))
         if inc is None:
             return started
         iid = str(inc["alert_incident_id"])
@@ -138,7 +152,7 @@ async def dispatch_once() -> int:
 def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement: str) -> str:
     """结构化诊断输入：告警要素 + 要求段（规则自定义提示词优先，空则系统默认五步法）。"""
     lines = [
-        "【7x24 告警自动接管】以下告警命中了本 Agent 的订阅规则，请立即开展自动诊断。",
+        "【7x24 告警自动接管】以下告警命中了本 Agent 的接管规则，请立即开展自动诊断。",
         "",
         f"告警标题：{inc.get('title')}",
         f"严重度：{inc.get('severity')}    告警类型：{inc.get('category') or '未知'}",

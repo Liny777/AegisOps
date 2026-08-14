@@ -31,13 +31,9 @@ def _pull(client) -> dict:
 
 
 def _setup_instance(client, *, severities: list[str] | None = None,
-                    strategies: list[str] | None = None,
-                    max_open: int | None = None) -> str:
+                    strategies: list[str] | None = None) -> str:
     inst = create_instance(client)
     iid = inst["instance_id"]
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True, "max_open_incidents": max_open}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 接管", "categories": ["MySQL"],
@@ -108,11 +104,19 @@ def test_attach_same_group_and_escalate_severity(client):
     assert detail["alerts_total"] == 2
 
 
+def _set_cfg(client, key: str, value) -> None:
+    unwrap(client.post("/api/openops/v1/admin/alerts/config:update", headers=ADMIN_HEADERS,
+                       json={"client_request_id": _crid(), "updates": {key: value},
+                             "reason": "test"}))
+
+
 def test_instance_overflow_creates_skipped_with_reason(client):
-    iid = _setup_instance(client, max_open=1)
+    iid = _setup_instance(client)
+    _set_cfg(client, "alert_max_open_incidents_per_instance", 1)  # 实例覆盖随订阅下线，走全局旋钮
     alert_platform_mock._inject(title="告警一", category="MySQL", app_id="APP-A", fingerprint="fp_o1")
     alert_platform_mock._inject(title="告警二", category="MySQL", app_id="APP-A", fingerprint="fp_o2")  # 不同组
     counters = _pull(client)
+    _set_cfg(client, "alert_max_open_incidents_per_instance", 10)  # 复位默认，别污染后续用例
     assert counters["queued"] == 1 and counters["skipped"] == 1
 
     skipped = _incidents(client, iid, state="skipped")
@@ -177,13 +181,15 @@ def test_resolved_only_lands_event_without_incident(client):
     assert _incidents(client, iid) == []
 
 
-def test_disabled_subscription_means_no_match(client):
-    inst = create_instance(client)
-    iid = inst["instance_id"]  # 不开订阅、只建规则 → list_enabled_rules 不含它
-    unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "name": "未开通", "categories": ["MySQL"]}))
-    alert_platform_mock._inject(title="x", category="MySQL", fingerprint="fp_d1")
+def test_disabled_rule_means_no_match(client):
+    """规则启停是匹配面唯一的用户开关（订阅总开关已下线 2026-08-15）：禁用即断流。"""
+    iid = _setup_instance(client)
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    unwrap(client.post(f"{BASE}/rules:batch", headers=USER_HEADERS,
+                       json={"client_request_id": _crid(),
+                             "rule_ids": [r["rule_id"] for r in rules], "action": "disable"}))
+    alert_platform_mock._inject(title="x", category="MySQL", app_id="APP-A", fingerprint="fp_d1")
     counters = _pull(client)
     assert counters["unmatched"] == 1 and _incidents(client, iid) == []
 
