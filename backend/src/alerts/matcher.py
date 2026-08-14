@@ -47,6 +47,53 @@ def app_id_from_group_key(gk: str) -> str:
     return parts[1]
 
 
+def rule_categories(match_json: dict[str, Any]) -> list[str]:
+    """规则的类别集合归一：categories 多值 ∪ legacy 单值 category 回退。
+
+    match() 与倒排索引构建必须走同一套归一——索引漏了 legacy 规则就是漏单。
+    （service._rule_categories 是同构逻辑；matcher 零依赖 service，各自持有 4 行。）
+    """
+    cats = [c for c in (match_json.get("categories") or []) if c]
+    if not cats:
+        legacy = str(match_json.get("category") or "")
+        cats = [legacy] if legacy else []
+    return cats
+
+
+def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
+    """category 倒排索引（2026-08-14 吞吐：3000 条/s × 千级规则 = 每秒百万次 match 全扫
+    扛不住）。桶里存**规则下标**：candidate_rules 按下标排序合并，保持与 rules 原序一致
+    ——`matched_rules[0]["owner_user_id"]` 依赖组内顺序，乱序会让 owner 归属抖动。
+    空类别规则（不限类型）进 wildcard 桶，每条告警都要带上它精判。
+    只倒排 category 一维：severities/strategies 区分度低，keywords/label_selectors
+    是子串/逐键语义不可倒排——候选集仍逐条跑完整 match() 精判，六维语义零变。
+    """
+    by_category: dict[str, list[int]] = {}
+    wildcard: list[int] = []
+    for i, rule in enumerate(rules):
+        cats = rule_categories(rule.get("match_json") or {})
+        if not cats:
+            wildcard.append(i)
+            continue
+        for cat in cats:
+            by_category.setdefault(cat, []).append(i)
+    return {"rules": rules, "by_category": by_category, "wildcard": wildcard}
+
+
+def candidate_rules(index: dict[str, Any], category: str) -> list[dict[str, Any]]:
+    """告警类别 → 候选规则（类型桶 ∪ 通配桶，按原始下标序）。"""
+    idxs = index["by_category"].get(category or "", [])
+    wildcard = index["wildcard"]
+    if not wildcard:
+        picked = idxs
+    elif not idxs:
+        picked = wildcard
+    else:
+        picked = sorted(set(idxs) | set(wildcard))
+    rules = index["rules"]
+    return [rules[i] for i in picked]
+
+
 def match(alert: dict[str, Any], match_json: dict[str, Any]) -> bool:
     """alert 为 ingest 规范化后的形态：category/severity/strategy_name/app_id/labels/title/description。
 
@@ -54,10 +101,7 @@ def match(alert: dict[str, Any], match_json: dict[str, Any]) -> bool:
     兼容读取）；strategies 为勾选的监控策略名集合（空=该类型全部策略）。
     其余维度语义不变（维度间 AND、维度内 OR、空=不限）。
     """
-    cats = [c for c in (match_json.get("categories") or []) if c]
-    if not cats:
-        legacy = str(match_json.get("category") or "")  # 存量单值规则
-        cats = [legacy] if legacy else []
+    cats = rule_categories(match_json)  # categories 多值 ∪ legacy 单值回退（与索引同源）
     if cats and alert.get("category") not in cats:
         return False
     sevs = match_json.get("severities") or []

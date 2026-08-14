@@ -176,7 +176,9 @@ async def feedback_incident(incident_id: str, req: FeedbackRequest, user: User):
 # ---- 管理面：alert 域热更新配置 + 手动拉取 ----
 @admin_router.get("/config")
 async def get_config(_admin: Admin):
-    return ok({"config": await service.get_config()})
+    # bounds/env_locked 供管理台运行参数面板：渲染输入范围 + 禁用被 env 钉死的键
+    return ok({"config": await service.get_config(), "bounds": service.config_bounds(),
+               "env_locked": service.env_locked_keys()})
 
 
 @admin_router.post("/config:update")

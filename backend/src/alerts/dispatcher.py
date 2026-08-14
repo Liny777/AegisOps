@@ -273,7 +273,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
         except Exception:  # noqa: BLE001
             log.warning("[alerts][dispatch] 超时取消失败 task=%s", task_id, exc_info=True)
         await repo.finish(iid, to_state="failed", state_reason="timeout",
-                          result_summary=None, agent_result=None)
+                          result_summary=None, agent_result="failed")  # 清单结果列显「失败」
         return
     except asyncio.CancelledError:
         raise
@@ -292,7 +292,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
                                                 "summary_chars": len(summary or "")})
     else:
         await repo.finish(iid, to_state="failed", state_reason=f"task_{st.status}",
-                          result_summary=None, agent_result=None)
+                          result_summary=None, agent_result="failed")
         await audit.insert_event(
             audit_trace_id=_AUDIT_TRACE, event_type="alert.diagnosis_failed", user_id="system",
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
@@ -330,7 +330,7 @@ async def converge_incidents() -> dict[str, int]:
         else:
             await repo.finish(iid, to_state="failed",
                               state_reason="stale" if stale else "interrupted_by_restart",
-                              result_summary=None, agent_result=None)
+                              result_summary=None, agent_result="failed")
             counts["failed"] += 1
     if any(counts.values()):
         log.warning("[alerts][converge] %s", counts)
@@ -363,6 +363,13 @@ async def _dispatch_loop() -> None:
             except asyncio.TimeoutError:
                 pass
             _kick_event.clear()
+            # 排队超时先翻（2026-08-14）：必须在 dispatch_once 之前，否则本轮会把已过期
+            # 的单捞去起诊断白耗名额。queued ≤ queue_max，空命中 UPDATE 成本可忽略。
+            expired = await repo.expire_stale_queued(
+                int((await service.get_config())["alert_queue_max_age_s"]))
+            if expired:
+                log.warning("[alerts][dispatch] 排队超时翻接管失败 %d 单（queue_expired，"
+                            "清单可见可重试）", expired)
             await dispatch_once()
             if time.monotonic() - last_purge > 3600:  # 搭车清理（学 studio drain）
                 last_purge = time.monotonic()

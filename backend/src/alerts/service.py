@@ -48,6 +48,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "alert_requeue_max_age_s": 3600,             # 重启 requeue 的陈旧上限
     "alert_run_idle_ttl_minutes": 0,             # 0=跟随平台 run_idle_ttl；>0 提前关告警 run
     "alert_pull_batch_limit": 200,               # 单批拉取上限
+    "alert_queue_max_age_s": 86400,              # 排队超时上限：超过即翻「接管失败」留痕（1 天）
 }
 
 _INT_BOUNDS: dict[str, tuple[int, int]] = {
@@ -62,6 +63,7 @@ _INT_BOUNDS: dict[str, tuple[int, int]] = {
     "alert_requeue_max_age_s": (60, 604800),
     "alert_run_idle_ttl_minutes": (0, 1440),
     "alert_pull_batch_limit": (1, 1000),
+    "alert_queue_max_age_s": (300, 604800),
 }
 
 
@@ -115,6 +117,17 @@ def _apply_env_overrides(merged: dict[str, Any]) -> None:
             log.warning("[alerts][config] %s=%d 超界 [%d,%d]，收敛为 %d",
                         env_name, value, lo, hi, clamped)
         merged[key] = clamped
+
+
+def config_bounds() -> dict[str, list[int]]:
+    """整型旋钮边界（管理台渲染输入范围；bool 键不在此表）。"""
+    return {k: [lo, hi] for k, (lo, hi) in _INT_BOUNDS.items()}
+
+
+def env_locked_keys() -> list[str]:
+    """被 env 钉死的旋钮键（OPENOPS_<键大写> 有值即锁）。管理台据此禁用输入——
+    env 恒盖 DB，UI 改了「保存成功但回显不变」会像 bug。"""
+    return sorted(k for k in _INT_BOUNDS if os.environ.get(f"OPENOPS_{k.upper()}", "").strip())
 
 
 async def get_config() -> dict[str, Any]:
@@ -382,6 +395,7 @@ _SKIP_REASON_TEXT = {
     "stale": "重启后发现告警已陈旧，不再补诊",
     "no_scope": "无可用范围快照（实例从未成功解析过 scope）",
     "disabled": "接管开关已关闭",
+    "queue_expired": "排队超时未接管（超过配置时限自动放弃，可手动重试）",
 }
 
 

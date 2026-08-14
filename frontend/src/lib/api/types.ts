@@ -393,6 +393,12 @@ export interface SandboxCfg {
   desc: string;
   val: string;
 }
+/** 告警接管运行参数（管理台面板）：config 全量旋钮 + 整型键边界 + 被 env 钉死的键。 */
+export interface AlertOpsConfig {
+  config: Record<string, number | boolean>;
+  bounds: Record<string, [number, number]>;
+  env_locked: string[];
+}
 export interface SandboxContainer {
   user_id: string;
   runtime_status: string; // active / idle

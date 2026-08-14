@@ -132,6 +132,7 @@ async def ingest_batch(alerts: list[dict[str, Any]], *, cfg: dict[str, Any] | No
         counters["disabled"] = True
         return counters
     rules = rules if rules is not None else await repo.list_enabled_rules()
+    rule_index = matcher.build_rule_index(rules)  # 每批构建（千级规则 ~1ms）：不做跨批缓存，规则改动即时生效
     scope_cache: dict[str, list[str] | None] = {}  # 批内 memo：风暴期同实例只解析一次范围
     for alert in alerts:
         counters["pulled"] += 1
@@ -142,7 +143,7 @@ async def ingest_batch(alerts: list[dict[str, Any]], *, cfg: dict[str, Any] | No
                             "severity=%s app_id=%s 归属=%s",
                             norm["external_alert_id"], norm["status"], norm["category"],
                             norm["severity"], norm["app_id"], _alert_appids(norm))
-            await _ingest_alert(norm, rules, cfg, counters, scope_cache)
+            await _ingest_alert(norm, rule_index, cfg, counters, scope_cache)
         except Exception:  # noqa: BLE001 —— 单条坏数据只跳过，不拖垮整批
             log.warning("[alerts][ingest] 单条告警处理失败 alert_id=%s",
                         alert.get("alert_id"), exc_info=True)
@@ -227,15 +228,17 @@ def _alert_appids(alert: dict[str, Any]) -> list[str]:
     return ids
 
 
-async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
+async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
                         cfg: dict[str, Any], counters: dict[str, Any],
                         scope_cache: dict[str, list[str] | None] | None = None) -> None:
     trace, alarm = _trace_hit(alert), alert["external_alert_id"]
     # ⓪ 匹配前置（2026-08-13 吞吐反馈：全网 ≈3000 条/s、99.9% 未命中，先做纯内存匹配，
     # 未命中零 DB 直接丢——指纹查询/落库只为命中者花，消费吞吐才追得上流量）。代价仅
     # 「未命中告警不再 touch 同指纹旧行」：旧行只可能来自曾命中后规则删改，last_seen 停更无碍。
+    # 候选集走 category 倒排索引（2026-08-14：千级规则全扫=每秒百万次 match，桶均摊十级），
+    # 候选仍逐条完整 match() 精判，六维语义零变。
     by_instance: dict[str, list[dict[str, Any]]] = {}
-    for rule in rules:
+    for rule in matcher.candidate_rules(rule_index, alert.get("category") or ""):
         if matcher.match(alert, rule.get("match_json") or {}):
             by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
     if not by_instance:
@@ -243,7 +246,7 @@ async def _ingest_alert(alert: dict[str, Any], rules: list[dict[str, Any]],
         if trace:
             log.warning("[alerts][trace] %s 未命中任何启用规则（当前启用 %d 条）——核对规则"
                         "类别/级别与消息 moType/alarmLevel、订阅是否开启、属主是否在白名单",
-                        alarm, len(rules))
+                        alarm, len(rule_index["rules"]))
         return
 
     existing = await repo.get_event_by_fingerprint(SOURCE_KEY, alert["fingerprint"])

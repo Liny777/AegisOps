@@ -9,6 +9,7 @@ import type {
   WorkbenchState,
   Conversation,
   AdminTableData,
+  AlertOpsConfig,
   SandboxCfg,
   SandboxContainer,
   SandboxDestroyResult,
@@ -234,6 +235,9 @@ export interface OpenOpsApi {
   adminSetAlertGrant(userId: string, granted: boolean): Promise<void>;
   /** 用户侧探询：告警接管对我是否开通（侧栏/设置导航锁定用；页面级空态由切片自查）。 */
   getAlertAccess(): Promise<{ granted: boolean }>;
+  /** 告警接管运行参数（管理台 /admin/alerts）：读全量旋钮+边界+env 钉死键；改动必填 reason 写审计。 */
+  getAlertOpsConfig(): Promise<AlertOpsConfig>;
+  saveAlertOpsConfig(updates: Record<string, unknown>, reason: string): Promise<void>;
   adminRevokeWhitelist(userId: string): Promise<void>;
   adminSetRole(userId: string, role: "user" | "platform_admin"): Promise<void>;
   /** 改领域标签（整体替换，[] 清空）——「标签」单元格行内编辑用。 */
@@ -953,6 +957,15 @@ const realApi: OpenOpsApi = {
   async getAlertAccess() {
     return apiFetch<{ granted: boolean }>(`/openops/v1/alerts/access`);
   },
+  async getAlertOpsConfig() {
+    return apiFetch<AlertOpsConfig>(`/openops/v1/admin/alerts/config`);
+  },
+  async saveAlertOpsConfig(updates, reason) {
+    await apiFetch<unknown>(`/openops/v1/admin/alerts/config:update`, {
+      method: "POST",
+      body: { client_request_id: crid(), updates, reason },
+    });
+  },
   async adminSetAlertGrant(userId, granted) {
     await apiFetch<void>(`/openops/v1/admin/alerts/grants:update`, {
       method: "POST",
@@ -1328,6 +1341,33 @@ const mockApi: OpenOpsApi = {
   adminSetAlertGrant: () => delay(undefined as unknown as void),
   // 与切片 mock 同一演示缝：localStorage['openops.mock.alertGranted']='0' 演示未开通
   getAlertAccess: () => delay({ granted: localStorage.getItem("openops.mock.alertGranted") !== "0" }),
+  getAlertOpsConfig: () => {
+    const defaults: Record<string, number | boolean> = {
+      alert_enabled: true, alert_max_concurrent_diagnosis: 2, alert_queue_max: 50,
+      alert_max_open_incidents_per_instance: 10, alert_dedup_window_s: 300,
+      alert_group_cooldown_s: 900, alert_diagnosis_timeout_s: 900, alert_max_retries: 1,
+      alert_retry_backoff_s: 60, alert_requeue_max_age_s: 3600, alert_run_idle_ttl_minutes: 0,
+      alert_pull_batch_limit: 200, alert_queue_max_age_s: 86400,
+    };
+    const saved = JSON.parse(localStorage.getItem("openops.mock.alertOpsCfg") || "{}") as Record<string, number | boolean>;
+    return delay({
+      config: { ...defaults, ...saved },
+      bounds: {
+        alert_max_concurrent_diagnosis: [1, 16], alert_queue_max: [1, 1000],
+        alert_max_open_incidents_per_instance: [1, 100], alert_dedup_window_s: [0, 86400],
+        alert_group_cooldown_s: [0, 86400], alert_diagnosis_timeout_s: [60, 7200],
+        alert_max_retries: [0, 5], alert_retry_backoff_s: [1, 3600],
+        alert_requeue_max_age_s: [60, 604800], alert_run_idle_ttl_minutes: [0, 1440],
+        alert_pull_batch_limit: [1, 1000], alert_queue_max_age_s: [300, 604800],
+      } as AlertOpsConfig["bounds"],
+      env_locked: JSON.parse(localStorage.getItem("openops.mock.alertOpsEnvLocked") || "[]") as string[],
+    });
+  },
+  saveAlertOpsConfig: (updates) => {
+    const saved = JSON.parse(localStorage.getItem("openops.mock.alertOpsCfg") || "{}") as Record<string, unknown>;
+    localStorage.setItem("openops.mock.alertOpsCfg", JSON.stringify({ ...saved, ...updates }));
+    return delay(undefined as unknown as void);
+  },
   adminSetRole: () => delay(undefined as unknown as void),
   adminDeleteUser: () => delay(undefined as unknown as void),
   getAuditTrace: () => delay(M.auditTimeline),

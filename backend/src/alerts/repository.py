@@ -254,6 +254,26 @@ async def purge_expired_events() -> int:
     return await exec1("delete from sre_alert_event where expire_at < now()")
 
 
+async def expire_stale_queued(max_age_s: int) -> int:
+    """排队超时批量翻失败（2026-08-14 拍板：极端积压下排队超过 alert_queue_max_age_s
+    的单不再等派发，直接「接管失败」留痕告知用户，可手动 :retry 重入队）。
+
+    判据必须用 queued_at：requeue（:retry）会重置 queued_at=now()，手动重试单重新
+    计时——用 last_alert_at 会把刚重试的陈旧单立刻再翻掉。agent_result 一并置
+    'failed'，清单「结果」列直接显红（与诊断失败同投影）。
+    """
+    return await exec1(
+        """
+        update sre_alert_incident
+        set incident_state='failed', state_reason='queue_expired', agent_result='failed',
+            ended_at=now(), last_update_date=now(), last_updated_by='system'
+        where incident_state='queued' and deleted_at is null
+          and queued_at < now() - make_interval(secs => %(age)s)
+        """,
+        {"age": int(max_age_s)},
+    )
+
+
 async def bump_open_incident_counts(event_id: str) -> int:
     """去重窗口内同指纹再现：其所在未完结 incident 的计数与最近告警时间同步前进。"""
     return await exec1(

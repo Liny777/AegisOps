@@ -120,6 +120,7 @@ export function Sidebar() {
     { key: "model-templates", label: "模型模板", icon: "versions", to: "/admin/model-templates" },
     { key: "skills", label: "Skill 基线", icon: "file-code", to: "/admin/skills" },
     { key: "users", label: "用户与白名单", icon: "users", to: "/admin/users" },
+  { key: "alerts", label: "告警接管", icon: "shield-bolt", to: "/admin/alerts" },
     { key: "sandbox", label: "沙箱与容量", icon: "box", to: "/admin/sandbox" },
     { key: "audit", label: "审计回放", icon: "history", to: "/admin/audit" },
     STUDIO_ADMIN_NAV,                      // Agent Studio（切片自带）
