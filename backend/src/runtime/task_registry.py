@@ -112,6 +112,12 @@ def running_count(user_id: str, origin: str | None = None) -> int:
                and (origin is None or getattr(st, "origin", "user") == origin))
 
 
+def running_total(origin: str) -> int:
+    """全局某池在跑主任务数（v3 分池闸：user=交互池 / alert=告警池）。"""
+    return sum(1 for st in _by_run.values()
+               if st.status == "running" and getattr(st, "origin", "user") == origin)
+
+
 def running_by_user(user_id: str) -> list[TaskState]:
     """该用户在跑的主任务（管理员强制销毁容器时须连带取消，否则容器被自愈重建）。
 

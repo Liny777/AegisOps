@@ -94,7 +94,6 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
 
   const rules = cfg?.rules ?? [];
   const enabledCount = rules.filter((r) => r.enabled).length;
-  const masterOn = cfg?.enabled ?? true;
 
   const categories = useMemo(() => {
     if (!payload) return FALLBACK_CATEGORIES;
@@ -159,26 +158,8 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
           </div>
         ) : null}
 
-        {/* 总开关卡 */}
-        <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "16px 18px", display: "flex", alignItems: "center", gap: 14 }}>
-          <div style={{ width: 40, height: 40, borderRadius: 10, background: color.brandTintBg, display: "flex", alignItems: "center", justifyContent: "center", flex: "0 0 40px" }}>
-            <Icon name="bell-bolt" size={21} color={color.brand} />
-          </div>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 14, fontWeight: 700 }}>自动接管告警</div>
-            <div style={{ fontSize: 12, color: color.textSubtle, marginTop: 2 }}>命中下方任一启用策略的告警将自动排队并创建诊断会话</div>
-          </div>
-          <Toggle on={masterOn} onChange={(v) => run(alertsApi.setTakeoverEnabled(instanceId, v))} />
-        </div>
-
-        {!masterOn ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8, background: color.warningBg, border: `1px solid ${color.warningBorder}`, borderRadius: radius.lg, padding: "9px 13px", fontSize: 12, color: color.warningText, fontWeight: 600 }}>
-            <Icon name="alert-triangle" size={14} color={color.warningText} />总开关已关闭，策略暂不生效
-          </div>
-        ) : null}
-
-        {/* 策略区（总开关关闭时整体淡显） */}
-        <div style={{ opacity: masterOn ? 1 : 0.5, display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* 策略区（实例总开关随订阅下线 2026-08-15：规则启停/批量即整体暂停） */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {/* 工具栏一行：搜索 + 类型 + 统计 + 批量 + 添加 */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <div style={{ position: "relative", width: 216 }}>

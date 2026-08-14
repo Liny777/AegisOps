@@ -349,14 +349,14 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
             log.warning("[alerts][trace] %s 建单即跳过 reason=%s incident=%s（清单可见留痕）",
                         alarm, reason, iid)
 
-    sub = await repo.get_subscription(instance_id)
-    max_open = (sub or {}).get("max_open_incidents") or int(cfg["alert_max_open_incidents_per_instance"])
-    if await repo.count_open_by_instance(instance_id) >= int(max_open):
+    max_open = int(cfg["alert_max_open_incidents_per_instance"])  # 实例级覆盖随订阅下线（2026-08-15）
+    if await repo.count_open_by_instance(instance_id) >= max_open:
         await _skip("overflow_instance")  # ⑤ 实例上限：留痕不入队
         return
 
     if await repo.count_queued_global() >= int(cfg["alert_queue_max"]):
-        victim = await repo.lowest_queued(matcher.SEVERITY_ORDER)
+        victim = await repo.lowest_queued(matcher.SEVERITY_ORDER,
+                                          int(cfg["alert_aging_minutes"]))
         if victim is not None and matcher.severity_rank(alert["severity"]) < matcher.severity_rank(
                 str(victim["severity"])):
             await repo.transition(str(victim["alert_incident_id"]), from_states=["queued"],

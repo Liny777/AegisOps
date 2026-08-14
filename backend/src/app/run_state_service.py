@@ -169,11 +169,32 @@ async def _create_run_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
     return await idempotency.commit(uid, "create_run", req.client_request_id, result)
 
 
-async def _acquire_interactive_slot(uid: str, cfg: dict[str, Any]) -> bool:
-    """交互池名额准入：有名额返回 True。
+def pool_admit(kind: str, n_user: int, n_alert: int, cfg: dict[str, Any]) -> bool:
+    """v3 分池闸（§5.1/§5.2，2026-08-15 落地）：溢出记账——各池超出硬保底的部分共抢弹性区。
 
-    ⚠ **这是 v3 分池并发（交互硬保底 + 弹性额度 + 告警硬保底）的唯一替换点**——
-    届时把"每用户计数"换成"全局分池计数"，start_task 与排队逻辑都不用动。
+    弹性 = total − reserve_interactive − reserve_alert；admit = 池内未满保底，或
+    两池溢出量之和 < 弹性。注意**不能**用 §5.2 的简化式 n_user+n_alert < total：
+    它在对方池空闲时会把对方的硬保底让出去（告警能冲到 12，违背「交互硬保底
+    告警永远抢不走」——保底是双向恒预留，空闲也不外借，弹性区才是共享区）。
+    运营口径：交互上限 5+5=10、告警上限 2+5=7；夜间告警最多 7（交互 5 恒留给
+    值班），白天告警仍有 2 保底。dispatcher（alerts 切片）共用本函数防两侧漂移。
+    """
+    total = int(cfg.get("model_total_concurrency", 12))
+    ri = int(cfg.get("reserve_interactive", 5))
+    ra = int(cfg.get("reserve_alert", 2))
+    elastic = max(0, total - ri - ra)
+    user_over = max(0, n_user - ri)
+    alert_over = max(0, n_alert - ra)
+    if kind == "user":
+        return n_user < ri or user_over + alert_over < elastic
+    return n_alert < ra or alert_over + user_over < elastic
+
+
+async def _acquire_interactive_slot(uid: str, cfg: dict[str, Any]) -> bool:
+    """交互池名额准入 = 每用户闸（防单人刷屏，保留） ∧ 分池闸（v3 三段式）。
+
+    2026-08-15 起替换原「仅每用户限 2」：全局交互数进硬保底判定，超出保底与告警池
+    共抢弹性额度。start_task 与排队/出队复核逻辑不动（本函数是唯一替换点）。
     """
     limit = int(cfg.get("per_user_running_task_limit", 2))
     running = task_registry.running_count(uid, origin="user")
@@ -181,7 +202,10 @@ async def _acquire_interactive_slot(uid: str, cfg: dict[str, Any]) -> bool:
         running = max(running, await task_states.count_running(uid))
     except Exception:  # noqa: BLE001
         pass
-    return running < limit
+    if running >= limit:
+        return False
+    return pool_admit("user", task_registry.running_total("user"),
+                      task_registry.running_total("alert"), cfg)
 
 
 async def has_interactive_slot(uid: str) -> bool:

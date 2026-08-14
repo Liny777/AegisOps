@@ -142,9 +142,8 @@ export interface AlertRule {
   updated_at: string;
 }
 
-/** 规则页聚合视图 = 实例总开关（subscription）+ 规则清单。 */
+/** 规则页视图 = 规则清单（实例总开关随订阅下线 2026-08-15）。 */
 export interface AlertRulesConfig {
-  enabled: boolean;
   rules: AlertRule[];
 }
 

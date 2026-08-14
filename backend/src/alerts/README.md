@@ -12,7 +12,7 @@
   --mock 档: 内存变更流 + 轮询 run_once（OPENOPS_ALERT_PULL_INTERVAL_S，0=关，admin :pull 手动）-->
 ingest.ingest_batch()（传输无关入口）
   ① fingerprint 去重（dedup_window_s 内同指纹仅 seen_count++）
-  ② matcher 内存匹配（订阅开+规则开；v2 规则=类型单值 ∧ 级别 ∧ 命中勾选策略集，空集=该类型全部）
+  ② matcher 内存匹配（白名单+规则开；v2 规则=类型单值 ∧ 级别 ∧ 命中勾选策略集，空集=该类型全部）
   ③ 附着式聚合（group_key=instance|appid|title 有未完结单 → 附着，severity 取高）
   ④ 组冷却（group_cooldown_s 内同组不建新单）
   ⑤ 有界队列（实例/全局上限 → skipped 留痕；高 severity 可踢队尾低者）
@@ -26,7 +26,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 
 - **配置页**（设置页第三 tab）：`GET/POST /alerts/rules`（v2 一弹窗一规则：name/category 单选/
   severities 三档/strategies 勾选集/prompt）、`:update`/`:delete`、**`POST /alerts/rules:batch`**
-  （批量启用/禁用/删除）、`GET /alerts/rule-templates`（3 类 9 条 + default_prompt）、subscription 总开关。
+  （批量启用/禁用/删除）、`GET /alerts/rule-templates`（3 类 9 条 + default_prompt）。
 - **接管清单**（全量告警视角，v2 需求 1.3）：`GET /alerts/events`——事件 LEFT JOIN LATERAL 本人最新
   聚合单；普通用户可见=本人接管 ∪（未接管 ∧ appid∈所选 Agent scope 快照）；三值投影
   告警状态（未分派/已分派/已关闭）与接管状态（未接管/处理中/已完成，skipped/ignored 归未接管）；
@@ -49,7 +49,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
   `OPENOPS_ALERT_KAFKA_BOOTSTRAP/_TOPIC`（必，缺配 fail-closed）`/_GROUP/_USERNAME/_PASSWORD/_SASL/_SECURITY_PROTOCOL`；
   详情/回写 HTTP：`OPENOPS_ALERT_BASE_URL` + `OPENOPS_ALERT_TOKEN`。mock：`OPENOPS_ALERT_PULL_INTERVAL_S`
   （0=关）、`OPENOPS_ALERT_MOCK_SEED=1` 播种。横幅字段 `alert=/alert_kafka=/alert_pull=/alert_token=`。
-- DB 热更新（域 `alert`，admin `/admin/alerts/config:update`，reason 必填）：12 键见 `service.CONFIG_DEFAULTS`；
+- DB 热更新（域 `alert`，admin `/admin/alerts/config:update`，reason 必填）：全量键见 `service.CONFIG_DEFAULTS`（管理台 /admin/alerts 可视化编辑；含排队超时/老化步长）；
   `alert_enabled=false` 全局热停（Kafka 消费暂停不 commit，恢复续传）。
 - **并发放大换算式**：模型峰值并发 = `alert_max_concurrent_diagnosis` × (1 + max_children=3)。默认 2 ⇒ 峰值 8，
   上线初期建议设 1。

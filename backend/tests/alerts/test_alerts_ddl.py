@@ -17,7 +17,6 @@ EXPECTED_TABLES = [
     "sre_alert_event",
     "sre_alert_incident",
     "sre_alert_incident_event",
-    "sre_alert_subscription",
     "sre_alert_pull_state",
     "sre_alert_user_grant",
 ]
@@ -27,7 +26,7 @@ def _ddl() -> str:
     return DDL.read_text(encoding="utf-8")
 
 
-def test_slice_declares_exactly_seven_tables():
+def test_slice_declares_exactly_six_tables():
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", _ddl())
     assert tables == EXPECTED_TABLES
 

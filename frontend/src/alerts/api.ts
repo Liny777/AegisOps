@@ -66,7 +66,7 @@ export interface AlertsApi {
   retryIncident(id: string): Promise<void>;
   feedbackIncident(id: string, body: { feedback: UserFeedback; note: string }): Promise<void>;
   getSummary(instanceId: string): Promise<AlertSummary>;
-  /** 规则页聚合视图：real 档并发拉 rules + subscription 拼成一份（前端唯一消费形态）。 */
+  /** 规则清单（订阅总开关已下线 2026-08-15：规则启停是唯一开关面）。 */
   getRules(instanceId: string): Promise<AlertRulesConfig>;
   /** 单规则创建（v2：编辑器一次建一条，策略勾选清单在 strategies 里）。 */
   createRule(instanceId: string, input: NewRuleInput): Promise<void>;
@@ -76,8 +76,6 @@ export interface AlertsApi {
   deleteRule(ruleId: string): Promise<void>;
   /** 启停开关走 :update 只传 {enabled}（独立方法是为了调用点语义清晰）。 */
   toggleRule(ruleId: string, enabled: boolean): Promise<void>;
-  /** 实例级总开关（subscription）。 */
-  setTakeoverEnabled(instanceId: string, enabled: boolean): Promise<void>;
   /** 模板 payload：templates + 可选级别 + 默认提示词。 */
   getRuleTemplates(): Promise<AlertRuleTemplatesPayload>;
   /** 功能开通探询（白名单闸）：false 时设置页/清单页渲染「未开通」引导空态。 */
@@ -185,12 +183,9 @@ const realAlertsApi: AlertsApi = {
   },
   async getRules(instanceId) {
     const s = new URLSearchParams({ instance_id: instanceId });
-    // 两端点并发拼一份聚合视图：rules 是规则清单，subscription 是实例总开关
-    const [rulesEnvelope, sub] = await Promise.all([
-      apiFetch<{ rules: AlertRulesConfig["rules"] }>(`/openops/v1/alerts/rules?${s.toString()}`),
-      apiFetch<{ enabled: boolean }>(`/openops/v1/alerts/subscription?${s.toString()}`),
-    ]);
-    return { enabled: sub.enabled, rules: rulesEnvelope.rules };
+    const envelope = await apiFetch<{ rules: AlertRulesConfig["rules"] }>(
+      `/openops/v1/alerts/rules?${s.toString()}`);
+    return { rules: envelope.rules };
   },
   async createRule(instanceId, input) {
     await apiFetch<{ rule: unknown }>(`/openops/v1/alerts/rules`, {
@@ -235,13 +230,6 @@ const realAlertsApi: AlertsApi = {
       body: { client_request_id: crid(), enabled },
     });
     invalidateAlerts();
-  },
-  async setTakeoverEnabled(instanceId, enabled) {
-    await apiFetch<void>(`/openops/v1/alerts/subscription:update`, {
-      method: "POST",
-      body: { client_request_id: crid(), agent_team_instance_id: instanceId, enabled },
-    });
-    invalidateAlerts(instanceId);
   },
   async getRuleTemplates() {
     return apiFetch<AlertRuleTemplatesPayload>(`/openops/v1/alerts/rule-templates`);
@@ -311,8 +299,6 @@ const mockAlertsApi: AlertsApi = {
     delay(undefined).then(() => { M.mockDeleteRule(ruleId); invalidateAlerts(); }),
   toggleRule: (ruleId, enabled) =>
     delay(undefined).then(() => { M.mockUpdateRule(ruleId, { enabled }); invalidateAlerts(); }),
-  setTakeoverEnabled: (instanceId, enabled) =>
-    delay(undefined).then(() => { M.mockSetTakeoverEnabled(instanceId, enabled); invalidateAlerts(instanceId); }),
   getRuleTemplates: () => delay(M.mockGetRuleTemplates()),
   // mock 缝：localStorage['openops.mock.alertGranted']='0' 可演示未开通态（默认开通）
   getAccess: () => delay({ granted: localStorage.getItem("openops.mock.alertGranted") !== "0" }),

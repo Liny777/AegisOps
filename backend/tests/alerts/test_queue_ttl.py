@@ -28,9 +28,6 @@ def _crid() -> str:
 
 def _queued_incident(client) -> tuple[str, str]:
     iid = create_instance(client)["instance_id"]
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 接管", "categories": ["MySQL"]}))

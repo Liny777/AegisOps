@@ -15,10 +15,10 @@ from alerts import repository as repo
 from alerts.rule_templates import DEFAULT_RULE_PROMPT, RULE_TEMPLATES
 from alerts.schemas import (
     AlertConfigUpdateRequest,
+    AlertPrioritizeRequest,
     BatchRulesRequest,
     CreateRuleRequest,
     DeleteRuleRequest,
-    SubscriptionUpdateRequest,
     UpdateRuleRequest,
 )
 from domain.errors import ApiError, Err
@@ -49,6 +49,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "alert_run_idle_ttl_minutes": 0,             # 0=跟随平台 run_idle_ttl；>0 提前关告警 run
     "alert_pull_batch_limit": 200,               # 单批拉取上限
     "alert_queue_max_age_s": 86400,              # 排队超时上限：超过即翻「接管失败」留痕（1 天）
+    "alert_aging_minutes": 10,                   # 老化步长：排队每满 N 分钟升一档（防饿死；关=调 1440）
 }
 
 _INT_BOUNDS: dict[str, tuple[int, int]] = {
@@ -64,6 +65,7 @@ _INT_BOUNDS: dict[str, tuple[int, int]] = {
     "alert_run_idle_ttl_minutes": (0, 1440),
     "alert_pull_batch_limit": (1, 1000),
     "alert_queue_max_age_s": (300, 604800),
+    "alert_aging_minutes": (1, 1440),
 }
 
 
@@ -351,30 +353,6 @@ async def delete_rule(user: dict[str, Any], rule_id: str, _req: DeleteRuleReques
     return {"deleted": True}
 
 
-async def get_subscription(user: dict[str, Any], instance_id: str) -> dict[str, Any]:
-    _owner_instance(await agent_teams.get_instance(instance_id), user["user_id"])
-    row = await repo.get_subscription(instance_id)
-    if row is None:
-        return {"agent_team_instance_id": instance_id, "enabled": False,
-                "max_open_incidents": None}  # 无行 = 未开通接管
-    return {"agent_team_instance_id": instance_id, "enabled": bool(row["enabled"]),
-            "max_open_incidents": row.get("max_open_incidents")}
-
-
-async def update_subscription(user: dict[str, Any], req: SubscriptionUpdateRequest) -> dict[str, Any]:
-    await _require_takeover_grant(user)
-    uid = user["user_id"]
-    _owner_instance(await agent_teams.get_instance(req.agent_team_instance_id), uid)
-    await repo.upsert_subscription(
-        instance_id=req.agent_team_instance_id, owner=uid, enabled=req.enabled,
-        max_open_incidents=req.max_open_incidents, by=uid)
-    await audit.insert_event(
-        audit_trace_id=req.agent_team_instance_id, event_type="alert.subscription_updated",
-        user_id=uid, instance_id=req.agent_team_instance_id, action="update", actor_type="user",
-        payload_redacted={"enabled": req.enabled, "max_open_incidents": req.max_open_incidents})
-    return await get_subscription(user, req.agent_team_instance_id)
-
-
 def rule_templates() -> dict[str, Any]:
     """配置弹窗数据源：三类模板 + UI 三档级别 + 默认提示词（用户可改后存 rule.prompt）。"""
     return {"templates": RULE_TEMPLATES, "severities": list(UI_SEVERITIES),
@@ -544,7 +522,9 @@ async def get_incident_detail(user: dict[str, Any], incident_id: str) -> dict[st
     else:
         out["error"] = None
     if state == "queued":
-        out["queue_position"] = await repo.queue_position(row, list(SEVERITY_ORDER))
+        cfg = await get_config()
+        out["queue_position"] = await repo.queue_position(row, list(SEVERITY_ORDER),
+                                                          int(cfg["alert_aging_minutes"]))
     return out
 
 
@@ -784,6 +764,21 @@ async def admin_set_grant(admin: dict[str, Any], *, target_user_id: str,
     return {"user_id": target, "granted": granted}
 
 
+async def prioritize_incident(admin: dict[str, Any], incident_id: str,
+                              req: AlertPrioritizeRequest) -> dict[str, Any]:
+    """管理员置顶/取消（§5.3 软插队，2026-08-15 落地）：有效优先级恒 -1 排队首；
+    仅 queued 可操作（拍板⑯：不抢占、不打断在跑的诊断——最坏等一个诊断周期）。"""
+    if not await repo.set_manual_priority(incident_id, not req.cancel, admin["user_id"]):
+        raise ApiError(Err.ALERT_INCIDENT_STATE_INVALID, "仅排队中的聚合单可置顶/取消置顶")
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="alert.incident_prioritized",
+        user_id=admin["user_id"], action="cancel" if req.cancel else "prioritize",
+        actor_type="user",
+        payload_redacted={"incident_id": incident_id, "reason": req.reason, "cancel": req.cancel})
+    row = await repo.get_incident(incident_id)
+    return incident_out(row) if row else {"incident_id": incident_id}
+
+
 async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
                                   alert_status: str | None, severities: str | None,
                                   takeover: str | None, category: str | None,
@@ -797,8 +792,14 @@ async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
         takeover=_check_enum(takeover, TAKEOVER_STATUSES, "接管状态"),
         category=category or None, search=search or None, since_days=since_days,
         page=page, page_size=page_size)
-    return {"items": [event_row_out(r, admin["user_id"]) for r in rows], "total": total,
-            "page": page, "page_size": page_size}
+    items = []
+    for r in rows:
+        out = event_row_out(r, admin["user_id"])
+        out["owner_user_id"] = r.get("inc_owner")        # 谁接管的（admin 表「接管人」列）
+        out["incident_state"] = r.get("inc_state")       # 置顶按钮条件（仅 queued 可置顶）
+        out["manual_priority"] = bool(r.get("inc_manual_priority"))
+        items.append(out)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 async def admin_overview() -> dict[str, Any]:

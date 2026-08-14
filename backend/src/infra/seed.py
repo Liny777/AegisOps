@@ -22,6 +22,11 @@ SANDBOX_DEFAULTS: dict[str, tuple[object, str]] = {
     "container_image": ("python:3.11-slim", "沙箱容器镜像（须已在宿主 docker load）"),
     "container_network_mode": ("bridge", "容器网络模式：bridge（默认，可出网）/ none（断网）"),
     "container_pids_limit": (256, "容器内进程数上限（防 fork 炸弹）"),
+    # v3 分池并发（§5.1 两层闸的任务级；2026-08-15 落地）：交互/告警各留硬保底，
+    # 弹性=total−两保底（派生不落库）。三键 SandboxPanel 可热调（reason+审计）。
+    "model_total_concurrency": (12, "任务级并发总额 M（实测模型配额）；弹性额度=M−两个硬保底"),
+    "reserve_interactive": (5, "交互硬保底：告警永远抢不走的对话名额（值班随时能发消息）"),
+    "reserve_alert": (2, "告警硬保底：对话高峰也保留的诊断名额"),
     # 逗号分隔字符串（管理台编辑框按字符串回传，数组一经编辑必被打成字符串）；token 词边界匹配防串联绕过
     "bash_deny_prefixes": ("docker,sudo,su,mount,umount,mkfs,shutdown,reboot,halt,poweroff",
                            "容器内 Bash 平台 deny 前缀（逗号分隔；即便用户批准也不放行的纵深项）"),

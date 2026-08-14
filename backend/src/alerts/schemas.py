@@ -48,13 +48,6 @@ class DeleteRuleRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
 
 
-class SubscriptionUpdateRequest(BaseModel):
-    client_request_id: str = Field(min_length=1)
-    agent_team_instance_id: str = Field(min_length=1)
-    enabled: bool
-    max_open_incidents: int | None = Field(default=None, ge=1, le=100)
-
-
 class GrantUpdateRequest(BaseModel):
     """管理员开通/关闭某用户的告警接管（算力保护白名单）。"""
     client_request_id: str = Field(min_length=1)
@@ -70,6 +63,13 @@ class FeedbackRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     feedback: Literal["positive", "negative", "neutral"]
     note: str = Field(default="", max_length=500)
+
+
+class AlertPrioritizeRequest(BaseModel):
+    """管理员置顶/取消置顶（§5.3 软插队）：reason 必填写审计。"""
+    client_request_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1, max_length=300)
+    cancel: bool = False
 
 
 class AlertConfigUpdateRequest(BaseModel):

@@ -66,7 +66,7 @@ def test_ddl_001_has_core_tables_plus_runtime_config():
     """
     ddl = "\n".join(f.read_text(encoding="utf-8") for f in DDL_FILES)
     tables = re.findall(r"CREATE TABLE IF NOT EXISTS ([a-z_]+)", ddl)
-    assert len(tables) == 36  # 23 业务核心（含 model_template 两表） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）+ alerts 七表（切片，含用户白名单 grant）
+    assert len(tables) == 35  # 23 业务核心（含 model_template 两表） + runtime_config + P 块三表 + D 块 delegation + studio span（切片）+ alerts 六表（切片；订阅表 2026-08-15 随实例总开关下线）
     assert "sre_platform_runtime_config" in tables
     assert "sre_agent_studio_span" in tables
     assert "sre_agent_team_tpl_version" in tables

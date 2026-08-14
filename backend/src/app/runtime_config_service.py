@@ -39,6 +39,9 @@ _SANDBOX_CHECKS = {
     "container_memory_limit_mib": _pos_int,
     "max_user_containers_per_host": _pos_int,
     "per_user_running_task_limit": _pos_int,
+    "model_total_concurrency": _pos_int,
+    "reserve_interactive": _nonneg_int,  # 0=交互无保底（全走弹性），合法
+    "reserve_alert": _nonneg_int,
     "user_container_idle_ttl_minutes": _nonneg_int,
     "run_idle_ttl_minutes": _pos_int,  # 用 _pos_int：0 会把刚建的静默 run 立刻回收
     "capacity_full_policy": lambda v: str(v).strip().lower() == "strict_ttl",  # V1 仅支持 strict_ttl，拦非法值

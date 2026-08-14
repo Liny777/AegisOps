@@ -86,9 +86,6 @@ def test_platform_down_falls_back_to_local(client, monkeypatch):
 
     iid = _setup_instance(client)
     # 订阅 + 规则 + 注入 + 拉取：种一条本地落库的 MySQL 事件
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 接管", "categories": ["MySQL"]}))

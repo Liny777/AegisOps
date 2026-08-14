@@ -40,9 +40,6 @@ def _setup_instance(client,
                     prompt: str = "【专属排查指引】优先检查主从复制线程与 binlog 位点。") -> str:
     inst = create_instance(client, f"告警接管 Agent {time.time_ns()}")
     iid = inst["instance_id"]
-    unwrap(client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True}))
     unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
                              "name": "MySQL 全量接管", "categories": ["MySQL"],

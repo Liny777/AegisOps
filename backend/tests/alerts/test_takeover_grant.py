@@ -24,12 +24,6 @@ def _set_grant(user_id: str, granted: bool) -> None:
     asyncio.run(repo.set_user_grant(user_id, granted, "test"))
 
 
-def _subscribe(client, iid: str):
-    return client.post(f"{BASE}/subscription:update", headers=USER_HEADERS,
-                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
-                             "enabled": True})
-
-
 def _mk_rule(client, iid: str, name: str):
     return client.post(f"{BASE}/rules", headers=USER_HEADERS,
                        json={"client_request_id": _crid(), "agent_team_instance_id": iid,
@@ -37,21 +31,19 @@ def _mk_rule(client, iid: str, name: str):
 
 
 def test_access_and_config_gate(client):
-    """未开通：access.granted=False，订阅/建规/预览全 403 且文案可引导；开通后放行。"""
+    """未开通：access.granted=False，建规/预览全 403 且文案可引导；开通后放行。"""
     iid = create_instance(client)["instance_id"]
     _set_grant("0026demo01", False)
 
     assert unwrap(client.get(f"{BASE}/access", headers=USER_HEADERS))["granted"] is False
-    r1 = _subscribe(client, iid)
+    r1 = _mk_rule(client, iid, "拦截")
     assert r1.status_code == 403 and "联系平台管理员" in r1.text
-    assert _mk_rule(client, iid, "拦截").status_code == 403
     r3 = client.get(f"{BASE}/history-preview", headers=USER_HEADERS,
                     params={"instance_id": iid, "categories": "MySQL"})
     assert r3.status_code == 403
 
     _set_grant("0026demo01", True)
     assert unwrap(client.get(f"{BASE}/access", headers=USER_HEADERS))["granted"] is True
-    assert _subscribe(client, iid).status_code < 400
     assert _mk_rule(client, iid, "放行").status_code < 400
 
 
@@ -76,9 +68,8 @@ def test_admin_bypass_and_grants_api(client):
 
 
 def test_revoked_user_rules_leave_matching_plane(client):
-    """匹配面断流：开通期建好订阅+规则 → 关闭开通 → 注入命中告警 → matched=0 不落库。"""
+    """匹配面断流：开通期建好规则 → 关闭开通 → 注入命中告警 → matched=0 不落库。"""
     iid = create_instance(client)["instance_id"]
-    assert _subscribe(client, iid).status_code < 400
     assert _mk_rule(client, iid, "MySQL 接管").status_code < 400
 
     _set_grant("0026demo01", False)
@@ -93,7 +84,6 @@ def test_revoked_user_rules_leave_matching_plane(client):
 def test_queued_incident_skipped_after_revoke(client):
     """派发面双保险：排队后被移出名单 → dispatch 置 skipped 留痕，不再建诊断。"""
     iid = create_instance(client)["instance_id"]
-    assert _subscribe(client, iid).status_code < 400
     assert _mk_rule(client, iid, "MySQL 接管").status_code < 400
     alert_platform_mock._reset()
     alert_platform_mock._inject(title="MySQL 磁盘满", category="MySQL", severity="critical", app_id="APP-A")
