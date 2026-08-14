@@ -151,11 +151,24 @@ else
   echo "   OK：真实 openops.*.env 未进入版本控制"
 fi
 
-echo "== ③ V1 禁用入口核对 =="
+echo "== ③ V1 禁用入口与切片边界核对 =="
 if [ -f frontend/src/layout/Sidebar.tsx ]; then
   grep -q "locked: true" frontend/src/layout/Sidebar.tsx \
     && echo "   OK：知识/自动化/本体仍置灰" \
     || fail "Sidebar 置灰项被改动，需人工核对"
+  # 切片残留：这些文件已迁往 frontend/src/studio/，磁盘上的旧副本仍引用已搬走的类型/api，
+  # 会被 tsc 编译并打挂构建（内网实测：7 条 TS2305/TS2339 指向 src/admin/AgentStudioPage.tsx）。
+  # 必须查磁盘而非 git——残留常是未追踪文件，git ls-files 看不见但 tsc 照样编译。
+  # 与 frontend/scripts/check-slice-boundary.mjs 同源；此处独立再查一次，保证不构建也能拦住。
+  STALE_SLICE=""
+  for f in AgentStudioPage StudioAgentCard StudioTranscript RunDetailView ReplayPage; do
+    [ -f "frontend/src/admin/${f}.tsx" ] && STALE_SLICE="${STALE_SLICE} frontend/src/admin/${f}.tsx"
+  done
+  if [ -n "$STALE_SLICE" ]; then
+    fail "存在切片残留文件（应只在 frontend/src/studio/ 下）：${STALE_SLICE} ⇒ 删除即可：git rm -f${STALE_SLICE}"
+  else
+    echo "   OK：src/admin/ 无 Studio 切片残留"
+  fi
 else
   echo "   SKIP：backend-only 工件不含前端；该项已在构建机静态检查"
 fi
