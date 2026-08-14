@@ -6,6 +6,7 @@ infra.idempotency；配置更新照 runtime_config_service 的「整批校验 + 
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -85,13 +86,45 @@ async def ensure_config_defaults() -> None:
                                         description="7x24 告警接管运行旋钮", reason="seed", by="system")
 
 
+_env_config_warned: set[str] = set()  # 非法 env 只警一次（get_config 在消费循环里每秒跑）
+
+
+def _apply_env_overrides(merged: dict[str, Any]) -> None:
+    """env 钉死缝（2026-08-13 内网诉求：批量等旋钮想部署态定死，不想部署后补接口调用）。
+
+    `OPENOPS_<配置键大写>`（如 OPENOPS_ALERT_PULL_BATCH_LIMIT=1000）配了即最高优先级——
+    ensure_config_defaults 会把全部键种进 DB，env 不压 DB 就永远不生效；代价是接口对该键
+    的热调失效（get_config 读侧恒被 env 盖住），管理台回显的也是 env 值，语义自洽。
+    非法/越界值 fail-safe：忽略/收敛进边界并 warning 一次，绝不拦启动。
+    """
+    for key, (lo, hi) in _INT_BOUNDS.items():
+        env_name = f"OPENOPS_{key.upper()}"
+        raw = os.environ.get(env_name, "").strip()
+        if not raw:
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            if env_name not in _env_config_warned:
+                _env_config_warned.add(env_name)
+                log.warning("[alerts][config] %s=%r 不是整数，已忽略", env_name, raw)
+            continue
+        clamped = min(hi, max(lo, value))
+        if clamped != value and env_name not in _env_config_warned:
+            _env_config_warned.add(env_name)
+            log.warning("[alerts][config] %s=%d 超界 [%d,%d]，收敛为 %d",
+                        env_name, value, lo, hi, clamped)
+        merged[key] = clamped
+
+
 async def get_config() -> dict[str, Any]:
-    """默认值 + DB 覆盖（读侧永远给全量键，管理台/循环都吃这份）。"""
+    """默认值 + DB 覆盖 + env 钉死（读侧永远给全量键，管理台/循环都吃这份）。"""
     merged = dict(CONFIG_DEFAULTS)
     for row in await runtime_config.get_domain(DOMAIN_ALERT):
         key = row["config_key"]
         if key in merged:
             merged[key] = row["config_value_json"]
+    _apply_env_overrides(merged)
     return merged
 
 
