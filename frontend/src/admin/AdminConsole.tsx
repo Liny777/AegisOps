@@ -4,7 +4,7 @@ import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api } from "../lib/api";
-import type { AdminTableData, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
+import type { AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
@@ -21,6 +21,7 @@ const TITLES: Record<string, string> = {
   "model-templates": "模型模板",
   skills: "Skill 基线",
   users: "用户与白名单",
+  alerts: "告警接管",
   sandbox: "沙箱与容量",
   audit: "审计与 Trace 回放",
   [STUDIO_ADMIN_PAGE.key]: STUDIO_ADMIN_PAGE.title,
@@ -328,6 +329,8 @@ export function AdminConsole() {
             </>
           ) : null}
 
+          {page === "alerts" ? <AlertOpsPanel /> : null}
+
           {page === "sandbox" ? <SandboxPanel /> : null}
 
           {page === STUDIO_ADMIN_PAGE.key ? STUDIO_ADMIN_PAGE.render() : null}
@@ -551,6 +554,123 @@ function ModelGrantsDialog({ target, onClose, onSaved }: {
           }}>保存授权</Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** 告警接管运行参数（2026-08-14）：只读 → 编辑 → reason 必填 → config:update 写审计，
+ * 保存即生效（消费/派发循环每轮重读配置，免重启）。env 钉死键（OPENOPS_<键大写>）
+ * 禁用输入——env 恒盖 DB，UI 改了「保存成功但回显不变」会像 bug。 */
+const ALERT_KNOB_LABELS: Record<string, string> = {
+  alert_enabled: "告警接管总开关",
+  alert_max_concurrent_diagnosis: "诊断并发上限",
+  alert_queue_max: "全局排队上限",
+  alert_max_open_incidents_per_instance: "单实例未完结上限",
+  alert_dedup_window_s: "同指纹去重窗口（秒）",
+  alert_group_cooldown_s: "同组冷却（秒）",
+  alert_diagnosis_timeout_s: "单次诊断超时（秒）",
+  alert_max_retries: "失败重试上限",
+  alert_retry_backoff_s: "重试退避（秒）",
+  alert_requeue_max_age_s: "重启补诊陈旧上限（秒）",
+  alert_run_idle_ttl_minutes: "告警会话空闲回收（分钟，0=跟随平台）",
+  alert_pull_batch_limit: "Kafka 单批消费上限",
+  alert_queue_max_age_s: "排队超时上限（秒，超过翻「接管失败」）",
+};
+
+function AlertOpsPanel() {
+  const [data, setData] = useState<AlertOpsConfig | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [reason, setReason] = useState("");
+  const [err, setErr] = useState("");
+  const [saved, setSaved] = useState(false);
+
+  const load = useCallback(() => {
+    api.getAlertOpsConfig().then(setData).catch((e) => setErr((e as Error).message));
+  }, []);
+  useEffect(load, [load]);
+
+  if (!data) {
+    return <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px", fontSize: 12.5, color: err ? color.dangerText : color.textSubtle }}>{err || "加载中…"}</div>;
+  }
+  const keys = Object.keys(ALERT_KNOB_LABELS).filter((k) => k in data.config);
+  const locked = new Set(data.env_locked);
+
+  const startEdit = () => {
+    setDraft(Object.fromEntries(keys.map((k) => [k, String(data.config[k])])));
+    setEditing(true); setSaved(false); setErr("");
+  };
+  const cancel = () => { setEditing(false); setReason(""); setErr(""); };
+  const confirm = async () => {
+    if (!reason.trim()) { setErr("请填写变更原因——配置修改必须写审计。"); return; }
+    const updates: Record<string, unknown> = {};
+    for (const k of keys) {
+      if (locked.has(k) || draft[k] === String(data.config[k])) continue;
+      updates[k] = k === "alert_enabled" ? draft[k] === "true" : Number(draft[k]);
+    }
+    if (!Object.keys(updates).length) { setErr("没有改动。"); return; }
+    try {
+      await api.saveAlertOpsConfig(updates, reason.trim());
+      setEditing(false); setReason(""); setErr(""); setSaved(true);
+      load();
+    } catch (e) { setErr((e as Error).message); }
+  };
+
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, padding: "18px 20px" }}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 4 }}>运行参数</div>
+          <div style={{ fontSize: 12, color: color.textSubtle }}>修改需填写 reason 并写审计；保存即生效（消费/派发循环每轮重读）。标「环境锁定」的键由部署环境变量钉死，请改 env 后重启。</div>
+        </div>
+        {!editing ? (
+          <Button variant="secondary" icon="pencil" onClick={startEdit} style={{ fontSize: 12.5, padding: "8px 15px" }}>编辑</Button>
+        ) : (
+          <Pill tone="warning">编辑中</Pill>
+        )}
+      </div>
+      {saved ? <div style={{ fontSize: 12, color: color.goodText, marginBottom: 10 }}>已保存并生效。</div> : null}
+      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        {keys.map((k) => {
+          const isLocked = locked.has(k);
+          const bound = data.bounds[k];
+          return (
+            <div key={k} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: radius.md, background: isLocked ? color.pageBg : "transparent" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ALERT_KNOB_LABELS[k]}</div>
+                <div style={{ fontSize: 11, color: color.textFaint, fontFamily: "ui-monospace, monospace" }}>
+                  {k}{bound ? `　[${bound[0]} ~ ${bound[1]}]` : ""}
+                </div>
+              </div>
+              {isLocked ? <Pill tone="neutral" icon="lock">环境锁定</Pill> : null}
+              {!editing || isLocked ? (
+                <span style={{ fontSize: 13, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>
+                  {k === "alert_enabled" ? (data.config[k] ? "开" : "关") : String(data.config[k])}
+                </span>
+              ) : k === "alert_enabled" ? (
+                <select value={draft[k]} onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))}
+                        style={{ height: 30, border: `1px solid ${color.border}`, borderRadius: radius.sm, fontSize: 12.5, padding: "0 6px" }}>
+                  <option value="true">开</option>
+                  <option value="false">关</option>
+                </select>
+              ) : (
+                <input type="number" value={draft[k]} min={bound?.[0]} max={bound?.[1]}
+                       onChange={(e) => setDraft((d) => ({ ...d, [k]: e.target.value }))}
+                       style={{ width: 110, height: 30, border: `1px solid ${color.border}`, borderRadius: radius.sm, fontSize: 12.5, padding: "0 8px", textAlign: "right" }} />
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {editing ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${color.border}` }}>
+          <input value={reason} placeholder="变更原因（必填，写审计）" onChange={(e) => setReason(e.target.value)}
+                 style={{ flex: 1, height: 32, border: `1px solid ${color.border}`, borderRadius: radius.sm, fontSize: 12.5, padding: "0 10px" }} />
+          <Button variant="secondary" onClick={cancel} style={{ fontSize: 12.5, padding: "8px 14px" }}>取消</Button>
+          <Button onClick={() => void confirm()} style={{ fontSize: 12.5, padding: "8px 14px" }}>确认生效</Button>
+        </div>
+      ) : null}
+      {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10 }}>{err}</div> : null}
     </div>
   );
 }
