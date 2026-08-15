@@ -392,21 +392,68 @@ def test_user_llm_014_delete_soft_deletes_and_revokes_secret(client):
     assert all(s["secret_ref_id"] != sec["secret_ref_id"] for s in secs)
 
 
-def test_user_llm_015_delete_blocked_while_bound_to_agent(client):
-    """仍被某 Agent 当前配置绑定时拒删——真删了那些 Agent 每次起任务都 403（运行时是硬失败）。"""
+def test_user_llm_015_delete_while_bound_degrades_and_tells_user(client):
+    """被 Agent 绑着也允许删；该 Agent 下次起任务降级平台默认，并留痕告知用户重新选择。
+
+    真链路（建 Agent → 删模型 → 起任务 → 读 /state）而非桩：降级发生在 start_task 里，
+    假 TaskState 的单测抓不到「事件到底发没发」。
+    """
     sec = _mk_secret(client)
     cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
-    unwrap(client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS,
-                       json={"client_request_id": f"i_{time.time_ns()}",
-                             "template_version_id": templates[0]["template_version_id"],
-                             "name": "占用该模型的 Agent", "workspace_id": "ws_pay_abc",
-                             "initial_overlay_json": {"user_llm_config_id": cid}}))
-    r = client.delete(f"/api/openops/v1/llm-configs/{cid}", headers=USER_HEADERS)
-    assert r.status_code == 400
-    msg = r.json()["error"]["message"]
-    assert "占用该模型的 Agent" in msg  # 报出占用方名字，用户知道去哪换绑
-    assert _listed(client, cid)["llm_config_id"] == cid  # 仍在
+    inst = unwrap(client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS,
+                              json={"client_request_id": f"i_{time.time_ns()}",
+                                    "template_version_id": templates[0]["template_version_id"],
+                                    "name": "绑了会被删的模型的 Agent", "workspace_id": "ws_pay_abc",
+                                    "initial_overlay_json": {"user_llm_config_id": cid}}))["instance"]
+
+    assert client.delete(f"/api/openops/v1/llm-configs/{cid}", headers=USER_HEADERS).status_code == 200
+    assert all(c["llm_config_id"] != cid for c in
+               unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS)))
+
+    run = create_run(client, inst["instance_id"])
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+                       json={"client_request_id": f"t_{time.time_ns()}", "input_text": "排查支付延迟"}))
+    state = wait_until(lambda: _state_with_model(client, run["agent_run_id"]))
+    assert state is not None
+    # 降级到平台默认：selected_model 不再是那个已删配置的 UUID
+    assert state["active_task"]["selected_model"] != cid
+
+    # 告知用户的那条事件必须在（reason 读出来叫 reason_summary，redact 改的名）
+    evs = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/events?limit=100",
+                            headers=USER_HEADERS))["items"]
+    deg = [e for e in evs if "user_llm_degraded" in str(e.get("event_type"))]
+    assert deg, "自带模型被删后必须发降级事件，否则用户不知道 prompt 换了模型去处"
+    payload = deg[0].get("payload_redacted_json") or {}
+    assert payload.get("llm_config_id") == cid  # 未被 redact 白名单静默吞掉
+    assert "USER_LLM_DELETED" in str(payload.get("reason_summary"))
+    assert "重新选择" in str(payload.get("summary"))
+
+
+def test_user_llm_017_bind_rejects_foreign_or_missing_config(client):
+    """绑定期校验：绑不存在的 / 别人的自带模型 → 403（MODEL_NOT_AUTHORIZED），
+    不再等到运行时才静默降级。"""
+    templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+
+    def _create(llm_id: str):
+        return client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS,
+                           json={"client_request_id": f"i_{time.time_ns()}",
+                                 "template_version_id": templates[0]["template_version_id"],
+                                 "name": f"绑无效模型 {time.time_ns()}", "workspace_id": "ws_pay_abc",
+                                 "initial_overlay_json": {"user_llm_config_id": llm_id}})
+
+    assert _create("00000000-0000-0000-0000-000000000000").status_code == 403
+
+    # 别人的配置：admin 建一个，普通用户绑不上
+    sec = unwrap(client.post("/api/openops/v1/secrets", headers=ADMIN_HEADERS,
+                             json={"client_request_id": f"s_{time.time_ns()}", "secret_name": "admin key",
+                                   "secret_type": "api_key", "provider": "openai_compatible",
+                                   "secret_value": "sk-admin"}))
+    other = unwrap(client.post("/api/openops/v1/llm-configs", headers=ADMIN_HEADERS,
+                               json={"client_request_id": f"l_{time.time_ns()}", "display_name": "admin 的模型",
+                                     "provider": "openai_compatible", "base_url": _BASE,
+                                     "model_name": "gpt-4o", "secret_ref_id": sec["secret_ref_id"]}))
+    assert _create(other["llm_config_id"]).status_code == 403
 
 
 def test_user_llm_016_delete_cross_user_is_404(client):

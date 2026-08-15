@@ -130,6 +130,9 @@ _GENERIC_SAFE_KEYS = (
     # 本函数是 deny-by-default——不进白名单的自定义键会被静默剥掉（写入与审计读出双侧生效）
     "model_template_id",
     "slot",
+    # 自带模型降级（model.user_llm_degraded）：配置 id 本身不是密钥（Key 在 sre_user_secret 加密列），
+    # 放行才能让审计回放答得出「当时绑的是哪个配置」；不加这条会被上面的 deny-by-default 静默吞掉
+    "llm_config_id",
     "access_scope",
     "template_id",
     "template_version_id",

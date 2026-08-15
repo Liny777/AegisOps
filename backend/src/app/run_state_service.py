@@ -335,9 +335,22 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any,
     _overlay = (active_cv or {}).get("overlay_json") or {}  # 模型三键 + main_role_append 同源
     _tpl_id = _overlay.get("model_template_id")
     if _overlay.get("user_llm_config_id"):
-        st.selected_model = str(_overlay["user_llm_config_id"])
-        # 用户 LLM 失效走显式报错（S3 语义），不静默回退
-        st.model_spec = await model_gateway.resolve_runtime_model(st.selected_model, uid)
+        _ures = await model_gateway.resolve_user_llm_models(str(_overlay["user_llm_config_id"]), uid)
+        st.model_spec, st.selected_model = _ures["spec"], _ures["selected"]
+        for _d in _ures["degraded"]:  # 自带模型已删/不可用：回退平台默认（fail-safe 不阻断）
+            # 曾是硬失败（S3/C2-OBS-003），会让绑过被删模型的 Agent 每次起任务都 403 直接变砖。
+            # 现改为降级 + 工作台横幅显式告知——用户看得见才谈得上「请重新选择」，风险靠告知控。
+            _msg = ("原自带模型已被删除，本次已改用平台默认模型，请到 Agent 编辑页重新选择模型"
+                    if _d.get("reason") == "USER_LLM_DELETED"
+                    else "原自带模型不可用（已禁用或非本人配置），本次已改用平台默认模型，请重新选择模型")
+            _eid = await audit.insert_event(
+                audit_trace_id=trace, event_type="model.user_llm_degraded", user_id=uid, run_id=run_id,
+                instance_id=st.instance_id, task_id=task_id, action=str(_d["slot"]), actor_type="system",
+                payload_redacted={**_d, "summary": _msg},
+            )
+            events.publish(run_id, events.envelope(run_id, "openops.model.user_llm_degraded", task_id=task_id,
+                                                   message=_msg, payload=dict(_d),
+                                                   audit_trace_id=trace, event_id=_eid))
     elif _tpl_id:
         _res = await model_gateway.resolve_template_models(str(_tpl_id), uid)
         st.model_spec, st.sub_model_spec = _res["main_spec"], _res["sub_spec"]

@@ -23,10 +23,12 @@ export function MyModelsPane() {
   useEffect(load, [load]);
 
   const remove = (row: MyLlmConfig) => {
-    if (!window.confirm(`删除「${row.display_name}」？其 API Key 将一并作废，此操作不可撤销。`)) return;
+    // 明说后果：删除不拦占用（运行时 fail-safe 降级），但仍绑着它的 Agent 会改用平台默认模型
+    if (!window.confirm(
+      `删除「${row.display_name}」？其 API Key 将一并作废，此操作不可撤销。\n\n`
+      + "仍绑定该模型的 Agent 下次起任务会改用平台默认模型，并提示重新选择。")) return;
     api.deleteLlmConfig(row.llm_config_id)
       .then(() => { setErr(""); load(); })
-      // 被某 Agent 当前配置绑定时后端 400，message 里带占用方名字——原样透出，用户才知道去哪换绑
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : "删除失败"));
   };
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { color, radius, type Tone } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, IconButton, Button } from "../ui";
@@ -134,6 +135,7 @@ export function Workbench({
 }) {
   const { instanceId, explicitRunId } = target;
   const { agents, setCurrentAgentId } = useApp();
+  const nav = useNavigate();
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<"active" | "closed">("active");
@@ -141,6 +143,10 @@ export function Workbench({
   const [chatTitle, setChatTitle] = useState<string | null>(null);   // run_title（real）；null=未起名
   const [agentName, setAgentName] = useState<string | null>(null);   // /state 的 instance.instance_name
   const [initializationIssue, setInitializationIssue] = useState<WorkbenchRecoveryIssue | null>(null);
+  // 自带模型降级告知（openops.model.user_llm_degraded）：绑的自带模型被删/禁用后，本次任务已改用
+  // 平台默认模型。这是用户**唯一**能看见降级的地方——主 Agent 时间线 real 模式恒空，该事件也没有
+  // delegation_id 进不了子 Agent 轮次，不弹这条横幅用户就只能在管理员审计页才看得到。
+  const [modelDegraded, setModelDegraded] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [copilotConnectionGeneration, setCopilotConnectionGeneration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -382,6 +388,11 @@ export function Workbench({
         setRca(projectRca(parsed as unknown as Record<string, unknown>, e.occurred_at));
         break;
       }
+      case "openops.model.user_llm_degraded":
+        // 绑的自带模型没了 → 已降级平台默认。横幅常驻直到用户去改绑或手动关闭：任务照跑，
+        // 但用户必须知道这次的 prompt 发去了平台模型而不是他自己的模型。
+        setModelDegraded(e.message || "原自带模型不可用，本次已改用平台默认模型，请重新选择模型");
+        break;
       case "openops.run.closed":
         setRunStatus("closed");
         if (activeInstanceRef.current) forgetEnsuredRun(activeInstanceRef.current, e.agent_run_id);
@@ -550,6 +561,7 @@ export function Workbench({
     refreshRequestRef.current = null;
     updateTransition({ key: targetKey, status: "loading" });
     setInitializationIssue(null);
+    setModelDegraded(null);  // 降级横幅属于上一个会话/Agent，切目标必须清，否则串台
     if (!hadDisplayedRun) setConn("connecting");
 
     void (async () => {
@@ -981,6 +993,34 @@ export function Workbench({
         <IconButton icon="timeline-event" title="活动栏" active={activityOpen} onClick={() => setActivityOpen((v) => !v)} />
         <IconButton icon="list-check" title="服务状态" active={statusOpen} onClick={() => setStatusOpen((v) => !v)} />
       </header>
+
+      {/* 自带模型降级：样式同下方初始化告警，但动作是「去改绑」而非「重试」——降级不是可重试的
+          错误，重试只会再降级一次。关闭仅收起本次提示，不改任何配置。 */}
+      {modelDegraded ? (
+        <div
+          role="alert"
+          style={{
+            flex: "0 0 auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "9px 20px",
+            borderBottom: `1px solid ${color.border}`,
+            background: toneColor.warning.bg,
+            color: toneColor.warning.text,
+            fontSize: 12.5,
+          }}
+        >
+          <Icon name="alert-triangle" size={15} />
+          <span style={{ flex: 1 }}>{modelDegraded}</span>
+          {effectiveInstanceId ? (
+            <Button variant="ghost" onClick={() => nav(`/agent-teams/${effectiveInstanceId}/edit`)}>
+              重新选择模型
+            </Button>
+          ) : null}
+          <IconButton icon="x" title="关闭提示" onClick={() => setModelDegraded(null)} />
+        </div>
+      ) : null}
 
       {initializationError ? (
         <div

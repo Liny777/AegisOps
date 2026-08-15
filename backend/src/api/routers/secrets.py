@@ -65,6 +65,6 @@ async def update_llm(llm_config_id: str, req: UpdateLlmConfigRequest, user: User
 
 @router.delete("/llm-configs/{llm_config_id}")
 async def delete_llm(llm_config_id: str, user: User):
-    """软删自带模型 + 连带作废其专属 Secret；仍被某 Agent 当前配置绑定时拒删。"""
+    """软删自带模型 + 连带作废其专属 Secret。仍绑着它的 Agent 下次起任务降级平台默认并横幅告知。"""
     await secret_model_gateway.delete_llm_config(user, llm_config_id)
     return ok({"deleted": True})

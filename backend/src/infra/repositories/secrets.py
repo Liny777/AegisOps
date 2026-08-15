@@ -76,7 +76,20 @@ async def list_llm_configs(user_id: str) -> list[dict[str, Any]]:
     )
 
 
+def _is_uuid(s: Any) -> bool:
+    """llm_config_id 列是 uuid 类型：非 UUID 字面量直接绑参会让 psycopg 抛
+    InvalidTextRepresentation（整条 500），而不是干净的「查不到」。这些 id 来自路径参数、
+    请求体与存量 overlay，形状不可信——查询前先挡一道，语义上「非 UUID 必然不存在」。"""
+    try:
+        uuid.UUID(str(s))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 async def get_llm_config(llm_config_id: str) -> dict[str, Any] | None:
+    if not _is_uuid(llm_config_id):
+        return None
     return await q_one(
         "select * from sre_user_llm_config where llm_config_id=%(l)s and deleted_at is null", {"l": llm_config_id}
     )
@@ -114,7 +127,8 @@ async def update_fields(llm_config_id: str, fields: dict[str, Any], by: str) -> 
 async def soft_delete_llm_config(llm_config_id: str, by: str) -> int:
     """软删自带模型配置。软删而非硬删：历史 config_version.overlay_json 里的 UUID 仍指得回一行，
     审计回放能显示「当时用的是哪个模型」；且 secret_ref_id NOT NULL 的关联不被打断。
-    服务层先做 active 实例引用检查（被绑定则拒删——运行时对失效自带 LLM 是硬失败不是降级）。"""
+    不做引用检查——仍绑着它的 Agent 下次起任务 fail-safe 降级平台默认 + 横幅告知（见
+    [[model_gateway.resolve_user_llm_models]]）。"""
     return await exec1(
         """
         update sre_user_llm_config set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
@@ -137,22 +151,15 @@ async def soft_delete_secret(secret_ref_id: str, by: str) -> int:
     )
 
 
-async def list_instances_using_llm_config(llm_config_id: str) -> list[dict[str, Any]]:
-    """仍以该自带模型为**当前生效配置**的实例（删除前的引用检查）。
-
-    只看 active_config_version（历史版本的 overlay 引用不该拦删除，同
-    [[agent_teams.asset_in_use]] 的 cv.status='active' 判据）。命中即拒删：
-    真删了会让这些实例每次 start_task 都 403（model_gateway 对失效自带 LLM 抛
-    MODEL_NOT_AUTHORIZED，run_state_service 未接住），Agent 直接不可用。
-    """
-    return await q_all(
+async def get_llm_config_owned(llm_config_id: str, user_id: str) -> dict[str, Any] | None:
+    """本人的、未删的配置（绑定期校验用）。与 get_llm_config 的区别是带归属过滤——
+    实例绑定 user_llm_config_id 时用它挡住「绑别人的 / 不存在的 UUID」。"""
+    if not _is_uuid(llm_config_id):
+        return None
+    return await q_one(
         """
-        select i.agent_team_instance_id, i.instance_name
-        from sre_agent_team_instance i
-        join sre_agent_team_config_version cv on cv.config_version_id = i.active_config_version_id
-        where cv.overlay_json->>'user_llm_config_id' = %(l)s
-          and i.deleted_at is null and cv.deleted_at is null
-        order by i.creation_date
+        select llm_config_id, display_name, status from sre_user_llm_config
+        where llm_config_id=%(l)s and user_id=%(u)s and deleted_at is null
         """,
-        {"l": llm_config_id},
+        {"l": llm_config_id, "u": user_id},
     )

@@ -37,6 +37,22 @@ async def _ensure_model_template_bindable(user_id: str, model_template_id: Any) 
     await model_template_service.ensure_bindable(user_id, str(model_template_id))
 
 
+async def _ensure_user_llm_bindable(user_id: str, llm_config_id: Any) -> None:
+    """选自带模型作实例默认时的存在性 + 归属 + active 复校，口径同上面两个模型键。
+
+    三键里这个曾经完全没有校验——能绑别人的、或压根不存在的 UUID。运行时改成 fail-safe 降级后
+    这个缺口更隐蔽：绑错了不再报错，而是静默跑平台默认模型。绑定期挡住，运行期的降级就只用于
+    「原本有效、后来被删」这一种真实情形。
+    """
+    if not llm_config_id:
+        return
+    from infra.repositories import secrets  # 延迟导入：与其余两个校验同风格
+
+    cfg = await secrets.get_llm_config_owned(str(llm_config_id), user_id)
+    if cfg is None or cfg.get("status") != "active":
+        raise ApiError(Err.MODEL_NOT_AUTHORIZED, "该自定义模型不存在、已删除或非本人配置，请重新选择")
+
+
 def _ensure_model_keys_exclusive(overlay: dict[str, Any]) -> None:
     if sum(1 for k in _MODEL_OVERLAY_KEYS if overlay.get(k)) > 1:
         raise ApiError(Err.VALIDATION_FAILED, "模型绑定互斥：自带 LLM / 模型模板 / 平台模型只能选其一")
@@ -85,6 +101,7 @@ async def _create_body(user: dict[str, Any], req: Any) -> dict[str, Any]:
     _ensure_model_keys_exclusive(overlay)
     await _ensure_platform_model_authorized(uid, overlay.get("platform_model_id"))
     await _ensure_model_template_bindable(uid, overlay.get("model_template_id"))
+    await _ensure_user_llm_bindable(uid, overlay.get("user_llm_config_id"))
     inst = await agent_teams.create_instance(
         uid, str(tv["template_id"]), req.template_version_id, req.name,
         req.workspace_id, req.scope_revision or ws["scope_revision"], overlay,
@@ -157,6 +174,7 @@ async def _update_body(user: dict[str, Any], instance_id: str, req: Any) -> dict
     prev_overlay = dict((prev or {}).get("overlay_json") or {})
     new_overlay = {k: v for k, v in prev_overlay.items() if k not in _MODEL_OVERLAY_KEYS}
     if req.user_llm_config_id:
+        await _ensure_user_llm_bindable(uid, req.user_llm_config_id)
         new_overlay["user_llm_config_id"] = req.user_llm_config_id
     elif req.model_template_id:
         await _ensure_model_template_bindable(uid, req.model_template_id)
@@ -269,6 +287,7 @@ async def save_config(user: dict[str, Any], instance_id: str, req: Any) -> dict[
     overlay = {k: v for k, v in (req.overlay_json or {}).items() if k in _OVERLAY_ALLOWED}
     _ensure_model_keys_exclusive(overlay)
     await _ensure_model_template_bindable(user["user_id"], overlay.get("model_template_id"))
+    await _ensure_user_llm_bindable(user["user_id"], overlay.get("user_llm_config_id"))
     out = await derive_config_version(row, user["user_id"], req.change_reason or "update", overlay=overlay)
     return {"config_version": row_json(out["config_version"])}
 

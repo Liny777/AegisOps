@@ -106,17 +106,12 @@ def _merged_headers(cfg: dict[str, Any], fields: dict[str, Any]) -> dict[str, st
 async def delete_llm_config(user: dict[str, Any], llm_config_id: str) -> None:
     """软删自带模型 + 连带作废其专属 Secret。
 
-    仍被某实例**当前生效配置**绑定时拒删（fail-closed）：运行时对失效的自带 LLM 是硬失败——
-    model_gateway.resolve_runtime_model 抛 MODEL_NOT_AUTHORIZED 且 run_state_service 未接住，
-    真删了那些 Agent 每次起任务都 403、要进编辑向导换绑才能恢复。先让用户改绑再删。
+    **不做引用检查**：仍绑着它的 Agent 下次起任务时由 model_gateway.resolve_user_llm_models
+    降级到平台默认，并推 model.user_llm_degraded 事件让工作台横幅告知用户重新选择。
+    曾经是「被引用则拒删」（那时运行时是硬失败，放行会让那些 Agent 每次起任务都 403），
+    现运行时已 fail-safe，删除不再需要这道墙。
     """
     cfg = await _owned_llm_config(user, llm_config_id)
-    refs = await secrets.list_instances_using_llm_config(llm_config_id)
-    if refs:
-        names = "、".join(str(r["instance_name"]) for r in refs[:5])
-        more = f" 等 {len(refs)} 个" if len(refs) > 5 else ""
-        raise ApiError(Err.VALIDATION_FAILED,
-                       f"该模型正被 Agent 使用（{names}{more}），请先在对应 Agent 的编辑页换用其它模型再删除")
     await secrets.soft_delete_llm_config(llm_config_id, user["user_id"])
     if cfg.get("secret_ref_id"):
         await secrets.soft_delete_secret(str(cfg["secret_ref_id"]), user["user_id"])

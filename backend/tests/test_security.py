@@ -169,24 +169,31 @@ def test_sec_s3_dns_pin_blocks_disjoint_drift(client, monkeypatch):
     egress.reset_pins()
 
 
-def test_sec_s3_user_llm_no_silent_fallback(client, monkeypatch):
-    """S3（C2-OBS-003）：选中的自定义 LLM 失效不再静默回退平台默认——显式 MODEL_NOT_AUTHORIZED。"""
+def test_sec_s3_user_llm_degrades_loudly(client, monkeypatch):
+    """S3（C2-OBS-003 语义更新）：自定义 LLM 失效 → 降级平台默认，但**必须回传 degraded**。
+
+    原口径是显式 MODEL_NOT_AUTHORIZED（不静默回退），理由是「用户 prompt 不该流向其没有选择的
+    模型」。但那让绑过被删模型的 Agent 每次起任务都 403、直接变砖。现改为降级 + 调用方据
+    degraded 写审计并推 SSE 让工作台横幅告知用户——**风险由「硬失败」改为「显式告知」来控**。
+
+    所以这条用例的安全价值在后半句：降级可以，但 degraded 不能为空（一旦为空就退化成
+    真正的静默回退，用户永远不知道自己的 prompt 换了模型去处）。
+    """
     import asyncio as _asyncio
     import uuid as _uuid
 
-    import pytest as _pytest
-
     from app import model_gateway
-    from domain.errors import ApiError
     from infra.repositories import secrets as secrets_repo
 
     async def _gone(_id):  # 配置已删除/禁用
         return None
 
     monkeypatch.setattr(secrets_repo, "get_llm_config", _gone)
-    with _pytest.raises(ApiError) as ei:
-        _asyncio.run(model_gateway.resolve_runtime_model(str(_uuid.uuid4()), "0026demo01"))
-    assert ei.value.code == "MODEL_NOT_AUTHORIZED"
+    res = _asyncio.run(model_gateway.resolve_user_llm_models(str(_uuid.uuid4()), "0026demo01"))
+    assert res["degraded"], "降级必须留痕，否则等于静默回退（用户无从得知 prompt 换了模型）"
+    assert res["degraded"][0]["reason"] == "USER_LLM_DELETED"
+    assert res["degraded"][0]["slot"] == "user_llm"
+    assert res["spec"] is None or res["spec"].get("is_user_llm") is not True  # 已不是用户自带模型
 
 
 def test_def_d_redact_args_and_gateway_event(client):

@@ -58,6 +58,10 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   // 38 号：模型模板槽位降级（授权撤销/模板停用 → 该槽回退平台默认）。双写裸名：审计行无 openops. 前缀
   "openops.model.template_degraded": { icon: "alert-triangle", tone: "warning", title: "模型模板降级" },
   "model.template_degraded": { icon: "alert-triangle", tone: "warning", title: "模型模板降级" },
+  // 自带模型降级（配置被删/禁用 → 回退平台默认）。与模板降级不同：这条还会在工作台弹横幅
+  // 直接告知用户去重新选择（见 Workbench 的 openops.model.user_llm_degraded 分支）
+  "openops.model.user_llm_degraded": { icon: "alert-triangle", tone: "warning", title: "自带模型降级" },
+  "model.user_llm_degraded": { icon: "alert-triangle", tone: "warning", title: "自带模型降级" },
   "run.closed": { icon: "lock", tone: "neutral", title: "会话关闭" },
 };
 
