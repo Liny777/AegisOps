@@ -143,6 +143,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
         try:
             existing = {str(m.get("display_name")) for m in await assets.list_platform_mcps()}
+            # 平台资产对账无用户语义：不传 userId（期望对端只返回平台 server——联调确认项①）
             for srv in await mcp_registry_client.list_servers():
                 url = str(srv.get("server_url") or "")
                 if mcp_registry_client.is_placeholder_endpoint(url):  # 占位防呆（同 discover_tools 口径）

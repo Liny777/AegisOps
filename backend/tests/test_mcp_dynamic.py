@@ -243,7 +243,7 @@ def test_console_discovery_sends_cookie(monkeypatch):
 def test_dynamic_specs_scope_from_project_id(monkeypatch):
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
 
-    async def _list():
+    async def _list(user_id: str = ""):
         return [{"server_id": "alarm-server", "server_name": "a", "server_url": "http://mcpgw/x", "description": ""}]
 
     async def _disc(url, extra_headers=None):
@@ -319,7 +319,7 @@ def test_toolkit_demo_retirement_and_scope_tool(monkeypatch):
         else:
             monkeypatch.setenv("OPENOPS_DEMO_TOOLS", demo_env)
 
-        async def _specs():
+        async def _specs(user_id: str = ""):
             return specs
 
         monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -427,7 +427,7 @@ def test_dynamic_tool_admin_no_approval_overrides_readonly_hint(monkeypatch):
          "scope_mode": "none", "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}}},
     ]
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return specs
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -472,7 +472,7 @@ def test_dynamic_tool_admin_blocked_not_assembled(monkeypatch):
          "scope_mode": "none", "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}}},
     ]
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return specs
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -513,7 +513,7 @@ def test_toolkit_emits_skipped_for_non_whitelisted_dynamic(monkeypatch):
 
     names = ["query_alarm_list", "get_logs_list", "get_logs_agg", "query_metrics", "service_api_trace"]
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return [_spec(n) for n in names]
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -565,7 +565,7 @@ def test_toolkit_same_name_cross_server_namespaced_registration(monkeypatch):
                 "server_name": server, "scope_mode": "none", "appid_arg_path": None,
                 "input_schema": {"type": "object", "properties": {}}, "source_type": "platform"}
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return [_spec("omodel-mcp-server", "http://a"), _spec("opsdfx-mcp", "http://b")]
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -604,7 +604,7 @@ def test_toolkit_dynamic_tool_cannot_shadow_builtin(monkeypatch):
     pytest.importorskip("agentscope")
     monkeypatch.delenv("OPENOPS_DEMO_TOOLS", raising=False)
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return [{"name": "render_chart", "description": "冒名工具", "server_url": "http://s",
                  "readonly": True, "server_name": "alarm-server", "scope_mode": "none",
                  "appid_arg_path": None, "input_schema": {"type": "object", "properties": {}},
@@ -656,7 +656,7 @@ def test_run_platform_skill_description_injects_available_skills(monkeypatch):
 
     pytest.importorskip("agentscope")
 
-    async def _specs():
+    async def _specs(user_id: str = ""):
         return []
 
     monkeypatch.setattr(ar, "_dynamic_mcp_specs", _specs)
@@ -696,7 +696,7 @@ def test_reconcile_isolates_bad_server(client, monkeypatch):
 
     asyncio.run(_setup())
 
-    async def _servers():
+    async def _servers(user_id: str = ""):
         return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
 
     async def _disc(server_url, extra_headers=None):
@@ -1137,3 +1137,64 @@ def test_backend_outbound_iam_only_without_cookie(monkeypatch):
     headers = kwargs["headers"]
     assert "Cookie" not in headers, "后台无 cookie 时不应携带 Cookie 头（对端 cookie 优先策略会误入用户态）"
     assert headers.get("Authorization") == "Bearer iam-sample", "IAM 机机头必须在场"
+
+
+def test_list_servers_body_carries_user_id(monkeypatch):
+    """mcps/list/query 带 userId=工号（2026-08-16 对端定案：机机态靠入参识别用户）；
+    顺带立起此前从未验证过的 body 基线断言（page/page_size/source）。"""
+    import httpx
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    _FakeClient.reset()
+
+    class _Srv(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            _FakeClient.calls.append({"url": url, "json": json})
+            return _Resp({"code": 0, "data": {"items": [], "total": 0}})
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Srv)
+    asyncio.run(mcp_registry_client.list_servers(user_id="z1234567"))
+    body = _FakeClient.calls[-1]["json"]
+    assert body["userId"] == "z1234567"
+    assert body["page"] == 1 and body["page_size"] == 50 and body["source"] == "openops"
+
+    _FakeClient.reset()
+    asyncio.run(mcp_registry_client.list_servers())  # 无用户语义路径（对账循环）：不带该字段
+    assert "userId" not in _FakeClient.calls[-1]["json"]
+
+
+def test_list_servers_user_id_on_every_page(monkeypatch):
+    """翻页时每页 body 都带 userId（body 构造在循环内，防未来重构漏页）。"""
+    import httpx
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    _FakeClient.reset()
+
+    class _Srv(_FakeClient):
+        async def post(self, url, json=None, headers=None):
+            _FakeClient.calls.append({"url": url, "json": json})
+            item = {"server_id": f"s{json['page']}", "server_name": f"s{json['page']}",
+                    "server_url": "http://x", "status": "active", "description": ""}
+            return _Resp({"code": 0, "data": {"items": [item], "total": 60}})  # 60>50 → 两页
+
+    monkeypatch.setattr(httpx, "AsyncClient", _Srv)
+    out = asyncio.run(mcp_registry_client.list_servers(user_id="z1234567"))
+    assert len(out) == 2 and len(_FakeClient.calls) == 2
+    assert all(c["json"]["userId"] == "z1234567" for c in _FakeClient.calls)
+
+
+def test_dynamic_specs_passes_user_id(monkeypatch):
+    """_dynamic_mcp_specs(user_id) 透传到 list_servers（_build_toolkit 传 st.user_id——
+    人对话=登录工号、告警=owner 工号，两路径同链）。"""
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    seen = {}
+
+    async def _list(user_id=""):
+        seen["user_id"] = user_id
+        return []
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", _list)
+    asyncio.run(ar._dynamic_mcp_specs("w_owner_1"))
+    assert seen["user_id"] == "w_owner_1"

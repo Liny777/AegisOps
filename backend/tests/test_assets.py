@@ -381,7 +381,7 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     真 server 入库、占位 http://mock 不入、重复对账幂等、list_servers 挂了不炸 skill 分支。"""
     from infra.external import mcp_registry_client
 
-    async def fake_servers():
+    async def fake_servers(user_id: str = ""):
         return [
             {"server_id": "alarm-server", "server_name": "alarm-server",
              "server_url": "https://mcpgateway.local/alarm", "description": "告警工具"},
@@ -397,7 +397,7 @@ def test_asset_reconcile_ingests_registry_mcp(client, monkeypatch):
     second = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=USER_HEADERS))
     assert second["mcps_created"] == 0  # create-if-missing 幂等
 
-    async def boom():
+    async def boom(user_id: str = ""):
         raise RuntimeError("console down")
 
     monkeypatch.setattr(mcp_registry_client, "list_servers", boom)
@@ -460,7 +460,7 @@ def test_reconcile_real_mode_skips_placeholder_and_empty_endpoint_assets(client,
 
     asyncio.run(_setup())
 
-    async def _servers():
+    async def _servers(user_id: str = ""):
         return []  # 隔离 ingest 分支（real 需 BASE_URL，与本用例无关）
 
     async def _disc(server_url, extra_headers=None):
@@ -1234,7 +1234,7 @@ def test_personal_mcp_mute_is_idempotent_guarded(client, no_egress):
 
 def test_platform_mcp_cannot_be_muted(client, no_egress, monkeypatch):
     """平台 MCP 由模板装配、不可解绑：调 mcp-mutes → 403。"""
-    async def fake_servers():
+    async def fake_servers(user_id: str = ""):
         return [{"server_id": "alarm", "server_name": "alarm-server",
                  "server_url": "https://alarm.example.com/mcp", "description": "d"}]
 

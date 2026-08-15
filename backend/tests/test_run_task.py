@@ -802,7 +802,7 @@ def test_e1_child_dynamic_tools_respect_whitelist(client, runtime_backend, monke
                 "readonly": True, "scope_mode": "none", "appid_arg_path": None,
                 "input_schema": {"type": "object", "properties": {}}}
 
-    async def _fake_specs():
+    async def _fake_specs(user_id: str = ""):
         return [_spec("dyn_alarm_query"), _spec("dyn_log_query")]
 
     monkeypatch.setattr(rt, "_dynamic_mcp_specs", _fake_specs)

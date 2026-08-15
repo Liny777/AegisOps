@@ -276,7 +276,7 @@ def _py_annotation(prop: dict[str, Any]) -> Any:
     return _JSON_PY.get(prop.get("type"), str)
 
 
-async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
+async def _dynamic_mcp_specs(user_id: str = "") -> list[dict[str, Any]]:
     """OPENOPS_MCPREGISTRY=real 时，从注册表发现所有 server 的工具 → 动态工具 spec（含 server_url/只读/scope）。
     mock 或发现失败 → 空（不拖垮 demo 工具）。appid 约定（拍板 i）：inputSchema 有 project_id/appid → 该字段受 scope 约束。"""
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real":
@@ -285,7 +285,7 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
     from infra.external import mcp_registry_client
 
     try:
-        servers = await mcp_registry_client.list_servers()
+        servers = await mcp_registry_client.list_servers(user_id)
     except Exception as e:  # noqa: BLE001 —— 发现失败不拖垮整个 run
         # 动态工具面将整轮为空（主+子 Agent）——后台链路（告警诊断）走纯 IAM 机机态
         # （2026-08-16 定案：对端双鉴权 cookie 优先/IAM 兜底），失败先核对 j2c_utils
@@ -803,7 +803,10 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         return ToolResponse(content=[TextBlock(type="text", text=summary)])
 
     # 动态 MCP 工具先发现（决定 demo 双工具去留）：有真工具时 demo 退场——不再弹假审批卡/脚本 RCA。
-    dynamic_specs = await _dynamic_mcp_specs()
+    # userId=任务 owner 工号（=login_key，2026-08-16 对端定案）：机机态（告警诊断）无
+    # cookie，console 靠此入参识别用户返回「平台+该用户自定义」server——人对话与告警
+    # 两路径 st.user_id 天然都有值（登录工号 / incident owner 工号），显式传参零魔法。
+    dynamic_specs = await _dynamic_mcp_specs(st.user_id)
     _demo_env = os.environ.get("OPENOPS_DEMO_TOOLS", "").strip()  # 1=恒开 0=恒关 未设=自动
     keep_demo = _demo_env == "1" or (_demo_env != "0" and not dynamic_specs)
     if (keep_demo and not dynamic_specs and _demo_env != "1"
