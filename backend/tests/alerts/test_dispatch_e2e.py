@@ -129,6 +129,7 @@ def test_full_diagnosis_chain(client):
             "order by creation_date limit 1", (run_id,)).fetchone()
     assert row and "【专属排查指引】优先检查主从复制线程" in row[0]
     assert "MySQL 主库延迟>5s" in row[0]  # 告警要素段照旧拼装
+    assert "告警编号：alt_" in row[0]  # 编号必带（2026-08-16：MCP 告警工具按编号查详情）
 
     # 完成后可评价；summary 的 attention 归零
     fb = unwrap(client.post(f"{BASE}/incidents/{done['incident_id']}:feedback",

@@ -150,10 +150,18 @@ async def dispatch_once() -> int:
 
 
 def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement: str) -> str:
-    """结构化诊断输入：告警要素 + 要求段（规则自定义提示词优先，空则系统默认五步法）。"""
+    """结构化诊断输入：告警要素 + 要求段（规则自定义提示词优先，空则系统默认五步法）。
+
+    告警编号必带（2026-08-16）：Agent/子 Agent 的 MCP 告警工具按编号查平台详情
+    （query_alarm_detail 类入参=alarmCode），提示词里没编号等于工具废掉一半。
+    """
+    alarm_ids = [str(e.get("external_alert_id") or "") for e in events if e.get("external_alert_id")]
+    head_id = alarm_ids[0] if alarm_ids else "未知"
+    id_suffix = f"（等 {len(alarm_ids)} 条，全列见下方明细）" if len(alarm_ids) > 1 else ""
     lines = [
         "【7x24 告警自动接管】以下告警命中了本 Agent 的接管规则，请立即开展自动诊断。",
         "",
+        f"告警编号：{head_id}{id_suffix}",
         f"告警标题：{inc.get('title')}",
         f"严重度：{inc.get('severity')}    告警类型：{inc.get('category') or '未知'}",
         f"影响应用（APPID）：{matcher.app_id_from_group_key(str(inc.get('group_key') or '')) or '未知'}",
@@ -162,7 +170,8 @@ def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement
     for e in events[:5]:
         labels = e.get("labels_json") or {}
         anno = e.get("annotations_json") or {}
-        seg = f"- [{e.get('severity')}] {e.get('alert_name')}"
+        eid = str(e.get("external_alert_id") or "").strip()
+        seg = f"- [{e.get('severity')}]{f' {eid}' if eid else ''} {e.get('alert_name')}"
         if anno.get("description"):
             seg += f"：{str(anno['description'])[:300]}"
         if labels:
