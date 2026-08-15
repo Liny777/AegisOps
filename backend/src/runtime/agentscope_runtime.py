@@ -287,7 +287,10 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
     try:
         servers = await mcp_registry_client.list_servers()
     except Exception as e:  # noqa: BLE001 —— 发现失败不拖垮整个 run
-        log.warning("MCP 注册表 list_servers 失败：%s", _redact(str(e)))
+        # 动态工具面将整轮为空（主+子 Agent）——后台链路（告警诊断）走纯 IAM 机机态
+        # （2026-08-16 定案：对端双鉴权 cookie 优先/IAM 兜底），失败先核对 j2c_utils
+        # IAM token 可取 与 对端双鉴权是否上线；401/1001=对端未认 IAM 或误配静态 cookie。
+        log.warning("MCP 注册表 list_servers 失败（动态工具面将为空）：%s", _redact(str(e)))
         return []
     specs: list[dict[str, Any]] = []
     for srv in servers:
@@ -803,6 +806,11 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     dynamic_specs = await _dynamic_mcp_specs()
     _demo_env = os.environ.get("OPENOPS_DEMO_TOOLS", "").strip()  # 1=恒开 0=恒关 未设=自动
     keep_demo = _demo_env == "1" or (_demo_env != "0" and not dynamic_specs)
+    if (keep_demo and not dynamic_specs and _demo_env != "1"
+            and os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"):
+        # 观测补强（2026-08-16）：demo 回台会掩盖「真工具全丢」——real 档发现为空必须现形
+        log.warning("[runtime] 动态 MCP 发现为空，demo 工具回台掩盖中 agent=%s run=%s"
+                    "——见上方 list_servers 失败日志", st.agent_key, st.run_id)
     fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)} if keep_demo else {}
     anns = st.tool_annotations or {}
     tools = []
@@ -894,6 +902,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 不互踩）；注册名 = LLM 面（见下方分配器）。注入标注：只读→免审批、写类→ASK；有 project_id/appid
     # → scope 受限（拍板 i）。
     _skipped_dynamic: list[str] = []  # 发现到、但因不在白名单未装配的动态工具（复合键；可见性：见循环后 emit）
+    _dyn_added = 0  # 实际装配的动态工具数（子 Agent 空工具面现形用，2026-08-16）
     _assembled: list[tuple[dict[str, Any], dict[str, Any]]] = []  # (spec, 标注) —— 过完白名单/标注闸的装配集
     for spec in dynamic_specs:
         # server 名缺失（老 spec/测试手搓）→ 身份退化为裸名（旧语义），不造 "::tool" 畸形键
@@ -968,6 +977,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         # _permission_context / _handle_ask / gateway 快照回退全按注册名工作，无需解析。
         st.tool_annotations[reg_name] = entry
         tools.append(_make_dynamic_tool(st, run, spec, reg_name=reg_name))
+        _dyn_added += 1
     # 可见性（白名单闸）：注册表已发现、却因不在模板白名单未装配的动态工具——仅对 main 发一条 tool.skipped
     # 观测事件（子 Agent 的白名单收窄是刻意角色隔离，噪声大，只落日志）。**不置 st.tool_blocked**：
     # 「未启用」不是「被拦截」，不该压制本轮「已闭环」结论；故用独立事件类型（非 tool.blocked 的红色阻断）。
@@ -983,6 +993,19 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
                             f"完整清单见管理台 MCP 工具页；启用需在模板编辑器勾入 default_tools 并标注 allowed。"),
                    reason_code="TOOL_NOT_WHITELISTED",
                    payload={"tools": _skipped_dynamic, "phase": "toolkit_build"})
+    if (st.agent_key != "main" and st.template_tools and not _dyn_added
+            and os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"):  # mock 档动态发现未开，装不上是常态
+        # 子 Agent 画像点名了 MCP 工具却一个都没装上（多为发现失败）——此前完全静默，
+        # 模型只能自述「工具没有注册」（2026-08-16 内网盲区）。活动栏现形 + warning 日志。
+        log.warning("[runtime] 子 Agent 动态工具面为空 agent=%s run=%s 画像白名单=%d 个"
+                    "——多为 MCP 发现失败（见 list_servers 日志）", st.agent_key, st.run_id,
+                    len(st.template_tools))
+        await emit(st, run, "openops.tool.skipped", severity="warning", action="mcp_empty_toolset",
+                   message=(f"子 Agent {st.agent_key} 的 {len(st.template_tools)} 个画像 MCP 工具"
+                            "一个都未装配——多为工具发现失败（告警后台链路走 IAM 机机态，"
+                            "核对 IAM token 与对端双鉴权），本轮将以内置能力作答。"),
+                   reason_code="TOOL_DISCOVERY_EMPTY",
+                   payload={"whitelist_count": len(st.template_tools), "phase": "toolkit_build"})
     # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见
     # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP
     # 不可能出现在管理员维护的模板白名单里，若按白名单裁剪则本特性等于不存在。隔离靠「仅 main」

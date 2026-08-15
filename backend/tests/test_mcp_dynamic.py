@@ -1113,3 +1113,27 @@ def test_platform_call_succeeds_without_ec_ip(monkeypatch):
                                               server_url="http://mcpgw/x", handshake_headers=ec))
     assert r["status"] == "ok"
     assert not any(_has_ec_ip(c["headers"]) for c in _FakeClient.calls)
+
+
+def test_backend_outbound_iam_only_without_cookie(monkeypatch):
+    """机机契约守卫（2026-08-16 定案：后台=纯 IAM token，对端双鉴权 cookie 优先/IAM 兜底）：
+    空 cookie/空上下文的后台形态下，console 出站仍可发（无硬校验）且带 IAM Authorization，
+    不带 Cookie——防未来有人把 cookie 改成必需项，掐断告警诊断的机机通路。"""
+    import contextvars
+
+    from infra import iam_headers, request_context
+    from infra.external.mcp_registry_client import console_client_kwargs
+
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    request_context.clear()
+    monkeypatch.setattr(iam_headers, "iam_auth_headers",
+                        lambda: {"Authorization": "Bearer iam-sample"})
+
+    def _background_kwargs():
+        return console_client_kwargs("http://console.internal", "OPENOPS_MCPREGISTRY_COOKIE")
+
+    kwargs = contextvars.Context().run(_background_kwargs)  # 全新上下文=真实后台协程形态
+    headers = kwargs["headers"]
+    assert "Cookie" not in headers, "后台无 cookie 时不应携带 Cookie 头（对端 cookie 优先策略会误入用户态）"
+    assert headers.get("Authorization") == "Bearer iam-sample", "IAM 机机头必须在场"
