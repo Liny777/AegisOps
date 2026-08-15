@@ -917,13 +917,15 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         # main 需要直连的动态工具须在模板编辑器勾进 default_tools（先 allowed 标注）。
         # 复合键或裸名任一命中即放行（已迁移复合键模板 / 存量裸名模板双通）。
         if st.template_tools is None or (key not in st.template_tools and spec["name"] not in st.template_tools):
-            # 可见性修复：此处曾静默 continue（不发事件/不打日志）——真机上「注册表已发现某 MCP 工具、
-            # 却因不在模板 default_tools 白名单而没装配到 Agent」全程无痕，用户只见模型据实说「没注册/没加载」。
-            # 收集复合键 + 打 info 日志（main/sub 都打，带 agent_key）；循环后仅对 main 发一条观测事件。
+            # 可见性：收集复合键，循环后仅对 main 发一条聚合观测事件（tool.skipped）。
+            # 逐条日志降为 debug（2026-08-16 内网反馈刷屏）：白名单裁剪是**常态**——每个子
+            # Agent 都全量发现再按画像收窄，别家角色的工具被裁本就是设计预期（alarm-agent
+            # 没有 log-server 的工具天经地义），逐条 info 一次诊断能刷几十行。异常态另有
+            # 承载：main=tool.skipped 聚合事件；子 Agent 全空=TOOL_DISCOVERY_EMPTY warning。
             _skipped_dynamic.append(key)
-            log.info("动态 MCP 工具未装配（不在%s白名单）：tool=%s agent=%s",
-                     "模板 default_tools" if st.agent_key == "main" else "子 Agent 画像 mcp_tools",
-                     key, st.agent_key)
+            log.debug("动态 MCP 工具未装配（不在%s白名单）：tool=%s agent=%s",
+                      "模板 default_tools" if st.agent_key == "main" else "子 Agent 画像 mcp_tools",
+                      key, st.agent_key)
             continue
         # 管理员在管理台显式标注即事实来源（runtime_annotations 已按 annotation_id 非空装进快照）：
         # is_approval_required（勿审批/需审批）/scope/secret/status 全以标注为准；server 的 readOnlyHint
