@@ -95,7 +95,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 
 **联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
 
-**单条告警去向定位**（2026-08-13）：批摘要 `apps={...}` 分布先确认应用 ID 进没进批（`无`=appIdList 缺失量）；
+**单条告警去向定位**（2026-08-13）：批摘要 `apps={...}` 分布先确认应用 ID 进没进批（`无`=appIdList 缺失量）；管理台清单默认只显示命中+白名单行——查 out_of_scope 等全量留痕用 `GET /admin/alerts/events?matched_only=false`（2026-08-15）；
 再配 `OPENOPS_ALERT_TRACE=<alarmId或应用ID>` 重启，`grep "[alerts][trace]"` 看决策链逐站：
 消费到（appIdList 解析结果）→ 未命中/去重/恢复 → 范围过滤（实例范围 vs 归属并排打出）→ 入队/附着/冷却/skip。定位完删 env。
 → 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。

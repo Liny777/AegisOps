@@ -336,6 +336,7 @@ export function AlertsPage() {
             <table style={{ width: "100%", minWidth: 1560, borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr>
+                  <th style={th}>操作</th>{/* 2026-08-15 挪首列（用户反馈：操作是高频入口） */}
                   <th style={th}>告警编号</th>
                   <th style={th}>告警类型</th>
                   <th style={{ ...th, minWidth: 150 }}>告警名称</th>
@@ -351,7 +352,6 @@ export function AlertsPage() {
                   <th style={th}>开始时间</th>
                   <th style={th}>结束时间</th>
                   <th style={th}>时长</th>
-                  <th style={th}>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -365,6 +365,23 @@ export function AlertsPage() {
                       baseStyle={{ background: "transparent" }}
                       hoverStyle={{ background: color.surfaceTint }}
                     >
+                      <td style={td}>
+                        {clickable ? (
+                          <span
+                            onClick={() => nav(`/agent-runs/${it.run_id}`)}
+                            style={{ fontSize: 12, fontWeight: 600, color: color.brand, cursor: "pointer", whiteSpace: "nowrap" }}
+                          >
+                            查看处理会话
+                          </span>
+                        ) : (
+                          <span
+                            title={it.run_id ? "处理会话已过期清理" : "该告警未被 Agent 接管，无处理会话"}
+                            style={{ fontSize: 12, fontWeight: 600, color: color.textFaint, cursor: "not-allowed", whiteSpace: "nowrap" }}
+                          >
+                            查看处理会话
+                          </span>
+                        )}
+                      </td>
                       <td style={{ ...td, whiteSpace: "nowrap" }}>
                         {it.detail_url ? (
                           <a
@@ -382,7 +399,7 @@ export function AlertsPage() {
                       </td>
                       <td style={{ ...td, fontWeight: 700, whiteSpace: "nowrap", color: color.textStrong }}>{it.category}</td>
                       <td style={{ ...td, maxWidth: 220 }}>
-                        <span style={{ display: "block", color: color.brand, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={it.title}>
+                        <span style={{ display: "block", color: color.textStrong, fontWeight: 700, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={it.title}>
                           {it.title}
                         </span>
                       </td>
@@ -405,23 +422,6 @@ export function AlertsPage() {
                       <td style={{ ...td, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.started_at)}</td>
                       <td style={{ ...td, fontFamily: font.mono, fontSize: 11.5, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.ended_at)}</td>
                       <td style={{ ...td, fontFamily: font.mono, color: color.textNav, whiteSpace: "nowrap" }}>{it.duration ?? "—"}</td>
-                      <td style={td}>
-                        {clickable ? (
-                          <span
-                            onClick={() => nav(`/agent-runs/${it.run_id}`)}
-                            style={{ fontSize: 12, fontWeight: 600, color: color.brand, cursor: "pointer", whiteSpace: "nowrap" }}
-                          >
-                            查看处理会话
-                          </span>
-                        ) : (
-                          <span
-                            title={it.run_id ? "处理会话已过期清理" : "该告警未被 Agent 接管，无处理会话"}
-                            style={{ fontSize: 12, fontWeight: 600, color: color.textFaint, cursor: "not-allowed", whiteSpace: "nowrap" }}
-                          >
-                            查看处理会话
-                          </span>
-                        )}
-                      </td>
                     </Interactive>
                   );
                 })}

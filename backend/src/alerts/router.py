@@ -91,11 +91,14 @@ async def admin_list_events(
     category: str | None = Query(default=None, max_length=64),
     search: str | None = Query(default=None, max_length=200),
     since_days: int | None = Query(default=None, ge=1, le=30),
+    matched_only: bool = Query(default=True,
+                               description="默认只看命中规则+白名单的行；false=全量留痕（排查用）"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
 ):
     return ok(await service.admin_list_alert_events(
-        admin, user_id=user_id, alert_status=alert_status, severities=severity,
+        admin, user_id=user_id, matched_only=matched_only,
+        alert_status=alert_status, severities=severity,
         takeover=takeover, category=category, search=search, since_days=since_days,
         page=page, page_size=page_size))
 

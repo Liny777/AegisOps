@@ -170,13 +170,13 @@ def _owner_instance(row: dict[str, Any] | None, user_id: str) -> dict[str, Any]:
 
 
 async def _require_takeover_grant(user: dict[str, Any]) -> None:
-    """告警接管功能白名单闸（2026-08-09 算力保护）：写路径（订阅/规则/预览）统一入口。
+    """告警接管功能白名单闸（2026-08-09 算力保护）：写路径（规则/预览）统一入口。
 
-    fail-closed：名单空 = 全员关闭；platform_admin 天然豁免（管理员开名单前得能自测）。
-    读路径（清单/规则列表）不拦——名单外用户自然无数据，前端靠 /alerts/access 显示引导。
+    fail-closed：名单空 = 全员关闭；**platform_admin 不豁免**（2026-08-15 收窄：匹配面/
+    派发面从来不豁免，配置面豁免是假豁免——admin 建的规则根本不生效，纯误导；管理员
+    自测路径 = 管理台用户表先给自己开通）。读路径（清单/规则列表）不拦——名单外用户
+    自然无数据，前端靠 /alerts/access 显示引导。
     """
-    if user.get("role") == "platform_admin":
-        return
     if not await repo.is_user_granted(user["user_id"]):
         raise ApiError(Err.FORBIDDEN,
                        "告警接管功能未开通：算力资源有限按需开放，请联系平台管理员开通")
@@ -745,9 +745,9 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
 
 
 async def takeover_access(user: dict[str, Any]) -> dict[str, Any]:
-    """用户侧探询：告警接管功能对我是否开通（前端设置页/清单页据此渲染引导空态）。"""
-    granted = user.get("role") == "platform_admin" or await repo.is_user_granted(user["user_id"])
-    return {"granted": granted}
+    """用户侧探询：告警接管功能对我是否开通（前端侧栏锁/设置锁/清单空态同源）。
+    platform_admin 不豁免（2026-08-15）：未开通的管理员前台同样锁定，三面口径一致。"""
+    return {"granted": await repo.is_user_granted(user["user_id"])}
 
 
 async def admin_list_grants(_admin: dict[str, Any]) -> dict[str, Any]:
@@ -789,10 +789,13 @@ async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
                                   alert_status: str | None, severities: str | None,
                                   takeover: str | None, category: str | None,
                                   search: str | None, since_days: int | None = None,
+                                  matched_only: bool = True,
                                   page: int, page_size: int) -> dict[str, Any]:
-    """管理员全量视角：无可见性子句；user_id 非空=按该用户视角投影接管状态。"""
+    """管理员视角：默认只看「命中规则+白名单」行（matched_only）；user_id 非空=按该
+    用户视角投影接管状态。全量留痕排查（R14 out_of_scope 等）走 ?matched_only=false。"""
     rows, total = await repo.list_events(
         lateral_owner=user_id or None, lateral_instance=None, scope_appids=None,
+        matched_only=matched_only,
         alert_status=_check_enum(alert_status, EVENT_STATUSES, "告警状态"),
         severities=_parse_severities(severities),
         takeover=_check_enum(takeover, TAKEOVER_STATUSES, "接管状态"),

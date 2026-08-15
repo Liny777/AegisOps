@@ -792,10 +792,10 @@ const realApi: OpenOpsApi = {
       for (const k of Object.keys(alertEventMeta)) delete alertEventMeta[k];  // 每次刷新重建行元数据
       return {
         title: "告警接管",
-        cols: [{ label: "时间", width: "150px" }, { label: "编号" }, { label: "类型", width: "110px" },
-               { label: "对象" }, { label: "APPID" }, { label: "级别", width: "76px" },
-               { label: "接管", width: "76px" }, { label: "结果", width: "72px" },
-               { label: "接管人", width: "110px" }, { label: "置顶", width: "96px" }],
+        cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
+               { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
+               { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+               { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
         rows: d.items.map((r, i) => {
           const rowId = String(r.incident_id || `${r.alert_no}-${i}`);
           alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
@@ -1374,20 +1374,20 @@ const mockApi: OpenOpsApi = {
       : key === "alert-events"
       ? delay({
           title: "告警接管",
-          cols: [{ label: "时间", width: "150px" }, { label: "编号" }, { label: "类型", width: "110px" },
-                 { label: "对象" }, { label: "APPID" }, { label: "级别", width: "76px" },
-                 { label: "接管", width: "76px" }, { label: "结果", width: "72px" },
-                 { label: "接管人", width: "110px" }, { label: "置顶", width: "96px" }],
+          cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
+                 { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
+                 { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+                 { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
           rows: [
             { id: "mock-inc-1", cells: [
-              { text: "2026-08-15 09:41" }, { text: "ALM-2026081500042", kind: "action" as const, onClickKey: "alert-open" },
+              { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
               { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
               { text: "fatal", kind: "badge" as const, tone: "danger" as const },
               { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
               { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
             ] },
             { id: "mock-inc-2", cells: [
-              { text: "2026-08-15 09:12" }, { text: "ALM-2026081500017", mono: true },
+              { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
               { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
               { text: "warning", kind: "badge" as const, tone: "neutral" as const },
               { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },

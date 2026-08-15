@@ -1,5 +1,5 @@
 """告警接管白名单（算力保护，fail-closed）：配置面 403 / 匹配面断流 / 派发面 skip /
-admin grants CRUD+审计 / platform_admin 豁免 / access 探询。
+admin grants CRUD+审计 / platform_admin 不豁免（2026-08-15 收窄：自开通闭环）/ access 探询。
 
 conftest 的 autouse fixture 给测试用户开了 grant——本文件的用例显式关掉再测。
 """
@@ -47,9 +47,15 @@ def test_access_and_config_gate(client):
     assert _mk_rule(client, iid, "放行").status_code < 400
 
 
-def test_admin_bypass_and_grants_api(client):
-    """platform_admin 天然豁免；grants API 往返 + 幂等 + 名单读取。"""
+def test_admin_not_exempt_and_grants_api(client):
+    """platform_admin 不豁免（2026-08-15）：未开通 granted=False（前台自动锁）；
+    管理台给自己开通后放行——匹配面/派发面本来就不豁免，三面口径一致。"""
+    _set_grant("admin", False)
+    assert unwrap(client.get(f"{BASE}/access", headers=ADMIN_HEADERS))["granted"] is False
+    unwrap(client.post("/api/openops/v1/admin/alerts/grants:update", headers=ADMIN_HEADERS,
+                       json={"client_request_id": _crid(), "user_id": "admin", "granted": True}))
     assert unwrap(client.get(f"{BASE}/access", headers=ADMIN_HEADERS))["granted"] is True
+    _set_grant("admin", False)  # 复位，别让 admin 常驻名单影响其他用例
 
     got = unwrap(client.post(f"{BASE.replace('/alerts', '')}/admin/alerts/grants:update".replace(
         "/api/openops/v1/admin", "/api/openops/v1/admin"), headers=ADMIN_HEADERS,
