@@ -96,7 +96,12 @@ def test_admin_full_view_and_per_user_projection(client):
 
     full = unwrap(client.get("/api/openops/v1/admin/alerts/events",
                              headers=ADMIN_HEADERS))["items"]
-    assert {r["alert_no"] for r in full} == {"ALM-E1", "ALM-E2", "ALM-E3"}  # 全量含范围外
+    # 2026-08-15 默认口径：只看「命中规则建过单 ∧ 属主在白名单」的行——
+    # E2（resolved 首见未建单）与 E3（out_of_scope 拦截留痕）被滤，不再冒充「订阅产物」
+    assert {r["alert_no"] for r in full} == {"ALM-E1"}
+    raw = unwrap(client.get("/api/openops/v1/admin/alerts/events", headers=ADMIN_HEADERS,
+                            params={"matched_only": "false"}))["items"]
+    assert {r["alert_no"] for r in raw} >= {"ALM-E1", "ALM-E2", "ALM-E3"}  # 排查后门：全量留痕
     e1 = next(r for r in full if r["alert_no"] == "ALM-E1")
     assert e1["takeover_status"] == "processing"  # 任意 owner 最新单投影
 

@@ -62,9 +62,10 @@ def test_out_of_scope_app_blocked(client):
     assert counters["out_of_scope"] == 1 and counters["queued"] == 0
     assert counters["unmatched"] == 0  # 语义区分：命中了规则但越权 ≠ 未命中
     assert _incidents(client, iid) == []
-    # 被拦的行仍落库留痕（未命中不存档的例外面）：排查抓手 = 查 event.appid 对照范围
-    stored = unwrap(client.get("/api/openops/v1/admin/alerts/events",
-                               headers=ADMIN_HEADERS))["items"]
+    # 被拦的行仍落库留痕（未命中不存档的例外面）：排查抓手 = matched_only=false 后门
+    # 看全量留痕（默认口径只显示命中+白名单行，R14 排查须显式开）
+    stored = unwrap(client.get("/api/openops/v1/admin/alerts/events", headers=ADMIN_HEADERS,
+                               params={"matched_only": "false"}))["items"]
     assert any(r["alert_no"] == "ALM-SCOPE-1" for r in stored)
 
 

@@ -635,6 +635,7 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
                       alert_status: str | None, severities: list[str] | None,
                       takeover: str | None, category: str | None, search: str | None,
                       since_days: int | None = None, categories: list[str] | None = None,
+                      matched_only: bool = False,
                       page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
     """事件 LEFT JOIN LATERAL「该视角下最新聚合单」。
 
@@ -646,6 +647,17 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
     params: dict[str, Any] = {"lat_owner": lateral_owner, "lat_inst": lateral_instance,
                               "scope": scope_appids}
     where = ["1=1"]
+    if matched_only:
+        # 管理台清单默认口径（2026-08-15）：只看「命中规则建过单 ∧ 属主仍在白名单」的行。
+        # 用与 LATERAL 解耦的 EXISTS——朴素 i.inc_id is not null 会在「按用户查看」时把
+        # 他人接管的行一并滤掉（lat_owner 过滤了 LATERAL），杀掉 per-user 投影语义。
+        # 内层 grant EXISTS = 白名单活口径：被移出名单用户的旧单行不再展示。
+        where.append("""exists (select 1 from sre_alert_incident_event l2
+            join sre_alert_incident x2 on x2.alert_incident_id = l2.alert_incident_id
+            where l2.alert_event_id = e.alert_event_id
+              and l2.deleted_at is null and x2.deleted_at is null
+              and exists (select 1 from sre_alert_user_grant g
+                          where g.user_id = x2.owner_user_id and g.deleted_at is null))""")
     if scope_appids is not None:
         where.append("(i.inc_id is not null or e.appid = any(%(scope)s::text[]))")
     if alert_status == "closed":

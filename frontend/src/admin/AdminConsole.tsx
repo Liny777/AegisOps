@@ -21,7 +21,8 @@ const TITLES: Record<string, string> = {
   "model-templates": "模型模板",
   skills: "Skill 基线",
   users: "用户与白名单",
-  alerts: "告警接管",
+  alerts: "告警接管清单",
+  "alerts-config": "告警接管配置",
   sandbox: "沙箱与容量",
   audit: "审计与 Trace 回放",
   [STUDIO_ADMIN_PAGE.key]: STUDIO_ADMIN_PAGE.title,
@@ -348,7 +349,11 @@ export function AdminConsole() {
                             <Dot tone={cell.tone ?? "neutral"} />{cell.text}
                           </span>
                         ) : cell.kind === "action" ? (
-                          <span onClick={() => onCellAction(cell.onClickKey, r.id, String(r.cells[0]?.text ?? ""))} style={{ fontSize: 12, color: color.brand, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4 }}>{cell.text}<Icon name="chevron-right" size={13} color={color.brand} /></span>
+                          <span onClick={() => onCellAction(cell.onClickKey, r.id, String(r.cells[0]?.text ?? ""))} title={cell.text} style={{ fontSize: 12, color: color.brand, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "100%" }}>
+                            {/* 长文案（如 32 位告警编号）收进省略号，别压住相邻列 */}
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cell.text}</span>
+                            <Icon name="chevron-right" size={13} color={color.brand} />
+                          </span>
                         ) : (
                           <span style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{cell.text}</span>
                         )}
@@ -365,9 +370,9 @@ export function AdminConsole() {
             </>
           ) : null}
 
-          {page === "alerts" ? <AlertOpsPanel /> : null}
-          {page === "alerts" ? <div style={{ height: 14 }} /> : null}
-          {page === "alerts" ? <AlertPoolPanel /> : null}
+          {page === "alerts-config" ? <AlertOpsPanel /> : null}
+          {page === "alerts-config" ? <div style={{ height: 14 }} /> : null}
+          {page === "alerts-config" ? <AlertPoolPanel /> : null}
 
           {page === "sandbox" ? <SandboxPanel /> : null}
 
