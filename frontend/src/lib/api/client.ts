@@ -48,6 +48,28 @@ export class ApiError extends Error {
   }
 }
 
+/** 后端错误信封里与登录态相关的字段（401 时后端按 deps.py 带上 login_url）。 */
+export interface ApiErrorBody {
+  code?: string;
+  message?: string;
+  retryable?: boolean;
+  login_url?: string;
+}
+
+/**
+ * B9：IAM 会话失效 → 跳公司登录页（老项目 App.tsx 379-430 口径）。返回是否已发起跳转。
+ *
+ * 抽成导出函数供 SSE 复用：SSE 通道原先把 401 当网络抖动无限重连（8s 退避封顶，永不停），
+ * 用户既不跳登录也看不到错误，后端 access 日志被刷满——两条通道必须同一套判定，不能双写。
+ */
+export function redirectToLoginIfUnauthorized(status: number, err: ApiErrorBody | undefined): boolean {
+  if (status !== 401 || !err?.login_url) return false;
+  // {host} 兜底替换：网关直连后端时 Host 头可能被改写成 ip:port，后端替出的域名不可用；
+  // 前端永远知道正确域名（当前地址栏），残留占位符或 ip:port 域都以它为准
+  window.location.assign(err.login_url.replaceAll("{host}", window.location.host));
+  return true;
+}
+
 export async function apiFetch<T = unknown>(
   path: string,
   opts: { method?: string; body?: unknown; signal?: AbortSignal } = {},
@@ -71,12 +93,8 @@ export async function apiFetch<T = unknown>(
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = (json as { error?: { code?: string; message?: string; retryable?: boolean; login_url?: string } }).error;
-    // B9：IAM 会话失效且后端带了登录地址 → 直接跳公司登录页（老项目 App.tsx 379-430 口径）
-    if (res.status === 401 && err?.login_url) {
-      // {host} 兜底替换：网关直连后端时 Host 头可能被改写成 ip:port，后端替出的域名不可用；
-      // 前端永远知道正确域名（当前地址栏），残留占位符或 ip:port 域都以它为准
-      window.location.assign(err.login_url.replaceAll("{host}", window.location.host));
+    const err = (json as { error?: ApiErrorBody }).error;
+    if (redirectToLoginIfUnauthorized(res.status, err)) {
       // 浏览器即将跳登录页：抛专用码，启动链据此保持加载态而非闪错误屏
       throw new ApiError("AUTH_REDIRECT", "正在跳转登录…", false);
     }

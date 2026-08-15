@@ -19,6 +19,12 @@ services:
       interval: 3s
       timeout: 3s
       retries: 20
+    # docker 默认 json-file 无上限，容器日志会一直涨到磁盘满（本机踩过 PG 因磁盘满起不来）
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
 
 volumes:
   openops_pgdata:

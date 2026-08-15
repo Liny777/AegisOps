@@ -26,6 +26,8 @@ import re
 import uuid
 from typing import Any
 
+from infra.logging_config import WindowGate, suppressed_suffix
+
 log = logging.getLogger("openops.omodel")
 
 # omodel 网关对写操作拦截脚本类 UA（python-httpx）——内网实锤：同 cookie，Postman/浏览器 UA 通、
@@ -127,8 +129,11 @@ def _client_kwargs(base: str) -> dict[str, Any]:
                else "env:OMODEL" if os.getenv("OPENOPS_OMODEL_COOKIE")
                else "env:shared" if os.getenv("OPENOPS_CONSOLE_COOKIE") and cookie
                else "none")
-        log.warning("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d iam=%s",
-                    src, len(cookie or ""), "set" if headers.get("Authorization") else "missing")
+        iam = "set" if headers.get("Authorization") else "missing"
+        ok, dropped = _debug_gate.allow(f"cookie:{src}:{iam}")
+        if ok:
+            log.info("[OpenOps][omodel][debug] cookie_src=%s cookie_len=%d iam=%s%s",
+                     src, len(cookie or ""), iam, suppressed_suffix(dropped))
         kwargs["event_hooks"] = {"response": [_log_outbound_response]}
     return kwargs
 
@@ -137,10 +142,24 @@ def _http_debug() -> bool:
     return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
+#: 出站调试行的时间窗闸门。每构造一次 client 打一行 cookie_src、每个响应打一行 status，
+#: 而 client 是**每次调用现建**（不复用）——后台告警链每批解析一次范围时，实测约 1 秒一对，
+#: 上游持续 4xx 时能把 journald 刷满。窗口内同类只留一条，被压条数随下一条汇报。
+_debug_gate = WindowGate("OPENOPS_HTTP_DEBUG_SAMPLE_S")
+
+
 async def _log_outbound_response(response: Any) -> None:
-    """调试日志只保留状态与请求 ID；绝不读取或记录响应体、URL、请求头。"""
-    log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
-                response.status_code, _response_request_id(response) or "-")
+    """调试日志只保留状态与请求 ID；绝不读取或记录响应体、URL、请求头。
+
+    只打**非 2xx**：成功响应的状态码没有诊断价值，而它占了绝大多数条数。
+    """
+    status = int(getattr(response, "status_code", 0) or 0)
+    if 200 <= status < 300:
+        return
+    ok, dropped = _debug_gate.allow(f"status:{status}")
+    if ok:
+        log.info("[OpenOps][omodel][debug] status=%s request_id=%s%s",
+                 status, _response_request_id(response) or "-", suppressed_suffix(dropped))
 
 
 def _response_request_id(response: Any) -> str:
@@ -312,16 +331,15 @@ async def list_workspaces() -> list[dict[str, Any]]:
             r.raise_for_status()
             payload = r.json()
             items = _extract_ws_items(payload)  # 多形状兼容：{items}/裸数组/{data:{items}}/{data:[]}
-            if _http_debug():
-                log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
-                            r.status_code, _response_request_id(r) or "-")
+            # 成功路径不再单独打状态：_log_outbound_response 这个 response hook 已覆盖所有响应
             return [_map_metadata(md) for md in items if isinstance(md, dict)]
     except Exception as e:  # noqa: BLE001
-        if _http_debug():
-            resp = getattr(e, "response", None)
-            log.warning("[OpenOps][omodel][debug] status=%s request_id=%s",
-                        getattr(resp, "status_code", "error"),
-                        _response_request_id(resp) if resp is not None else "-")
+        # 保留本分支：连接错/超时**没有 response**，response hook 根本不会触发，只有这里能记一笔
+        if _http_debug() and getattr(e, "response", None) is None:
+            ok, dropped = _debug_gate.allow(f"exc:{type(e).__name__}")
+            if ok:
+                log.info("[OpenOps][omodel][debug] status=error(%s) request_id=-%s",
+                         type(e).__name__, suppressed_suffix(dropped))
         return []
 
 

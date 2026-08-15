@@ -198,6 +198,47 @@ TLS：内网证书就绪后挂载证书目录 + 以自有 conf 覆盖模板（co
 `volumes: [./openops-ssl.conf:/etc/nginx/templates/default.conf.template, ./certs:/etc/nginx/certs]`
 并加 443 端口映射），或前置负载均衡终结 TLS。
 
+## 三½、日志容量（一次性主机配置，装完就做）
+
+两个日志槽**默认都无上限**，不设就是磁盘定时炸弹——本机已经因磁盘满导致 PG 起不来过一次。
+
+**① 后端 → journald。** 单元不设 `StandardOutput=`，全部进 journald；单元里的
+`LogRateLimitIntervalSec/Burst` 只管**瞬时速率**，总容量是主机级配置，必须单独设：
+
+```bash
+sudo mkdir -p /etc/systemd/journald.conf.d
+sudo tee /etc/systemd/journald.conf.d/openops.conf >/dev/null <<'EOF'
+[Journal]
+SystemMaxUse=2G
+SystemMaxFileSize=200M
+MaxRetentionSec=14day
+EOF
+sudo systemctl restart systemd-journald
+journalctl --disk-usage          # 确认已收敛到 2G 以内
+```
+
+**② 前端/sidecar/PG 容器 → docker json-file。** compose 里已带 `logging:` 上限
+（`max-size: 50m` × `max-file: 5` = 单容器封顶 250M），随包发布，无需手工改。
+但**上限只对新建容器生效**——升级时 `docker compose up -d` 会重建容器，故自动生效；
+若容器未重建，需 `docker compose up -d --force-recreate`。核对：
+
+```bash
+docker inspect openops-frontend --format '{{json .HostConfig.LogConfig}}'
+# → {"Type":"json-file","Config":{"max-file":"5","max-size":"50m"}}
+du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail -5
+```
+
+兜底（推荐，覆盖将来任何新容器）：主机 `/etc/docker/daemon.json` 设同款默认值，
+改完 `sudo systemctl restart docker`（会重启所有容器，挑窗口做）：
+
+```json
+{ "log-driver": "json-file", "log-opts": { "max-size": "50m", "max-file": "5" } }
+```
+
+**③ 应用日志级别。** 后端默认 `OPENOPS_LOG_LEVEL=INFO`。日志量偏大时先调 `WARNING`
+再考虑动容量；`OPENOPS_ACCESS_LOG_DEDUP_S`（默认 60）控制 uvicorn access 行的同
+`(路径, 状态码)` 抑制窗口，健康检查路径恒不记。排查具体请求时临时设 `0` 关闭抑制。
+
 ## 四、测试/生产双环境差异（仅三处，其余工件共用）
 
 | 位置 | 测试 | 生产 |

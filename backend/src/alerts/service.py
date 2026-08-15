@@ -712,8 +712,9 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
     未命中规则的告警也可见），平台不可用时降级本地事件库（只剩已落库面）。
 
     响应恒带 source ∈ platform|local_fallback，前端据此提示数据来源。
-    projectIds 走 **omodel 实时探询**（scope_service.peek_effective_appids：override 缝
-    → 30s 缓存 → resolve；2026-08-10 内网实证对端「应用/产品/子产品/Hrn 四选一必填」，
+    projectIds 走 **omodel 实时探询**（scope_service.peek_effective_appids(fresh=True)：
+    override 缝 → 30s 缓存 → resolve，跳过后台循环写的失败负缓存；
+    2026-08-10 内网实证对端「应用/产品/子产品/Hrn 四选一必填」，
     不能不传）——预览是用户在线操作，请求上下文有认证，实时链成立；快照口径
     （_viewer_scope_appids）只是任务边界的审计残影，新实例恒为空，弃用。
     **peek 拿不到范围时不打必败请求**，直接落本地降级。
@@ -725,7 +726,9 @@ async def history_preview(user: dict[str, Any], *, instance_id: str, categories:
     inst = _owner_instance(await agent_teams.get_instance(instance_id), uid)
     cats = _check_categories([c for c in categories.split(",")])
     sevs = _parse_severities(severities) or list(UI_SEVERITIES)
-    appids = await scope_service.peek_effective_appids(uid, inst)
+    # fresh=True：用户点「预览」才走到这，不能让 10 秒前后台循环踩到的一次 omodel 失败
+    # 把这次点击也判死（负缓存只为压后台频率，见 peek_effective_appids）
+    appids = await scope_service.peek_effective_appids(uid, inst, fresh=True)
     if not appids:
         log.info("[alerts][preview] 实例 %s 拿不到 effective_appids（omodel 不可达或空范围），"
                  "跳过平台查询直接本地降级", instance_id)

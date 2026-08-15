@@ -6,9 +6,24 @@ from conftest import USER_HEADERS, unwrap
 
 
 def test_run_disables_uvicorn_proxy_header_rewrite():
+    """⚠ `uvicorn.Config.__init__` 内部就会调 `configure_logging()`——**构造即改全局日志**。
+
+    自 2026-08-15 起 run.py 传的 log_config 带 root handler（infra.logging_config），
+    于是本用例一构造 Config 就把 root logger 从「无 handler / WARNING」换成
+    「stdout handler / INFO」，并且 dictConfig 还会 close 掉 pytest 挂在 root 上的
+    LogCaptureHandler——泄漏给整个 session 的后续用例（实测会翻出 test_run_task 里
+    interrupted/cancelled 的时序竞态）。本用例只关心 proxy_headers，故用完即还原。
+    """
+    import logging
+
     import run
 
-    assert run._uvicorn_config().proxy_headers is False
+    root = logging.getLogger()
+    saved_handlers, saved_level = list(root.handlers), root.level
+    try:
+        assert run._uvicorn_config().proxy_headers is False
+    finally:
+        root.handlers[:], root.level = saved_handlers, saved_level
 
 
 def test_init_002_lists_template_and_ready_workspaces(client):

@@ -22,9 +22,19 @@ _TTL_S = float(os.environ.get("OPENOPS_SCOPE_TTL_S", "30"))
 # (workspace_id, scope_revision, user_id) -> (expires_at_monotonic, ScopeContext)
 _cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
 
+# peek 专用缓存：只存 effective_appids（不是 ScopeContext），故不会污染 _cache 的消费面。
+# 存在理由见 peek_effective_appids 的「频率」段。
+_PEEK_TTL_S = float(os.environ.get("OPENOPS_SCOPE_PEEK_TTL_S", "") or _TTL_S)
+# 失败负缓存要**短**：oModel 恢复后不该还被自己压着不重试。
+_PEEK_FAIL_TTL_S = float(os.environ.get("OPENOPS_SCOPE_PEEK_FAIL_TTL_S", "10"))
+# (workspace_id, scope_revision, user_id) -> (expires_at_monotonic, effective_appids, resolve 是否成功)
+# 第三位区分「上游答复范围为空」与「问不到」——两者 appids 都是 []，但 TTL 与可绕过性不同。
+_peek_cache: dict[tuple[str, str, str], tuple[float, list[str], bool]] = {}
+
 
 def _reset_cache() -> None:  # 测试隔离
     _cache.clear()
+    _peek_cache.clear()
 
 
 async def _blocked(run_id: str, task_id: str, instance_id: str, trace: str,
@@ -49,8 +59,9 @@ def _scope_override() -> list[str] | None:
     return [a.strip() for a in raw.split(",") if a.strip()] or None
 
 
-async def peek_effective_appids(user_id: str, instance: dict[str, Any]) -> list[str]:
-    """只读探询（告警历史预览用）：override 缝 → 30s 缓存命中 → omodel 实时 resolve。
+async def peek_effective_appids(user_id: str, instance: dict[str, Any], *,
+                                fresh: bool = False) -> list[str]:
+    """只读探询（告警摄入/历史预览用）：override 缝 → _cache 命中 → _peek_cache 命中 → omodel 实时 resolve。
 
     与 resolve_for_task 的三点**刻意**差异，别顺手"统一"：
     ① 不写 scope_snapshot——快照表 run_id NOT NULL，且快照语义是任务边界的审计证据，
@@ -58,24 +69,48 @@ async def peek_effective_appids(user_id: str, instance: dict[str, Any]) -> list[
     ② 不发 scope.blocked 审计/SSE——没有 run 通道可推；
     ③ 失败/空一律返回 []（调用方自行降级本地数据）——预览不是执行边界，拿不到范围
       不该拦住用户看页面；执行边界的 fail-closed 语义只归 resolve_for_task。
-    只读缓存**不写**缓存：_cache 值是含 scope_snapshot_id 的完整 ScopeContext，
-    peek 写半截 ctx 会污染 resolve_for_task 的命中消费面（audit 要读 snapshot_id）。
+    只读**不写 _cache**：它的值是含 scope_snapshot_id 的完整 ScopeContext，peek 写半截
+    ctx 会污染 resolve_for_task 的命中消费面（audit 要读 snapshot_id）。
+
+    频率（2026-08-15 修）：此前 peek 只读不写**任何**缓存，于是 Kafka 每批（getmany
+    timeout 1s）都真打一次 omodel——内网实测约 1 秒一次出站，上游 403 时把日志刷满，
+    每次还搭一个同步 IAM 取 token 阻塞事件循环。故加 `_peek_cache`：只存 appid 列表，
+    不含 snapshot_id，天然不会污染 _cache 的消费面。**失败也缓存**（更短的负 TTL）——
+    当前 403 场景每批都失败，只缓存成功等于没修。
+
+    `fresh=True`：跳过**负**缓存（成功缓存照读）。给用户点了按钮才发生的调用用——
+    人手重试的间隔比负 TTL 短，让用户对着 10 秒前的一次失败干等，是拿降噪换体验。
+    后台循环一律用默认 False：那里没有「用户在等」这回事，压频率才是正解。
     """
     ws_id = instance["workspace_id"]
     key = (ws_id, instance["scope_revision"], user_id)
     override = _scope_override()
     if override is not None:
         return list(override)
+    now = time.monotonic()
     cached = _cache.get(key)
-    if cached is not None and cached[0] > time.monotonic():
+    if cached is not None and cached[0] > now:  # resolve_for_task 写的，比 peek 自己的更权威
         return list(cached[1].get("effective_appids") or [])
+    peeked = _peek_cache.get(key)
+    if peeked is not None and peeked[0] > now and (peeked[2] or not fresh):
+        return list(peeked[1])
     try:
         res = await omodel_client.resolve_scope(ws_id, instance["scope_revision"], user_id)
     except Exception:  # noqa: BLE001 —— OModelError/网络等：预览降级，不放大为 500
-        return []
+        return _peek_miss(key, now)
     if str(res.get("status") or "") != "ok":
-        return []
-    return sorted(a for a in (res.get("effective_appids") or []) if a)
+        return _peek_miss(key, now)
+    appids = sorted(a for a in (res.get("effective_appids") or []) if a)
+    # ok=True 即使 appids 为空：「上游明确答复范围为空」和「问不到」是两回事，
+    # 前者该按正常 TTL 缓存，后者是故障、要短 TTL 且允许 fresh 绕过。
+    _peek_cache[key] = (now + _PEEK_TTL_S, list(appids), True)
+    return appids
+
+
+def _peek_miss(key: tuple[str, str, str], now: float) -> list[str]:
+    """peek 取不到范围：写短负缓存并返回 []（调用方按「宁漏勿越权」降级）。"""
+    _peek_cache[key] = (now + _PEEK_FAIL_TTL_S, [], False)
+    return []
 
 
 async def resolve_for_task(

@@ -21,6 +21,13 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    # nginx access/error 日志走容器 stdout/stderr，docker 默认 json-file 无上限；
+    # 前端每条 /api 都记一行（含 SSE 重连风暴），不封顶就是磁盘定时炸弹。
+    logging: &json_file_capped
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
   sidecar:
     image: openops-sidecar:latest
     container_name: openops-sidecar
@@ -31,3 +38,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+    logging: *json_file_capped

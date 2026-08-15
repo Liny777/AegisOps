@@ -101,7 +101,9 @@ async def _instance_scope(instance_id: str, owner_uid: str,
 
     返回 None = 范围不可得（实例不存在/omodel 不可达且无历史快照）——调用方按
     「宁漏勿越权」fail-closed 处理（2026-08-11 拍板）。批内 memo（scope_cache）保证
-    风暴期同实例每批只解析一次；跨批由 peek 的 30s 缓存兜住频率。
+    风暴期同实例每批只解析一次；跨批由 peek 的 30s 缓存兜住频率——**这句话在
+    2026-08-15 之前是错的**：peek 当时只读不写缓存，每批都真打 omodel（内网实测约
+    1 秒一次，上游 403 时刷满日志）。现已由 scope_service._peek_cache 补上，含失败负缓存。
     """
     if instance_id in scope_cache:
         return scope_cache[instance_id]

@@ -34,9 +34,23 @@ try:
 except ModuleNotFoundError:
     pass
 
+# InsecureRequestWarning 降为**每进程一条**。内网 infra/j2c_utils.py（不进本仓库）取 IAM token
+# 走 requests+verify=False，每次出站都 warn 一次，实测把后台日志刷满。
+# 用 "once" 而不是 "ignore"：TLS 校验被关是真实风险，必须留一条可见记录——这行不是消音，是去重。
+try:
+    import warnings
+
+    from urllib3.exceptions import InsecureRequestWarning
+
+    warnings.filterwarnings("once", category=InsecureRequestWarning)
+except ImportError:
+    pass  # 本仓库不直接依赖 urllib3（自有出站全走 httpx）；没装就没这个警告
+
 
 def _uvicorn_config():
     import uvicorn
+
+    from infra.logging_config import build_log_config
 
     return uvicorn.Config(
         app="main:app",
@@ -49,7 +63,10 @@ def _uvicorn_config():
         proxy_headers=False,
         # 文根（OPENOPS_ROOT_PATH）不走 uvicorn root_path——新版 uvicorn 会把它拼回请求路径，
         # 网关不剥前缀时会变双前缀 404。改由 main.RootPathShim 在应用层按需剥（两种网关都兼容）。
-        log_level="info",
+        #
+        # 不再传 log_level：级别统一由 OPENOPS_LOG_LEVEL 经 build_log_config() 下发，
+        # 两处都设会让 uvicorn 用 log_level 覆盖 dictConfig 里的 logger 级别。
+        log_config=build_log_config(),
     )
 
 

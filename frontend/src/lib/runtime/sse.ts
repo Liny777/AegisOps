@@ -2,8 +2,9 @@
  * fetch 流式 SSE 客户端（参考 frontend-v2 EventSource 模式，但 mock 鉴权走请求头，
  * EventSource 不支持自定义头 → 用 fetch+ReadableStream 手解析；B8 真 IAM(Cookie) 后可换回 EventSource）。
  * 支持：Last-Event-ID 断线补发、自动重连（指数退避）、resync 信号回调。
+ * 重连只针对**可恢复**故障：401 就地终止（见 connect() 内注释），不进退避循环。
  */
-import { demoIdentity } from "../api/client";
+import { type ApiErrorBody, demoIdentity, redirectToLoginIfUnauthorized } from "../api/client";
 
 export interface SseHandle {
   close: () => void;
@@ -15,6 +16,11 @@ export function subscribeSse(
     onEvent: (data: unknown, id: number | null) => void;
     onResync?: () => void;
     onStateChange?: (s: "connecting" | "open" | "reconnecting") => void;
+    /**
+     * 不可重试的终止（当前只有 401 未登录）。调用方据此提示用户，而不是让 UI 无限转圈。
+     * 能跳登录页时不会触发——那种情况浏览器已经在离开本页了。
+     */
+    onFatal?: (code: string, message: string) => void;
     /** `/state.last_event_seq`：首次连接即从快照游标之后补发，避免为防竞态重复拉 state。 */
     initialLastEventId?: number | null;
   },
@@ -63,6 +69,13 @@ export function subscribeSse(
       try {
         const res = await fetch(url, {
           signal: controller.signal,
+          // B9：带上公司 IAM cookie，与 apiFetch (client.ts) 同口径。真部署是同源
+          // （nginx 转 /api），cookie 随请求走，SSE 才拿得到登录态。
+          // ⚠跨源 VITE_OPENOPS_API_BASE 下本请求会被浏览器预检直接拦掉（后端
+          // CORS 是 allow_origins=["*"] 且无 allow_credentials，通配符与
+          // credentials:include 互斥）——但 apiFetch 早就是这个状态，即跨源模式对
+          // 整个 JSON API 本来就不通，不是 SSE 独有。要支持跨源须后端改 CORS 白名单。
+          credentials: "include",
           headers: {
             Accept: "text/event-stream",
             "X-OpenOps-Mock-User": demoIdentity.user,
@@ -70,6 +83,19 @@ export function subscribeSse(
             ...(lastId != null ? { "Last-Event-ID": String(lastId) } : {}),
           },
         });
+        // 401 不是网络抖动，重连一万次也还是 401——退避封顶 8s 就意味着一个未登录标签页
+        // 永久每 8 秒打一次后端（内网 access 日志实测被这条刷满）。就地终止：能跳登录就跳，
+        // 跳不了就把 onFatal 交给调用方提示，绝不进 catch 的重连分支。
+        if (res.status === 401) {
+          closed = true;
+          const err = await res.json().catch(() => ({})).then(
+            (j) => (j as { error?: ApiErrorBody }).error,
+          );
+          if (!redirectToLoginIfUnauthorized(res.status, err)) {
+            opts.onFatal?.(err?.code ?? "UNAUTHORIZED", err?.message ?? "登录已失效，请重新登录");
+          }
+          return;
+        }
         if (!res.ok || !res.body) throw new Error(`SSE HTTP ${res.status}`);
         if (closed || controller.signal.aborted) {
           void res.body.cancel().catch(() => undefined);

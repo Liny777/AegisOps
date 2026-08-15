@@ -100,8 +100,6 @@ def _looks_html(r: "httpx.Response") -> bool:
 
 
 def check_omodel() -> None:
-    from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
-
     raw = os.environ.get("OPENOPS_OMODEL_BASE_URL", "").strip()
     base = raw.split("#", 1)[0].rstrip("/")  # 剥浏览器地址栏的 #fragment（同 omodel_real._base）
     print(f"[check-net]③ oModel(umodel)={base or '(未设 OPENOPS_OMODEL_BASE_URL，跳过)'}"
@@ -109,16 +107,21 @@ def check_omodel() -> None:
     if not base:
         return
     from infra.external.mcp_registry_client import console_cookie
-
-    from infra.iam_headers import iam_auth_headers
+    from infra.external.omodel_real import _client_kwargs
 
     cookie = console_cookie("OPENOPS_OMODEL_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
-    hdrs = dict(iam_auth_headers())  # 服务态 IAM（内网 j2c_utils，缺失即空）——与 omodel_real._client_kwargs 同口径
-    if cookie:
-        hdrs["Cookie"] = cookie
+    # 直接复用运行时的装配函数，而不是在这里手搓 Cookie+IAM 两个头：运行时还会带
+    # 浏览器 UA / Origin / Referer / Sec-Fetch / IAM-Client-Ip，网关对这些**都敏感**。
+    # 手搓版少几个头 → 出现过「check-net 通、后台链路 403」的不可定位态；本探针的全部
+    # 价值就是精确复现，故必须同源。base_url 由下面各请求自带绝对 URL，此处丢弃。
+    kw = _client_kwargs(base)
+    kw.pop("base_url", None)
+    kw.pop("event_hooks", None)  # 探针自己打日志，不叠 OPENOPS_HTTP_DEBUG 的钩子
+    kw["timeout"] = 10
+    hdrs = kw["headers"]
     print(f"[check-net]   cookie: {'len=' + str(len(cookie)) if cookie else '未设（29.7 workspace 端点匿名可用）'}"
-          f"  iam: {'len=' + str(len(hdrs.get('Authorization', ''))) if hdrs.get('Authorization') else '未取到（j2c_utils 缺失或取 token 失败）'}")
-    kw = {"timeout": 10, "verify": console_tls_verify(), "trust_env": http_trust_env(), "headers": hdrs}
+          f"  iam: {'len=' + str(len(hdrs.get('Authorization', ''))) if hdrs.get('Authorization') else '未取到（j2c_utils 缺失或取 token 失败）'}"
+          f"  client_ip: {'set' if hdrs.get('IAM-Client-Ip') else '未设（后台链路同款：无请求上下文）'}")
     try:
         r = httpx.get(f"{base}/healthz", **kw)
         if _looks_html(r) or r.status_code >= 400:
@@ -137,6 +140,14 @@ def check_omodel() -> None:
             print(f"[check-net]   ❌ GET /api/v1/workspaces → HTTP {r.status_code}——该部署要登录态。\n"
                   "[check-net]   → 浏览器开 OModel 页面 → F12 → Network → 任一 /api/v1 请求 → Request Headers\n"
                   "[check-net]     → 复制整个 Cookie 值 → export OPENOPS_OMODEL_COOKIE='<值>'（含分号务必加引号）")
+            if hdrs.get("Authorization") and not cookie:
+                # 这正是**后台链路**（告警摄入 peek/resolve）的头组合：无用户 cookie、无 IAM-Client-Ip，
+                # 只有 j2c 服务态 token。它在这里被拒 ⇒ 后台 403 是对端授权问题，本端无解。
+                print("[check-net]   ⚠ 本次只带了服务态 IAM token、没带用户 Cookie——这与告警接管\n"
+                      "[check-net]     后台协程的出站头**完全一致**。此处被拒即说明：服务态 token 对 umodel\n"
+                      "[check-net]     无权，需找 umodel 侧开通；改本端代码无用。\n"
+                      "[check-net]     反之，若配上 OPENOPS_OMODEL_COOKIE 后本探针通过、后台仍 403，\n"
+                      "[check-net]     则问题是「后台没有用户登录态」，属设计缝，须走服务态授权。")
             return
         print(f"[check-net]   GET /api/v1/workspaces → HTTP {r.status_code}", end="")
         items = (r.json() or {}).get("items", []) if r.status_code == 200 else []
