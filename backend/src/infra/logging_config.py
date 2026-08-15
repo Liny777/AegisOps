@@ -26,6 +26,22 @@ from typing import Any
 #: 健康探活：k8s/compose healthcheck + 运维 curl，每几秒一条且永远 200，记了也没人看。
 QUIET_PATHS = frozenset({"/health", "/healthz", "/api/health", "/api/healthz"})
 
+#: 第三方库里「INFO 即刷屏」的 logger，一律钉到 WARNING。
+#:
+#: 装根 handler 之前这些库的 INFO 本来就被 lastResort 丢掉，装上之后会**全部冒出来**——
+#: 治日志反而先加一把火。`httpx` 尤其危险：它每个**成功**响应打一行且**带完整 URL**
+#: （`HTTP Request: GET https://…/workspaces/ws-x/projects "HTTP/1.1 200 OK"`），
+#: 而本仓库出站调试日志的既定纪律是绝不记 URL/头/体（见 omodel_real._log_outbound_response
+#: 与 mcp_registry_client 的掩码逻辑）——放任它等于绕过那条纪律。
+#: 排查第三方库自身问题时用 OPENOPS_THIRD_PARTY_LOG_LEVEL 临时调回 INFO/DEBUG。
+THIRD_PARTY_LOGGERS = (
+    "httpx", "httpcore",      # 出站 HTTP：httpx 每次成功响应一行且带完整 URL
+    "urllib3",                # 内网 j2c_utils 走 requests → urllib3
+    "aiokafka", "kafka",      # 告警消费循环：心跳/rebalance 在 INFO
+    "openai",                 # GLM/自带模型经 OpenAI 兼容客户端
+    "asyncio", "multipart",
+)
+
 #: 抑制汇总打到独立 logger，避免在 uvicorn.access 的 filter 里递归回自己。
 _summary_log = logging.getLogger("openops.access")
 
@@ -160,6 +176,12 @@ def _level() -> str:
     return raw if raw in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG") else "INFO"
 
 
+def _third_party_level() -> str:
+    """`OPENOPS_THIRD_PARTY_LOG_LEVEL`；默认 WARNING（见 THIRD_PARTY_LOGGERS 的理由）。"""
+    raw = os.getenv("OPENOPS_THIRD_PARTY_LOG_LEVEL", "").strip().upper()
+    return raw if raw in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG") else "WARNING"
+
+
 def _access_dedup_window() -> float:
     try:
         return max(0.0, float(os.getenv("OPENOPS_ACCESS_LOG_DEDUP_S", "60") or "60"))
@@ -199,4 +221,10 @@ def build_log_config() -> dict[str, Any]:
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         if name in cfg["loggers"]:
             cfg["loggers"][name]["level"] = level
+
+    # 第三方库钉级别：必须在装根 handler 的同一份配置里做，否则它们的 INFO 会顺着
+    # 新根 handler 全部冒出来（httpx 还会带完整 URL）——治日志反倒先加一把火。
+    tp = _third_party_level()
+    for name in THIRD_PARTY_LOGGERS:
+        cfg["loggers"][name] = {"level": tp}  # 不给 handler：照常向上冒到根，只卡级别
     return cfg
