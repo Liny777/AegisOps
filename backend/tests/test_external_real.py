@@ -391,13 +391,27 @@ async def test_ext_omodel_list_debug_never_logs_payload(monkeypatch, caplog):
 
     monkeypatch.setenv("OPENOPS_OMODEL_BASE_URL", "https://console.example/omodel")
     monkeypatch.setenv("OPENOPS_HTTP_DEBUG", "1")
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG_SAMPLE_S", "0")  # 关抑制窗口，锁单次行为
     _install(monkeypatch, lambda m, u, k: _Resp(
         200, {"items": [], "sensitive_marker": "must-not-reach-log"},
         headers={"X-Request-Id": "list-1"}))
-    caplog.set_level(logging.WARNING, logger="openops.omodel")
+    # 调试日志 2026-08-15 起降到 INFO（root handler 已由 infra.logging_config 装上）
+    caplog.set_level(logging.INFO, logger="openops.omodel")
 
+    # 成功路径**不再**打状态行：response hook 只打非 2xx，成功的状态码没有诊断价值却占了
+    # 绝大多数条数（内网 403 风暴期约 1 秒一对，把 journald 刷满）。
     assert await omodel_real.list_workspaces() == []
-    assert "status=200" in caplog.text and "request_id=list-1" in caplog.text
+    assert "must-not-reach-log" not in caplog.text
+    # cookie_src 行（每构造一次 client 一条）仍在，这里只断言**状态行**不再为成功打
+    assert "status=" not in caplog.text
+
+    # 失败路径仍必须留痕，且同样不得带 payload——降噪不能把错误一起降没了。
+    # （_install 换掉整个 AsyncClient，event hook 不跑；这里走 list_workspaces 的异常分支）
+    caplog.clear()
+    _install(monkeypatch, lambda m, u, k: _Resp(
+        403, {"secret": "must-not-reach-log"}, headers={"X-Request-Id": "list-2"}))
+    assert await omodel_real.list_workspaces() == []
+    assert "status=error(RuntimeError)" in caplog.text
     assert "must-not-reach-log" not in caplog.text
 
 
@@ -953,7 +967,7 @@ async def test_ext_mcpreg_request_hook_survives_multipart_stream(monkeypatch, ca
 
     from infra.external.mcp_registry_client import _log_outbound_request
 
-    caplog.set_level(logging.WARNING, logger="openops.mcpreg")
+    caplog.set_level(logging.INFO, logger="openops.mcpreg")  # 调试行 2026-08-15 起降到 INFO
     # 真实 multipart 流式体：修复前 `request.content` 抛 RequestNotRead
     mp = httpx.Request("POST", "http://skillhub/obsv/agent/management/skills/upload",
                        files={"file": ("demo.zip", b"PK\x03\x04zipbytes", "application/zip")},
@@ -1131,14 +1145,15 @@ async def test_ext_omodel_outbound_headers(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_ext_omodel_response_hook_never_logs_payload(caplog):
+async def test_ext_omodel_response_hook_never_logs_payload(monkeypatch, caplog):
     """真实执行 response hook，锁定 URL/header/body 中的凭据均不进入调试日志。"""
     import logging
     from types import SimpleNamespace
 
     from infra.external.omodel_real import _log_outbound_response
 
-    caplog.set_level(logging.WARNING, logger="openops.omodel")
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG_SAMPLE_S", "0")  # 关抑制窗口，锁单次行为
+    caplog.set_level(logging.INFO, logger="openops.omodel")  # 调试行 2026-08-15 起降到 INFO
     response = SimpleNamespace(
         status_code=401,
         headers={"X-Request-Id": "upstream-req-1"},
@@ -1154,6 +1169,37 @@ async def test_ext_omodel_response_hook_never_logs_payload(caplog):
     assert "status=401" in caplog.text and "request_id=upstream-req-1" in caplog.text
     for secret in ("response-secret", "request-secret", "url-secret", "request-body-secret", "password"):
         assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_ext_omodel_response_hook_skips_2xx_and_samples(monkeypatch, caplog):
+    """出站调试行的两道降噪闸（2026-08-15）：成功响应不打；同状态码窗口内只打一条。
+
+    治的是内网实景：后台告警链每批解析一次范围 ⇒ 每秒一对 debug 行，上游持续 403 时
+    把 journald 刷满。压的必须只是**重复**——新状态码要立刻可见。
+    """
+    import logging
+    from types import SimpleNamespace
+
+    from infra.external import omodel_real
+
+    monkeypatch.setenv("OPENOPS_HTTP_DEBUG_SAMPLE_S", "60")
+    omodel_real._debug_gate._seen.clear()
+    caplog.set_level(logging.INFO, logger="openops.omodel")
+
+    def _resp(code: int):
+        return SimpleNamespace(status_code=code, headers={})
+
+    for code in (200, 201, 204):
+        await omodel_real._log_outbound_response(_resp(code))
+    assert caplog.text == "", "2xx 不得留痕"
+
+    for _ in range(5):
+        await omodel_real._log_outbound_response(_resp(403))
+    assert caplog.text.count("status=403") == 1, "同状态码窗口内只留一条"
+
+    await omodel_real._log_outbound_response(_resp(500))
+    assert "status=500" in caplog.text, "新状态码必须即时可见"
 
 
 def test_ext_omodel_rejects_credentialed_or_ambiguous_base():

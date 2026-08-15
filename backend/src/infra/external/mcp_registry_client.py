@@ -12,6 +12,8 @@ import logging
 import os
 from typing import Any
 
+from infra.logging_config import WindowGate, suppressed_suffix
+
 log = logging.getLogger("openops.mcpreg")
 
 # console 网关与 omodel 同一套边界策略（omodel_real._BROWSER_UA 内网实锤）：脚本类 UA 会被拦，
@@ -70,6 +72,10 @@ def _http_debug() -> bool:
     return os.getenv("OPENOPS_HTTP_DEBUG", "").strip().lower() in ("1", "true", "yes")
 
 
+#: cookie_src 行的时间窗闸门（与 omodel_real._debug_gate 同款、各自独立计数）。
+_debug_gate = WindowGate("OPENOPS_HTTP_DEBUG_SAMPLE_S")
+
+
 async def _log_outbound_request(request: Any) -> None:
     """门控诊断（OPENOPS_HTTP_DEBUG=1）：出站的方法/URL/头/体。SEC-001：Cookie 只打长度、
     IAM-Client-Ip/X-Forwarded-For 只打在场与否——凭据与客户端 IP 不入日志。"""
@@ -90,8 +96,10 @@ async def _log_outbound_request(request: Any) -> None:
         body = request.content.decode("utf-8", "replace")[:500] if request.content else ""
     else:
         body = f"<streaming body {request.headers.get('content-type', '')}>"
-    log.warning("[OpenOps][mcpreg][debug] → %s %s body=%s", request.method, request.url, body)
-    log.warning("[OpenOps][mcpreg][debug] → headers: %s", "; ".join(masked))
+    # info 而非 warning：本行只在 OPENOPS_HTTP_DEBUG=1 时存在，warning 会把它混进真告警里。
+    # 不做窗口抑制——这两行的全部价值就是逐请求全量细节，压掉等于关掉。
+    log.info("[OpenOps][mcpreg][debug] → %s %s body=%s", request.method, request.url, body)
+    log.info("[OpenOps][mcpreg][debug] → headers: %s", "; ".join(masked))
 
 
 async def _log_outbound_response(response: Any) -> None:
@@ -99,7 +107,7 @@ async def _log_outbound_response(response: Any) -> None:
     ct = str(response.headers.get("content-type", ""))
     body = ((response.text or "")[:1000] if ("json" in ct or "text" in ct)
             else f"<{len(response.content)} bytes {ct}>")  # ZIP 等二进制不进日志
-    log.warning("[OpenOps][mcpreg][debug] ← status=%s body=%s", response.status_code, body)
+    log.info("[OpenOps][mcpreg][debug] ← status=%s body=%s", response.status_code, body)
 
 
 def console_client_kwargs(base: str, cookie_env: str, timeout: float = 15) -> dict[str, Any]:
@@ -145,9 +153,12 @@ def console_client_kwargs(base: str, cookie_env: str, timeout: float = 15) -> di
                else f"env:{cookie_env}" if os.getenv(cookie_env)
                else "env:shared" if cookie
                else "none")
-        log.warning("[OpenOps][mcpreg][debug] cookie_src=%s cookie_len=%d client_ip=%s iam=%s",
-                    src, len(cookie or ""), "set" if ip else "missing",
-                    "set" if headers.get("Authorization") else "missing")
+        # 与 omodel 同款窗口抑制：client 每次调用现建，这行本会随出站频率线性刷屏。
+        ip_state, iam_state = ("set" if ip else "missing"), ("set" if headers.get("Authorization") else "missing")
+        ok, dropped = _debug_gate.allow(f"cookie:{src}:{ip_state}:{iam_state}")
+        if ok:
+            log.info("[OpenOps][mcpreg][debug] cookie_src=%s cookie_len=%d client_ip=%s iam=%s%s",
+                     src, len(cookie or ""), ip_state, iam_state, suppressed_suffix(dropped))
         kwargs["event_hooks"] = {"request": [_log_outbound_request],
                                  "response": [_log_outbound_response]}
     return kwargs

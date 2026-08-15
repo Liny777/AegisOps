@@ -14,12 +14,15 @@ from infra import iam_headers
 
 @pytest.fixture(autouse=True)
 def _reset_flags():
-    """限频 flag 是 module 级——逐测重置，保证一次性日志断言确定。"""
+    """限频 flag 与 token 缓存都是 module 级——逐测重置，否则前一个用例缓存的 token
+    会让后一个用例根本不调 j2c，断言全部失真。"""
     iam_headers._warned_missing = False
     iam_headers._warned_failed = False
+    iam_headers._reset_cache()
     yield
     iam_headers._warned_missing = False
     iam_headers._warned_failed = False
+    iam_headers._reset_cache()
 
 
 def _fake_j2c(monkeypatch, auth: str = "Bearer IAM-TOKEN") -> None:
@@ -79,3 +82,75 @@ def test_console_client_kwargs_carries_iam(monkeypatch):
     _fake_j2c(monkeypatch)
     headers = console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")["headers"]
     assert headers["Authorization"] == "Bearer IAM-TOKEN"
+
+
+# ============================ TTL 缓存（2026-08-15） ============================
+# 内网 j2c 每次出站都真打 IAM（requests，同步阻塞事件循环），日志里每条出站都伴随一条
+# InsecureRequestWarning——这组用例锁住「同一 TTL 内只取一次」。
+
+
+def _counting_j2c(monkeypatch, auth: str = "Bearer IAM-TOKEN") -> dict[str, int]:
+    calls = {"n": 0}
+
+    def _get():
+        calls["n"] += 1
+        return {"Authorization": auth}
+
+    monkeypatch.setitem(sys.modules, "infra.j2c_utils", SimpleNamespace(_get_iam_headers=_get))
+    return calls
+
+
+def test_token_cached_within_ttl(monkeypatch):
+    """TTL 内重复出站只取一次 token（这就是刷屏与阻塞的根治点）。"""
+    calls = _counting_j2c(monkeypatch)
+    monkeypatch.setenv("OPENOPS_IAM_TOKEN_TTL_S", "300")
+    for _ in range(5):
+        assert iam_headers.iam_auth_headers() == {"Authorization": "Bearer IAM-TOKEN"}
+    assert calls["n"] == 1
+
+
+def test_cache_expiry_refetches(monkeypatch):
+    """TTL 过期后必须重取——token 有寿命，缓存不能变成永久钉死。"""
+    calls = _counting_j2c(monkeypatch)
+    monkeypatch.setenv("OPENOPS_IAM_TOKEN_TTL_S", "300")
+    iam_headers.iam_auth_headers()
+    assert calls["n"] == 1
+    # 直接把过期时刻拨到过去，避免 sleep 拖慢 suite
+    iam_headers._cache = (0.0, {"Authorization": "Bearer IAM-TOKEN"})
+    iam_headers.iam_auth_headers()
+    assert calls["n"] == 2
+
+
+def test_ttl_zero_disables_cache(monkeypatch):
+    """TTL=0 = 每次现取（排查缝）。"""
+    calls = _counting_j2c(monkeypatch)
+    monkeypatch.setenv("OPENOPS_IAM_TOKEN_TTL_S", "0")
+    for _ in range(3):
+        iam_headers.iam_auth_headers()
+    assert calls["n"] == 3
+
+
+def test_failure_not_cached(monkeypatch):
+    """失败**不写**缓存：否则一次 IAM 抖动会被放大成整个 TTL 窗口的无鉴权出站，
+    与本模块「取不到就降级回 Cookie 通路」的语义相冲。"""
+    def _boom():
+        raise RuntimeError("IAM down")
+
+    monkeypatch.setitem(sys.modules, "infra.j2c_utils", SimpleNamespace(_get_iam_headers=_boom))
+    monkeypatch.setenv("OPENOPS_IAM_TOKEN_TTL_S", "300")
+    assert iam_headers.iam_auth_headers() == {}
+    assert iam_headers._cache is None
+
+    # 恢复后立即拿到新 token，不被负缓存挡住
+    calls = _counting_j2c(monkeypatch)
+    assert iam_headers.iam_auth_headers() == {"Authorization": "Bearer IAM-TOKEN"}
+    assert calls["n"] == 1
+
+
+def test_cached_headers_are_copies(monkeypatch):
+    """返回副本：调用方（_client_kwargs）会把它 update 进自己的 headers 再改。"""
+    _counting_j2c(monkeypatch)
+    monkeypatch.setenv("OPENOPS_IAM_TOKEN_TTL_S", "300")
+    first = iam_headers.iam_auth_headers()
+    first["Authorization"] = "TAMPERED"
+    assert iam_headers.iam_auth_headers()["Authorization"] == "Bearer IAM-TOKEN"

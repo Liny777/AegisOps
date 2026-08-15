@@ -3,6 +3,10 @@
 #   发布包解压到 /opt/openops/releases/<BUILD_ID>，/opt/openops/current 原子指向当前版本。
 #   按环境改 EnvironmentFile 指向 openops.test.env 或 openops.prod.env。
 #   sudo systemctl daemon-reload && sudo systemctl enable --now openops-backend
+#
+# 日志：本单元不设 StandardOutput=，全部进 journald（journalctl -u openops-backend）。
+#   journald 的**总容量**是主机级配置，不随本单元走——必须另建
+#   /etc/systemd/journald.conf.d/openops.conf 设 SystemMaxUse 等，见 docs/deploy-intranet.md「日志容量」。
 [Unit]
 Description=OpenOps V1 Backend (uvicorn via run.py)
 After=network-online.target
@@ -17,6 +21,11 @@ ExecStart=/opt/openops/current/.venv/bin/python run.py
 Restart=always
 RestartSec=5
 User=openops
+# 日志风暴护栏：单元级限速，30s 内超过 5000 条即丢弃余下并由 journald 记一条 "Suppressed N messages"。
+# 阈值远高于正常量（正常每秒个位数），只在出站 403 风暴/重连风暴这类异常态才触发——
+# 触发本身即是信号，不要因为「怕丢日志」调高：容量护栏在 journald.conf.d，这里管的是瞬时速率。
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=5000
 # 沙箱切 docker（OPENOPS_SANDBOX=docker）须让运行用户能读写 /var/run/docker.sock。取消下一行注释即可
 # （声明式、随单元走）；注意宿主须已有 docker 组，否则 systemd 会因 SupplementaryGroups 不存在拒绝启动。
 # SupplementaryGroups=docker

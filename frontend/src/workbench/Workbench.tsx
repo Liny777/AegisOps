@@ -534,6 +534,14 @@ export function Workbench({
     onEvent: (raw) => {
       if (activeRunRef.current === rid) handleOpenOpsEvent(raw as OpenOpsEvent);
     },
+    // 401 且无 login_url（后端没配 OPENOPS_IAM_LOGIN_URL）：SSE 已就地停连，
+    // 这里必须把原因显出来——否则连接条停在 reconnecting 上，用户只看到一直转圈。
+    onFatal: (_code, message) => {
+      if (activeRunRef.current !== rid) return;
+      sseOpenRef.current = false;
+      setInitializationIssue({ owner: "run", runId: rid, message });
+      setConn("error");
+    },
   }), [handleOpenOpsEvent, refresh]);
 
   // 显式 run_id 优先；否则 ensureRun。切换期间保留旧内容与旧连接，/state 成功后原子换入。

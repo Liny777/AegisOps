@@ -33,8 +33,9 @@ export function runAguiTask(runId: string, text: string, h: AguiHandlers): { can
       "X-OpenOps-Mock-User": demoIdentity.user,
       "X-OpenOps-Mock-Name": encodeURIComponent(demoIdentity.name),
     },
-    // HttpAgent 把 fetch 存成未绑定引用后以 this.fetch() 调用 → 浏览器 Illegal invocation；显式绑定 window
-    fetch: (input: string, init: RequestInit) => window.fetch(input, init),
+    // HttpAgent 把 fetch 存成未绑定引用后以 this.fetch() 调用 → 浏览器 Illegal invocation；显式绑定 window。
+    // credentials 同 apiFetch/sse.ts：真部署同源，IAM cookie 必须随请求走（跨源限制见 sse.ts 注释）。
+    fetch: (input: string, init: RequestInit) => window.fetch(input, { ...init, credentials: "include" }),
   });
   agent.messages = [{ id: `u_${Date.now()}`, role: "user", content: text }];
   void agent
