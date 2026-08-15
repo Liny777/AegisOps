@@ -5,7 +5,12 @@ from fastapi import APIRouter
 from api.deps import User
 from api.responses import ok
 from app import model_asset_service, model_template_service, secret_model_gateway
-from domain.schemas import CreateLlmConfigRequest, CreateSecretRequest, TestConnectionRequest
+from domain.schemas import (
+    CreateLlmConfigRequest,
+    CreateSecretRequest,
+    TestConnectionRequest,
+    UpdateLlmConfigRequest,
+)
 
 router = APIRouter(prefix="/api/openops/v1", tags=["secrets"])
 
@@ -47,3 +52,19 @@ async def test_llm_connection(req: TestConnectionRequest, _user: User):
 @router.post("/llm-configs")
 async def create_llm(req: CreateLlmConfigRequest, user: User):
     return ok(await secret_model_gateway.create_llm_config(user, req))
+
+
+# 以下两个 {llm_config_id} 路由必须注册在 `/llm-configs:test-connection` **之后**：路径参数不匹配
+# `/` 但**匹配 `:`**，先注册会把 `/llm-configs:test-connection` 吃成 id=":test-connection"
+# （同 admin.py 的 PUT /{id} 排序约束）。
+@router.patch("/llm-configs/{llm_config_id}")
+async def update_llm(llm_config_id: str, req: UpdateLlmConfigRequest, user: User):
+    """局部更新自带模型连接配置；改连接类字段会强制重探测（不通过则整条不落库）。"""
+    return ok(await secret_model_gateway.update_llm_config(user, llm_config_id, req))
+
+
+@router.delete("/llm-configs/{llm_config_id}")
+async def delete_llm(llm_config_id: str, user: User):
+    """软删自带模型 + 连带作废其专属 Secret；仍被某 Agent 当前配置绑定时拒删。"""
+    await secret_model_gateway.delete_llm_config(user, llm_config_id)
+    return ok({"deleted": True})

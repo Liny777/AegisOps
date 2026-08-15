@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from infra.db import exec1, q_all, q_one
+from infra.db import exec1, jsonb, q_all, q_one
 
 
 async def list_all() -> list[dict[str, Any]]:
@@ -38,6 +38,7 @@ async def create(
     display_name: str, protocol: str, model_id: str, base_url: str | None,
     secret_env_var: str | None, status: str, by: str,
     context_window_tokens: int = 128000,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     # access_scope 列已废弃（38.1 授权迁模板维度）：insert 不再含该列，DEFAULT 'all' 兜底
     mid = str(uuid.uuid4())
@@ -45,11 +46,12 @@ async def create(
         """
         insert into sre_model_asset
           (model_asset_id, display_name, protocol, model_id, base_url, secret_env_var,
-           context_window_tokens, status, registered_by, created_by, last_updated_by)
-        values (%(i)s, %(d)s, %(p)s, %(m)s, %(u)s, %(e)s, %(cw)s, %(s)s, %(b)s, %(b)s, %(b)s)
+           context_window_tokens, extra_params_json, status, registered_by, created_by, last_updated_by)
+        values (%(i)s, %(d)s, %(p)s, %(m)s, %(u)s, %(e)s, %(cw)s, %(x)s, %(s)s, %(b)s, %(b)s, %(b)s)
         """,
         {"i": mid, "d": display_name, "p": protocol, "m": model_id, "u": base_url,
-         "e": secret_env_var, "cw": context_window_tokens, "s": status, "b": by},
+         "e": secret_env_var, "cw": context_window_tokens, "s": status, "b": by,
+         "x": jsonb({"extra_headers": extra_headers} if extra_headers else {})},
     )
     return (await get(mid))  # type: ignore[return-value]
 
@@ -78,7 +80,9 @@ async def soft_delete(model_asset_id: str, by: str) -> int:
 
 # 可经 PUT /model-assets/{id} 改写的列。model_id 不在内（实例 overlay.platform_model_id 的绑定键）；
 # status 亦不在（专用 :status 端点）；access_scope 已废弃（38.1 授权迁模板维度）。
-_UPDATABLE = ("display_name", "base_url", "secret_env_var", "context_window_tokens")
+_UPDATABLE = ("display_name", "base_url", "secret_env_var", "context_window_tokens",
+              "extra_params_json")
+_JSONB_COLS = frozenset({"extra_params_json"})
 
 
 async def update_fields(model_asset_id: str, fields: dict[str, Any], by: str) -> int:
@@ -86,17 +90,19 @@ async def update_fields(model_asset_id: str, fields: dict[str, Any], by: str) ->
 
     SET 子句由 `_UPDATABLE` **字面量白名单**驱动，列名绝不来自请求体原文；值仍走 %(x)s 绑定。
     同 [[agent_teams.asset_in_use]] 的 f-string 拼列名口径。
+    jsonb 列的 dict 值必须经 jsonb() 适配，直接绑 dict 会被 psycopg 拒。
     """
     cols = [c for c in _UPDATABLE if c in fields]
     if not cols:
         return 0
     sets = ", ".join(f"{c}=%({c})s" for c in cols)
+    vals = {c: (jsonb(fields[c]) if c in _JSONB_COLS else fields[c]) for c in cols}
     return await exec1(
         f"""
         update sre_model_asset set {sets}, last_updated_by=%(b)s, last_update_date=now()
         where model_asset_id=%(i)s and deleted_at is null
         """,
-        {**{c: fields[c] for c in cols}, "i": model_asset_id, "b": by},
+        {**vals, "i": model_asset_id, "b": by},
     )
 
 

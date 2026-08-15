@@ -98,6 +98,8 @@ case "$DATABASE_MODE" in
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-10-rename-run-source.sql"
     # ↑ 仅我方旧库真执行（run_source→entry_source rename）；内网库/新库自动空转
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-09-alert-category-motype.sql"
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-15-model-asset-extra-headers.sql"
+    # ↑ 平台模型资产补 extra_params_json（自定义出站 Header）；用户自带模型侧同名列早已存在
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/alerts.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/studio_span.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"

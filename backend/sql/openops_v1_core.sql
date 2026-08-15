@@ -299,6 +299,7 @@ CREATE TABLE IF NOT EXISTS sre_model_asset (
   base_url text,
   secret_env_var text,
   context_window_tokens integer NOT NULL DEFAULT 128000,
+  extra_params_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   access_scope text NOT NULL DEFAULT 'all',
   status text NOT NULL DEFAULT 'active',
   registered_by text NOT NULL,
@@ -940,6 +941,7 @@ COMMENT ON COLUMN sre_model_asset.model_id IS '模型标识（如 glm-5.1），�
 COMMENT ON COLUMN sre_model_asset.base_url IS 'OpenAI 兼容 endpoint，可空';
 COMMENT ON COLUMN sre_model_asset.secret_env_var IS '平台侧 API Key 环境变量名，Key 本身不落库';
 COMMENT ON COLUMN sre_model_asset.context_window_tokens IS '上下文长度（token），管理台注册时填，默认 128000';
+COMMENT ON COLUMN sre_model_asset.extra_params_json IS 'Provider 差异化参数（含 extra_headers：自定义出站 Header，schema 层禁 Authorization 等保留头），不允许保存密钥';
 COMMENT ON COLUMN sre_model_asset.access_scope IS 'DEPRECATED（38.1：授权迁至模型模板维度 sre_model_template.access_scope）：本列保留不消费，新写恒 DEFAULT all';
 COMMENT ON COLUMN sre_model_asset.status IS '状态：active / disabled';
 COMMENT ON COLUMN sre_model_asset.registered_by IS '注册人（管理员工号），管理台「归属」展示来源';

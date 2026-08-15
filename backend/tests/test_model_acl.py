@@ -272,3 +272,94 @@ def test_model_acl_005_legacy_binding_open(client):
                            "workspace_id": "ws_pay_abc", "user_llm_config_id": None,
                            "model_template_id": None, "platform_model_id": "claude-3-5-sonnet"})
     assert r2.status_code == 403  # disabled 仍 fail-closed
+
+
+# ---- 平台模型资产的自定义出站 Header（与用户自带模型对齐）----
+
+def test_model_asset_register_and_update_extra_headers(client):
+    """注册时带 header → 落库；PUT 改 header → 生效；传 {} → 清空。
+    jsonb 列走 update_fields 白名单，dict 需经 jsonb() 适配，直接绑参会被 psycopg 拒。"""
+    mid = f"hdr-test-{time.time_ns()}"
+    unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "HdrAsset",
+                             "model_id": mid, "protocol": "openai_compatible",
+                             "base_url": "https://1.1.1.1/v1", "secret_env_var": "OPENOPS_HDR_KEY",
+                             "extra_headers": {"X-Tenant-Id": "t-plat"}}))
+    row = _asset(client, mid)
+    assert (row["extra_params_json"] or {}).get("extra_headers") == {"X-Tenant-Id": "t-plat"}
+
+    aid = row["model_asset_id"]
+    assert _update(client, ADMIN_HEADERS, aid, {"extra_headers": {"X-Route-Env": "prod"}}).status_code == 200
+    assert (_asset(client, mid)["extra_params_json"] or {}).get("extra_headers") == {"X-Route-Env": "prod"}
+
+    assert _update(client, ADMIN_HEADERS, aid, {"extra_headers": {}}).status_code == 200
+    assert (_asset(client, mid)["extra_params_json"] or {}).get("extra_headers", {}) == {}
+
+    # 其余列不被这次 header 改动殃及（PATCH 语义）
+    assert _asset(client, mid)["secret_env_var"] == "OPENOPS_HDR_KEY"
+
+
+def test_model_asset_rejects_reserved_headers(client):
+    """保留头在平台侧同样被拒（与自带模型共用 validate_extra_headers）：
+    Key 只走 secret_env_var 环境变量，不许经 header 明文旁路（SEC-001）。"""
+    aid = _asset(client, "glm-5.1")["model_asset_id"]
+    for bad in ({"Authorization": "Bearer x"}, {"Host": "evil.internal"}):
+        assert _update(client, ADMIN_HEADERS, aid, {"extra_headers": bad}).status_code in (400, 422)
+    r = client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                    json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "Bad",
+                          "model_id": f"bad-{time.time_ns()}", "protocol": "openai_compatible",
+                          "extra_headers": {"X-Evil": "a\r\nX-Inject: b"}})
+    assert r.status_code in (400, 422)
+
+
+async def test_model_asset_headers_reach_spec_and_probe(client, monkeypatch):
+    """平台 header 全链：落库 → _spec 带出（runtime 据此注入 default_headers）；
+    「测试连接」与真实调用同源携带，否则测通了也可能跑不通。"""
+    import httpx
+
+    from app import model_asset_service, model_gateway
+    from infra.external import llm_provider_client
+    from infra.repositories import model_assets
+
+    mid = f"spec-hdr-{time.time_ns()}"
+    unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "SpecHdr",
+                             "model_id": mid, "protocol": "openai_compatible",
+                             "base_url": "https://1.1.1.1/v1", "secret_env_var": "OPENOPS_SPEC_HDR_KEY",
+                             "extra_headers": {"X-Tenant-Id": "t-spec"}}))
+    row = await model_assets.get_by_model_id(mid)
+    assert model_gateway._spec(row)["extra_headers"] == {"X-Tenant-Id": "t-spec"}
+
+    # 「测试连接」把 header 真的发出去（探测与真跑同源）
+    monkeypatch.setenv("OPENOPS_LLM_PROBE", "real")
+    monkeypatch.setenv("OPENOPS_SPEC_HDR_KEY", "sk-platform")
+    seen: dict[str, str] = {}
+
+    class _SpyClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            seen.update(headers or {})
+
+            class _R:
+                status_code = 200
+                text = ""
+
+            return _R()
+
+    monkeypatch.setattr(httpx, "AsyncClient", _SpyClient)
+    assert llm_provider_client  # 探测走的就是这个模块（上面 monkeypatch 的是它用的 httpx）
+    req = type("R", (), {"base_url": "https://1.1.1.1/v1", "model_id": mid,
+                         "secret_env_var": "OPENOPS_SPEC_HDR_KEY",
+                         "extra_headers": {"X-Tenant-Id": "t-spec"}})()
+    res = await model_asset_service.test_connection(req)
+    assert res["ok"] is True
+    assert seen["X-Tenant-Id"] == "t-spec"
+    assert seen["Authorization"] == "Bearer sk-platform"

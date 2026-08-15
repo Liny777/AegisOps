@@ -26,6 +26,7 @@ import type {
   ConfigVersionRow,
   ModelOption,
   ModelTemplateOption,
+  MyLlmConfig,
   AdminModelTemplate,
   AdminModelAssetOption,
   ActivityNode,
@@ -196,6 +197,12 @@ export interface OpenOpsApi {
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
   createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
   createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<{ llm_config_id: string }>;
+  /** 「我的模型」管理页数据源：只含本人自带模型的完整详情（含 extra_headers，供回显与编辑）。 */
+  getMyLlmConfigs(): Promise<MyLlmConfig[]>;
+  /** PATCH 语义：只传要改的键。改 base_url/model_name/extra_headers 会触发服务端重探测，不通过则整条不保存。 */
+  updateLlmConfig(id: string, input: { display_name?: string; base_url?: string; model_name?: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
+  /** 软删自带模型 + 连带作废其专属 Secret；仍被某 Agent 当前配置绑定时后端 400（提示先换绑）。 */
+  deleteLlmConfig(id: string): Promise<void>;
   /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。extra_headers 与保存后的真实调用同源携带。 */
   testLlmConnection(input: { base_url: string; model_name: string; api_key: string; extra_headers?: Record<string, string> }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
@@ -258,9 +265,11 @@ export interface OpenOpsApi {
   /** 模板白名单授权（38.1：授权在模板维度，原资产 /grants 已移除）。 */
   adminGetModelTemplateGrants(modelTemplateId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelTemplateGrants(modelTemplateId: string, accessScope: string, userIds: string[]): Promise<void>;
-  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; context_window_tokens?: number }): Promise<void>;
+  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
+  /** 更新平台模型连接配置（PATCH 语义：只传要改的键；显式 null 清空 base_url/secret_env_var）。 */
+  adminUpdateModelAsset(id: string, input: { display_name?: string; base_url?: string | null; secret_env_var?: string | null; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
   /** 平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名），客户端不持 Key。 */
-  testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string }): Promise<TestConnResult>;
+  testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string; extra_headers?: Record<string, string> }): Promise<TestConnResult>;
   // admin 模型模板（38 号）：主/子 Agent 槽位编排 CRUD
   adminListModelTemplates(): Promise<AdminModelTemplate[]>;
   /** 模板编辑弹窗的槽位候选（复用 GET /admin/model-assets）。 */
@@ -747,6 +756,29 @@ const realApi: OpenOpsApi = {
     });
     return { llm_config_id: String(d.llm_config_id) };
   },
+  async getMyLlmConfigs() {
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/llm-configs");
+    return rows.map((r) => ({
+      llm_config_id: String(r.llm_config_id),
+      display_name: String(r.display_name),
+      base_url: String(r.base_url ?? ""),
+      model_name: String(r.model_name),
+      context_window_tokens: Number(r.context_window_tokens ?? 128000),
+      supports_tool_calling: Boolean(r.supports_tool_calling),
+      status: String(r.status),
+      // header 存在 extra_params_json 的 extra_headers 键下；无 header 的行该列是 {}
+      extra_headers: ((r.extra_params_json as Record<string, unknown> | null)?.extra_headers ?? {}) as Record<string, string>,
+    }));
+  },
+  async updateLlmConfig(id, input) {
+    await apiFetch(`/openops/v1/llm-configs/${id}`, {
+      method: "PATCH",
+      body: { client_request_id: crid(), ...input },
+    });
+  },
+  async deleteLlmConfig(id) {
+    await apiFetch(`/openops/v1/llm-configs/${id}`, { method: "DELETE" });
+  },
   async testLlmConnection(input) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/llm-configs:test-connection", {
       method: "POST",
@@ -757,7 +789,7 @@ const realApi: OpenOpsApi = {
   async testModelAssetConnection(input) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/model-assets:test-connection", {
       method: "POST",
-      body: { base_url: input.base_url, model_id: input.model_id, secret_env_var: input.secret_env_var },
+      body: { base_url: input.base_url, model_id: input.model_id, secret_env_var: input.secret_env_var, extra_headers: input.extra_headers ?? {} },
     });
     return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null, probe_mode: d.probe_mode === "mock" ? "mock" : "real" };
   },
@@ -895,22 +927,18 @@ const realApi: OpenOpsApi = {
     if (key === "model-assets") {
       // 38.1：授权范围列与「白名单授权」入口已整体迁到「模型模板」页（授权在模板维度）
       const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-assets");
-      return {
-        title: "模型资产",
-        primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-        cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }, { label: "删除", width: "56px" }],
-        rows: rows.map((m) => ({
-          id: String(m.model_asset_id),
-          cells: [
-            { text: String(m.display_name) },
-            { text: m.protocol === "openai_compatible" ? "OpenAI 兼容" : String(m.protocol) },
-            { text: String(m.model_id), mono: true },
-            { text: m.registered_by === "system" ? "平台" : String(m.registered_by) },
-            { text: String(m.status), kind: "badge" as const, tone: m.status === "active" ? "good" as const : "neutral" as const },
-            { text: "删除", kind: "action" as const, onClickKey: "ma-delete" },
-          ],
-        })),
-      };
+      return M.buildModelAssetTable(rows.map((m) => ({
+        model_asset_id: String(m.model_asset_id),
+        model_id: String(m.model_id),
+        display_name: String(m.display_name),
+        status: String(m.status),
+        base_url: String(m.base_url ?? ""),
+        secret_env_var: String(m.secret_env_var ?? ""),
+        context_window_tokens: Number(m.context_window_tokens ?? 128000),
+        extra_headers: ((m.extra_params_json as Record<string, unknown> | null)?.extra_headers ?? {}) as Record<string, string>,
+        protocol: String(m.protocol ?? ""),
+        registered_by: String(m.registered_by ?? ""),
+      })));
     }
     return M.adminTables[key] ?? M.adminTables.templates;
   },
@@ -1068,6 +1096,12 @@ const realApi: OpenOpsApi = {
       body: { client_request_id: crid(), protocol: "openai_compatible", ...fields },
     });
   },
+  async adminUpdateModelAsset(id, input) {
+    await apiFetch(`/openops/v1/admin/model-assets/${id}`, {
+      method: "PUT",
+      body: { client_request_id: crid(), ...input },
+    });
+  },
   // ---- admin 模型模板（38 号）----
   async adminListModelTemplates() {
     const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/admin/model-templates");
@@ -1098,6 +1132,10 @@ const realApi: OpenOpsApi = {
       model_id: String(m.model_id),
       display_name: String(m.display_name),
       status: String(m.status),
+      base_url: String(m.base_url ?? ""),
+      secret_env_var: String(m.secret_env_var ?? ""),
+      context_window_tokens: Number(m.context_window_tokens ?? 128000),
+      extra_headers: ((m.extra_params_json as Record<string, unknown> | null)?.extra_headers ?? {}) as Record<string, string>,
     }));
   },
   async adminCreateModelTemplate(input) {
@@ -1361,6 +1399,18 @@ const mockApi: OpenOpsApi = {
   getModelTemplates: () => delay(M.mockModelTemplates.map(M.toUserModelTemplate)),
   createSecret: () => delay({ secret_ref_id: "sec_mock", fingerprint: "sk-…mock" }),
   createLlmConfig: () => delay({ llm_config_id: "llm_mock_" + Math.random().toString(36).slice(2, 8) }),
+  getMyLlmConfigs: () => delay(M.mockMyLlmConfigs.map((c) => ({ ...c, extra_headers: { ...c.extra_headers } }))),
+  // mock 下改/删就地生效（同 mockModelTemplates 口径），让「改完重拉」的闭环在离线也能验
+  updateLlmConfig: (id, input) => {
+    const row = M.mockMyLlmConfigs.find((c) => c.llm_config_id === id);
+    if (row) Object.assign(row, input);
+    return delay(undefined as unknown as void);
+  },
+  deleteLlmConfig: (id) => {
+    const i = M.mockMyLlmConfigs.findIndex((c) => c.llm_config_id === id);
+    if (i >= 0) M.mockMyLlmConfigs.splice(i, 1);
+    return delay(undefined as unknown as void);
+  },
   // mock「测试连接」：镜像后端 mock 探测（model 含 no-tool → 失败），供离线 UI 验证保存门。
   // probe_mode: "mock" 让 UI 如实显示「未真实探测」——离线态同样不许冒充真探测。
   testLlmConnection: (input) => delay(
@@ -1372,6 +1422,8 @@ const mockApi: OpenOpsApi = {
   getAdminTable: (key) =>
     key === "model-templates"
       ? delay(M.buildModelTemplateTable([...M.mockModelTemplates]))  // 从可变数组现算：创建/启停后重拉即反映
+      : key === "model-assets"
+      ? delay(M.buildModelAssetTable([...M.mockModelAssets]))  // 同上：注册/编辑/删除后重拉即反映
       : key === "alert-events"
       ? delay({
           title: "告警接管",
@@ -1507,6 +1559,7 @@ const mockApi: OpenOpsApi = {
     return delay(undefined as unknown as void);
   },
   adminRegisterModel: () => delay(undefined as unknown as void),
+  adminUpdateModelAsset: () => delay(undefined as unknown as void),
   // ---- 模型模板（38 号）mock 写闭环：原地改可变数组（先例：createWorkspace/renameRun）----
   adminListModelTemplates: () => delay([...M.mockModelTemplates]),
   adminListModelAssets: () => delay([...M.mockModelAssets]),

@@ -16,6 +16,7 @@ import type {
   AdminModelAssetOption,
   AdminModelTemplate,
   ModelTemplateOption,
+  MyLlmConfig,
 } from "./types";
 
 export const mockMe = (role: "user" | "platform_admin" = "user"): Me => ({
@@ -327,6 +328,21 @@ export const mockModels = [
   { llm_config_id: "llm_user_gpt4o", label: "我的 GPT-4o", note: "OpenAI 兼容 · 64k · 我的 SecretRef", current: false, available: true },
 ];
 
+/** 「我的模型」管理页 mock（可变数组：mock 下改/删后重拉即反映，同 mockModelTemplates 口径）。
+ *  两行刻意一有 header 一无 header，覆盖「已配 / 未配」两种卡片展示。 */
+export const mockMyLlmConfigs: MyLlmConfig[] = [
+  {
+    llm_config_id: "llm_user_gpt4o", display_name: "我的 GPT-4o", base_url: "https://api.openai.com/v1",
+    model_name: "gpt-4o", context_window_tokens: 65536, supports_tool_calling: true, status: "active",
+    extra_headers: { "X-Tenant-Id": "pay-core" },
+  },
+  {
+    llm_config_id: "llm_user_glm", display_name: "内网 GLM", base_url: "https://glm.internal.example.com/v1",
+    model_name: "glm-5.1", context_window_tokens: 128000, supports_tool_calling: true, status: "active",
+    extra_headers: {},
+  },
+];
+
 export const mockBoundSkills: AssetRow[] = [
   { id: "bind_logscan", name: "日志聚类 logscan", version: "v2", status: "enabled", statusTone: "good", meta: "Skill · 我的 · main", bound: true, kind: "skill", assetId: "skill_user_logscan" },
 ];
@@ -350,10 +366,18 @@ export const mockConfigVersions: ConfigVersionRow[] = [
 /* ---------------------- 模型模板（38 号）mock ---------------------- */
 /** 模板编辑弹窗的槽位候选（可变数组：管理台 mock 写闭环的真源）。 */
 export const mockModelAssets: AdminModelAssetOption[] = [
-  { model_asset_id: "ma_glm51", model_id: "glm-5.1", display_name: "GLM-5.1", status: "active" },
-  { model_asset_id: "ma_qwen35", model_id: "qwen3.5-instruct", display_name: "Qwen3.5", status: "active" },
-  { model_asset_id: "ma_deepseek", model_id: "deepseek-chat", display_name: "DeepSeek-V3", status: "active" },
-  { model_asset_id: "ma_txllm", model_id: "tx-llm-v2", display_name: "交易大模型-TX", status: "active" },
+  // glm-5.1 带自定义 Header：覆盖资产编辑弹窗的「已配 header」回填路径
+  { model_asset_id: "ma_glm51", model_id: "glm-5.1", display_name: "GLM-5.1", status: "active",
+    base_url: "https://glm.internal.example.com/v1", secret_env_var: "OPENOPS_PLATFORM_GLM_API_KEY",
+    context_window_tokens: 128000, extra_headers: { "X-Tenant-Id": "sre-platform" } },
+  { model_asset_id: "ma_qwen35", model_id: "qwen3.5-instruct", display_name: "Qwen3.5", status: "active",
+    base_url: "", secret_env_var: "", context_window_tokens: 128000, extra_headers: {} },
+  { model_asset_id: "ma_deepseek", model_id: "deepseek-chat", display_name: "DeepSeek-V3", status: "active",
+    base_url: "https://api.deepseek.com/v1", secret_env_var: "OPENOPS_PLATFORM_DS_API_KEY",
+    context_window_tokens: 65536, extra_headers: {} },
+  { model_asset_id: "ma_txllm", model_id: "tx-llm-v2", display_name: "交易大模型-TX", status: "active",
+    base_url: "https://tx.internal.example.com/v1", secret_env_var: "OPENOPS_PLATFORM_TX_API_KEY",
+    context_window_tokens: 128000, extra_headers: {} },
 ];
 
 export const mockModelTemplates: AdminModelTemplate[] = [
@@ -397,6 +421,34 @@ export const toUserModelTemplate = (t: AdminModelTemplate): ModelTemplateOption 
 /** 管理台「模型模板」表（real/mock 共用同一构建器，保证两模式表形状一致）。
  * 启/停编码进 onClickKey（mt-disable/mt-enable）：onCellAction 只有 rowId，拿不到行状态。
  * 38.1：授权范围列（全员开放/限 N 人）+「白名单授权」动作（原模型资产页的授权入口整体迁到本页）。 */
+/** 模型资产表（real 与 mock 共用，防两处列数漂移）。protocol/registered_by 在 mock 侧无此字段，
+ *  按平台默认呈现即可——两态列结构必须一致，否则 mock 下的列错位极难排查。 */
+export const buildModelAssetTable = (
+  rows: (AdminModelAssetOption & { protocol?: string; registered_by?: string })[],
+): AdminTableData => ({
+  title: "模型资产",
+  primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
+  cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" },
+         { label: "自定义 Header", width: "112px" }, { label: "状态", width: "96px" },
+         { label: "编辑", width: "56px" }, { label: "删除", width: "56px" }],
+  rows: rows.map((m) => {
+    const n = Object.keys(m.extra_headers || {}).length;
+    return {
+      id: m.model_asset_id,
+      cells: [
+        { text: m.display_name },
+        { text: !m.protocol || m.protocol === "openai_compatible" ? "OpenAI 兼容" : m.protocol },
+        { text: m.model_id, mono: true },
+        { text: !m.registered_by || m.registered_by === "system" ? "平台" : m.registered_by },
+        n > 0 ? { text: `${n} 个`, kind: "badge" as const, tone: "good" as const } : { text: "—" },
+        { text: m.status, kind: "badge" as const, tone: m.status === "active" ? "good" as const : "neutral" as const },
+        { text: "编辑", kind: "action" as const, onClickKey: "ma-edit" },
+        { text: "删除", kind: "action" as const, onClickKey: "ma-delete" },
+      ],
+    };
+  }),
+});
+
 export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableData => ({
   title: "模型模板",
   primary: { label: "新建模板", icon: "plus", actionKey: "new-model-template" },
@@ -430,24 +482,13 @@ export const buildModelTemplateTable = (rows: AdminModelTemplate[]): AdminTableD
 export const adminTables: Record<string, AdminTableData> = {
   // 38.1：授权范围/白名单授权已迁「模型模板」页——本表只剩资产基础列（补齐原 mock 空隙：
   // 此前无 model-assets 键，mock 下模型资产页会错误回退显示 templates 表）
+  // 行从 mockModelAssets 现算（同 buildModelTemplateTable 口径）：注册/编辑/删除后重拉即反映，
+  // 也免去硬编码行与资产数组两处漂移（此前 mock 表少了 DeepSeek 那行）
   "model-assets": {
     title: "模型资产",
     primary: { label: "注册模型接口", icon: "plus", actionKey: "register-model" },
-    cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }, { label: "删除", width: "56px" }],
-    rows: [
-      { id: "ma_glm51", cells: [
-        { text: "GLM-5.1" }, { text: "OpenAI 兼容" }, { text: "glm-5.1", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
-        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
-      { id: "ma_qwen35", cells: [
-        { text: "Qwen3.5" }, { text: "OpenAI 兼容" }, { text: "qwen3.5-instruct", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
-        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
-      { id: "ma_txllm", cells: [
-        { text: "交易大模型-TX" }, { text: "OpenAI 兼容" }, { text: "tx-llm-v2", mono: true },
-        { text: "平台" }, { text: "active", kind: "badge", tone: "good" },
-        { text: "删除", kind: "action", onClickKey: "ma-delete" } ] },
-    ],
+    cols: [{ label: "模型名称" }, { label: "协议" }, { label: "model_id" }, { label: "归属" }, { label: "状态", width: "96px" }, { label: "编辑", width: "56px" }, { label: "删除", width: "56px" }],
+    rows: [],
   },
   templates: {
     title: "模板管理",

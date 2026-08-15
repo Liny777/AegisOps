@@ -429,6 +429,22 @@ export interface Template {
   active_version: string;
 }
 
+/** 自带模型配置详情（「我的模型」管理页数据源）。
+ *
+ * 与 ModelOption 刻意分开：后者是模型选择器的**展示投影**，同时承载平台模型行
+ * （llm_config_id 前缀 `platform:`），往上加原始字段会污染语义。API Key 永不回显
+ * （加密存 user_secret）；extra_headers 是明文配置项，回显是为了能改。 */
+export interface MyLlmConfig {
+  llm_config_id: string;
+  display_name: string;
+  base_url: string;
+  model_name: string;
+  context_window_tokens: number;
+  supports_tool_calling: boolean;
+  status: string;
+  extra_headers: Record<string, string>;
+}
+
 /** 模型模板（38 号：管理员编排的 主/子 Agent 模型组合）。
  * 用户侧 GET /models/templates 经模板级 ACL 过滤（38.1：scope=all ∪ 白名单授权），real 模式只回 active 行。 */
 export interface ModelTemplateOption {
@@ -460,11 +476,16 @@ export interface AdminModelTemplate {
 }
 
 /** 模型模板编辑弹窗的槽位候选（来自 GET /admin/model-assets）。 */
+/** 管理台模型资产。模板编辑器的槽位候选只用前四个字段；后四个供资产编辑弹窗回填。 */
 export interface AdminModelAssetOption {
   model_asset_id: string;
   model_id: string;
   display_name: string;
   status: string;
+  base_url: string;
+  secret_env_var: string;
+  context_window_tokens: number;
+  extra_headers: Record<string, string>;
 }
 export interface ScopeApp {
   app_id: string;

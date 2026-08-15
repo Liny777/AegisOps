@@ -35,6 +35,8 @@ def _spec(row: dict[str, Any]) -> dict[str, Any]:
         "display_name": row["display_name"],
         "base_url": _openai_base_url(row["base_url"]),
         "secret_env_var": row["secret_env_var"],  # 环境变量名，非 Key 本身
+        # 自定义出站 Header（与自带模型同键名）：runtime 在两分支汇合后统一注入 default_headers
+        "extra_headers": (row.get("extra_params_json") or {}).get("extra_headers") or {},
     }
 
 

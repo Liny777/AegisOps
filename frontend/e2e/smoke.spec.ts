@@ -202,6 +202,39 @@ test("初始化向导：三步骨架（配置 → 确认能力清单 → 激活�
   await expect(page.getByRole("button", { name: "添加自定义模型" })).toHaveCount(0);
   await page.getByText(/高级选项：接入自带模型/).click();
   await expect(page.getByRole("button", { name: "添加自定义模型" })).toBeVisible();
+  // 自定义出站 Header：表单里可加行（内网网关路由/租户标识场景）
+  await page.getByRole("button", { name: "添加自定义模型" }).click();
+  await expect(page.getByText("自定义 Header（可选）")).toBeVisible();
+  await page.getByRole("button", { name: "添加 Header" }).click();
+  await expect(page.getByPlaceholder("Header 名，如 X-Tenant-Id")).toBeVisible();
+});
+
+test("设置 → 我的模型：列表 + Header 徽标 + 编辑弹窗（Key 不回显）", async ({ page }) => {
+  await page.goto("/settings/models");
+  await expect(page.getByText("我的 GPT-4o")).toBeVisible({ timeout: 15_000 });
+  // 已配 header 的行显示条数徽标；未配的不显示
+  await expect(page.getByText("1 个自定义 Header")).toBeVisible();
+  await expect(page.getByText("内网 GLM")).toBeVisible();
+
+  await page.getByTitle("编辑").first().click();
+  await expect(page.getByText("编辑自定义模型")).toBeVisible();
+  // Key 加密存、永不回显 → 编辑弹窗不含 API Key 输入；header 回填可改
+  await expect(page.getByPlaceholder("sk-…")).toHaveCount(0);
+  await expect(page.getByPlaceholder("Header 名，如 X-Tenant-Id")).toHaveValue("X-Tenant-Id");
+  // 无改动时保存禁用（PATCH 只提交改动键，避免无谓触发服务端重探测）
+  await expect(page.getByRole("button", { name: "保存" })).toBeDisabled();
+});
+
+test("管理台模型资产页：Header 列 + 编辑弹窗（model_id 锁定）", async ({ page }) => {
+  await page.goto("/admin/model-assets?as=admin");
+  await expect(page.getByRole("main").getByText("GLM-5.1").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("main").getByText("自定义 Header")).toBeVisible();
+
+  await page.getByRole("main").getByText("编辑", { exact: true }).nth(1).click();  // nth(0) 是表头列名
+  await expect(page.getByText("编辑模型接口")).toBeVisible();
+  // model_id 是实例 overlay 的绑定键，编辑态锁定；已配 header 回填
+  await expect(page.getByText("（model_id 不可改）")).toBeVisible();
+  await expect(page.getByPlaceholder("Header 名，如 X-Tenant-Id")).toHaveValue("X-Tenant-Id");
 });
 
 test("管理台模型模板页：表格 + 授权（38.1）+ 新建弹窗（主/子槽位下拉）", async ({ page }) => {
