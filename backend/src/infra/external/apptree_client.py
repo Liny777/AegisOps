@@ -147,9 +147,15 @@ async def list_user_apps(user_id: str) -> list[dict[str, str]]:
 
     kwargs: dict[str, Any] = {"timeout": _TIMEOUT,
                               "verify": console_tls_verify(), "trust_env": http_trust_env()}
+    headers: dict[str, str] = {}
     cookie = console_cookie("OPENOPS_APPTREE_COOKIE")  # 专属 > 共享 OPENOPS_CONSOLE_COOKIE
     if cookie:
-        kwargs["headers"] = {"Cookie": cookie}
+        headers["Cookie"] = cookie
+    from infra.iam_headers import iam_auth_headers
+    for k, v in iam_auth_headers().items():  # 双凭据对齐（2026-08-16 定案）：cookie 优先/IAM 兜底，
+        headers.setdefault(k, v)             # 本客户端此前是唯一漏网的 console 系出站
+    if headers:
+        kwargs["headers"] = headers
 
     import httpx
 
