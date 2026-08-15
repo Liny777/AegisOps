@@ -50,6 +50,7 @@ CONFIG_DEFAULTS: dict[str, Any] = {
     "alert_pull_batch_limit": 200,               # 单批拉取上限
     "alert_queue_max_age_s": 86400,              # 排队超时上限：超过即翻「接管失败」留痕（1 天）
     "alert_aging_minutes": 10,                   # 老化步长：排队每满 N 分钟升一档（防饿死；关=调 1440）
+    "alert_stale_message_age_s": 1800,           # 陈旧放弃阈值：消费延迟超此值留痕不诊断（0=关）
 }
 
 _INT_BOUNDS: dict[str, tuple[int, int]] = {
@@ -66,6 +67,7 @@ _INT_BOUNDS: dict[str, tuple[int, int]] = {
     "alert_pull_batch_limit": (1, 1000),
     "alert_queue_max_age_s": (300, 604800),
     "alert_aging_minutes": (1, 1440),
+    "alert_stale_message_age_s": (0, 86400),
 }
 
 
@@ -374,6 +376,7 @@ _SKIP_REASON_TEXT = {
     "no_scope": "无可用范围快照（实例从未成功解析过 scope）",
     "disabled": "接管开关已关闭",
     "queue_expired": "排队超时未接管（超过配置时限自动放弃，可手动重试）",
+    "stale_consumer_lag": "消费延迟超阈值，自动放弃处理（告警到达时已陈旧；可手动重试，或到对话界面自行诊断）",
 }
 
 
@@ -643,6 +646,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
         "takeover_status": takeover,
         "agent_result": row.get("inc_agent_result") if takeover == "done" else (
             "processing" if takeover == "processing" else None),
+        # 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag 等 skip 原因透出，
+        # 前端据此把「未接管」细化为「延迟放弃」并给引导文案；不改三值投影口径。
+        "state_reason": row.get("inc_state_reason"),
         "user_feedback": row.get("inc_user_feedback"),
         "feedback_note": row.get("inc_feedback_note") or "",
         "detail_url": detail_url,

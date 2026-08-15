@@ -616,7 +616,8 @@ _LATERAL = """
              x.agent_result as inc_agent_result, x.user_feedback as inc_user_feedback,
              x.feedback_note as inc_feedback_note, x.agent_run_id as inc_run_id,
              x.owner_user_id as inc_owner, x.agent_team_instance_id as inc_instance_id,
-             x.result_summary as inc_summary, x.manual_priority as inc_manual_priority
+             x.result_summary as inc_summary, x.manual_priority as inc_manual_priority,
+             x.state_reason as inc_state_reason
       from sre_alert_incident x
       join sre_alert_incident_event l
         on l.alert_incident_id = x.alert_incident_id

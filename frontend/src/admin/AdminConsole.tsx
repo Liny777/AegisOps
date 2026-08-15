@@ -717,6 +717,7 @@ const ALERT_KNOB_LABELS: Record<string, string> = {
   alert_pull_batch_limit: "Kafka 单批消费上限",
   alert_queue_max_age_s: "排队超时上限（秒，超过翻「接管失败」）",
   alert_aging_minutes: "老化步长（分钟：排队每满 N 分钟升一档防饿死；1440≈关）",
+  alert_stale_message_age_s: "陈旧放弃阈值（秒：消费延迟超此值留痕不诊断，清单显「延迟放弃」；0=关）",
 };
 
 function AlertOpsPanel() {

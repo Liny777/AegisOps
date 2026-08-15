@@ -45,15 +45,19 @@ const SeverityPill = ({ severity }: { severity: AlertSeverity }) => {
   return <Pill tone={m.tone} style={m.subtle ? { opacity: 0.6 } : undefined}>{m.label}</Pill>;
 };
 
-/** Agent 接管状态：shield（蓝）= 已完成/处理中；shield-off（灰）= 未接管。 */
-const TakeoverCell = ({ takeover }: { takeover: AlertTakeoverStatus }) => {
+/** Agent 接管状态：shield（蓝）= 已完成/处理中；shield-off（灰）= 未接管。
+ * 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag → 「延迟放弃」——
+ * 命中了规则但消费延迟超阈值未自动处理，告知用户可自行诊断（不静默丢）。 */
+const TakeoverCell = ({ takeover, stateReason }: { takeover: AlertTakeoverStatus; stateReason?: string | null }) => {
+  const stale = takeover === "none" && stateReason === "stale_consumer_lag";
   const meta = {
     done: { icon: "shield", c: color.brand, label: "已完成" },
     processing: { icon: "shield", c: color.brand, label: "处理中" },
-    none: { icon: "shield-off", c: color.textFaint, label: "未接管" },
+    none: { icon: "shield-off", c: color.textFaint, label: stale ? "延迟放弃" : "未接管" },
   }[takeover];
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", color: takeover === "none" ? color.textSubtle : color.textBody, fontWeight: 600 }}>
+    <span title={stale ? "消费延迟超阈值，未自动处理——可到对话界面自行诊断，或联系管理员重试" : undefined}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, whiteSpace: "nowrap", color: takeover === "none" ? color.textSubtle : color.textBody, fontWeight: 600 }}>
       <Icon name={meta.icon} size={15} color={meta.c} />
       {meta.label}
     </span>
@@ -395,7 +399,7 @@ export function AlertsPage() {
                       </td>
                       <td style={td}><Pill tone={EVENT_STATUS_META[it.alert_status].tone}>{EVENT_STATUS_META[it.alert_status].label}</Pill></td>
                       <td style={td}><SeverityPill severity={it.severity} /></td>
-                      <td style={td}><TakeoverCell takeover={it.takeover_status} /></td>
+                      <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} /></td>
                       <td style={td}><ResultCell it={it} /></td>
                       <td style={{ ...td, ...feedbackDim }}><FeedbackCell it={it} /></td>
                       <td style={{ ...td, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.started_at)}</td>
