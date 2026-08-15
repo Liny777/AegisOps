@@ -1431,6 +1431,7 @@ const mockApi: OpenOpsApi = {
       alert_group_cooldown_s: 900, alert_diagnosis_timeout_s: 900, alert_max_retries: 1,
       alert_retry_backoff_s: 60, alert_requeue_max_age_s: 3600, alert_run_idle_ttl_minutes: 0,
       alert_pull_batch_limit: 200, alert_queue_max_age_s: 86400, alert_aging_minutes: 10,
+      alert_stale_message_age_s: 1800,
     };
     const saved = JSON.parse(localStorage.getItem("openops.mock.alertOpsCfg") || "{}") as Record<string, number | boolean>;
     return delay({
@@ -1442,7 +1443,7 @@ const mockApi: OpenOpsApi = {
         alert_max_retries: [0, 5], alert_retry_backoff_s: [1, 3600],
         alert_requeue_max_age_s: [60, 604800], alert_run_idle_ttl_minutes: [0, 1440],
         alert_pull_batch_limit: [1, 1000], alert_queue_max_age_s: [300, 604800],
-        alert_aging_minutes: [1, 1440],
+        alert_aging_minutes: [1, 1440], alert_stale_message_age_s: [0, 86400],
       } as AlertOpsConfig["bounds"],
       env_locked: JSON.parse(localStorage.getItem("openops.mock.alertOpsEnvLocked") || "[]") as string[],
     });

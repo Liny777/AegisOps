@@ -247,6 +247,7 @@ export const mockEvents: MockEventRow[] = [
     alert_status: "closed",
     severity: "warning",
     takeover_status: "none",
+    state_reason: "stale_consumer_lag", // 演示样本：延迟放弃（消费延迟超阈值留痕不诊断）
     agent_result: null,
     user_feedback: null,
     feedback_note: "",

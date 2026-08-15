@@ -26,6 +26,8 @@ export type AlertEventAgentResult = "recovered" | "escalated" | "failed";
 /** 告警事件行（清单页主形态，GET /alerts/events 的行口径）。
  *  `duration` 是前端投影列：api 层由 `duration_s` 生成中文文案（<60s「N秒」否则「N分」）。 */
 export interface AlertEventRow {
+  /** 未接管细分（skip 原因透出，如 stale_consumer_lag=延迟放弃）；null=非 skip。 */
+  state_reason?: string | null;
   /** 告警编号（ALM-yyyymmdd-xxxxxx 风格）。 */
   alert_no: string;
   category: AlertCategory;

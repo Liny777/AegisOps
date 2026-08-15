@@ -92,7 +92,7 @@ def _normalize(alert: dict[str, Any]) -> dict[str, Any]:
 
 def _new_counters() -> dict[str, Any]:
     return {"pulled": 0, "deduped": 0, "unmatched": 0, "out_of_scope": 0, "attached": 0,
-            "queued": 0, "skipped": 0, "cooldown": 0, "resolved": 0}
+            "queued": 0, "skipped": 0, "cooldown": 0, "resolved": 0, "stale": 0}
 
 
 async def _instance_scope(instance_id: str, owner_uid: str,
@@ -333,6 +333,28 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
         if trace:
             log.warning("[alerts][trace] %s 组冷却中（窗口 %ss）不建新单", alarm,
                         cfg["alert_group_cooldown_s"])
+        return
+
+    # ④' 陈旧留痕跳过（2026-08-15 拍板：消费延迟不静默丢）：告警时间距今超阈值 →
+    # 自动诊断已无意义，但命中了用户规则必须有交代——建 skipped 单留痕，清单显示
+    # 「延迟放弃」可手动重试/自行诊断。附着与冷却在前（同组陈旧风暴只留痕一条）；
+    # started_at 缺失 fail-open 不误杀；0=关闭年龄闸。
+    stale_max = int(cfg.get("alert_stale_message_age_s", 1800) or 0)
+    alert_age = _age_s(alert["started_at"]) if alert.get("started_at") else 0.0
+    if stale_max and alert_age > stale_max:
+        iid = await repo.create_incident(
+            instance_id=instance_id, owner=owner, rule_id=rule_ids[0],
+            matched_rules=[{"rule_id": str(r["alert_rule_id"]), "rule_name": r["rule_name"]}
+                           for r in matched_rules],
+            group_key=gk, title=alert["title"], severity=alert["severity"],
+            category=alert["category"], state="skipped", state_reason="stale_consumer_lag",
+            first_alert_at=alert["started_at"])
+        await repo.link_event(iid, event_id, rule_ids)
+        counters["stale"] += 1
+        if trace:
+            log.warning("[alerts][trace] %s 陈旧跳过（告警时间距今 %d 秒 > 阈值 %d）"
+                        "建单留痕 incident=%s（清单可见，可手动重试/自行诊断）",
+                        alarm, int(alert_age), stale_max, iid)
         return
 
     async def _skip(reason: str) -> None:
