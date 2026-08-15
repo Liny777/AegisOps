@@ -181,6 +181,36 @@ def test_build_log_config_bad_level_falls_back(monkeypatch):
     assert build_log_config()["root"]["level"] == "INFO"
 
 
+def test_third_party_loggers_pinned_to_warning(monkeypatch):
+    """装了根 handler 之后，第三方库的 INFO 会**全部**冒出来——治日志反倒先加一把火。
+
+    httpx 尤其危险：每个成功响应一行且**带完整 URL**，直接绕过本仓库
+    「出站日志绝不记 URL/头/体」的纪律（omodel_real._log_outbound_response 的注释）。
+    """
+    monkeypatch.delenv("OPENOPS_THIRD_PARTY_LOG_LEVEL", raising=False)
+    cfg = build_log_config()
+    for name in ("httpx", "httpcore", "urllib3", "aiokafka", "openai"):
+        assert cfg["loggers"][name]["level"] == "WARNING"
+    # 不给 handler：照常向上冒到根，只卡级别
+    assert "handlers" not in cfg["loggers"]["httpx"]
+
+
+def test_third_party_level_env_override(monkeypatch):
+    """排查第三方库自身问题时要能调回来。"""
+    monkeypatch.setenv("OPENOPS_THIRD_PARTY_LOG_LEVEL", "debug")
+    assert build_log_config()["loggers"]["httpx"]["level"] == "DEBUG"
+    monkeypatch.setenv("OPENOPS_THIRD_PARTY_LOG_LEVEL", "乱填")
+    assert build_log_config()["loggers"]["httpx"]["level"] == "WARNING"
+
+
+def test_third_party_pin_does_not_touch_openops_loggers(monkeypatch):
+    """钉的只能是第三方——把 openops.* 一起钉了就等于白装根 handler。"""
+    monkeypatch.setenv("OPENOPS_LOG_LEVEL", "INFO")
+    cfg = build_log_config()
+    assert not any(n.startswith("openops") for n in cfg["loggers"])
+    assert cfg["root"]["level"] == "INFO"
+
+
 def test_build_log_config_attaches_access_filter():
     cfg = build_log_config()
     assert "openops_access_noise" in cfg["loggers"]["uvicorn.access"]["filters"]

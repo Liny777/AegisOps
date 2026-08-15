@@ -235,9 +235,18 @@ du -sh /var/lib/docker/containers/*/*-json.log | sort -h | tail -5
 { "log-driver": "json-file", "log-opts": { "max-size": "50m", "max-file": "5" } }
 ```
 
-**③ 应用日志级别。** 后端默认 `OPENOPS_LOG_LEVEL=INFO`。日志量偏大时先调 `WARNING`
-再考虑动容量；`OPENOPS_ACCESS_LOG_DEDUP_S`（默认 60）控制 uvicorn access 行的同
-`(路径, 状态码)` 抑制窗口，健康检查路径恒不记。排查具体请求时临时设 `0` 关闭抑制。
+**③ 应用日志级别。** 五个旋钮**全部有默认值，不配即可**；下面只在需要调整时用：
+
+| 变量 | 默认 | 何时动 |
+|---|---|---|
+| `OPENOPS_LOG_LEVEL` | INFO | 日志量仍偏大 → `WARNING`（会连 uvicorn access 行一起静掉） |
+| `OPENOPS_ACCESS_LOG_DEDUP_S` | 60 | 排查某个具体请求 → `0` 关抑制（健康检查路径恒不记，与本项无关） |
+| `OPENOPS_THIRD_PARTY_LOG_LEVEL` | WARNING | 查第三方库自身问题 → `INFO`。⚠ 调高后 httpx 会**按每次出站刷屏且带完整 URL**，查完立刻调回 |
+| `OPENOPS_IAM_TOKEN_TTL_S` | 300 | 一般不动。**别设 0**——内网 j2c 无 token 缓存，0 = 每次出站同步打一次 IAM 并阻塞事件循环 |
+| `OPENOPS_SCOPE_PEEK_TTL_S` / `_FAIL_TTL_S` | 30 / 10 | 一般不动。oModel 长期不可用又想快速重试时才调小负缓存 |
+
+`OPENOPS_HTTP_DEBUG` 本次**建议先留 1**：403 已被限频压到每 30 秒最多一对，留着才看得到
+它有没有好；定位完再按 `docs/release-checklist.md` 改回 0。
 
 ## 四、测试/生产双环境差异（仅三处，其余工件共用）
 

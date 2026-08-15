@@ -45,6 +45,10 @@ BACKEND_NAME="openops-backend-src-${VER}.tar.gz"
 ARCHIVE_PATHS=(
   backend/src backend/sql backend/tests backend/docs
   backend/run.py backend/pyproject.toml backend/run-backend.sh backend/config
+  # 诊断工具箱：deploy-intranet.md §五「故障排查」与 EXTERNAL-INTEGRATION.md 都让人在
+  # 后端机上跑它们，此前却没进包（只能手工 scp）。check-net ③ 是判定 omodel 403 归属的
+  # 决定性工具——它必须跟着 release 走，否则出问题时机上根本没有这个文件。
+  backend/check-net.py backend/check-db.py
   scripts/release_check.sh
   docs/API.md docs/release-checklist.md docs/deploy-intranet.md docs/build-images-intranet.md
   deploy/systemd/openops-backend.service
