@@ -55,6 +55,19 @@ def set_request_user(user_id: str, cookie: str) -> None:
         _cookie_cache[user_id] = (time.monotonic() + _ttl(), cookie)
 
 
+def set_background_user(user_id: str) -> None:
+    """后台任务（告警派发等）以目标用户身份运行：**只设 user_id contextvar**。
+
+    治 2026-08-16 内网「告警诊断子 Agent 无 MCP 工具」：出站鉴权三档里的
+    「按 user_id 查 cookie 缓存」档，发现面走 `cached_user_cookie(current_user_id())`
+    ——后台协程 user_id 恒空导致连 owner 的缓存都够不着（执行面按 st.user_id 查得到，
+    两面口径不对称）。本函数补齐口径；**不伪造 cookie contextvar**（透传档仍空，
+    语义诚实——没有请求就没有"本请求的 cookie"）。在 create_task 出来的任务内调用，
+    contextvars 已与请求隔离，不会泄回。
+    """
+    _user_id.set(user_id or "")
+
+
 def user_cookie() -> str:
     """当前请求的用户 cookie（contextvar）。"""
     return _user_cookie.get()

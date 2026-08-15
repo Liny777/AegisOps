@@ -1113,3 +1113,79 @@ def test_platform_call_succeeds_without_ec_ip(monkeypatch):
                                               server_url="http://mcpgw/x", handshake_headers=ec))
     assert r["status"] == "ok"
     assert not any(_has_ec_ip(c["headers"]) for c in _FakeClient.calls)
+
+
+def test_background_user_reaches_cookie_cache(monkeypatch):
+    """后台身份上下文（2026-08-16 治告警诊断无 MCP 工具）：set_background_user 后，
+    发现面的 console_cookie 能命中该用户的 cookie 缓存（口径与执行面对齐）。"""
+    import asyncio as _aio
+    import contextvars
+
+    from infra import request_context
+    from infra.external.mcp_registry_client import console_cookie
+
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY_COOKIE", raising=False)
+    monkeypatch.delenv("OPENOPS_CONSOLE_COOKIE", raising=False)
+    request_context.clear()
+
+    async def _background_without_identity():
+        return console_cookie("OPENOPS_MCPREGISTRY_COOKIE")
+
+    async def _background_with_identity():
+        request_context.set_background_user("u_owner")
+        return console_cookie("OPENOPS_MCPREGISTRY_COOKIE")
+
+    # 预热 owner 缓存（普通 dict，跨上下文可见——模拟其 300s 内登录过）。
+    # 放独立 Context 跑：set_request_user 会设本线程 contextvar，泄漏会污染
+    # 后续用例（test_tool_gateway 的 headers 断言实测中招）
+    contextvars.Context().run(request_context.set_request_user, "u_owner", "cookie-of-owner")
+    # 真实后台协程（lifespan create_task）contextvar 全空——用全新 Context 模拟，
+    # 否则 asyncio.run 会继承本测试线程刚设的 contextvar，测不出后台形态
+    fresh = lambda coro_fn: contextvars.Context().run(_aio.run, coro_fn())  # noqa: E731
+    assert fresh(_background_without_identity) == "", "无身份的后台协程够不着任何缓存"
+    assert fresh(_background_with_identity) == "cookie-of-owner"
+    request_context.clear()
+
+
+def test_dynamic_specs_snapshot_fallback(monkeypatch, caplog):
+    """发现快照兜底：成功建快照 → list_servers 抛错 → 回退上次成功清单（degraded 日志）；
+    无快照身份（空 uid）失败仍返回空（既有语义不变）。"""
+    import logging
+
+    from infra import request_context
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    ar._specs_snapshot.clear()
+
+    async def _list():
+        return [{"server_id": "s1", "server_name": "a", "server_url": "http://mcpgw/x",
+                 "description": ""}]
+
+    async def _disc(url, extra_headers=None):
+        return [{"tool_name": "t1", "description": "", "readonly": True,
+                 "input_schema": {"type": "object", "properties": {}}}]
+
+    async def _boom():
+        raise RuntimeError("console 401")
+
+    async def _scenario():
+        request_context.set_background_user("u_snap")
+        monkeypatch.setattr(mcp_registry_client, "list_servers", _list)
+        monkeypatch.setattr(mcp_registry_client, "discover_tools", _disc)
+        ok = await ar._dynamic_mcp_specs()          # 成功：建快照
+        monkeypatch.setattr(mcp_registry_client, "list_servers", _boom)
+        degraded = await ar._dynamic_mcp_specs()    # 失败：回退快照
+        return ok, degraded
+
+    with caplog.at_level(logging.WARNING, logger="openops.runtime"):
+        ok, degraded = asyncio.run(_scenario())
+    assert [s["name"] for s in ok] == ["t1"]
+    assert [s["name"] for s in degraded] == ["t1"], "失败应回退上次成功清单"
+    assert "回退上次成功清单" in caplog.text
+
+    async def _no_identity():
+        monkeypatch.setattr(mcp_registry_client, "list_servers", _boom)
+        return await ar._dynamic_mcp_specs()
+
+    assert asyncio.run(_no_identity()) == [], "无身份无快照：仍返回空（既有语义）"
+    ar._specs_snapshot.clear()

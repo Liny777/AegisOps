@@ -260,6 +260,12 @@ async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
 
 async def _run_diagnosis(inc: dict[str, Any]) -> None:
     iid = str(inc["alert_incident_id"])
+    # 后台以 owner 身份跑（2026-08-16 治「告警诊断子 Agent 无 MCP 工具」）：MCP 发现面按
+    # current_user_id() 查 cookie 缓存，后台 contextvar 恒空连 owner 缓存都够不着（执行面
+    # 按 st.user_id 查得到——两面口径不对称）。本 task 由 create_task 派生，contextvar 不泄回。
+    from infra import request_context
+
+    request_context.set_background_user(str(inc["owner_user_id"]))
     cfg = await service.get_config()
     try:
         run_id, task_id, st = await _ensure_run_and_task(inc)

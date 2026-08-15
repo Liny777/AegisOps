@@ -276,18 +276,35 @@ def _py_annotation(prop: dict[str, Any]) -> Any:
     return _JSON_PY.get(prop.get("type"), str)
 
 
+# user_id → 最后一次成功的发现结果（进程内）。夜间兜底：cookie 缓存 TTL 300s 过期后
+# list_servers 必败，回退上次成功清单让告警诊断仍有工具面（与 scope snapshot-fallback 同
+# 哲学：宁旧勿无；清单变化频率低，成功一次即自愈）。重启后首败仍空=已知限制。
+_specs_snapshot: dict[str, list[dict[str, Any]]] = {}
+
+
 async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
     """OPENOPS_MCPREGISTRY=real 时，从注册表发现所有 server 的工具 → 动态工具 spec（含 server_url/只读/scope）。
-    mock 或发现失败 → 空（不拖垮 demo 工具）。appid 约定（拍板 i）：inputSchema 有 project_id/appid → 该字段受 scope 约束。"""
+    mock 或发现失败 → 空（不拖垮 demo 工具）。appid 约定（拍板 i）：inputSchema 有 project_id/appid → 该字段受 scope 约束。
+    快照键取 request_context.current_user_id()——请求路径=登录用户；告警后台路径由
+    dispatcher.set_background_user 设为 owner（2026-08-16），两路径同键。"""
     if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() != "real":
         return []
-    from infra import host_ip
+    from infra import host_ip, request_context
     from infra.external import mcp_registry_client
 
+    uid = request_context.current_user_id()
     try:
         servers = await mcp_registry_client.list_servers()
     except Exception as e:  # noqa: BLE001 —— 发现失败不拖垮整个 run
-        log.warning("MCP 注册表 list_servers 失败：%s", _redact(str(e)))
+        snap = _specs_snapshot.get(uid) if uid else None
+        if snap:
+            log.warning("MCP 注册表 list_servers 失败（user=%s）：%s——回退上次成功清单"
+                        "（%d 个工具，degraded；成功一次即自愈）", uid or "(空)", _redact(str(e)),
+                        len(snap))
+            return [dict(x) for x in snap]
+        log.warning("MCP 注册表 list_servers 失败（user=%s，无历史快照可退，动态工具面将为空）：%s"
+                    "——后台链路核对 owner 登录态（cookie 缓存 TTL 300s）/OPENOPS_MCPREGISTRY_COOKIE",
+                    uid or "(空)", _redact(str(e)))
         return []
     specs: list[dict[str, Any]] = []
     for srv in servers:
@@ -317,6 +334,8 @@ async def _dynamic_mcp_specs() -> list[dict[str, Any]]:
                 "appid_arg_path": f"$.{appid_prop}" if appid_prop else None,
                 "source_type": "platform",  # 自证：随 spec 下传给 tool_gateway.invoke（对照 _user_mcp_specs）
             })
+    if uid:
+        _specs_snapshot[uid] = [dict(x) for x in specs]  # 成功即更新（含真空清单=真实状态）
     return specs
 
 
@@ -803,6 +822,11 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     dynamic_specs = await _dynamic_mcp_specs()
     _demo_env = os.environ.get("OPENOPS_DEMO_TOOLS", "").strip()  # 1=恒开 0=恒关 未设=自动
     keep_demo = _demo_env == "1" or (_demo_env != "0" and not dynamic_specs)
+    if (keep_demo and not dynamic_specs and _demo_env != "1"
+            and os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"):
+        # 观测补强（2026-08-16）：demo 回台会掩盖「真工具全丢」——real 档发现为空必须现形
+        log.warning("[runtime] 动态 MCP 发现为空，demo 工具回台掩盖中 agent=%s run=%s"
+                    "——若为告警后台链路，见上方 list_servers 失败日志", st.agent_key, st.run_id)
     fns = {"query_resource": (query_resource, True), "recover_execute": (recover_execute, False)} if keep_demo else {}
     anns = st.tool_annotations or {}
     tools = []
@@ -894,6 +918,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
     # 不互踩）；注册名 = LLM 面（见下方分配器）。注入标注：只读→免审批、写类→ASK；有 project_id/appid
     # → scope 受限（拍板 i）。
     _skipped_dynamic: list[str] = []  # 发现到、但因不在白名单未装配的动态工具（复合键；可见性：见循环后 emit）
+    _dyn_added = 0  # 实际装配的动态工具数（子 Agent 空工具面现形用，2026-08-16）
     _assembled: list[tuple[dict[str, Any], dict[str, Any]]] = []  # (spec, 标注) —— 过完白名单/标注闸的装配集
     for spec in dynamic_specs:
         # server 名缺失（老 spec/测试手搓）→ 身份退化为裸名（旧语义），不造 "::tool" 畸形键
@@ -968,6 +993,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         # _permission_context / _handle_ask / gateway 快照回退全按注册名工作，无需解析。
         st.tool_annotations[reg_name] = entry
         tools.append(_make_dynamic_tool(st, run, spec, reg_name=reg_name))
+        _dyn_added += 1
     # 可见性（白名单闸）：注册表已发现、却因不在模板白名单未装配的动态工具——仅对 main 发一条 tool.skipped
     # 观测事件（子 Agent 的白名单收窄是刻意角色隔离，噪声大，只落日志）。**不置 st.tool_blocked**：
     # 「未启用」不是「被拦截」，不该压制本轮「已闭环」结论；故用独立事件类型（非 tool.blocked 的红色阻断）。
@@ -983,6 +1009,19 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
                             f"完整清单见管理台 MCP 工具页；启用需在模板编辑器勾入 default_tools 并标注 allowed。"),
                    reason_code="TOOL_NOT_WHITELISTED",
                    payload={"tools": _skipped_dynamic, "phase": "toolkit_build"})
+    if (st.agent_key != "main" and st.template_tools and not _dyn_added
+            and os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real"):  # mock 档动态发现未开，装不上是常态
+        # 子 Agent 画像点名了 MCP 工具却一个都没装上（多为发现失败）——此前完全静默，
+        # 模型只能自述「工具没有注册」（2026-08-16 内网盲区）。活动栏现形 + warning 日志。
+        log.warning("[runtime] 子 Agent 动态工具面为空 agent=%s run=%s 画像白名单=%d 个"
+                    "——多为 MCP 发现失败（见 list_servers 日志；后台链路核对属主登录态）",
+                    st.agent_key, st.run_id, len(st.template_tools))
+        await emit(st, run, "openops.tool.skipped", severity="warning", action="mcp_empty_toolset",
+                   message=(f"子 Agent {st.agent_key} 的 {len(st.template_tools)} 个画像 MCP 工具"
+                            "一个都未装配——多为工具发现失败（告警后台链路请核对属主登录态与"
+                            "MCP 注册表连通性），本轮将以内置能力作答。"),
+                   reason_code="TOOL_DISCOVERY_EMPTY",
+                   payload={"whitelist_count": len(st.template_tools), "phase": "toolkit_build"})
     # 用户自定义 MCP 工具（st.mcp_servers，仅 main）：**豁免模板 default_tools 白名单**——先例见
     # run_state_service.filter_main_skills「白名单只收窄平台资产，用户个人资产恒保留」。用户登记的 MCP
     # 不可能出现在管理员维护的模板白名单里，若按白名单裁剪则本特性等于不存在。隔离靠「仅 main」
