@@ -5,6 +5,9 @@
 - 资产池对全员一致（list_active，38.1 资产级授权废弃）；**模板级授权二次校验**在
   resolve_template_models（第三闸门，防「先绑后撤销」）：模板失效/未授权 → 回退平台默认。
 - 返回 None 表示无可用真模型 → runtime 回退 stub（demo / pytest 不依赖真网、不需要 Key）。
+- 三条绑定路径的失效口径已统一为 **fail-safe 降级平台默认**（模板 / 自带模型 / legacy 平台模型）。
+  其中模板与自带模型额外回传 `degraded` 供调用方写审计 + 推 SSE 告知用户；用户主动 select-model
+  选到失效配置仍是当场报错（见 resolve_user_llm_models 的边界说明）。
 """
 from __future__ import annotations
 
@@ -12,7 +15,6 @@ import os
 import uuid
 from typing import Any
 
-from domain.errors import ApiError, Err
 from infra import egress
 from infra.repositories import model_assets, model_templates, secrets
 
@@ -35,6 +37,8 @@ def _spec(row: dict[str, Any]) -> dict[str, Any]:
         "display_name": row["display_name"],
         "base_url": _openai_base_url(row["base_url"]),
         "secret_env_var": row["secret_env_var"],  # 环境变量名，非 Key 本身
+        # 自定义出站 Header（与自带模型同键名）：runtime 在两分支汇合后统一注入 default_headers
+        "extra_headers": (row.get("extra_params_json") or {}).get("extra_headers") or {},
     }
 
 
@@ -71,7 +75,9 @@ async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str,
     """在**全部 active 平台模型**内解析运行模型（38.1：资产级授权放开）。
 
     优先级：选中平台模型 → 选中的用户自定义 LLM → 平台默认 → 首个带 secret_env_var 的可用 → None(stub)。
-    C2：选中用户 LLM 时解析用户配置（不再静默回退平台模型）；用户 LLM 不可用（禁用/越权）时才回退默认。
+    自带模型失效在这里也走 fail-safe 回退（不抛）——但**实例默认绑定**那条路应改调
+    [[resolve_user_llm_models]]，它额外回传 degraded 供调用方留痕 + 告知用户；本函数的静默回退
+    只服务 legacy/平台模型路径（那两条本就无声降级）。
     """
     rows = await model_assets.list_active()
     by_id = {r["model_id"]: r for r in rows}
@@ -81,11 +87,35 @@ async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str,
         user_spec = await _user_llm_spec(selected, user_id)
         if user_spec is not None:
             return user_spec
-        # S3（C2-OBS-003 关闭）：选中的自定义 LLM 失效（禁用/删除/非本人）不再静默回退平台默认——
-        # 否则用户 prompt 会流向其没有选择的模型。显式报错让用户重选/改绑。
-        raise ApiError(Err.MODEL_NOT_AUTHORIZED,
-                       "选中的自定义 LLM 不可用（已禁用或非本人配置），请重新选择模型或调整实例默认绑定")
     return _default_spec(rows)
+
+
+async def resolve_user_llm_models(llm_config_id: str, user_id: str) -> dict[str, Any]:
+    """自带模型（BYO）解析为 runtime spec，失效则**降级平台默认**并回传 degraded。
+
+    与 [[resolve_template_models]] 对称：**永不抛异常**，返回 {"spec","selected","degraded"}，
+    降级不阻断任务；留痕（审计 + SSE 告知用户）由调用方 run_state_service.start_task 负责。
+
+    历史：曾对失效自带模型抛 MODEL_NOT_AUTHORIZED（S3/C2-OBS-003），理由是「用户 prompt 不该流向
+    其没有选择的模型」。但那让被删模型绑定过的 Agent 每次起任务都 403、直接变砖。现改为
+    降级 + **工作台横幅显式告知**来控这个风险——用告知替代硬失败，语义变更是有意的。
+
+    注意边界：这里是**被动继承**（实例 overlay 绑的模型没了，用户无从当场得知）才降级。
+    用户**主动选择**一个失效配置（run_state_service.select_model）仍须当场报错，不要"统一"成降级。
+    """
+    rows = await model_assets.list_active()
+    spec = await _user_llm_spec(llm_config_id, user_id)
+    if spec is not None:
+        return {"spec": spec, "selected": llm_config_id, "degraded": []}
+    # 分档给用户看：已删 vs 存在但不可用（禁用/非本人）——文案差异决定用户下一步怎么做
+    cfg = await secrets.get_llm_config(llm_config_id)
+    reason = "USER_LLM_DELETED" if cfg is None else "USER_LLM_UNAVAILABLE"
+    fb = _default_spec(rows)
+    return {
+        "spec": fb,
+        "selected": (fb or {}).get("model_id"),
+        "degraded": [{"slot": "user_llm", "llm_config_id": llm_config_id, "reason": reason}],
+    }
 
 
 def _default_spec(rows: list[dict[str, Any]]) -> dict[str, Any] | None:

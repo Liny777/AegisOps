@@ -352,6 +352,26 @@ def test_update_workspace_refreshes_scope_revision(client):
     assert detail["scope_revision"] == fresh_rev
 
 
+def _real_llm_config(client, name: str = "overlay 用自带模型") -> str:
+    """建一个真实可绑的自带模型并回传 id。
+
+    绑定期已 fail-closed 校验 user_llm_config_id（存在 + 本人 + active），假 id 会被 403 挡掉，
+    所以下面这些测 overlay 合并/幂等的用例必须用真配置——它们要断言的是 overlay 行为，
+    别被模型校验噪声打断。
+    """
+    import time as _t
+
+    sec = unwrap(client.post("/api/openops/v1/secrets", headers=USER_HEADERS,
+                             json={"client_request_id": f"s_{_t.time_ns()}", "secret_name": f"{name} Key",
+                                   "secret_type": "api_key", "provider": "openai_compatible",
+                                   "secret_value": "sk-overlay"}))
+    cfg = unwrap(client.post("/api/openops/v1/llm-configs", headers=USER_HEADERS,
+                             json={"client_request_id": f"l_{_t.time_ns()}", "display_name": name,
+                                   "provider": "openai_compatible", "base_url": "https://1.1.1.1/v1",
+                                   "model_name": "gpt-4o", "secret_ref_id": sec["secret_ref_id"]}))
+    return str(cfg["llm_config_id"])
+
+
 def test_update_overlay_merge_preserves_main_role_append(client):
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
     inst = unwrap(client.post(
@@ -360,10 +380,11 @@ def test_update_overlay_merge_preserves_main_role_append(client):
               "name": "覆盖合并", "workspace_id": "ws_pay_abc",
               "initial_overlay_json": {"main_role_append": "保留我"}},
     ))["instance"]
-    unwrap(_update(client, inst["instance_id"], "upd_ov_llm", "覆盖合并", "ws_pay_abc", "llm-cfg-1"))
+    llm1 = _real_llm_config(client, "覆盖合并模型")
+    unwrap(_update(client, inst["instance_id"], "upd_ov_llm", "覆盖合并", "ws_pay_abc", llm1))
     detail = _detail(client, inst["instance_id"])
     overlay = detail["active_config_version"]["overlay_json"]
-    assert overlay == {"main_role_append": "保留我", "user_llm_config_id": "llm-cfg-1"}
+    assert overlay == {"main_role_append": "保留我", "user_llm_config_id": llm1}
     versions = unwrap(client.get(
         f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS))
     assert versions[0]["version_no"] == 2 and versions[0]["status"] == "active"
@@ -372,11 +393,12 @@ def test_update_overlay_merge_preserves_main_role_append(client):
 
 def test_update_custom_to_platform_removes_llm(client):
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+    llm2 = _real_llm_config(client, "回平台默认前的模型")
     inst = unwrap(client.post(
         "/api/openops/v1/agent-teams", headers=USER_HEADERS,
         json={"client_request_id": "upd_back_create", "template_version_id": templates[0]["template_version_id"],
               "name": "回平台默认", "workspace_id": "ws_pay_abc",
-              "initial_overlay_json": {"main_role_append": "别动我", "user_llm_config_id": "llm-cfg-2"}},
+              "initial_overlay_json": {"main_role_append": "别动我", "user_llm_config_id": llm2}},
     ))["instance"]
     unwrap(_update(client, inst["instance_id"], "upd_back_pf", "回平台默认", "ws_pay_abc", None))
     overlay = _detail(client, inst["instance_id"])["active_config_version"]["overlay_json"]
@@ -411,14 +433,15 @@ def test_update_client_request_id_idempotent(client):
     from conftest import create_instance
 
     inst = create_instance(client, name="编辑幂等")
-    one = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", "llm-cfg-3"))
-    two = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", "llm-cfg-3"))
+    llm3 = _real_llm_config(client, "幂等用模型")
+    one = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", llm3))
+    two = unwrap(_update(client, inst["instance_id"], "upd_idem", "编辑幂等", "ws_pay_abc", llm3))
     assert one["instance"]["instance_id"] == two["instance"]["instance_id"]
     versions = unwrap(client.get(
         f"/api/openops/v1/agent-teams/{inst['instance_id']}/config-versions", headers=USER_HEADERS))
     assert len(versions) == 2  # 重放不重复派生（initial + 模型变更一版）
     # 同 key 异体（hash 载荷含 instance_id 与字段）→ 409
-    r = _update(client, inst["instance_id"], "upd_idem", "编辑幂等·异体", "ws_pay_abc", "llm-cfg-3")
+    r = _update(client, inst["instance_id"], "upd_idem", "编辑幂等·异体", "ws_pay_abc", llm3)
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "IDEMPOTENCY_KEY_CONFLICT"
 

@@ -49,6 +49,11 @@ PostgreSQL DDL 来自 `backend/sql/openops_v1_core.sql`，无数据库级表间�
 - `GET /api/openops/v1/llm-configs`
 - `GET /api/openops/v1/models/platform`
 - `POST /api/openops/v1/llm-configs` — 可选 `extra_headers`（自定义出站 Header，随每次 LLM 请求附带；禁 `Authorization`/`Host` 等保留头，鉴权走 `secret_ref_id`）；`POST /llm-configs:test-connection` 同参同源携带
+- `PATCH /api/openops/v1/llm-configs/{llm_config_id}` — 局部更新自带模型（只改显式提供的键）。改 `base_url`/`model_name`/`secret_ref_id`/`extra_headers` 会强制重探测，不通过则整条不保存（`MODEL_PROBE_FAILED`）；`extra_headers` 传 `{}` 即清空。非本人配置 404
+- `DELETE /api/openops/v1/llm-configs/{llm_config_id}` — 软删 + 连带作废其专属 Secret。**不做引用检查**：仍绑着它的 Agent 下次起任务由服务端降级到平台默认模型，并推 `openops.model.user_llm_degraded`（工作台横幅告知用户重新选择）+ 写 `model.user_llm_degraded` 审计。非本人配置 404
+  - 绑定期已有 fail-closed 校验：`user_llm_config_id` 绑不存在/非本人/非 active 的配置 → 403 `MODEL_NOT_AUTHORIZED`，所以运行期降级只对应「原本有效、后来被删」这一种情形
+  - 用户**主动** `select-model` 选到失效配置仍当场报错（`SECRET_REQUIRED`），不降级
+- `POST|PUT /api/openops/v1/admin/model-assets[/{id}]` — 平台模型资产同样支持 `extra_headers`（同一套保留头校验）；`POST /admin/model-assets:test-connection` 同参同源携带
 - `POST /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs`
 - `GET /api/openops/v1/agent-runs/{agent_run_id}/state`

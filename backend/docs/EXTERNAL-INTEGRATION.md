@@ -204,7 +204,11 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
 | `OPENOPS_LLM_EGRESS_DENY` / `_DENY_HOSTS` | docker bridge / localhost,metadata | 额外 deny 网段/主机 |
 
 残余风险（已知）：check→实连之间的单次 TOCTOU 窗口仍在（消除需自定义 DNS transport，V1 不做）；
-用户 LLM 失效时不再静默回退平台默认（显式 MODEL_NOT_AUTHORIZED，C2-OBS-003 关闭）。
+用户 LLM 失效（配置被删/禁用）时**降级平台默认**——C2-OBS-003 的口径已从「硬失败」改为
+「降级 + 显式告知」：绑定期 fail-closed 校验（绑无效配置直接 403），运行期降级必发
+`model.user_llm_degraded` 审计 + `openops.model.user_llm_degraded` SSE，工作台弹横幅告知用户
+本次改用了平台默认模型、请重新选择。原硬失败会让绑过被删模型的 Agent 每次起任务都 403 变砖，
+代价高于收益；风险改由「用户看得见」来控，故 degraded 不得为空（见 test_sec_s3_user_llm_degrades_loudly）。
 
 ## IAM 双步鉴权（B9；2026-07-13，老项目 D4 机制迁移）
 

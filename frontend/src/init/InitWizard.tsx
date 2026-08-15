@@ -39,6 +39,10 @@ export function InitWizard() {
   const [customLlmId, setCustomLlmId] = useState("");
   const [customLlmLabel, setCustomLlmLabel] = useState("");
   const [customLlmMeta, setCustomLlmMeta] = useState<CustomLlmMeta | null>(null);
+  // 当前 customLlmId 是否本次会话刚建的。编辑态回填进来的是**已被本 Agent 使用**的既有配置，
+  // 点垃圾桶只是想换模型、不是想删配置（真删也会被后端引用检查拒）；只有刚建的才连带删掉，
+  // 否则用户「加了又取消」会在库里留下永远无人认领的配置 + Secret。
+  const [customLlmIsNew, setCustomLlmIsNew] = useState(false);
   const [modelTemplates, setModelTemplates] = useState<ModelTemplateOption[]>([]); // 管理员编排且对本用户可见（38.1 模板级授权：scope+白名单）的模板
   const [selectedModelTemplateId, setSelectedModelTemplateId] = useState(""); // 选中的模板 id（空=平台默认兜底卡）
   const [legacyPlatformId, setLegacyPlatformId] = useState(""); // 存量 overlay.platform_model_id（仅编辑态非空）
@@ -70,6 +74,7 @@ export function InitWizard() {
           if (llmId) {
             setLlm("custom");
             setCustomLlmId(llmId);
+            setCustomLlmIsNew(false); // 回填的既有绑定：取消选用不删库
             setCustomLlmLabel(models.find((m) => m.llm_config_id === llmId)?.label ?? "自定义模型");
             setAdvancedOpen(true); // BYO 藏在高级折叠区：绑定态进来必须展开，否则选中卡不可见
           } else if (mtplId) {
@@ -180,8 +185,14 @@ export function InitWizard() {
               customLlmId={customLlmId} customLlmLabel={customLlmLabel} customLlmMeta={customLlmMeta}
               onCustomCreated={(id, label, meta) => {
                 setCustomLlmId(id); setCustomLlmLabel(label); setCustomLlmMeta(meta); setLlm("custom");
+                setCustomLlmIsNew(true);
               }}
               onCustomRemoved={() => {
+                // 刚建的才连带删后端配置：此前只清本地 state，用户以为删掉了，配置与其 Secret 却
+                // 留在库里成孤儿。删失败不阻断取消选用（本地照样回退），正式的删除入口与报错在
+                // 设置 →「我的模型」。回填的既有绑定不删（见 customLlmIsNew 注释）。
+                if (customLlmIsNew && customLlmId) void api.deleteLlmConfig(customLlmId).catch(() => {});
+                setCustomLlmIsNew(false);
                 // 删除 BYO 后的落点：存量 legacy 绑定优先回 legacy；否则回模板态（保留/补选默认）
                 setCustomLlmId(""); setCustomLlmLabel(""); setCustomLlmMeta(null);
                 if (legacyPlatformId) { setLlm("legacy"); return; }

@@ -4,8 +4,8 @@ import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api, alertEventMeta } from "../lib/api";
-import type { AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
-import { useConnTest, ConnTestResult, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW } from "../settings/AddCustomModelDialog";
+import type { AdminModelAssetOption, AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
+import { useConnTest, ConnTestResult, HeadersEditor, headersToRecord, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 import { ModelTemplateDialog } from "./ModelTemplateDialog";
@@ -45,6 +45,7 @@ export function AdminConsole() {
   const [tplEdit, setTplEdit] = useState<string | null>(null);
   // 模型模板（38 号）：新建/编辑弹窗（id=null 新建）
   const [mtEdit, setMtEdit] = useState<{ id: string | null } | null>(null);
+  const [maEdit, setMaEdit] = useState<AdminModelAssetOption | null>(null);
   // B7·三：白名单添加弹窗 / 表格动作错误横幅 / 审计 Trace 过滤
   const [wlAddOpen, setWlAddOpen] = useState(false);
   const [actionErr, setActionErr] = useState("");
@@ -191,6 +192,17 @@ export function AdminConsole() {
         `确认删除模型模板「${rowName}」？已绑定该模板的实例将在下次任务回退平台默认模型；如为默认模板，删除后用户选单回退首个模板。`)) return;
       setActionErr("");
       void api.adminDeleteModelTemplate(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
+    }
+    else if (key === "ma-edit") {
+      // 表格 cells 只有文本，改连接配置要完整行 → 现拉一次资产清单再开弹窗
+      setActionErr("");
+      void api.adminListModelAssets()
+        .then((rows) => {
+          const row = rows.find((a) => a.model_asset_id === rowId);
+          if (row) setMaEdit(row);
+          else setActionErr("该模型资产已不存在，请刷新后重试");
+        })
+        .catch((e) => setActionErr((e as Error).message));
     }
     else if (key === "ma-delete") {
       // 软删（38.2）：被模板槽位引用时后端 400（错误横幅提示先调整模板）；同 model_id 删后可重注册
@@ -426,6 +438,9 @@ export function AdminConsole() {
         onSaved={() => { setAnnotRow(null); void load(); }}
       />
       {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
+      {/* 编辑态复用同一弹窗（key 强制按行重挂，换行编辑时表单不残留上一行的值） */}
+      {maEdit ? <RegisterModelDialog key={maEdit.model_asset_id} editing={maEdit}
+        onClose={() => setMaEdit(null)} onSaved={() => { setMaEdit(null); void load(); }} /> : null}
       {grantsFor ? <ModelGrantsDialog target={grantsFor} onClose={() => setGrantsFor(null)} onSaved={() => { setGrantsFor(null); void load(); }} /> : null}
       <TemplateEditorModal open={!!tplEdit} templateId={tplEdit} onClose={() => setTplEdit(null)} onChanged={() => void load()} />
       {mtEdit ? <ModelTemplateDialog target={mtEdit.id} onClose={() => setMtEdit(null)} onSaved={() => { setMtEdit(null); void load(); }} /> : null}
@@ -471,19 +486,32 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
   );
 }
 
-/** 注册模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 / 上下文长度。
- *  38.1：授权范围已迁「模型模板」维度，注册不再选 scope。
- *  存前须「测试连接」通过（Key 走服务器环境变量探测）；走平台网关的模型（不填 base_url）可跳过测试直接存。 */
-function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
-  const [f, setF] = useState({ display_name: "", model_id: "", base_url: "", secret_env_var: "" });
-  const [contextWindow, setContextWindow] = useState(DEFAULT_CONTEXT_WINDOW);
+/** 注册 / 编辑模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 /
+ *  上下文长度 / 自定义 Header。38.1：授权范围已迁「模型模板」维度，注册不再选 scope。
+ *  存前须「测试连接」通过（Key 走服务器环境变量探测）；走平台网关的模型（不填 base_url）可跳过测试直接存。
+ *
+ *  传 `editing` 即编辑态（PUT /admin/model-assets/{id}，PATCH 语义只提交改动键）：
+ *  model_id 是实例 overlay.platform_model_id 的绑定键，编辑态锁定不可改（后端白名单里也没有它）。 */
+function RegisterModelDialog({ onClose, onSaved, editing }: {
+  onClose: () => void; onSaved: () => void; editing?: AdminModelAssetOption;
+}) {
+  const [f, setF] = useState({
+    display_name: editing?.display_name ?? "", model_id: editing?.model_id ?? "",
+    base_url: editing?.base_url ?? "", secret_env_var: editing?.secret_env_var ?? "",
+  });
+  const [contextWindow, setContextWindow] = useState(editing?.context_window_tokens || DEFAULT_CONTEXT_WINDOW);
+  const [headerRows, setHeaderRows] = useState<HeaderRow[]>(
+    Object.entries(editing?.extra_headers ?? {}).map(([name, value]) => ({ name, value })),
+  );
   const [err, setErr] = useState("");
   const test = useConnTest();
-  // 探测相关字段（base_url/model_id/secret_env_var）一改即让上次测试失效
+  // 探测相关字段（base_url/model_id/secret_env_var/自定义 Header）一改即让上次测试失效——
+  // header 参与探测，不 reset 就会出现「改了头还挂着旧绿勾」
   const setField = (key: keyof typeof f, val: string) => {
     setF((d) => ({ ...d, [key]: val }));
     if (key === "base_url" || key === "model_id" || key === "secret_env_var") test.reset();
   };
+  const onHeaders = (rows: HeaderRow[]) => { setHeaderRows(rows); test.reset(); };
   const input = (key: keyof typeof f, placeholder: string, mono = false) => (
     <input value={f[key]} onChange={(e) => setField(key, e.target.value)} placeholder={placeholder}
       style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", fontFamily: mono ? "ui-monospace, monospace" : undefined, boxSizing: "border-box" }} />
@@ -496,7 +524,10 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
 
   const runTest = () => {
     if (!hasBaseUrl || !f.model_id.trim() || test.state === "testing") return;
-    void test.run(() => api.testModelAssetConnection({ base_url: f.base_url.trim(), model_id: f.model_id.trim(), secret_env_var: f.secret_env_var.trim() }));
+    void test.run(() => api.testModelAssetConnection({
+      base_url: f.base_url.trim(), model_id: f.model_id.trim(),
+      secret_env_var: f.secret_env_var.trim(), extra_headers: headersToRecord(headerRows),
+    }));
   };
   const save = () => {
     const env = f.secret_env_var.trim();
@@ -504,19 +535,39 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
       setErr("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）——看起来填入了 Key 本身：Key 不落库，请配到后端环境变量后在此填变量名");
       return;
     }
+    const done = () => onSaved();
+    const fail = (e: unknown) => setErr((e as Error).message);
+    if (editing) {
+      // PATCH 语义：只提交改动键。base_url/secret_env_var 清空要显式传 null（后端靠 exclude_unset
+      // 区分「没传」与「传 null」），传 undefined 会被 JSON 丢掉、等同没传。
+      api.adminUpdateModelAsset(editing.model_asset_id, {
+        ...(f.display_name.trim() !== editing.display_name ? { display_name: f.display_name.trim() } : {}),
+        ...(f.base_url.trim() !== editing.base_url ? { base_url: f.base_url.trim() || null } : {}),
+        ...(env !== editing.secret_env_var ? { secret_env_var: env || null } : {}),
+        ...(contextWindow !== editing.context_window_tokens ? { context_window_tokens: contextWindow } : {}),
+        ...(JSON.stringify(headersToRecord(headerRows)) !== JSON.stringify(editing.extra_headers)
+          ? { extra_headers: headersToRecord(headerRows) } : {}),
+      }).then(done).catch(fail);
+      return;
+    }
     api.adminRegisterModel({
       display_name: f.display_name.trim(), model_id: f.model_id.trim(),
       base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
-      context_window_tokens: contextWindow,
-    }).then(onSaved).catch((e) => setErr((e as Error).message));
+      context_window_tokens: contextWindow, extra_headers: headersToRecord(headerRows),
+    }).then(done).catch(fail);
   };
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 460, background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>注册模型接口</div>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>{editing ? "编辑模型接口" : "注册模型接口"}</div>
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {input("display_name", "展示名，如：交易大模型-TX")}
-          {input("model_id", "model_id，如：tx-llm-v2", true)}
+          {editing ? (
+            /* model_id 是实例 overlay.platform_model_id 的绑定键：改了会让已绑定实例静默失配，编辑态锁定 */
+            <div title="model_id 是绑定键，不可修改" style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textSubtle, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box", fontFamily: "ui-monospace, monospace" }}>
+              {f.model_id}<span style={{ marginLeft: 8, fontFamily: "inherit", fontSize: 11.5 }}>（model_id 不可改）</span>
+            </div>
+          ) : input("model_id", "model_id，如：tx-llm-v2", true)}
           <div style={{ display: "flex", gap: 10 }}>
             <div style={{ flex: 1 }}>
               <div style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box" }}>接口协议：{PROTOCOL_LABEL}</div>
@@ -530,7 +581,11 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
           {input("secret_env_var", "API Key 环境变量名，如 OPENOPS_PLATFORM_GLM_API_KEY", true)}
           <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.5, marginTop: -4 }}>
             ⚠ 此处填<b>环境变量名</b>，不是 Key 本身——真实 Key 配在后端进程环境变量（run-backend 里
-            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。填了 base_url 须「测试连接」通过（Key 从环境变量取）才能注册。
+            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。填了 base_url 须「测试连接」通过（Key 从环境变量取）才能{editing ? "保存" : "注册"}。
+          </div>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: color.textSubtle, marginBottom: 5 }}>自定义 Header（可选）</div>
+            <HeadersEditor rows={headerRows} onChange={onHeaders} />
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 12 }}>
@@ -542,7 +597,7 @@ function RegisterModelDialog({ onClose, onSaved }: { onClose: () => void; onSave
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button disabled={!canSave} onClick={save}
-            title={!canSave && fieldsOk && hasBaseUrl ? "请先测试连接通过" : undefined}>注册</Button>
+            title={!canSave && fieldsOk && hasBaseUrl ? "请先测试连接通过" : undefined}>{editing ? "保存" : "注册"}</Button>
         </div>
       </div>
     </div>

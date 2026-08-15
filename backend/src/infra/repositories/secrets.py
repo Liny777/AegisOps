@@ -68,14 +68,98 @@ async def list_llm_configs(user_id: str) -> list[dict[str, Any]]:
     return await q_all(
         """
         select llm_config_id, display_name, provider, base_url, model_name, secret_ref_id,
-               context_window_tokens, max_output_tokens, supports_tool_calling, status, creation_date
+               context_window_tokens, max_output_tokens, supports_tool_calling, status, creation_date,
+               extra_params_json
         from sre_user_llm_config where user_id=%(u)s and deleted_at is null order by creation_date
         """,
         {"u": user_id},
     )
 
 
+def _is_uuid(s: Any) -> bool:
+    """llm_config_id 列是 uuid 类型：非 UUID 字面量直接绑参会让 psycopg 抛
+    InvalidTextRepresentation（整条 500），而不是干净的「查不到」。这些 id 来自路径参数、
+    请求体与存量 overlay，形状不可信——查询前先挡一道，语义上「非 UUID 必然不存在」。"""
+    try:
+        uuid.UUID(str(s))
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
+
+
 async def get_llm_config(llm_config_id: str) -> dict[str, Any] | None:
+    if not _is_uuid(llm_config_id):
+        return None
     return await q_one(
         "select * from sre_user_llm_config where llm_config_id=%(l)s and deleted_at is null", {"l": llm_config_id}
+    )
+
+
+# 可经 PATCH /llm-configs/{id} 改写的列。llm_config_id 不在内（实例 overlay.user_llm_config_id
+# 的绑定键）；status 亦不在（本迭代无启停端点）；provider 固定 openai_compatible。
+# extra_params_json 承载 extra_headers，值需过 jsonb() 包装——见 update_fields。
+_UPDATABLE = ("display_name", "base_url", "model_name", "secret_ref_id",
+              "context_window_tokens", "extra_params_json")
+_JSONB_COLS = frozenset({"extra_params_json"})
+
+
+async def update_fields(llm_config_id: str, fields: dict[str, Any], by: str) -> int:
+    """按提供的键局部改写自带模型配置（PATCH 语义：未出现的列原样不动）。
+
+    SET 子句由 `_UPDATABLE` **字面量白名单**驱动，列名绝不来自请求体原文；值仍走 %(x)s 绑定
+    （同 [[model_assets.update_fields]] 口径）。jsonb 列的 dict 值必须经 jsonb() 适配，
+    直接绑 dict 会被 psycopg 拒。
+    """
+    cols = [c for c in _UPDATABLE if c in fields]
+    if not cols:
+        return 0
+    sets = ", ".join(f"{c}=%({c})s" for c in cols)
+    vals = {c: (jsonb(fields[c]) if c in _JSONB_COLS else fields[c]) for c in cols}
+    return await exec1(
+        f"""
+        update sre_user_llm_config set {sets}, last_updated_by=%(b)s, last_update_date=now()
+        where llm_config_id=%(l)s and deleted_at is null
+        """,
+        {**vals, "l": llm_config_id, "b": by},
+    )
+
+
+async def soft_delete_llm_config(llm_config_id: str, by: str) -> int:
+    """软删自带模型配置。软删而非硬删：历史 config_version.overlay_json 里的 UUID 仍指得回一行，
+    审计回放能显示「当时用的是哪个模型」；且 secret_ref_id NOT NULL 的关联不被打断。
+    不做引用检查——仍绑着它的 Agent 下次起任务 fail-safe 降级平台默认 + 横幅告知（见
+    [[model_gateway.resolve_user_llm_models]]）。"""
+    return await exec1(
+        """
+        update sre_user_llm_config set deleted_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where llm_config_id=%(l)s and deleted_at is null
+        """,
+        {"l": llm_config_id, "b": by},
+    )
+
+
+async def soft_delete_secret(secret_ref_id: str, by: str) -> int:
+    """连带软删该配置专属的 Secret（submitCustomLlm 每建一个配置就建一条同名 Secret，
+    生命周期绑定；不连带删会在密钥清单里留下永远无人认领的孤儿）。"""
+    return await exec1(
+        """
+        update sre_user_secret set deleted_at=now(), status='revoked',
+               last_updated_by=%(b)s, last_update_date=now()
+        where secret_ref_id=%(s)s and deleted_at is null
+        """,
+        {"s": secret_ref_id, "b": by},
+    )
+
+
+async def get_llm_config_owned(llm_config_id: str, user_id: str) -> dict[str, Any] | None:
+    """本人的、未删的配置（绑定期校验用）。与 get_llm_config 的区别是带归属过滤——
+    实例绑定 user_llm_config_id 时用它挡住「绑别人的 / 不存在的 UUID」。"""
+    if not _is_uuid(llm_config_id):
+        return None
+    return await q_one(
+        """
+        select llm_config_id, display_name, status from sre_user_llm_config
+        where llm_config_id=%(l)s and user_id=%(u)s and deleted_at is null
+        """,
+        {"l": llm_config_id, "u": user_id},
     )

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import time
 
-from conftest import USER_HEADERS, create_run, unwrap, wait_until
+from conftest import ADMIN_HEADERS, USER_HEADERS, create_run, unwrap, wait_until
 
 # base_url 用公网 IP 字面量：过 egress SSRF 校验且不依赖 DNS（同 test_sec_009）
 _BASE = "https://1.1.1.1/v1"
@@ -292,3 +292,173 @@ async def test_user_llm_008_probe_real_sends_extra_headers(monkeypatch):
     assert ok["ok"]
     assert seen["X-Tenant-Id"] == "t-001"
     assert seen["Authorization"] == "Bearer sk-secret"
+
+
+# ---- 自带模型可看/可改/可删（PATCH / DELETE /llm-configs/{id}）----
+
+def _patch(client, headers, cfg_id: str, body: dict):
+    return client.patch(f"/api/openops/v1/llm-configs/{cfg_id}", headers=headers,
+                        json={"client_request_id": f"upd_{time.time_ns()}", **body})
+
+
+def _listed(client, cfg_id: str) -> dict:
+    rows = unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS))
+    return next(c for c in rows if c["llm_config_id"] == cfg_id)
+
+
+def test_user_llm_009_list_returns_extra_headers(client):
+    """列表回显自定义 Header——否则用户看不到自己配了什么，改都无从改起。"""
+    sec = _mk_secret(client)
+    cfg = unwrap(client.post("/api/openops/v1/llm-configs", headers=USER_HEADERS,
+                             json={"client_request_id": f"l_{time.time_ns()}", "display_name": "带头模型",
+                                   "provider": "openai_compatible", "base_url": _BASE, "model_name": "gpt-4o",
+                                   "secret_ref_id": sec["secret_ref_id"],
+                                   "extra_headers": {"X-Tenant-Id": "t-001"}}))
+    row = _listed(client, cfg["llm_config_id"])
+    assert (row["extra_params_json"] or {}).get("extra_headers") == {"X-Tenant-Id": "t-001"}
+
+
+def test_user_llm_010_patch_only_given_keys(client):
+    """PATCH 语义：只改传入的键，其余原样（含 header 不被顺手清空）。"""
+    sec = _mk_secret(client)
+    cfg = unwrap(client.post("/api/openops/v1/llm-configs", headers=USER_HEADERS,
+                             json={"client_request_id": f"l_{time.time_ns()}", "display_name": "旧名",
+                                   "provider": "openai_compatible", "base_url": _BASE, "model_name": "gpt-4o",
+                                   "secret_ref_id": sec["secret_ref_id"],
+                                   "extra_headers": {"X-Tenant-Id": "t-001"}}))
+    cid = cfg["llm_config_id"]
+    assert _patch(client, USER_HEADERS, cid, {"display_name": "新名"}).status_code == 200
+
+    row = _listed(client, cid)
+    assert row["display_name"] == "新名"
+    assert row["model_name"] == "gpt-4o" and row["base_url"] == _BASE
+    assert (row["extra_params_json"] or {}).get("extra_headers") == {"X-Tenant-Id": "t-001"}
+
+
+def test_user_llm_011_patch_headers_replace_and_clear(client):
+    """header 传什么就是什么（整体替换）；显式传 {} 即清空。"""
+    sec = _mk_secret(client)
+    cfg = unwrap(client.post("/api/openops/v1/llm-configs", headers=USER_HEADERS,
+                             json={"client_request_id": f"l_{time.time_ns()}", "display_name": "改头模型",
+                                   "provider": "openai_compatible", "base_url": _BASE, "model_name": "gpt-4o",
+                                   "secret_ref_id": sec["secret_ref_id"],
+                                   "extra_headers": {"X-Tenant-Id": "t-001"}}))
+    cid = cfg["llm_config_id"]
+    assert _patch(client, USER_HEADERS, cid, {"extra_headers": {"X-Route-Env": "prod"}}).status_code == 200
+    assert (_listed(client, cid)["extra_params_json"] or {}).get("extra_headers") == {"X-Route-Env": "prod"}
+
+    assert _patch(client, USER_HEADERS, cid, {"extra_headers": {}}).status_code == 200
+    assert (_listed(client, cid)["extra_params_json"] or {}).get("extra_headers", {}) == {}
+
+    # 保留头在 PATCH 路径上同样被拒（更新不能成为绕过创建期校验的后门）
+    assert _patch(client, USER_HEADERS, cid,
+                  {"extra_headers": {"Authorization": "Bearer x"}}).status_code in (400, 422)
+
+
+def test_user_llm_012_patch_reprobes_and_rejects_bad_model(client):
+    """改连接类字段强制重探测：探测不过则整条不落库（与创建同门禁）。"""
+    sec = _mk_secret(client)
+    cfg = unwrap(_mk_llm(client, sec["secret_ref_id"]))
+    cid = cfg["llm_config_id"]
+    r = _patch(client, USER_HEADERS, cid, {"model_name": "gpt-4o-no-tool"})
+    assert r.status_code == 400 and r.json()["error"]["code"] == "MODEL_PROBE_FAILED"
+    assert _listed(client, cid)["model_name"] == "gpt-4o"  # 未被写坏
+
+
+def test_user_llm_013_patch_rejects_empty_and_cross_user(client):
+    """空 body → 400；NOT NULL 列显式 null → 400；改他人配置 → 404。
+
+    越权用 admin 断言：自带模型绑的是**用户私有** Secret，管理员也不该经用户接口改写它；
+    且 404 而非 403——不区分「不存在」与「是别人的」，免得接口成了 UUID 存在性探测旁路。
+    """
+    sec = _mk_secret(client)
+    cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
+    assert _patch(client, USER_HEADERS, cid, {}).status_code == 400
+    assert _patch(client, USER_HEADERS, cid, {"display_name": None}).status_code in (400, 422)
+
+    assert _patch(client, ADMIN_HEADERS, cid, {"display_name": "越权改"}).status_code == 404
+    assert _listed(client, cid)["display_name"] == "我的自定义模型"
+
+
+def test_user_llm_014_delete_soft_deletes_and_revokes_secret(client):
+    """删除：从列表消失，且专属 Secret 连带作废（不留无人认领的孤儿密钥）。"""
+    sec = _mk_secret(client)
+    cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
+    assert client.delete(f"/api/openops/v1/llm-configs/{cid}", headers=USER_HEADERS).status_code == 200
+
+    rows = unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS))
+    assert all(c["llm_config_id"] != cid for c in rows)
+    secs = unwrap(client.get("/api/openops/v1/secrets", headers=USER_HEADERS))
+    assert all(s["secret_ref_id"] != sec["secret_ref_id"] for s in secs)
+
+
+def test_user_llm_015_delete_while_bound_degrades_and_tells_user(client):
+    """被 Agent 绑着也允许删；该 Agent 下次起任务降级平台默认，并留痕告知用户重新选择。
+
+    真链路（建 Agent → 删模型 → 起任务 → 读 /state）而非桩：降级发生在 start_task 里，
+    假 TaskState 的单测抓不到「事件到底发没发」。
+    """
+    sec = _mk_secret(client)
+    cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
+    templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+    inst = unwrap(client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS,
+                              json={"client_request_id": f"i_{time.time_ns()}",
+                                    "template_version_id": templates[0]["template_version_id"],
+                                    "name": "绑了会被删的模型的 Agent", "workspace_id": "ws_pay_abc",
+                                    "initial_overlay_json": {"user_llm_config_id": cid}}))["instance"]
+
+    assert client.delete(f"/api/openops/v1/llm-configs/{cid}", headers=USER_HEADERS).status_code == 200
+    assert all(c["llm_config_id"] != cid for c in
+               unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS)))
+
+    run = create_run(client, inst["instance_id"])
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/tasks", headers=USER_HEADERS,
+                       json={"client_request_id": f"t_{time.time_ns()}", "input_text": "排查支付延迟"}))
+    state = wait_until(lambda: _state_with_model(client, run["agent_run_id"]))
+    assert state is not None
+    # 降级到平台默认：selected_model 不再是那个已删配置的 UUID
+    assert state["active_task"]["selected_model"] != cid
+
+    # 告知用户的那条事件必须在（reason 读出来叫 reason_summary，redact 改的名）
+    evs = unwrap(client.get(f"/api/openops/v1/agent-runs/{run['agent_run_id']}/events?limit=100",
+                            headers=USER_HEADERS))["items"]
+    deg = [e for e in evs if "user_llm_degraded" in str(e.get("event_type"))]
+    assert deg, "自带模型被删后必须发降级事件，否则用户不知道 prompt 换了模型去处"
+    payload = deg[0].get("payload_redacted_json") or {}
+    assert payload.get("llm_config_id") == cid  # 未被 redact 白名单静默吞掉
+    assert "USER_LLM_DELETED" in str(payload.get("reason_summary"))
+    assert "重新选择" in str(payload.get("summary"))
+
+
+def test_user_llm_017_bind_rejects_foreign_or_missing_config(client):
+    """绑定期校验：绑不存在的 / 别人的自带模型 → 403（MODEL_NOT_AUTHORIZED），
+    不再等到运行时才静默降级。"""
+    templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))
+
+    def _create(llm_id: str):
+        return client.post("/api/openops/v1/agent-teams", headers=USER_HEADERS,
+                           json={"client_request_id": f"i_{time.time_ns()}",
+                                 "template_version_id": templates[0]["template_version_id"],
+                                 "name": f"绑无效模型 {time.time_ns()}", "workspace_id": "ws_pay_abc",
+                                 "initial_overlay_json": {"user_llm_config_id": llm_id}})
+
+    assert _create("00000000-0000-0000-0000-000000000000").status_code == 403
+
+    # 别人的配置：admin 建一个，普通用户绑不上
+    sec = unwrap(client.post("/api/openops/v1/secrets", headers=ADMIN_HEADERS,
+                             json={"client_request_id": f"s_{time.time_ns()}", "secret_name": "admin key",
+                                   "secret_type": "api_key", "provider": "openai_compatible",
+                                   "secret_value": "sk-admin"}))
+    other = unwrap(client.post("/api/openops/v1/llm-configs", headers=ADMIN_HEADERS,
+                               json={"client_request_id": f"l_{time.time_ns()}", "display_name": "admin 的模型",
+                                     "provider": "openai_compatible", "base_url": _BASE,
+                                     "model_name": "gpt-4o", "secret_ref_id": sec["secret_ref_id"]}))
+    assert _create(other["llm_config_id"]).status_code == 403
+
+
+def test_user_llm_016_delete_cross_user_is_404(client):
+    """删他人配置 → 404（同 PATCH 口径），且对方配置完好。"""
+    sec = _mk_secret(client)
+    cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
+    assert client.delete(f"/api/openops/v1/llm-configs/{cid}", headers=ADMIN_HEADERS).status_code == 404
+    assert _listed(client, cid)["llm_config_id"] == cid

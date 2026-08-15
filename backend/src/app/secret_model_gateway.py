@@ -1,13 +1,14 @@
 """Secret & Model Gateway：Secret 密文落库 + LLM 配置探测（MODEL-001/002，SEC-001）。"""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from domain.errors import ApiError, Err
 from infra import crypto, egress
 from infra.db import row_json
 from infra.external import llm_provider_client
-from infra.repositories import secrets
+from infra.repositories import audit, secrets
 
 
 async def create_secret(user: dict[str, Any], req: Any) -> dict[str, Any]:
@@ -37,6 +38,87 @@ async def create_llm_config(user: dict[str, Any], req: Any) -> dict[str, Any]:
 
 async def list_llm_configs(user: dict[str, Any]) -> list[dict[str, Any]]:
     return [row_json(r) for r in await secrets.list_llm_configs(user["user_id"])]
+
+
+# 改动即让上次探测结论失效的字段：必须重探测通过才落库，否则会存下一个 active 但跑不通的配置
+_PROBE_FIELDS = ("base_url", "model_name", "secret_ref_id", "extra_headers")
+
+
+async def _owned_llm_config(user: dict[str, Any], llm_config_id: str) -> dict[str, Any]:
+    """取本人的配置，否则 NOT_FOUND。刻意不区分「不存在」与「是别人的」——
+    否则接口成了「探测某 UUID 是否存在」的旁路（同 agent_team_service._owner_check 口径）。"""
+    cfg = await secrets.get_llm_config(llm_config_id)
+    if cfg is None or cfg["user_id"] != user["user_id"]:
+        raise ApiError(Err.NOT_FOUND, "自定义模型配置不存在")
+    return cfg
+
+
+async def update_llm_config(user: dict[str, Any], llm_config_id: str, req: Any) -> dict[str, Any]:
+    """局部更新自带模型（PATCH：只改显式提供的键）。
+
+    改连接类字段（base_url/model_name/secret_ref_id/extra_headers）会强制重探测——与创建同门禁
+    （MODEL_PROBE_FAILED 则整条不落库）。改完**新 run 立即生效**：model_gateway 每次 run 启动
+    都重查库，无缓存需失效；已在跑的 run 沿用 TaskState 里已解析的 spec 到结束。
+    """
+    cfg = await _owned_llm_config(user, llm_config_id)
+    fields = req.model_dump(exclude_unset=True)  # 未出现的键不进 SET，与「显式传 null」区分开
+    fields.pop("client_request_id", None)
+    if not fields:
+        raise ApiError(Err.VALIDATION_FAILED, "未提供任何可更新字段")
+    for k in ("display_name", "base_url", "model_name", "context_window_tokens"):
+        if k in fields and fields[k] is None:  # 这些列 NOT NULL：显式 null 会被 DB 拒（整条 500）
+            raise ApiError(Err.VALIDATION_FAILED, f"{k} 不可置空")
+
+    merged_headers = _merged_headers(cfg, fields)
+    if any(k in fields for k in _PROBE_FIELDS):
+        base_url = fields.get("base_url") or cfg["base_url"]
+        egress.check_llm_egress(base_url)  # SSRF 防护（13/28.4）：改址也要过闸
+        secret_ref = fields.get("secret_ref_id") or str(cfg["secret_ref_id"])
+        s = await secrets.get_secret(secret_ref)
+        if s is None or s["user_id"] != user["user_id"] or s["status"] != "active":
+            raise ApiError(Err.SECRET_REQUIRED, "密钥不可用，请重新选择或创建")
+        api_key = crypto.decrypt(s["ciphertext"])  # 仅探测瞬时使用，不出网关
+        probe = await llm_provider_client.probe(
+            base_url, fields.get("model_name") or cfg["model_name"], api_key, merged_headers)
+        if not probe["ok"] or not probe["supports_tool_calling"]:
+            raise ApiError(Err.MODEL_PROBE_FAILED, "模型探测失败或不支持 tool calling，改动未保存")
+
+    if "extra_headers" in fields:  # header 存 extra_params_json，不是独立列
+        fields["extra_params_json"] = {"extra_headers": merged_headers} if merged_headers else {}
+    fields.pop("extra_headers", None)
+    await secrets.update_fields(llm_config_id, fields, user["user_id"])
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="user_llm_config.updated",
+        user_id=user["user_id"], action="update",
+        # 只记改了哪些字段名；header 的名与值、base_url 均不进审计（可能含租户/路由凭据）
+        payload_redacted={"llm_config_id": llm_config_id, "fields": sorted(fields)},
+    )
+    return row_json(await secrets.get_llm_config(llm_config_id))  # type: ignore[arg-type]
+
+
+def _merged_headers(cfg: dict[str, Any], fields: dict[str, Any]) -> dict[str, str]:
+    """本次生效的自定义 Header：传了就整体替换（{} = 清空），没传则沿用库里的。"""
+    if "extra_headers" in fields:
+        return fields["extra_headers"] or {}
+    return (cfg.get("extra_params_json") or {}).get("extra_headers") or {}
+
+
+async def delete_llm_config(user: dict[str, Any], llm_config_id: str) -> None:
+    """软删自带模型 + 连带作废其专属 Secret。
+
+    **不做引用检查**：仍绑着它的 Agent 下次起任务时由 model_gateway.resolve_user_llm_models
+    降级到平台默认，并推 model.user_llm_degraded 事件让工作台横幅告知用户重新选择。
+    曾经是「被引用则拒删」（那时运行时是硬失败，放行会让那些 Agent 每次起任务都 403），
+    现运行时已 fail-safe，删除不再需要这道墙。
+    """
+    cfg = await _owned_llm_config(user, llm_config_id)
+    await secrets.soft_delete_llm_config(llm_config_id, user["user_id"])
+    if cfg.get("secret_ref_id"):
+        await secrets.soft_delete_secret(str(cfg["secret_ref_id"]), user["user_id"])
+    await audit.insert_event(
+        audit_trace_id=str(uuid.uuid4()), event_type="user_llm_config.deleted",
+        user_id=user["user_id"], action="delete", payload_redacted={"llm_config_id": llm_config_id},
+    )
 
 
 async def test_connection(req: Any) -> dict[str, Any]:

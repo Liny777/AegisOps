@@ -124,6 +124,11 @@ def validate_extra_headers(v: dict[str, str]) -> dict[str, str]:
     return out
 
 
+def validate_extra_headers_opt(v: dict[str, str] | None) -> dict[str, str] | None:
+    """PATCH 用：None（未提供）直接放行，{} 与非空字典走同一道校验。"""
+    return None if v is None else validate_extra_headers(v)
+
+
 class CreateLlmConfigRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
@@ -143,6 +148,25 @@ class CreateLlmConfigRequest(BaseModel):
     _v_headers = field_validator("extra_headers")(validate_extra_headers)
 
 
+class UpdateLlmConfigRequest(BaseModel):
+    """更新自带模型（PATCH 语义：只改显式提供的键，服务层用 exclude_unset 取差集）。
+
+    改 base_url / model_name / extra_headers / secret_ref_id 会让上次探测结论失效，服务层
+    强制重探测后才落库——与创建同门禁（探测不过不存），否则改出一个跑不通的配置却仍是 active。
+    刻意不含 provider（当前只支持 openai_compatible）与 status（禁用/启用不在本迭代范围）。
+    """
+    client_request_id: str = Field(min_length=1)
+    display_name: str | None = Field(default=None, min_length=1)
+    base_url: str | None = Field(default=None, min_length=1)
+    model_name: str | None = Field(default=None, min_length=1)
+    secret_ref_id: str | None = None
+    context_window_tokens: int | None = Field(default=None, gt=0)
+    # 显式传 {} 表示清空全部自定义 Header；不传则原样保留（exclude_unset 区分二者）
+    extra_headers: dict[str, str] | None = None
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers_opt)
+
+
 class TestConnectionRequest(BaseModel):
     """用户自带模型「测试连接」（存前探测，不落库）：raw API Key 只在这一次请求内瞬时用于探测。
     extra_headers 与保存后的真实调用同源携带——否则会出现「测通了但跑不通」。"""
@@ -155,10 +179,14 @@ class TestConnectionRequest(BaseModel):
 
 
 class TestModelAssetRequest(BaseModel):
-    """平台模型「测试连接」：Key 由服务器读环境变量（secret_env_var 是变量名），客户端不传 Key。"""
+    """平台模型「测试连接」：Key 由服务器读环境变量（secret_env_var 是变量名），客户端不传 Key。
+    extra_headers 与保存后的真实调用同源携带——否则会出现「测通了但跑不通」。"""
     base_url: str = ""
     model_id: str = Field(min_length=1)
     secret_env_var: str = ""
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers)
 
 
 class CreateRunRequest(BaseModel):
@@ -210,6 +238,11 @@ class RegisterModelAssetRequest(BaseModel):
     base_url: str | None = None
     secret_env_var: str | None = None
     context_window_tokens: int = 128000
+    # 随每次模型请求附带的自定义 Header（内网网关路由/租户标识等），与用户自带模型同口径。
+    # Key 仍只走 secret_env_var 环境变量名，禁配 Authorization 等保留头。
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers)
 
 
 class ModelGrantsRequest(BaseModel):
@@ -237,6 +270,10 @@ class UpdateModelAssetRequest(BaseModel):
     base_url: str | None = None
     secret_env_var: str | None = None
     context_window_tokens: int | None = Field(default=None, gt=0)
+    # 显式传 {} 表示清空全部自定义 Header；不传则原样保留（exclude_unset 区分二者）
+    extra_headers: dict[str, str] | None = None
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers_opt)
 
 
 class CreateModelTemplateRequest(BaseModel):

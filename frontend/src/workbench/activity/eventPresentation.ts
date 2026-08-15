@@ -35,8 +35,9 @@ export function eventTitle(event: ActivityEvent): string {
     [/skill\.(started|called)/, "执行 Skill"],
     [/skill\.completed/, "Skill 执行完成"],
     [/sandbox/, "沙箱执行"],
-    // 模板降级须在 /model/ 通配之前：否则命中「模型处理」，警示语义全丢（38 号）
+    // 两条降级须在 /model/ 通配之前：否则命中「模型处理」，警示语义全丢（38 号）
     [/model\.template_degraded/, "模型模板降级"],
+    [/model\.user_llm_degraded/, "自带模型降级"],
     [/model/, "模型处理"],
   ];
   return labels.find(([pattern]) => pattern.test(type))?.[1] ?? event.action ?? type.replace(/[._]/g, " ");
@@ -44,7 +45,7 @@ export function eventTitle(event: ActivityEvent): string {
 
 export function eventIcon(event: ActivityEvent): string {
   const type = event.eventType.toLowerCase();
-  if (type.includes("template_degraded")) return "alert-triangle";
+  if (type.includes("_degraded")) return "alert-triangle";  // 模板降级 / 自带模型降级
   if (type.includes("failed")) return "alert-triangle";
   if (type.includes("timeout")) return "clock-exclamation";
   if (type.includes("cancelled")) return "ban";
@@ -103,9 +104,10 @@ export function technicalMeta(event: ActivityEvent): Array<{ label: string; valu
     ["原因", ["reason_code"]],
     ["请求", ["request_id", "tool_call_id"]],
     ["执行", ["execution_id"]],
-    // 38 号模板降级键（redact 白名单已放行）：不加提取行则 payload 过了脱敏也不渲染
+    // 降级事件的键（redact 白名单已放行）：不加提取行则 payload 过了脱敏也不渲染
     ["模板槽位", ["slot"]],
     ["模型模板", ["model_template_id"]],
+    ["自带模型", ["llm_config_id"]],
     ["Trace", ["audit_trace_id", "trace_id"]],
   ];
   const rows = candidates.flatMap(([label, keys]) => {

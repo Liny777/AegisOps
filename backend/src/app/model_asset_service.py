@@ -37,6 +37,7 @@ async def register(req: Any, by: str) -> dict[str, Any]:
         req.display_name, req.protocol, req.model_id, req.base_url,
         req.secret_env_var, "active", by,
         context_window_tokens=getattr(req, "context_window_tokens", 128000),
+        extra_headers=getattr(req, "extra_headers", None),
     )
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.registered", user_id=by,
@@ -65,6 +66,9 @@ async def update(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
         raise ApiError(Err.VALIDATION_FAILED, "display_name 不可置空")
     if "context_window_tokens" in fields and fields["context_window_tokens"] is None:
         raise ApiError(Err.VALIDATION_FAILED, "context_window_tokens 不可置空")
+    if "extra_headers" in fields:  # header 存 extra_params_json，不是独立列；传 {} 即清空
+        hdrs = fields.pop("extra_headers") or {}
+        fields["extra_params_json"] = {"extra_headers": hdrs} if hdrs else {}
     await model_assets.update_fields(model_asset_id, fields, by)
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.updated", user_id=by,
@@ -155,7 +159,10 @@ async def test_connection(req: Any) -> dict[str, Any]:
         egress.check_llm_egress(base_url)
     except ApiError as e:
         return {"ok": False, "supports_tool_calling": False, "reason": e.message}
-    probe = await llm_provider_client.probe(base_url, req.model_id, api_key)
+    # 自定义 Header 与真实调用同源携带（agentscope_runtime 的 default_headers）——不传这一份
+    # 就会出现「测试连接绿勾但真跑被网关拒」
+    probe = await llm_provider_client.probe(base_url, req.model_id, api_key,
+                                            getattr(req, "extra_headers", None))
     return {"ok": bool(probe["ok"] and probe["supports_tool_calling"]),
             "supports_tool_calling": bool(probe["supports_tool_calling"]),
             "reason": probe.get("reason"),
