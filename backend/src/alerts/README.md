@@ -61,10 +61,12 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 2. **追问切回用户容器**（决策⑦）：同 run 诊断期文件在共享沙箱、追问看不到——DEFAULT_RULE_PROMPT
    已要求「关键结论与证据写入对话正文」；追问的 lazy ensure 在容量满时 429 打在追问动作上。
 3. **纯 Kafka 无带外对账**：漏消费/offset 事故唯一回补=retention（≥7d 契约硬性）内按时间戳 seek 重放。
-4. **夜间降级**：scope 走「最近快照兜底」（审计 `omodel_request_id=snapshot-fallback` 可辨，ctx `degraded=true`）。
-   根因：oModel 只认用户 cookie，后台循环无请求上下文（per-user cookie 缓存 TTL 300s）。**根治=oModel 提供机机接口**
-   （服务态凭证 + `on-behalf-of` 用户标识，返回该用户的 effective_appids，权限不放大）——umodel P0-3，接口要求见
-   Obsidian 39 §10.2（四篇已合并为一篇）。平台 MCP 同病同源，建议同批推动。
+4. **后台出站鉴权=纯 IAM 机机态（2026-08-16 定案）**：人对话带用户 cookie（用户态），告警自接管
+   等后台链路带 j2c_utils 的 IAM token（#54 六注入点）；对端 omodel/MCP 双鉴权兼容——**有 cookie
+   优先 cookie，无 cookie 有 IAM token 也通过**。部署注意：别配静态 OPENOPS_CONSOLE_COOKIE/
+   OPENOPS_MCPREGISTRY_COOKIE（会被 cookie 优先策略选中且必过期→1001）。对端双鉴权上线前，
+   后台 MCP 发现失败会在日志/活动栏现形（TOOL_DISCOVERY_EMPTY）；scope 侧另有快照兜底
+   （omodel_request_id=snapshot-fallback，ctx degraded=true）。
 5. agent_result（已恢复/已升级）仅当 RCA 有结构化结论时回填；resolved 告警只落库不驱动状态机；
    `alert_run_idle_ttl_minutes` 旋钮预留未实现（平台 30min idle 回收兜底）。
 
