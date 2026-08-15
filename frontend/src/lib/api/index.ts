@@ -195,9 +195,9 @@ export interface OpenOpsApi {
   getModelTemplates(): Promise<ModelTemplateOption[]>;
   // 用户自定义 LLM（探测真化闭合）：录 Secret → 建 llm-config（服务端探测+egress）
   createSecret(secretName: string, secretValue: string): Promise<{ secret_ref_id: string; fingerprint?: string }>;
-  createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string; context_window_tokens?: number }): Promise<{ llm_config_id: string }>;
-  /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。 */
-  testLlmConnection(input: { base_url: string; model_name: string; api_key: string }): Promise<TestConnResult>;
+  createLlmConfig(input: { display_name: string; base_url: string; model_name: string; secret_ref_id: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<{ llm_config_id: string }>;
+  /** 用户自带模型「测试连接」（存前探测，不落库）：egress + tool-calling 探测。extra_headers 与保存后的真实调用同源携带。 */
+  testLlmConnection(input: { base_url: string; model_name: string; api_key: string; extra_headers?: Record<string, string> }): Promise<TestConnResult>;
   // settings 写闭环（B6：上传/注册/删除/绑定/解绑/main 追加/对账）
   /** 上传 Skill ZIP（29.3 §2.1 multipart）：仅 file 必填（分类/标签已移除）。
    * 29.9 起 skill_key 是命名空间化 id（user-{工号}-{name}），display_name 才是原始名（横幅展示用）。 */
@@ -742,6 +742,7 @@ const realApi: OpenOpsApi = {
         client_request_id: crid(), display_name: input.display_name, provider: "openai_compatible",
         base_url: input.base_url, model_name: input.model_name, secret_ref_id: input.secret_ref_id,
         context_window_tokens: input.context_window_tokens ?? 128000,
+        extra_headers: input.extra_headers ?? {},
       },
     });
     return { llm_config_id: String(d.llm_config_id) };
@@ -749,7 +750,7 @@ const realApi: OpenOpsApi = {
   async testLlmConnection(input) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/llm-configs:test-connection", {
       method: "POST",
-      body: { base_url: input.base_url, model_name: input.model_name, api_key: input.api_key },
+      body: { base_url: input.base_url, model_name: input.model_name, api_key: input.api_key, extra_headers: input.extra_headers ?? {} },
     });
     return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null, probe_mode: d.probe_mode === "mock" ? "mock" : "real" };
   },

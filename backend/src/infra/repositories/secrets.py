@@ -56,7 +56,10 @@ async def create_llm_config(user_id: str, req: dict[str, Any], probe: dict[str, 
          "m": req["model_name"], "s": req.get("secret_ref_id"),
          "cw": req["context_window_tokens"], "mo": req["max_output_tokens"],
          "to": req["timeout_ms"], "mr": req["max_retries"],
-         "tc": probe["supports_tool_calling"], "st": probe["supports_streaming"], "x": jsonb({})},
+         "tc": probe["supports_tool_calling"], "st": probe["supports_streaming"],
+         # extra_headers 存 extra_params_json（Provider 差异化参数位）：schema 层已禁 Authorization 等
+         # 保留头，密钥类凭据仍走 sre_user_secret 加密链，此处只放路由/租户类明文头
+         "x": jsonb({"extra_headers": req.get("extra_headers") or {}} if req.get("extra_headers") else {})},
     )
     return {"llm_config_id": lid}
 

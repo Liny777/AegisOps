@@ -1,9 +1,10 @@
 """请求模型（Pydantic，21 号 API 详设口径）。响应 DTO 由 service 组装 dict。"""
 from __future__ import annotations
 
+import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class WorkspaceAppItem(BaseModel):
@@ -92,6 +93,37 @@ class CreateSecretRequest(BaseModel):
     secret_value: str = Field(min_length=1)  # 明文只进这一次，落库即密文+指纹
 
 
+# 自定义出站 Header 校验（用户自带模型高级选项）：
+# - Authorization 禁用：API Key 走 user_secret 加密链（SEC-001），不许经 extra_params_json 明文旁路；
+# - Host/Content-Length/Transfer-Encoding/Connection 等由 HTTP 栈掌管，用户覆盖会破坏请求或绕过
+#   egress 的 base_url 判定（SSRF 辅助头同理拦 X-Forwarded-*）；
+# - 值禁 CR/LF（header 注入 fail early，而非等 httpx 抛错）。
+_HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9!#$%&'*+.^_|~-]{1,64}$")
+_FORBIDDEN_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "cookie", "content-type", "content-length",
+    "host", "transfer-encoding", "connection", "accept-encoding",
+    "x-forwarded-for", "x-forwarded-host", "x-forwarded-proto", "x-real-ip", "forwarded",
+})
+_MAX_EXTRA_HEADERS = 16
+
+
+def validate_extra_headers(v: dict[str, str]) -> dict[str, str]:
+    if len(v) > _MAX_EXTRA_HEADERS:
+        raise ValueError(f"自定义 Header 最多 {_MAX_EXTRA_HEADERS} 条")
+    out: dict[str, str] = {}
+    for name, value in v.items():
+        name = (name or "").strip()
+        if not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"非法 Header 名：{name!r}（仅限字母数字与 !#$%&'*+.^_|~- ，≤64 字符）")
+        if name.lower() in _FORBIDDEN_HEADERS:
+            raise ValueError(f"Header {name} 不允许自定义（鉴权走 API Key 字段，连接类头由系统掌管）")
+        value = str(value or "")
+        if "\r" in value or "\n" in value or len(value) > 2048:
+            raise ValueError(f"Header {name} 的值非法（禁换行，≤2048 字符）")
+        out[name] = value
+    return out
+
+
 class CreateLlmConfigRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
@@ -104,13 +136,22 @@ class CreateLlmConfigRequest(BaseModel):
     timeout_ms: int = 60000
     max_retries: int = 1
     supports_tool_calling: bool = True
+    # 高级选项：随每次 LLM 出站请求附带的自定义 Header（内网网关路由/租户标识等）。
+    # 明文存 extra_params_json——UI 已提示勿放密钥；密钥类凭据仍走 secret_ref_id 加密链。
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers)
 
 
 class TestConnectionRequest(BaseModel):
-    """用户自带模型「测试连接」（存前探测，不落库）：raw API Key 只在这一次请求内瞬时用于探测。"""
+    """用户自带模型「测试连接」（存前探测，不落库）：raw API Key 只在这一次请求内瞬时用于探测。
+    extra_headers 与保存后的真实调用同源携带——否则会出现「测通了但跑不通」。"""
     base_url: str = Field(min_length=1)
     model_name: str = Field(min_length=1)
     api_key: str = ""
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    _v_headers = field_validator("extra_headers")(validate_extra_headers)
 
 
 class TestModelAssetRequest(BaseModel):

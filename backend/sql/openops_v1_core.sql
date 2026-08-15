@@ -924,7 +924,7 @@ COMMENT ON COLUMN sre_user_llm_config.max_retries IS '模型调用重试次数';
 COMMENT ON COLUMN sre_user_llm_config.supports_tool_calling IS '是否支持 tool calling';
 COMMENT ON COLUMN sre_user_llm_config.supports_streaming IS '是否支持流式输出';
 COMMENT ON COLUMN sre_user_llm_config.supports_json_mode IS '是否支持 JSON mode，可空';
-COMMENT ON COLUMN sre_user_llm_config.extra_params_json IS 'Provider 差异化参数，不允许保存密钥';
+COMMENT ON COLUMN sre_user_llm_config.extra_params_json IS 'Provider 差异化参数（含 extra_headers：自定义出站 Header，schema 层禁 Authorization 等保留头），不允许保存密钥';
 COMMENT ON COLUMN sre_user_llm_config.status IS '状态：active / disabled / deleted';
 COMMENT ON COLUMN sre_user_llm_config.creation_date IS '创建时间';
 COMMENT ON COLUMN sre_user_llm_config.last_update_date IS '最后更新时间';

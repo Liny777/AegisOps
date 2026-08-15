@@ -55,12 +55,14 @@ async def _user_llm_spec(llm_config_id: str, user_id: str) -> dict[str, Any] | N
     if cfg is None or cfg["user_id"] != user_id or cfg.get("status") != "active":
         return None
     egress.check_llm_egress(cfg["base_url"])  # 每次调用边界复校（28.4）
+    extra_headers = (cfg.get("extra_params_json") or {}).get("extra_headers") or {}
     return {
         "provider": "openai_compatible",
         "model_id": cfg["model_name"],
         "display_name": cfg["display_name"],
         "base_url": _openai_base_url(cfg["base_url"]),
         "user_secret_ref_id": str(cfg["secret_ref_id"]),  # 用户 Secret 引用（不解密）
+        "extra_headers": extra_headers,  # 高级选项自定义出站 Header（spec 整体透传，子 Agent 自动继承）
         "is_user_llm": True,
     }
 
