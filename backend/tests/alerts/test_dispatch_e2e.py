@@ -91,7 +91,14 @@ def _drive_to_completed(client, run_id: str, timeout: float = 15.0) -> None:
     assert wait_until(probe, timeout=timeout, interval=0.1), "诊断任务未完成"
 
 
-def test_full_diagnosis_chain(client):
+def test_full_diagnosis_chain(client, monkeypatch):
+    # WeLink 完成通知（2026-08-16）：completed 收割后 fire-and-forget 一条，带会话链接
+    from infra.external import welink_client
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: notified.append((uid, data)))
+    monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.test")
+
     iid = _setup_instance(client)
     alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL", severity="fatal",
                                 app_id="APP-A", labels={"service": "pay-core"},
@@ -144,6 +151,16 @@ def test_full_diagnosis_chain(client):
     ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
                            params={"instance_id": iid}))["items"][0]
     assert ev["takeover_status"] == "done" and ev["alert_status"] == "assigned"
+
+    # WeLink 通知已派发：收件人=owner 工号，data 带标题与可点会话链接
+    import time as _t
+    for _ in range(50):  # to_thread fire-and-forget：给后台线程最多 1s
+        if notified:
+            break
+        _t.sleep(0.02)
+    assert notified and notified[0][0] == "0026demo01"
+    assert "MySQL 主库延迟>5s" in notified[0][1]
+    assert "https://openops.test/agent-runs/" in notified[0][1]
     assert ev["run_clickable"] is True and ev["run_id"] == run_id
     assert ev["user_feedback"] == "positive"
 
