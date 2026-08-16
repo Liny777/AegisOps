@@ -135,6 +135,65 @@ def test_child_updates_merge_into_leader_and_snapshot_main_task(board_env) -> No
     assert leader.rca["revision"] == 2
 
 
+def test_child_cannot_advance_step_or_conclude_the_board(board_env) -> None:
+    """子任务只并内容：并行子 Agent 自认为查完就报 step=5 曾把面板一步打成「诊断完成」。"""
+    board_env
+    leader = _st(task_id="tsk_leader", run_id="run_lead")
+    task_registry.put(leader)
+    child = _st(task_id="tsk_leader.diagnose-cafe0001", run_id="run_lead")
+    child.agent_key, child.leader_task_id = "diagnose", "tsk_leader"
+    task_registry.register_subtask(child)
+
+    _apply(leader, step=2, title="支付下单 P99 突增", step_summary="证据：P99 1.4s")
+    text = _apply(child, step=5, step_completed=True, step_summary="子 Agent 自认为收尾",
+                  conclusion="根因已确认，建议重启", facts=[{"text": "拓扑证据"}])
+
+    # 步骤/状态/结论一律不动；内容照常并入
+    assert leader.rca["status"] == "in_progress"
+    assert leader.rca["phaseLabel"] == "第2步·证据"
+    assert leader.rca["conclusion"] == ""
+    assert [f["text"] for f in leader.rca["facts"]] == ["拓扑证据"]
+    # 子小结不落位（否则会提前种在第5步上，等面板推进到 5 时突然冒出来）
+    assert leader.rca["step_summaries"] == {"2": "证据：P99 1.4s"}
+    assert "子任务只能提交内容" in text and "步骤推进" in text and "conclusion" in text
+    # 降权不是回退钳制，不得混报
+    assert "只能前进不能回退" not in text
+
+    # 主任务照常收尾（子任务的降权不污染 owner 权限）
+    _apply(leader, step=5, step_completed=True, conclusion="根因 H1 已确认，建议补连接回收配置。")
+    assert leader.rca["status"] == "concluded"
+
+
+def test_child_update_without_owner_board_lands_on_step1_not_concluded(board_env) -> None:
+    """owner 尚无模型面板时子任务先到：内容并入，但不伪造进度（落第1步、非闭环）。"""
+    board_env
+    leader = _st(task_id="tsk_leader2", run_id="run_lead2")
+    task_registry.put(leader)
+    child = _st(task_id="tsk_leader2.metric-cafe0002", run_id="run_lead2")
+    child.agent_key, child.leader_task_id = "metric", "tsk_leader2"
+    task_registry.register_subtask(child)
+
+    _apply(child, step=4, step_completed=True, facts=[{"text": "CPU 95%"}])
+    assert leader.rca["phaseLabel"] == "第1步·范围"
+    assert leader.rca["status"] == "in_progress"
+    assert [f["text"] for f in leader.rca["facts"]] == ["CPU 95%"]
+
+
+def test_child_content_only_update_has_no_demotion_notice(board_env) -> None:
+    """子任务老实只提内容（step=owner 现值）时不加降权噪音。"""
+    board_env
+    leader = _st(task_id="tsk_leader3", run_id="run_lead3")
+    task_registry.put(leader)
+    child = _st(task_id="tsk_leader3.log-cafe0003", run_id="run_lead3")
+    child.agent_key, child.leader_task_id = "log", "tsk_leader3"
+    task_registry.register_subtask(child)
+
+    _apply(leader, step=2, title="支付下单 P99 突增")
+    text = _apply(child, step=2, sources=[{"name": "log-agent", "status": "已完成", "tone": "good"}])
+    assert "子任务只能提交内容" not in text
+    assert leader.rca["sources"][0]["name"] == "log-agent"
+
+
 def test_first_model_call_discards_demo_board_but_continues_revision(board_env) -> None:
     emitted, _ = board_env
     st = _st()

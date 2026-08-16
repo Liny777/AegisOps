@@ -91,7 +91,8 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             return (f"Skill 「{skill_name}」是手册型技能（无可执行脚本）。{staged_note}"
                     f"请先阅读以下手册正文，按其中的指引使用可用工具完成任务；"
                     f"若该手册包含分步的诊断流程，每进入或完成一步都必须调用 update_diagnosis_board "
-                    f"上报进度与阶段产出，并附带 step_summary 一句话小结该步进展：\n\n{md[:cap]}{trunc}")
+                    f"上报进度与阶段产出，并附带 step_summary 一句话小结该步进展；必须逐步推进、"
+                    f"不得跳步（不要把中间步骤的产出并进一次收尾提交）：\n\n{md[:cap]}{trunc}")
         # 脚本型：entrypoint 指向的脚本必须真的在包里——缺失给结构化错误，而不是让 python 的 exit 2 出面
         if not any(tok in pkg["files"] for tok in str(pkg["entrypoint"]).split()):
             raise ApiError(Err.SKILL_PACKAGE_INVALID,

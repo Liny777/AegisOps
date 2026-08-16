@@ -521,13 +521,26 @@ _SKILL_PREFERENCE_RULE = (
     "- 当某个可用 Skill 的用途与当前任务匹配时，必须优先调用该 Skill（run_platform_skill）并严格按其步骤/流程执行，"
     "不要自行发挥；只有在没有任何匹配 Skill 时，才用通用工具（查询/命令/Read/Grep）自己诊断。\n"
 )
-# 主/子共享：诊断面板上报——update_diagnosis_board 主/子都注册（run 级单例面板，见 _build_toolkit），
-# 这是「模型漏调」的四层兜底之二（之一是工具 docstring，之三/四见 sandbox_skill 手册指引与 seed 角色 prompt）
-_BOARD_RULE = (
+# 诊断面板上报——update_diagnosis_board 主/子都注册（run 级单例面板，见 _build_toolkit），
+# 这是「模型漏调」的四层兜底之二（之一是工具 docstring，之三/四见 sandbox_skill 手册指引与 seed 角色 prompt）。
+# **按受众拆两版**（同本文件既有的「按受众拆块」纪律）：原为主/子共享一段，连子 Agent 都被教
+# 「诊断完成时以 step=5、step_completed=true 提交 conclusion」——主 Agent 还在第2步证据阶段，任何一个
+# 并行子 Agent 自认为查完就把 run 级单例面板一步打成「诊断完成」（内网现象：走到第2步就直接出根因报告）。
+# 服务端已在 rca_board 硬收窄子任务权限，这里同口径告知，省得模型反复撞墙浪费迭代预算。
+_BOARD_RULE_MAIN = (
     "- 执行诊断类任务（含按 Skill 手册的五步法流程执行）时，必须调用 update_diagnosis_board 把进度"
     "同步到用户界面：每进入一个新步骤调用一次（step=新步骤号），并把该步已取得的事实/假设/证据源等一并"
     "增量提交，同时用 step_summary 附上该步的一句话小结；诊断完成时以 step=5、step_completed=true 提交"
     " conclusion。内容必须来自本轮真实取得的数据，不得虚构。\n"
+    "- 面板必须按 1→2→3→4→5 逐步推进，每步各调用一次：禁止跳步，禁止把假设（3）、验证（4）的产出并进"
+    "一次 step=5 提交收尾。用户就是靠这条推进链看你的推理过程，跳步等于把假设与验证过程对用户隐藏。\n"
+)
+_BOARD_RULE_SUB = (
+    "- 执行诊断类任务时，用 update_diagnosis_board 把你本轮取得的事实（facts）/证据源（sources）/"
+    "假设（hypotheses）增量提交到用户界面的诊断面板，step 填你当前所处的步骤号即可。内容必须来自本轮"
+    "真实取得的数据，不得虚构。\n"
+    "- 你是被派发的子任务：面板的步骤推进、step_completed 与 conclusion 一律由主任务提交，"
+    "你提交也不会生效（平台会忽略），不要尝试用 step=5、step_completed=true 收尾整个诊断。\n"
 )
 # 主/子共享：安全护栏（子 Agent 可绑 recover_execute，同样需要知道审批要求——纵深防御）
 _SAFETY_RULES = (
@@ -540,7 +553,7 @@ _SAFETY_RULES = (
 _MAIN_ONLY_RULES = (
     "- 仅当本轮已取得的数值适合做趋势或对比时才调用 render_chart；不得为图表臆造数据。"
 )
-_PLATFORM_RULES = _RULES_HEADER + _SKILL_PREFERENCE_RULE + _BOARD_RULE + _SAFETY_RULES + _MAIN_ONLY_RULES
+_PLATFORM_RULES = _RULES_HEADER + _SKILL_PREFERENCE_RULE + _BOARD_RULE_MAIN + _SAFETY_RULES + _MAIN_ONLY_RULES
 
 # D 块：worker 汇报纪律（37 号老 roles.yaml 口径翻译）——拼进每个 sub agent 的 system_prompt。
 # 原住 infra.seed（DB 播种模块）却只被运行时消费，与 _PLATFORM_RULES 不同源；迁来与之并置。
@@ -574,7 +587,8 @@ def _build_system_prompt(st: TaskState) -> str:
 
 
 def _build_sub_system_prompt(child: TaskState, sub: dict[str, Any]) -> str:
-    """装配子 Agent 的 system_prompt：画像人设 + 主/子共享平台规则 + 汇报纪律。
+    """装配子 Agent 的 system_prompt：画像人设 + 子 Agent 版平台规则（面板规则用 _BOARD_RULE_SUB：
+    只提内容、不推进不收尾）+ 汇报纪律。
 
     顺序刻意：Skill 规则**先于**汇报纪律，否则纪律里的「禁止无差别调用通用工具」会被读成
     对 Skill 的抑制。skill_hint 必须按 **child** 的技能面重新校验——子技能面是 leader 的子集，
@@ -582,7 +596,7 @@ def _build_sub_system_prompt(child: TaskState, sub: dict[str, Any]) -> str:
     """
     # rstrip：_SAFETY_RULES 末尾的 \n 与 hint 子句开头的 \n 会叠出空行（主 Agent 侧因
     # _MAIN_ONLY_RULES 不带尾换行而无此问题）——对齐两边的行距
-    prompt = str(sub["role"]) + (_RULES_HEADER + _SKILL_PREFERENCE_RULE + _BOARD_RULE + _SAFETY_RULES).rstrip("\n")
+    prompt = str(sub["role"]) + (_RULES_HEADER + _SKILL_PREFERENCE_RULE + _BOARD_RULE_SUB + _SAFETY_RULES).rstrip("\n")
     if child.skill_hint and child.skill_hint in (child.available_skills or {}):
         prompt += _skill_hint_clause(child.skill_hint)
     # 独立小节标题：纪律原本紧贴规则列表，读起来像上一条 bullet 的续行——本次修复的要害正是
@@ -714,7 +728,11 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         - 每进入一个新步骤调用一次（step=新步骤号），并把已取得的事实/假设等产出一并带上；
         - 诊断完成时最后调用一次：step=5、step_completed=true，并填写 conclusion（诊断结论）。
         - 增量合并：未传的字段保留上次的值，传了的字段整体替换；每次只需提交新增或变化的内容。
-        - 步骤只能前进不能回退；内容必须来自本轮真实取得的数据，不得虚构。
+        - 必须按 1→2→3→4→5 逐步推进、每步各一次：步骤只能前进不能回退，且不得跳步——
+          不要把假设（3）、验证（4）的产出并进一次 step=5 收尾。
+        - 若你是被派发的子任务：只提交本轮取得的内容（facts/sources/hypotheses），步骤推进、
+          step_completed 与 conclusion 由主任务负责，你提交也不会生效。
+        - 内容必须来自本轮真实取得的数据，不得虚构。
 
         Args:
             step: 当前所处步骤号，1..5（1=范围 2=证据 3=假设 4=验证 5=结论）。

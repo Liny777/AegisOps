@@ -2,6 +2,9 @@
 
 模型经 update_diagnosis_board 自报进度，本模块负责「不信任模型」的那一半：
 - owner=主任务：子 Agent 的更新合并进 leader 的 `st.rca` → get_state 恢复与快照零改动生效；
+- 子任务只并内容：步骤推进、step_completed、conclusion、step_summary 只认 owner 主任务的提交——
+  面板是 run 级单例，被派发的子 Agent 自认为「我这块查完了」就报 step=5 会把整块面板一步打成
+  「诊断完成」（内网现象：走到第2步证据就直接出根因报告）；
 - revision 服务端权威自增（契约拒收模型提交的 revision）；且以 owner.rca 现值为基——
   demo 剧本先跑过时内容整体丢弃、revision 仍接续，保证前端「同 task revision 单调」守卫不掉更新；
 - 步骤单调钳制（宽松）：只前进不回退，回退不报错（省 ReAct 迭代预算），返回文本注明；允许跳步；
@@ -93,6 +96,23 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
 
     # 内容底座只认模型面板；demo 剧本一经模型接管即整体丢弃、从骨架起步（真流程不得掺假数据）
     prev = owner.rca if (owner.rca_source == "model" and isinstance(owner.rca, dict)) else None
+
+    # 子任务降权：被派发的 Agent 只能提交内容，步骤推进 / step_completed / conclusion / step_summary
+    # 一律由 owner 主任务提交。身份判定用 leader_task_id 而非 `st is not owner`——leader 已注销时
+    # board_owner 退回自身（防御分支），那条路径下调用方仍是子任务，同样不得伪造闭环。
+    # step_summary 一并降权：它是「主 Agent 对该步的总结」，放行会让报 step=5 的子 Agent 把小结提前
+    # 种在第5步上，等面板真推进到 5 时突然冒出来（正是「未开始的步已有产出」那类矛盾）。
+    demoted: list[str] = []
+    if st.leader_task_id:
+        child_step, child_completed = _progress_of(prev.get("steps")) if prev else (1, False)
+        if (args["step"], args["step_completed"]) > (child_step, child_completed):
+            demoted.append("步骤推进")
+        if args.pop("conclusion", None):
+            demoted.append("conclusion")
+        if args.pop("step_summary", None):
+            demoted.append("step_summary")
+        args["step"], args["step_completed"] = child_step, child_completed
+
     merged: dict[str, Any] = dict(_SKELETON)
     if prev:
         merged.update({k: prev[k] for k in _MERGE_KEYS if k in prev})
@@ -157,4 +177,7 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
     text = board_result_summary(merged)
     if clamped:
         text += f"（注意：步骤只能前进不能回退，本次提交的 step={args['step']} 未生效，面板保持{merged['phaseLabel']}）"
+    if demoted:
+        text += (f"（注意：子任务只能提交内容，本次的 {'、'.join(demoted)} 未生效——"
+                 f"步骤推进与诊断收尾由主任务负责，面板保持{merged['phaseLabel']}）")
     return text

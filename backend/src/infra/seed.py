@@ -118,8 +118,9 @@ TEMPLATE_CONTENT = {
         {"key": "inspect", "label": "巡检", "role": "基于应用范围查看健康状态、异常信号与风险，只做查询不做变更。",
          "skills": ["inspection"], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
         {"key": "diagnose", "label": "诊断",
-         "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行；按五步法诊断时，"
-                 "每进入或完成一步调用 update_diagnosis_board 上报进度与阶段产出。",
+         "role": "结合告警/指标/日志/链路/拓扑判断问题边界，输出证据与假设排行；用 "
+                 "update_diagnosis_board 把本轮取得的事实/证据源/假设增量提交到诊断面板，"
+                 "步骤推进与诊断收尾（step_completed/conclusion）由主任务负责，你提交不会生效。",
          "skills": [], "mcp_tools": ["query_resource"], "max_iters": 20, "tool_result_limit": 24000},
         {"key": "recover", "label": "恢复", "role": "执行受控恢复动作：先核对目标与影响面，恢复类工具调用需人工批准后执行。",
          "skills": [], "mcp_tools": ["recover_execute"], "max_iters": 10, "tool_result_limit": 24000},
