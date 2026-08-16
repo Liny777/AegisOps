@@ -64,6 +64,13 @@ class TaskState:
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled
     approval_id: str | None = None
+    # 假设 checkpoint 握手（诊断 step>=3 首次上报后暂停等用户补充假设/继续；decide 置位，
+    # diagnosis_checkpoint 等待）。三件套形制同 approval_*；活对象不落影子表。
+    checkpoint_ev: asyncio.Event = field(default_factory=asyncio.Event)
+    checkpoint_result: dict[str, Any] | None = None  # {"action": continue|add_hypothesis|hold, "text": str}
+    checkpoint_id: str | None = None  # 非 None = 卡片挂起中（get_state 据此投影 pending）
+    checkpoint_deadline: str | None = None  # ISO 时刻；前端倒计时按 deadline-now 展示（服务端权威）
+    checkpoint_done: bool = False  # 本 task 已弹过（只弹一次；补假设后重交 step=3 不再暂停，防自我死锁）
     # D 块：sub_agents 编排
     agent_key: str = "main"  # 本 TaskState 归属 agent（子 task=角色 key；事件 payload 携带供前端分组）
     agent_label: str = "主 Agent"  # 活动栏展示名；子 task 取模板 sub_agents[].label

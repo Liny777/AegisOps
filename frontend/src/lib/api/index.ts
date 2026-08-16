@@ -167,6 +167,13 @@ export interface OpenOpsApi {
   cancelTask(taskId: string): Promise<void>;
   closeRun(runId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
+  /** 假设 checkpoint 决策：continue/add_hypothesis/hold（hold=开始输入，冻结服务端倒计时）。 */
+  decideDiagnosisCheckpoint(
+    runId: string,
+    checkpointId: string,
+    action: "continue" | "add_hypothesis" | "hold",
+    text?: string,
+  ): Promise<void>;
   selectModel(runId: string, model: string): Promise<void>;
   /** 脱敏活动事件游标页；before 为空时取最新一页。 */
   getActivityEvents(
@@ -559,6 +566,12 @@ const realApi: OpenOpsApi = {
     await apiFetch(`/openops/v1/approvals/${id}:decide`, {
       method: "POST",
       body: { client_request_id: crid(), decision },
+    });
+  },
+  async decideDiagnosisCheckpoint(runId, checkpointId, action, text) {
+    await apiFetch(`/openops/v1/agent-runs/${runId}/diagnosis-checkpoint:decide`, {
+      method: "POST",
+      body: { client_request_id: crid(), checkpoint_id: checkpointId, action, text: text ?? "" },
     });
   },
   async selectModel(runId, model) {
@@ -1417,6 +1430,7 @@ const mockApi: OpenOpsApi = {
   cancelTask: () => delay(undefined as unknown as void),
   closeRun: () => delay(undefined as unknown as void).then(() => invalidateConversationHistory()),
   decideApproval: () => delay(undefined as unknown as void),
+  decideDiagnosisCheckpoint: () => delay(undefined as unknown as void),
   selectModel: () => delay(undefined as unknown as void),
   getActivityEvents: () => delay(normalizeActivityPage({
     items: [{

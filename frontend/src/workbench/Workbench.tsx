@@ -13,6 +13,12 @@ import { mockRcaFinal, mockRecoveryClosureEvents } from "../lib/api/mockData";
 import { parseRcaCard } from "../lib/rca/schema";
 import { initialRcaGuard, nextRcaGuard, shouldApplyRca, type RcaGuard } from "../lib/rca/model";
 import { deriveRecoveryState } from "../lib/rca/recovery";
+import {
+  applyCheckpointClosed,
+  applyCheckpointExtended,
+  checkpointFromOpened,
+  type CheckpointCardState,
+} from "../lib/checkpoint/model";
 import type {
   ActivityNode,
   ChatMessage,
@@ -25,6 +31,8 @@ import type {
 } from "../lib/api/types";
 import { newSendNonce, type PendingSend } from "./copilot/programmaticSend";
 import { HitlCard } from "./HitlCard";
+import { HypothesisCheckpointCard } from "./HypothesisCheckpointCard";
+import { CopilotCheckpointFloat } from "./copilot/CopilotCheckpointFloat";
 import { Composer } from "./Composer";
 import { resolveModelLabel } from "./modelLabel";
 import { ActivityRail } from "./ActivityRail";
@@ -163,6 +171,8 @@ export function Workbench({
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
+  // 假设 checkpoint 卡（诊断 step=3 后弹出：添加假设/继续排查/超时自动继续；服务端权威计时）
+  const [checkpoint, setCheckpoint] = useState<CheckpointCardState | undefined>(undefined);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
   // rcaGuard 分段键（board_task_id ?? task_id）的可渲染镜像：ref 不触发重渲染，恢复节点
   // 的段过滤需要它进 useMemo 依赖。与 rcaGuardRef 在同四处赋值点同步 set。
@@ -458,12 +468,32 @@ export function Workbench({
         );
         break;
       }
+      // 假设 checkpoint：opened 弹卡；extended（hold 冻结倒计时）更新 deadline；closed 定格
+      // 结果态后按 id 守卫计时器淡出（与审批卡同口径）。倒计时纯展示，超时判定在服务端。
+      case "openops.diagnosis.checkpoint.opened": {
+        const next = checkpointFromOpened(p);
+        if (next) setCheckpoint(next);
+        break;
+      }
+      case "openops.diagnosis.checkpoint.extended":
+        setCheckpoint((cur) => applyCheckpointExtended(cur, p));
+        break;
+      case "openops.diagnosis.checkpoint.closed": {
+        setCheckpoint((cur) => applyCheckpointClosed(cur, p));
+        const cid = String(p.checkpoint_id ?? "");
+        window.setTimeout(
+          () => setCheckpoint((cur) => (cur && (!cid || cur.checkpointId === cid) && cur.status !== "pending" ? undefined : cur)),
+          HITL_RESULT_LINGER_MS,
+        );
+        break;
+      }
       case "openops.task.completed":
         setTaskStatus("completed");
         taskStatusRef.current = "completed";
         setQueuePosition(null);
         aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
         observerStore.dispatch({ type: "task_terminal" }); // 直播 → finalizing（非 live 时 no-op）
+        setCheckpoint(undefined); // 任务终态：挂起的 checkpoint 卡随之撤下（run 已不在等）
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
         break;
       case "openops.task.failed":
@@ -472,6 +502,7 @@ export function Workbench({
         setQueuePosition(null);
         aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
         observerStore.dispatch({ type: "task_terminal" });
+        setCheckpoint(undefined);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.task.cancelled":
@@ -480,6 +511,7 @@ export function Workbench({
         setQueuePosition(null);
         aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
         observerStore.dispatch({ type: "task_terminal" });
+        setCheckpoint(undefined);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.rca.updated": {
@@ -574,6 +606,19 @@ export function Workbench({
     if (pending.length) setHitl(approvalToHitl(pending[0]));
     else if (replaceSession) setHitl(undefined);
     else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
+
+    // 假设 checkpoint 恢复：/state.diagnosis_checkpoint 是内存挂起态投影（刷新后倒计时按
+    // deadline-now 续算）。快照缺失时：换会话清空；同 Run resync 只清仍 pending 的旧卡
+    // （结果态短暂驻留由 linger 计时器收尾，不在这里打断）。
+    const snapshotCheckpoint = d.diagnosis_checkpoint as Record<string, unknown> | null | undefined;
+    if (snapshotCheckpoint?.checkpoint_id) {
+      const restored = checkpointFromOpened(snapshotCheckpoint);
+      if (restored) setCheckpoint((cur) => (cur && cur.checkpointId === restored.checkpointId ? cur : restored));
+    } else if (replaceSession) {
+      setCheckpoint(undefined);
+    } else {
+      setCheckpoint((cur) => (cur && cur.status !== "pending" ? cur : undefined));
+    }
 
     // 诊断面板恢复：`/state` 顶层 rca 与 rca.updated payload 同形。切换会话（replaceSession）
     // 无条件恢复并重置守卫；同 Run resync/refresh 仅 revision 守卫通过才覆盖，且
@@ -687,6 +732,7 @@ export function Workbench({
     if (API_MODE !== "real" || (!instanceId && !explicitRunId)) {
       setMessages(demo.messages);
       setHitl(demo.hitl);
+      setCheckpoint(undefined);
       setRca(demo.rca);
       rcaGuardRef.current = initialRcaGuard();
       // 镜像同步：demo 板无任务归属（boardTaskId=null → 恢复推导不过滤，吃下 demo 快照全部事件）
@@ -835,6 +881,13 @@ export function Workbench({
     }
     if (API_MODE !== "real") {
       setTaskStatus("running");  // mock 也走按钮两态，便于演示
+      // 假设 checkpoint 演示（e2e/手验专用，默认关不动既有 mock 时序）：
+      // localStorage 置 openops.mock.checkpoint=1 后，发送即弹卡（8s 假 deadline）。
+      // mock 无服务端事件，超时/决策翻态全靠本端（onDecide 乐观翻态 + onExpired 本地判超时）。
+      if (window.localStorage.getItem("openops.mock.checkpoint") === "1") {
+        setCheckpoint({ checkpointId: `ckpt-demo-${Date.now()}`,
+                        deadlineAt: new Date(Date.now() + 8_000).toISOString(), status: "pending" });
+      }
       // 诊断两段式推进：发送即回到进行中变体，900ms 后 mockRcaFinal() 定格闭环
       // ——mock/e2e 可完整演示「实时步骤 → 五步全绿定格」全程。
       if (demo.rca) setRca(demo.rca);
@@ -931,6 +984,32 @@ export function Workbench({
       HITL_RESULT_LINGER_MS,
     );
   }, [hitl]);
+
+  // 假设 checkpoint 决策（本端点击）：hold 只冻结服务端倒计时（不翻态，等 extended 事件更新
+  // deadline）；continue/add_hypothesis 乐观翻结果态 + linger 淡出，服务端 closed 事件幂等兜底。
+  const resolveCheckpoint = useCallback((action: "continue" | "add_hypothesis" | "hold", text?: string) => {
+    if (!checkpoint) return;
+    const id = checkpoint.checkpointId;
+    const rid = activeRunRef.current;
+    if (API_MODE === "real" && rid) void api.decideDiagnosisCheckpoint(rid, id, action, text);
+    if (action === "hold") return;
+    setCheckpoint((cur) => (cur && cur.checkpointId === id
+      ? { ...cur, status: action === "continue" ? "continued" : "added" }
+      : cur));
+    window.setTimeout(
+      () => setCheckpoint((cur) => (cur && cur.checkpointId === id ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, [checkpoint]);
+
+  // mock 专用：倒计时归零本地翻超时态（real 由服务端 closed 事件定格，不传此回调）
+  const expireCheckpointLocally = useCallback(() => {
+    setCheckpoint((cur) => (cur && cur.status === "pending" ? { ...cur, status: "timed_out" } : cur));
+    window.setTimeout(
+      () => setCheckpoint((cur) => (cur && cur.status !== "pending" ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, []);
 
   const running = taskStatus === "running";
 
@@ -1051,6 +1130,15 @@ export function Workbench({
           <AlertTakeoverProvider vm={alertTakeover} enabled={runStatus === "active"}>
             <AlertTakeoverSlot />
           </AlertTakeoverProvider>
+          {checkpoint ? (
+            <HypothesisCheckpointCard
+              key={checkpoint.checkpointId}
+              checkpoint={checkpoint}
+              rca={rca}
+              onDecide={resolveCheckpoint}
+              onExpired={API_MODE === "real" ? undefined : expireCheckpointLocally}
+            />
+          ) : null}
           {running ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: color.textSubtle, fontSize: 12.5 }}>
               <Icon name="loader-2" size={14} color={color.brand} spin />Agent 正在调查…（工具细节见右侧活动栏）
@@ -1093,7 +1181,12 @@ export function Workbench({
       {/* 面板 flex:1 → 排队条挂在其后即贴着输入框下沿（用户刚打完字，视线就在这儿） */}
       {queueBanner}
       {runStatus === "active" && shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
-        ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+        ? (
+          <>
+            <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+            <CopilotCheckpointFloat checkpoint={checkpoint} rca={rca} onDecide={resolveCheckpoint} />
+          </>
+        )
         : null}
     </div>
   ) : fallbackChat;

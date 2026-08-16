@@ -217,6 +217,14 @@ def sanitize_activity_payload(
     if event == "rca.updated":
         out.update(_safe_rca(source))
 
+    if event.startswith("diagnosis.checkpoint."):
+        # 假设 checkpoint（opened/extended/closed）：前端卡片与倒计时全靠这些标量驱动，
+        # 不进白名单会被 deny-by-default 剥掉、卡片渲染不出来。用户输入的假设文本不进事件
+        # （只回注模型工具返回值），payload 仅带 hypothesis_chars 计数
+        for key in ("checkpoint_id", "deadline_at", "action", "step",
+                    "timeout_seconds", "timed_out", "hypothesis_chars"):
+            _copy_scalar(source, out, key, limit=200)
+
     if event == "workspace.admin_created":
         # 管理员代查审计：哪个 APPID 被手输纳入范围是事件核心，必须在管理台可见
         for key in ("manual_app_ids", "app_ids"):
