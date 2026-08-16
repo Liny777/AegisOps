@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import { isAbortError } from "../lib/api/singleFlight";
 import type { Skill } from "../lib/api/types";
 import { alertsApi, subscribeAlerts } from "./api";
+import { deriveTemplateCategories, FALLBACK_CATEGORIES, SEVERITY_LABEL, SEVERITY_ORDER, SEVERITY_TONE } from "./constants";
 import type {
   AlertEventRow,
   AlertEventStatus,
@@ -16,17 +17,12 @@ import type {
   AlertSeverity,
 } from "./types";
 
-const SEVERITY_LABEL: Record<AlertSeverity, string> = { fatal: "致命", critical: "严重", warning: "普通", info: "提示" };
-const SEVERITY_TONE: Record<AlertSeverity, Tone> = { fatal: "danger", critical: "warning", warning: "neutral", info: "neutral" };
-const SEVERITY_ORDER: AlertSeverity[] = ["fatal", "critical", "warning", "info"];
 /** 第二步预览的告警状态徽标（AlertsPage 有同款映射但未导出，就地三行不跨文件掏）。 */
 const EVENT_STATUS_META: Record<AlertEventStatus, { label: string; tone: Tone }> = {
   unassigned: { label: "未分派", tone: "neutral" },
   assigned: { label: "已分派", tone: "warning" },
   closed: { label: "已关闭", tone: "good" },
 };
-/** payload 未到位时类型下拉的兜底档（与模板三类一致）。 */
-const FALLBACK_CATEGORIES = ["MySQL", "PostgreSQL", "Docker"];
 
 /** 表格网格列：☑ | 规则名称 | 策略类型 | 告警级别 | 提示词 | 操作 | 启用 */
 const GRID_COLS = "30px minmax(150px, 1.1fr) 104px 158px minmax(170px, 1.5fr) 96px 56px";
@@ -95,12 +91,8 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
   const rules = cfg?.rules ?? [];
   const enabledCount = rules.filter((r) => r.enabled).length;
 
-  const categories = useMemo(() => {
-    if (!payload) return FALLBACK_CATEGORIES;
-    const seen: string[] = [];
-    for (const t of payload.templates) if (!seen.includes(t.category)) seen.push(t.category);
-    return seen;
-  }, [payload]);
+  const categories = useMemo(
+    () => (payload ? deriveTemplateCategories(payload) : FALLBACK_CATEGORIES), [payload]);
 
   // 本地模糊搜索：名称 / 类型 / 级别（中文标签也可搜）
   const q = search.trim().toLowerCase();
@@ -356,11 +348,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
   onClose: () => void;
   onSubmit: (draft: RuleDraft) => void;
 }) {
-  const categories = useMemo(() => {
-    const seen: string[] = [];
-    for (const t of payload.templates) if (!seen.includes(t.category)) seen.push(t.category);
-    return seen;
-  }, [payload.templates]);
+  const categories = useMemo(() => deriveTemplateCategories(payload), [payload.templates]);
 
   const [name, setName] = useState(rule?.name ?? "");
   // 类型多选：编辑回填规则已存清单；新建默认选第一类（与旧单选的初始态一致）

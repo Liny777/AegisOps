@@ -6,11 +6,13 @@ import { AppShell } from "./layout/AppShell";
 import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
 import { api } from "./lib/api";
 import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
+import { captureAlertContext } from "./lib/alertEntry";
 import { studioRoutes } from "./studio/entry";  // 垂直切片自注册路由（懒加载在切片内部）
 import { alertsRoutes } from "./alerts/entry";  // 7x24 告警接管切片（同律：入口只有 lazy 与常量）
 
-// 外链 ?q= 捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
+// 外链 ?q= / 告警直达三参捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
 captureAutoQuestion();
+captureAlertContext();
 
 // 路由级 code splitting（S1）：对话主链路（Workbench/AppShell）留主包，
 // 低频面（设置/管理台/初始化向导）按需加载——主 chunk 曾 >500KB。

@@ -19,6 +19,7 @@ from alerts.schemas import (
     BatchRulesRequest,
     CreateRuleRequest,
     DeleteRuleRequest,
+    EnsureRuleRequest,
     UpdateRuleRequest,
 )
 from domain.errors import ApiError, Err
@@ -271,6 +272,158 @@ async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str,
         return await idempotency.commit(uid, "alert_rule_create", req.client_request_id, result)
     except Exception:
         await idempotency.rollback(uid, "alert_rule_create", req.client_request_id)
+        raise
+
+
+def _effective_prompt(p: str | None) -> str:
+    """prompt 归一判等口径：空白 ≡ 系统默认（与 dispatcher 派发时 rule_prompt or
+    DEFAULT_RULE_PROMPT 同源——归一后相等的两条规则派发行为完全一致，才可合并）。"""
+    return (p or "").strip() or DEFAULT_RULE_PROMPT
+
+
+def _is_generic(match: dict[str, Any]) -> bool:
+    """覆盖/合并资格门槛：strategies/appids/keywords/label_selectors 全空的「纯类型×级别」
+    规则。任一维非空只匹配子集，判成已覆盖会漏告警——宁新建不误判。"""
+    return (not [s for s in (match.get("strategies") or []) if s]
+            and not [a for a in (match.get("appids") or []) if a]
+            and not [k for k in (match.get("keywords") or []) if k]
+            and not (match.get("label_selectors") or {}))
+
+
+async def _pick_available_name(instance_id: str, requested: str) -> str:
+    """重名自动后缀 -2..-20（截断 base 保总长 ≤120）；耗尽 400 让用户手动起名。"""
+    if not await repo.rule_name_exists(instance_id, requested):
+        return requested
+    for i in range(2, 21):
+        suffix = f"-{i}"
+        candidate = requested[: 120 - len(suffix)] + suffix
+        if not await repo.rule_name_exists(instance_id, candidate):
+            return candidate
+    raise ApiError(Err.VALIDATION_FAILED, "规则名冲突过多，请手动指定名称")
+
+
+async def ensure_rule(user: dict[str, Any], req: EnsureRuleRequest) -> dict[str, Any]:
+    """深链进站收口（rules:ensure）：查覆盖 → 可合并则合并 → 否则新建，单端点三态决策。
+
+    覆盖/合并只看 _is_generic 规则；categories 读取复用 matcher.rule_categories
+    （legacy 单值 category 与匹配面同一套归一，索引/深链两处不许分叉）。
+    """
+    import copy
+
+    from alerts.matcher import rule_categories
+
+    await _require_takeover_grant(user)
+    uid = user["user_id"]
+    inst = _owner_instance(await agent_teams.get_instance(req.agent_team_instance_id), uid)
+    instance_id = req.agent_team_instance_id
+    cached = await idempotency.begin(uid, "alert_rule_ensure", req.client_request_id,
+                                     req.model_dump(exclude={"client_request_id"}))
+    if cached is not None:
+        return cached
+    try:
+        cats = _check_categories(req.categories)
+        if len(cats) != 1:  # schema 留宽（与 CreateRuleRequest 同形），本期语义收单值
+            raise ApiError(Err.VALIDATION_FAILED, "深链接管本期仅支持单个策略类型")
+        category = cats[0]
+        s_req = set(_check_ui_severities(req.severities))
+        if not s_req:
+            raise ApiError(Err.VALIDATION_FAILED, "至少选择一个告警级别")
+        rules = await repo.list_rules(instance_id)
+
+        # ---- already_covered：首条「不限或包含请求面」的 generic 启用规则，零写库 ----
+        for r in rules:
+            match = r.get("match_json") or {}
+            if not (bool(r["enabled"]) and _is_generic(match)):
+                continue
+            r_cats = set(rule_categories(match))
+            r_sevs = set(match.get("severities") or [])
+            if (not r_cats or category in r_cats) and (not r_sevs or s_req <= r_sevs):
+                prompt_ignored = _effective_prompt(req.prompt) != _effective_prompt(r.get("prompt"))
+                log.info("[alerts][ensure] 实例 %s 已有覆盖规则「%s」（category=%s sev=%s），不写库",
+                         instance_id, r["rule_name"], category, sorted(s_req))
+                result = {"outcome": "already_covered", "rule": rule_out(r), "renamed": False,
+                          "requested_name": req.name, "merge_detail": None,
+                          "prompt_ignored": prompt_ignored}
+                return await idempotency.commit(uid, "alert_rule_ensure",
+                                                req.client_request_id, result)
+
+        # ---- merged：类别命中且级别有限且 prompt 归一相等 → 并级别进类别面最小的候选 ----
+        candidates = [
+            r for r in rules
+            if bool(r["enabled"]) and _is_generic(r.get("match_json") or {})
+            and category in rule_categories(r.get("match_json") or {})
+            and (r.get("match_json") or {}).get("severities")
+            and _effective_prompt(req.prompt) == _effective_prompt(r.get("prompt"))
+        ]
+        if candidates:
+            # min 取首个最小者：list_rules 按 creation_date 升序，类别面同宽时并入最老规则
+            target = min(candidates,
+                         key=lambda r: len(rule_categories(r.get("match_json") or {})))
+            before = list((target.get("match_json") or {}).get("severities") or [])
+            after = [s for s in SEVERITY_ORDER if s in (set(before) | s_req)]
+            added = [s for s in after if s not in before]
+            new_match = copy.deepcopy(target.get("match_json") or {})
+            new_match["severities"] = after
+            rid = str(target["alert_rule_id"])
+            await repo.update_rule(rid, name=target["rule_name"],
+                                   description=target.get("description") or "",
+                                   match=new_match, prompt=target.get("prompt") or "",
+                                   enabled=True, by=uid)
+            await audit.insert_event(
+                audit_trace_id=str(inst["agent_team_instance_id"]),
+                event_type="alert.rule_updated", user_id=uid, instance_id=instance_id,
+                action="merge", actor_type="user",
+                payload_redacted={"via": "rules_ensure", "rule_id": rid,
+                                  "rule_name": target["rule_name"], "category": category,
+                                  "severities_before": before, "severities_after": after,
+                                  "added_severities": added})
+            row = await repo.get_rule(rid)
+            result = {"outcome": "merged", "rule": rule_out(row or target), "renamed": False,
+                      "requested_name": req.name,
+                      "merge_detail": {"severities_before": before, "severities_after": after,
+                                       "added_severities": added},
+                      "prompt_ignored": False}
+            return await idempotency.commit(uid, "alert_rule_ensure",
+                                            req.client_request_id, result)
+
+        # ---- created：预查起名 + 唯一索引竞态兜底 ----
+        import psycopg.errors  # infra.db 不包异常，ux_alert_rule_inst_name 冲突原样透传可识别
+
+        match = {"categories": [category],
+                 "severities": [s for s in SEVERITY_ORDER if s in s_req],
+                 "strategies": [], "appids": [], "label_selectors": {}, "keywords": [],
+                 "keyword_mode": "any"}
+        final_name, rid = req.name, None
+        for _ in range(3):  # 预查通过后仍可能并发撞唯一索引，重 pick 重试至多 2 次
+            final_name = await _pick_available_name(instance_id, req.name)
+            try:
+                rid = await repo.create_rule(
+                    instance_id=instance_id, owner=uid, name=final_name,
+                    description=req.description, source="custom", match=match,
+                    prompt=req.prompt.strip(), enabled=True, by=uid)
+                break
+            except psycopg.errors.UniqueViolation:
+                continue
+        if rid is None:
+            raise ApiError(Err.VALIDATION_FAILED, "规则名冲突过多，请手动指定名称")
+        await audit.insert_event(
+            audit_trace_id=str(inst["agent_team_instance_id"]), event_type="alert.rule_created",
+            user_id=uid, instance_id=instance_id, action="create", actor_type="user",
+            payload_redacted={"rule_name": final_name, "categories": [category],
+                              "strategies": 0, "via": "rules_ensure",
+                              "requested_name": req.name, "renamed": final_name != req.name})
+        row = await repo.get_rule(rid)
+        if row is None:  # 回读落空（并发硬删/副本滞后）：用刚落库的入参补出参，前端结果卡不能吃 null
+            row = {"alert_rule_id": rid, "agent_team_instance_id": instance_id,
+                   "rule_name": final_name, "description": req.description,
+                   "rule_source": "custom", "match_json": match,
+                   "prompt": req.prompt.strip(), "enabled": True}
+        result = {"outcome": "created", "rule": rule_out(row),
+                  "renamed": final_name != req.name, "requested_name": req.name,
+                  "merge_detail": None, "prompt_ignored": False}
+        return await idempotency.commit(uid, "alert_rule_ensure", req.client_request_id, result)
+    except Exception:
+        await idempotency.rollback(uid, "alert_rule_ensure", req.client_request_id)
         raise
 
 

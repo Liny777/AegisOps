@@ -22,6 +22,19 @@ class CreateRuleRequest(BaseModel):
     source: Literal["template", "custom"] = "custom"
 
 
+class EnsureRuleRequest(BaseModel):
+    """深链进站收口（rules:ensure）：查覆盖→可合并则合并→否则新建（重名自动后缀）。
+    categories 与 CreateRuleRequest 同形留宽，service 强制本期单类型；不收 enabled（恒开）
+    与 source（恒 custom）——深链产物必须立即生效且来源可辨识。"""
+    client_request_id: str = Field(min_length=1)
+    agent_team_instance_id: str = Field(min_length=1)
+    name: str = Field(min_length=1, max_length=120)
+    categories: list[str] = Field(min_length=1, max_length=10)
+    severities: list[str] = Field(min_length=1, max_length=3)
+    prompt: str = Field(default="", max_length=4000)
+    description: str = Field(default="", max_length=500)
+
+
 class UpdateRuleRequest(BaseModel):
     """部分更新：None = 不改该字段。"""
     client_request_id: str = Field(min_length=1)

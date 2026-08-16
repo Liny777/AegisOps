@@ -7,6 +7,8 @@
  * 写操作直接改本模块内存数组；invalidateAlerts 的触发在 api.ts 的 mock 实现里（本文件不
  * 回引 api.ts，避免模块环）。
  */
+import { ApiError } from "../lib/api/client";
+import { SEVERITY_ORDER } from "./constants";
 import type {
   AlertEventWire,
   AlertEventStatus,
@@ -20,12 +22,15 @@ import type {
   AlertSeverity,
   AlertSummary,
   AlertTakeoverStatus,
+  EnsureRuleInput,
+  EnsureRuleResult,
   IncidentStatus,
   NewRuleInput,
   UserFeedback,
 } from "./types";
 
-/* ------------------------- 规则模板字典（3 类 × 3 条） ------------------------- */
+/* ------------------- 规则模板字典（3 类 × 3 条 + EKS 1 条） ------------------- */
+// EKS 只有模板、不预置规则——留给 rules:ensure 的 created 路径演示（其余三类各有存量规则）。
 export const mockRuleTemplates = [
   { category: "MySQL", name: "资源饱和标准监控", description: "CPU / 内存 / 磁盘 IO 等资源饱和类告警，自动接管并定位瓶颈来源。", keywords: ["cpu_usage", "disk_io"] },
   { category: "MySQL", name: "主从延迟监控", description: "主从复制延迟超阈值告警，自动核对复制链路与大事务。", keywords: ["replication_lag"] },
@@ -36,6 +41,7 @@ export const mockRuleTemplates = [
   { category: "Docker", name: "容器重启监控", description: "容器反复重启告警，自动拉取退出码与最近变更。", keywords: ["restart_count"] },
   { category: "Docker", name: "资源限制监控", description: "容器触及 CPU/内存限额告警，自动核对限额与实际用量。", keywords: ["oom_killed", "cpu_throttle"] },
   { category: "Docker", name: "健康检查监控", description: "健康检查连续失败告警，自动探测端口与依赖服务。", keywords: ["healthcheck_fail"] },
+  { category: "EKS", name: "EKS 节点资源压力监控", description: "节点 CPU / 内存 / 磁盘压力告警，自动定位高负载 Pod 与驱逐风险。", keywords: ["node_pressure", "pod_evicted"] },
 ];
 
 /** 新建规则默认预填的诊断提示词（五步法口径，用户可在编辑器里改）。 */
@@ -605,6 +611,22 @@ export const mockRulesByInstance: Record<string, AlertRulesConfig> = {
         updated_at: "2026-07-28T10:00:00+08:00",
       },
       {
+        // 无 strategies 的「通用」规则（告警直达一键接管建出来的形态）：rules:ensure 的覆盖/合并
+        // 候选只认这类，带监控策略的规则只匹配子集不参与——mock 三态演示依赖这条种子。
+        rule_id: "rule_pay_mysql_takeover",
+        name: "MySQL致命告警接管规则",
+        description: "告警直达一键接管创建",
+        categories: ["MySQL"],
+        enabled: true,
+        source: "custom",
+        severities: ["fatal"],
+        strategies: [],
+        prompt: DEFAULT_PROMPT,
+        app_ids: [],
+        keywords: [],
+        updated_at: "2026-08-01T11:20:00+08:00",
+      },
+      {
         rule_id: "rule_pay_pg_order",
         name: "PostgreSQL 订单库接管",
         description: "2 条监控策略",
@@ -799,6 +821,76 @@ export const mockCreateRule = (instanceId: string, input: NewRuleInput): void =>
     updated_at: nowIso(),
   });
   changeSeq += 1;
+};
+
+/** ensure 覆盖/合并判定只看「纯类别规则」：strategies/app_ids/keywords 任一非空的规则条件
+ *  更窄，既不能替直达兜底（不算覆盖）也不被 ensure 改写（对齐后端设计；mock 规则无 label_selectors）。 */
+const isEnsureCandidate = (r: AlertRule): boolean =>
+  r.enabled && !r.strategies.length && !r.app_ids.length && !r.keywords.length;
+
+/** 提示词归一判等口径（同后端 _effective_prompt）：空白 ≡ 系统默认，派发行为一致才可合并。 */
+const effectivePrompt = (p: string): string => p.trim() || DEFAULT_PROMPT;
+
+/** 出参快照：斩断与内存态的引用共享（拷贝面与 mockGetRules 同）。 */
+const snapshotRule = (r: AlertRule): AlertRule =>
+  ({ ...r, categories: [...r.categories], severities: [...r.severities], strategies: [...r.strategies], app_ids: [...r.app_ids], keywords: [...r.keywords] });
+
+/** rules:ensure（告警直达链自动建规）：已覆盖零改动 / 级别并进既有规则 / 否则新建。 */
+export const mockEnsureRule = (instanceId: string, input: EnsureRuleInput): EnsureRuleResult => {
+  // 与 real 档 403 同形（ApiError.code=FORBIDDEN、文案同后端 service）：调用方按 code 统一识别未开通
+  if (localStorage.getItem("openops.mock.alertGranted") === "0") {
+    throw new ApiError("FORBIDDEN", "告警接管功能未开通：算力资源有限按需开放，请联系平台管理员开通");
+  }
+  const cfg = ensureRules(instanceId);
+  const candidates = cfg.rules.filter(
+    (r) => isEnsureCandidate(r) && input.categories.every((c) => r.categories.includes(c)));
+  // 级别覆盖：severities 空=不限级别；多条候选时优先「已覆盖」而非抢先合并第一条
+  const sevCovered = (r: AlertRule): boolean =>
+    r.severities.length === 0 || input.severities.every((s) => r.severities.includes(s));
+  const covering = candidates.find(sevCovered);
+  if (covering) {
+    return {
+      outcome: "already_covered",
+      rule: snapshotRule(covering),
+      renamed: false,
+      requested_name: input.name,
+      merge_detail: null,
+      prompt_ignored: effectivePrompt(input.prompt) !== effectivePrompt(covering.prompt),
+    };
+  }
+  // 合并要求提示词归一后相等（同后端）：不同提示词不静默改写既有规则，落 created
+  const target = candidates.find((r) => effectivePrompt(r.prompt) === effectivePrompt(input.prompt));
+  if (target) {
+    const before = [...target.severities];
+    target.severities = SEVERITY_ORDER.filter((s) => before.includes(s) || input.severities.includes(s));
+    target.updated_at = nowIso();
+    changeSeq += 1;
+    return {
+      outcome: "merged",
+      rule: snapshotRule(target),
+      renamed: false,
+      requested_name: input.name,
+      merge_detail: {
+        severities_before: before,
+        severities_after: [...target.severities],
+        added_severities: target.severities.filter((s) => !before.includes(s)),
+      },
+      prompt_ignored: false, // 提示词相等才走到这里
+    };
+  }
+  // created：重名自动 -2/-3… 后缀（含禁用规则也算占名，避免同名歧义）
+  const names = new Set(cfg.rules.map((r) => r.name));
+  let name = input.name;
+  for (let n = 2; names.has(name); n++) name = `${input.name}-${n}`;
+  mockCreateRule(instanceId, { name, categories: input.categories, severities: input.severities, prompt: input.prompt, enabled: true });
+  return {
+    outcome: "created",
+    rule: snapshotRule(cfg.rules[cfg.rules.length - 1]),
+    renamed: name !== input.name,
+    requested_name: input.name,
+    merge_detail: null,
+    prompt_ignored: false,
+  };
 };
 
 const findRule = (ruleId: string): AlertRule => {

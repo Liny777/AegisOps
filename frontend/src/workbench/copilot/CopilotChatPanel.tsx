@@ -18,6 +18,8 @@ import type { OpenOpsEvent } from "../../lib/api/types";
 import { CopilotAutoSend, CopilotProgrammaticSend } from "./CopilotAutoSend";
 import type { PendingSend } from "./programmaticSend";
 import { ChatPresetsProvider } from "./CopilotPresetQuestions";
+import { AlertTakeoverProvider } from "../alertTakeover/AlertTakeoverContext";
+import type { TakeoverVm } from "../alertTakeover/useAlertTakeover";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
 import { MermaidFullscreenBoundary } from "./MermaidFullscreenBoundary";
@@ -57,6 +59,7 @@ export function CopilotChatPanel({
   onPendingSent,
   onOpenOps,
   onRetryConnection,
+  alertTakeover,
 }: {
   runId: string;
   instanceId: string;
@@ -79,6 +82,8 @@ export function CopilotChatPanel({
   onOpenOps?: (event: OpenOpsEvent) => void;
   /** connect 恢复失败时重挂当前 run 的 Provider。 */
   onRetryConnection?: () => void;
+  /** 告警直达接管交互的 vm（Workbench 的 useAlertTakeover 产出）；缺省即不挂交互。 */
+  alertTakeover?: TakeoverVm;
 }) {
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "ready" | "error">(
     "connecting",
@@ -143,19 +148,22 @@ export function CopilotChatPanel({
             必须等 connectionStatus==="ready"：历史恢复期间 messages 会短暂为 []，
             否则 chips 会在 CopilotThreadGate 的半透明遮罩后闪一下再消失。 */}
         <ChatPresetsProvider enabled={!readOnly && connectionStatus === "ready"}>
-          <CopilotChat
-            key={`${runId}:${readOnly ? "readonly" : "active"}`}
-            agentId={AGENT_ID}
-            threadId={runId}
-            autoScroll="pin-to-bottom"
-            className="copilot-chat-panel"
-            messageView={OpenOpsChatMessageView}
-            welcomeScreen={false}
-            input={readOnly ? CLOSED_INPUT_SLOT : activeInputSlot}
-            onError={() =>
-              setConnectionStatus((current) => (current === "ready" ? current : "error"))
-            }
-          />
+          {/* 接管交互与 presets 同门（历史恢复期不闪现）；Slot 在 messageView 的 children 里消费。 */}
+          <AlertTakeoverProvider vm={alertTakeover} enabled={!readOnly && connectionStatus === "ready"}>
+            <CopilotChat
+              key={`${runId}:${readOnly ? "readonly" : "active"}`}
+              agentId={AGENT_ID}
+              threadId={runId}
+              autoScroll="pin-to-bottom"
+              className="copilot-chat-panel"
+              messageView={OpenOpsChatMessageView}
+              welcomeScreen={false}
+              input={readOnly ? CLOSED_INPUT_SLOT : activeInputSlot}
+              onError={() =>
+                setConnectionStatus((current) => (current === "ready" ? current : "error"))
+              }
+            />
+          </AlertTakeoverProvider>
         </ChatPresetsProvider>
         {!readOnly ? <CopilotSkillSlash instanceId={instanceId} /> : null}
         {!readOnly && autoQuestion && onAutoSent && shouldMountCopilotAutoSend(

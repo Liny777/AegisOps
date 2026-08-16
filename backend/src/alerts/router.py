@@ -15,6 +15,7 @@ from alerts.schemas import (
     BatchRulesRequest,
     CreateRuleRequest,
     DeleteRuleRequest,
+    EnsureRuleRequest,
     FeedbackRequest,
     GrantUpdateRequest,
     IncidentActionRequest,
@@ -47,6 +48,12 @@ async def create_rule(req: CreateRuleRequest, user: User):
 @user_router.post("/rules:batch")
 async def batch_rules(req: BatchRulesRequest, user: User):
     return ok(await service.batch_rules(user, req))
+
+
+@user_router.post("/rules:ensure")
+async def ensure_rule(req: EnsureRuleRequest, user: User):
+    """深链进站收口：查覆盖→可合并则合并→否则新建（重名自动后缀），幂等三态决策。"""
+    return ok(await service.ensure_rule(user, req))
 
 
 @user_router.post("/rules/{rule_id}:update")
