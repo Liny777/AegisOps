@@ -775,6 +775,29 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
     return {"approval_request_id": approval_id, "decision": req.decision}
 
 
+async def decide_diagnosis_checkpoint(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
+    """假设 checkpoint 决策：置位 st.checkpoint_ev 唤醒等待中的 diagnosis_checkpoint。
+
+    与审批 decide 的差异：checkpoint 无 DB 行（pending 态只活在内存，见 diagnosis_checkpoint
+    模块 docstring），归属校验走 owned_run + get_by_run；卡已收尾/换卡时幂等返回 closed
+    不报错（用户手快双击、多标签页并发、与超时同刻竞争都走这条）。
+    """
+    await owned_run(user["user_id"], run_id)
+    st = task_registry.get_by_run(run_id)
+    if st is None or st.checkpoint_id is None or st.checkpoint_id != req.checkpoint_id:
+        return {"checkpoint_id": req.checkpoint_id, "status": "closed"}
+    text = ""
+    if req.action == "add_hypothesis":
+        from infra.rca_contract import RcaBoardContractError, normalize_checkpoint_hypothesis
+        try:
+            text = normalize_checkpoint_hypothesis(req.text)
+        except RcaBoardContractError as exc:
+            raise ApiError(Err.VALIDATION_FAILED, f"假设文本不合规：{exc}") from exc
+    st.checkpoint_result = {"action": req.action, "text": text}
+    st.checkpoint_ev.set()
+    return {"checkpoint_id": req.checkpoint_id, "status": "accepted", "action": req.action}
+
+
 async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     """聚合状态（30.7 恢复事实入口）。"""
     run = await owned_run(user["user_id"], run_id)
@@ -785,11 +808,17 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     recent, events_has_more = await audit.list_page_by_run(run_id, limit=100)
     active_task: dict[str, Any] | None = None
     rca: Any = None
+    diagnosis_checkpoint: dict[str, Any] | None = None
     if st is not None:
         active_task = {"task_id": st.task_id, "status": st.status, "input_text": st.input_text,
                        "started_at": st.started_at, "selected_model": st.selected_model,
                        "selected_sub_model": st.selected_sub_model}
         rca = st.rca
+        # 假设 checkpoint 挂起态从内存投影（无 DB 行）：刷新页面后前端据此恢复卡片与倒计时；
+        # 进程重启则 run 已死，无需持久化回退
+        if st.checkpoint_id:
+            diagnosis_checkpoint = {"checkpoint_id": st.checkpoint_id,
+                                    "deadline_at": st.checkpoint_deadline}
     else:
         # P2 回退：内存 miss（进程重启过）读影子快照——恢复面能看到最后任务与 RCA，
         # interrupted 态由启动收敛写入，前端据此停「运行中」转圈
@@ -823,6 +852,7 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
         "instance": row_json(inst) if inst else None,
         "active_task": active_task,
         "rca": rca,
+        "diagnosis_checkpoint": diagnosis_checkpoint,
         "pending_approvals": [_approval_json(a) for a in pend],
         "recent_events": recent_items,
         "events_next_cursor": (recent_items[0]["audit_event_id"]

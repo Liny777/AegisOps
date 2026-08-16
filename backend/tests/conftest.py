@@ -13,6 +13,9 @@ os.environ.setdefault("OPENOPS_ORCH_DELAY_MS", "10")
 os.environ.setdefault("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
 # 探测默认已是 real（生产 fail-closed）；测试须显式退回 mock，否则建 llm-config / 测试连接会真打网
 os.environ.setdefault("OPENOPS_LLM_PROBE", "mock")
+# 假设 checkpoint 默认关（0=禁用）：防无关用例在 update_diagnosis_board 上被动等 10s；
+# 要测它的用例用 monkeypatch.setattr(diagnosis_checkpoint, "CHECKPOINT_TIMEOUT_S", ...) 显式开
+os.environ.setdefault("OPENOPS_DIAG_CHECKPOINT_TIMEOUT_S", "0")
 
 import asyncio  # noqa: E402
 import sys  # noqa: E402

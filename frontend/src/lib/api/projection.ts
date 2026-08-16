@@ -49,6 +49,13 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   "approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
   "openops.approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
   "openops.approval.timeout": { icon: "clock-x", tone: "warning", title: "批准超时" },
+  // 假设 checkpoint（step=3 后弹卡等用户补充假设/继续）；双写裸名：审计行无 openops. 前缀
+  "openops.diagnosis.checkpoint.opened": { icon: "bulb", tone: "warning", title: "等待补充假设" },
+  "diagnosis.checkpoint.opened": { icon: "bulb", tone: "warning", title: "等待补充假设" },
+  "openops.diagnosis.checkpoint.extended": { icon: "clock", tone: "neutral", title: "假设输入中" },
+  "diagnosis.checkpoint.extended": { icon: "clock", tone: "neutral", title: "假设输入中" },
+  "openops.diagnosis.checkpoint.closed": { icon: "circle-check", tone: "good", title: "假设确认完成" },
+  "diagnosis.checkpoint.closed": { icon: "circle-check", tone: "good", title: "假设确认完成" },
   "openops.task.completed": { icon: "flag-check", tone: "good", title: "任务完成" },
   "openops.task.cancelled": { icon: "player-stop", tone: "warning", title: "任务取消" },
   "openops.task.failed": { icon: "alert-triangle", tone: "danger", title: "任务失败" },

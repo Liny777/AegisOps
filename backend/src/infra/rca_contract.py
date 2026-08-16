@@ -203,6 +203,14 @@ def normalize_board_arguments(value: Any) -> dict[str, Any]:
     return out
 
 
+def normalize_checkpoint_hypothesis(value: Any) -> str:
+    """用户经假设 checkpoint 卡片补充的假设文本：与面板字段同口径清洗（拒尖括号/控制字符，≤300 字）。
+
+    该文本会拼进给模型的工具返回值——必须先过这里，不得把裸输入透传。
+    """
+    return _short_text(value, "hypothesis", limit=300)
+
+
 def derive_steps(step: int, completed: bool, summaries: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """服务端唯一 steps 生成器：i<step→done；i==step→completed?done:active；i>step→waiting。
 
