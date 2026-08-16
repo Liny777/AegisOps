@@ -1,0 +1,93 @@
+/* 接管交互三件套的布局约束（视觉色值走 theme/tokens 内联，范式照 HitlCard.css）。
+   fallback 路径不加载 CopilotChatPanel.css，armed 按钮的 pill 形态在此自带（对齐 .oa-preset-chip）。 */
+
+.oa-takeover-arm-row {
+  display: flex;
+  min-width: 0;
+  margin: 4px 0;
+}
+
+.oa-takeover-arm {
+  max-width: 100%;
+  padding: 7px 13px;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #dfe5ee;
+  border-radius: 999px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.oa-takeover-arm:hover {
+  color: #155eef;
+  background: #f0f6ff;
+  border-color: #b9d4ff;
+}
+
+.oa-takeover-arm:focus-visible {
+  outline: 2px solid #1683ff;
+  outline-offset: 2px;
+}
+
+.oa-takeover-card,
+.oa-takeover-result {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  padding: 15px 16px;
+  overflow: hidden;
+}
+
+.oa-takeover-card *,
+.oa-takeover-card *::before,
+.oa-takeover-card *::after,
+.oa-takeover-result *,
+.oa-takeover-result *::before,
+.oa-takeover-result *::after {
+  box-sizing: border-box;
+}
+
+.oa-takeover-readonly-row {
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+}
+
+.oa-takeover-readonly {
+  min-width: 0;
+  padding: 8px 11px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.oa-takeover-prompt {
+  display: block;
+  min-height: 72px;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.oa-takeover-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+/* 结果卡回显行：label/值 两列，窄容器自动断行 */
+.oa-takeover-result-rows {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  min-width: 0;
+}

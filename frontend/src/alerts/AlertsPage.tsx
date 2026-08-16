@@ -6,6 +6,7 @@ import { Button, Icon, Interactive, Pagination, Pill, TextInput } from "../ui";
 import { useApp } from "../lib/appState";
 import { isAbortError } from "../lib/api/singleFlight";
 import { alertsApi, subscribeAlerts } from "./api";
+import { FALLBACK_CATEGORIES, SEVERITY_LABEL, SEVERITY_TONE } from "./constants";
 import type {
   AlertEventRow,
   AlertEventsPage,
@@ -15,22 +16,12 @@ import type {
 } from "./types";
 
 const PAGE_SIZE = 20;
-/** 告警类型筛选的固定档（与模板三类一致；开放枚举的其余类型走「全部」）。 */
-const CATEGORY_OPTIONS = ["MySQL", "PostgreSQL", "Docker"];
 
 const fmtTime = (v: string | null): string => {
   if (!v) return "—";
   const d = new Date(v);
   if (Number.isNaN(d.getTime())) return v;
   return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).format(d);
-};
-
-/** 等级四档 → 徽标（提示为 subtle 淡显）。 */
-const SEVERITY_META: Record<AlertSeverity, { label: string; tone: Tone; subtle?: boolean }> = {
-  fatal: { label: "致命", tone: "danger" },
-  critical: { label: "严重", tone: "warning" },
-  warning: { label: "普通", tone: "neutral" },
-  info: { label: "提示", tone: "neutral", subtle: true },
 };
 
 /** 告警平台侧状态三态 → 徽标。 */
@@ -40,10 +31,10 @@ const EVENT_STATUS_META: Record<AlertEventStatus, { label: string; tone: Tone }>
   closed: { label: "已关闭", tone: "good" },
 };
 
-const SeverityPill = ({ severity }: { severity: AlertSeverity }) => {
-  const m = SEVERITY_META[severity];
-  return <Pill tone={m.tone} style={m.subtle ? { opacity: 0.6 } : undefined}>{m.label}</Pill>;
-};
+/** 等级四档 → 徽标（提示为 subtle 淡显；文案/色调取切片共享常量）。 */
+const SeverityPill = ({ severity }: { severity: AlertSeverity }) => (
+  <Pill tone={SEVERITY_TONE[severity]} style={severity === "info" ? { opacity: 0.6 } : undefined}>{SEVERITY_LABEL[severity]}</Pill>
+);
 
 /** Agent 接管状态：shield（蓝）= 已完成/处理中；shield-off（灰）= 未接管。
  * 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag → 「延迟放弃」——
@@ -298,7 +289,7 @@ export function AlertsPage() {
           onChange={(v) => { setCatF(v); setPage(1); }}
           options={[
             { label: "全部类型", value: "" },
-            ...CATEGORY_OPTIONS.map((c) => ({ label: c, value: c })),
+            ...FALLBACK_CATEGORIES.map((c) => ({ label: c, value: c })),
           ]}
         />
         {activeFilters > 0 ? (

@@ -196,3 +196,32 @@ export type AlertRulePatch = Partial<
 
 /** rules:batch 的动作枚举。 */
 export type AlertRuleBatchAction = "enable" | "disable" | "delete";
+
+/** rules:ensure 的收敛结果：created=新建；merged=级别并进既有规则；already_covered=已覆盖零改动。 */
+export type EnsureRuleOutcome = "created" | "merged" | "already_covered";
+
+/** rules:ensure 入参（告警直达链自动建规；不传 strategies=该类型全部策略）。 */
+export interface EnsureRuleInput {
+  name: string;
+  categories: AlertCategory[];
+  severities: AlertSeverity[];
+  prompt: string;
+}
+
+/** rules:ensure 返回。覆盖/合并判定只看纯类别规则（strategies/app_ids/keywords 全空），
+ *  条件更窄的规则既不挡新建也不被改写。 */
+export interface EnsureRuleResult {
+  outcome: EnsureRuleOutcome;
+  rule: AlertRule;
+  /** 请求名与既有规则重名时服务端自动加 -2/-3… 后缀。 */
+  renamed: boolean;
+  requested_name: string;
+  /** merged 时的级别变化明细；其余 outcome 为 null。 */
+  merge_detail: {
+    severities_before: AlertSeverity[];
+    severities_after: AlertSeverity[];
+    added_severities: AlertSeverity[];
+  } | null;
+  /** merged/already_covered 时入参 prompt 未落库（既有规则提示词保留）。 */
+  prompt_ignored: boolean;
+}

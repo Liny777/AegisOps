@@ -99,3 +99,22 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 再配 `OPENOPS_ALERT_TRACE=<alarmId或应用ID>` 重启，`grep "[alerts][trace]"` 看决策链逐站：
 消费到（appIdList 解析结果）→ 未命中/去重/恢复 → 范围过滤（实例范围 vs 归属并排打出）→ 入队/附着/冷却/skip。定位完删 env。
 → 界面规则编辑器第二步看 `source:"platform"` → 临时改错 QUERY_URL 验证 `local_fallback` 降级提示。
+
+## 6. 对话平台深链入站参数（告警平台侧拼链）
+
+告警平台在告警详情页拼对话平台链接，用户点击进站后自动发起诊断并可一键配置接管规则
+（后端收口在 `POST /alerts/rules:ensure`：查覆盖→可合并则合并→否则新建）。URL 形态：
+
+```
+https://<站点>/?q=<encodeURIComponent(诊断问题)>&entry_source=alert&alert_category=<moType>&alert_severity=<级别>
+```
+
+| 参数 | 必填 | 规则 |
+|---|---|---|
+| `entry_source` | 是 | 固定 `alert`——缺失/其他值不走告警进站流程 |
+| `alert_category` | 是 | `moType` 原样透传（开放枚举，同 §2 category 词表） |
+| `alert_severity` | 是 | 兼容两种写法：`fatal/critical/warning/info` 或 `"1"-"4"`（数字映射同 `alert_inet_contract.LEVEL_TO_SEVERITY`："1"→fatal … "4"→info） |
+| `q` | 推荐 | 诊断问题文本（`encodeURIComponent`）；带上则进站自动发起诊断 |
+
+非法参数（未知级别、缺 category 等）前端**静默忽略**——进站正常对话，只是不出现
+接管配置按钮；不弹错误。

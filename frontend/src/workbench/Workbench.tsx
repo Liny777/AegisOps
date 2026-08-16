@@ -33,6 +33,10 @@ import { CopilotErrorBoundary } from "./copilot/CopilotErrorBoundary";
 import { CopilotHitlFloat } from "./copilot/CopilotHitlFloat";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { consumeAutoQuestion } from "../lib/autosend";
+import { consumeAlertContext } from "../lib/alertEntry";
+import { AlertTakeoverProvider } from "./alertTakeover/AlertTakeoverContext";
+import { AlertTakeoverSlot } from "./alertTakeover/AlertTakeoverSlot";
+import { useAlertTakeover } from "./alertTakeover/useAlertTakeover";
 import type { ResolvedWorkbenchSession, WorkbenchTarget } from "../layout/workbenchSession";
 import {
   clearRunRecoveryIssue,
@@ -134,7 +138,7 @@ export function Workbench({
   onSessionResolved: (session: ResolvedWorkbenchSession) => void;
 }) {
   const { instanceId, explicitRunId } = target;
-  const { agents, setCurrentAgentId } = useApp();
+  const { agents, setCurrentAgentId, currentAgentId } = useApp();
   const nav = useNavigate();
   const [demo] = useState<WorkbenchState>(() => api.demoState()); // 静态外观（chips/skills/models/摘要）
   const [runId, setRunId] = useState<string | null>(null);
@@ -224,6 +228,21 @@ export function Workbench({
   // copilot 路径经 CopilotAutoSend 发送，自建/mock 路径由下方 effect 调 send()
   const [autoQuestion, setAutoQuestion] = useState<string | null>(() => consumeAutoQuestion());
   const autoSentRef = useRef(false);
+  // 告警外链直达：挂载即消费（sessionStorage 一次性），仅驱动本会话的「设置告警接管」交互。
+  // ctx 绝不进 WorkbenchTarget/workbenchSession——那会触发 AppShell latest-wins 重建 SSE/CopilotKit。
+  const [alertCtx] = useState(() => consumeAlertContext());
+  const alertTakeover = useAlertTakeover({
+    alertCtx,
+    runId,
+    runStatus,
+    // mock 档不拉 /state，`/agent-runs/:id` 落地后实例恒空——回落侧栏当前 Agent 才能演示接管；
+    // real 档不回落：归属实例未解析前建规会落到侧栏那个（可能不是本 run 的）实例上。
+    instanceId: effectiveInstanceId || (API_MODE === "real" ? "" : currentAgentId ?? ""),
+    rcaConcluded: rca?.status === "concluded",  // 唯一权威闭环信号（后端派生），禁用 steps 推断
+    running: taskStatus === "running",
+    inputBlocked: workbenchInputBlocked,
+    targetKey,
+  });
 
   useEffect(() => {
     if (
@@ -909,6 +928,9 @@ export function Workbench({
               onDecide={resolveHitl}
             />
           ) : null}
+          <AlertTakeoverProvider vm={alertTakeover} enabled={runStatus === "active"}>
+            <AlertTakeoverSlot />
+          </AlertTakeoverProvider>
           {running ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: color.textSubtle, fontSize: 12.5 }}>
               <Icon name="loader-2" size={14} color={color.brand} spin />Agent 正在调查…（工具细节见右侧活动栏）
@@ -943,6 +965,7 @@ export function Workbench({
         pendingSend={pendingSend}
         onPendingSent={() => setPendingSend(null)}
         onOpenOps={handleOpenOpsEvent}
+        alertTakeover={alertTakeover}
         onRetryConnection={() => setCopilotConnectionGeneration((generation) => generation + 1)}
       />
       {/* 面板 flex:1 → 排队条挂在其后即贴着输入框下沿（用户刚打完字，视线就在这儿） */}

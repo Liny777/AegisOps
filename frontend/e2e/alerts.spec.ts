@@ -151,8 +151,8 @@ test("批量：勾选两行批量禁用后 Toggle 灭，再批量删除减行数
   await page.goto("/settings/alerts");
   await expect(page.getByTestId("alerts-rule-row").first()).toBeVisible({ timeout: 15_000 });
   const rowsBefore = await page.getByTestId("alerts-rule-row").count();
-  expect(rowsBefore).toBe(3); // mock 基线：支付实例 3 条策略（2 启用 1 禁用）
-  await expect(page.getByText(/已启用 2 条/)).toBeVisible();
+  expect(rowsBefore).toBe(4); // mock 基线：支付实例 4 条策略（3 启用 1 禁用，含一条深链接管建的通用规则）
+  await expect(page.getByText(/已启用 3 条/)).toBeVisible();
 
   // 未选中时「批量操作」隐藏
   await expect(page.getByRole("button", { name: /批量操作/ })).toHaveCount(0);
@@ -168,7 +168,7 @@ test("批量：勾选两行批量禁用后 Toggle 灭，再批量删除减行数
   // 两行 Toggle 变灭（data-enabled 归 false）+ 统计归零 + 选中清空（批量按钮隐藏）
   await expect(page.getByTestId("alerts-rule-row").nth(0)).toHaveAttribute("data-enabled", "false");
   await expect(page.getByTestId("alerts-rule-row").nth(1)).toHaveAttribute("data-enabled", "false");
-  await expect(page.getByText(/已启用 0 条/)).toBeVisible();
+  await expect(page.getByText(/已启用 1 条/)).toBeVisible(); // 剩 PostgreSQL 一条启用
   await expect(page.getByRole("button", { name: /批量操作/ })).toHaveCount(0);
 
   // 再勾选两行 → 批量删除（菜单红色警示项）→ 行数与统计减少、选中清空
@@ -179,7 +179,7 @@ test("批量：勾选两行批量禁用后 Toggle 灭，再批量删除减行数
   await expect
     .poll(async () => page.getByTestId("alerts-rule-row").count())
     .toBe(rowsBefore - 2);
-  await expect(page.getByText(/共 1 条策略/)).toBeVisible();
+  await expect(page.getByText(/共 2 条策略/)).toBeVisible();
   await expect(page.getByRole("button", { name: /批量操作/ })).toHaveCount(0);
 });
 

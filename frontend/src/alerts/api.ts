@@ -24,6 +24,9 @@ import type {
   AlertSeverity,
   AlertSummary,
   AlertTakeoverStatus,
+  EnsureRuleInput,
+  EnsureRuleOutcome,
+  EnsureRuleResult,
   IncidentStatus,
   NewRuleInput,
   UserFeedback,
@@ -70,6 +73,8 @@ export interface AlertsApi {
   getRules(instanceId: string): Promise<AlertRulesConfig>;
   /** 单规则创建（v2：编辑器一次建一条，策略勾选清单在 strategies 里）。 */
   createRule(instanceId: string, input: NewRuleInput): Promise<void>;
+  /** 幂等建规（告警直达链）：已覆盖零改动 / 级别并进既有规则 / 否则新建（rules:ensure）。 */
+  ensureRule(instanceId: string, input: EnsureRuleInput, signal?: AbortSignal): Promise<EnsureRuleResult>;
   /** 批量启用/禁用/删除（rules:batch）。 */
   batchRules(ruleIds: string[], action: AlertRuleBatchAction): Promise<void>;
   updateRule(ruleId: string, patch: AlertRulePatch): Promise<void>;
@@ -118,6 +123,20 @@ interface AlertEventsWirePage {
   page: number;
   page_size: number;
 }
+
+/** rules:ensure 的 wire 形态：outcome 按开放字符串收（灰度期新旧后端可能多出档位）。 */
+type EnsureRuleWire = Omit<EnsureRuleResult, "outcome" | "merge_detail"> &
+  { outcome: string; merge_detail?: EnsureRuleResult["merge_detail"] };
+
+const ENSURE_OUTCOMES: readonly EnsureRuleOutcome[] = ["created", "merged", "already_covered"];
+
+/** ensure 响应收窄单点：未知 outcome 一律按 created 展示兜底（规则本体照常可用，不炸 UI）。 */
+const projectEnsureResult = (raw: EnsureRuleWire): EnsureRuleResult => ({
+  ...raw,
+  outcome: (ENSURE_OUTCOMES as readonly string[]).includes(raw.outcome)
+    ? (raw.outcome as EnsureRuleOutcome) : "created",
+  merge_detail: raw.merge_detail ?? null,
+});
 
 const eventsQuery = (params?: ListEventsParams): URLSearchParams => {
   const s = new URLSearchParams();
@@ -202,6 +221,22 @@ const realAlertsApi: AlertsApi = {
       },
     });
     invalidateAlerts(instanceId);
+  },
+  async ensureRule(instanceId, input, signal) {
+    const raw = await apiFetch<EnsureRuleWire>(`/openops/v1/alerts/rules:ensure`, {
+      method: "POST",
+      signal,
+      body: {
+        client_request_id: crid(),
+        agent_team_instance_id: instanceId,
+        name: input.name,
+        categories: input.categories,
+        severities: input.severities,
+        prompt: input.prompt,
+      },
+    });
+    invalidateAlerts(instanceId);
+    return projectEnsureResult(raw);
   },
   async batchRules(ruleIds, action) {
     await apiFetch<{ updated: number }>(`/openops/v1/alerts/rules:batch`, {
@@ -291,6 +326,13 @@ const mockAlertsApi: AlertsApi = {
   getRules: (instanceId) => delay(M.mockGetRules(instanceId)),
   createRule: (instanceId, input) =>
     delay(undefined).then(() => { M.mockCreateRule(instanceId, input); invalidateAlerts(instanceId); }),
+  // 未开通（alertGranted='0'）时 mockEnsureRule 同步 throw → 延迟求值转 rejected Promise
+  ensureRule: (instanceId, input) =>
+    delay(undefined).then(() => {
+      const result = M.mockEnsureRule(instanceId, input);
+      invalidateAlerts(instanceId);
+      return result;
+    }),
   batchRules: (ruleIds, action) =>
     delay(undefined).then(() => { M.mockBatchRules(ruleIds, action); invalidateAlerts(); }),
   updateRule: (ruleId, patch) =>
