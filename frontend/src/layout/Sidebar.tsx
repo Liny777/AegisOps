@@ -119,6 +119,7 @@ export function Sidebar() {
     { key: "model-assets", label: "模型资产", icon: "cpu", to: "/admin/model-assets" },
     { key: "model-templates", label: "模型模板", icon: "versions", to: "/admin/model-templates" },
     { key: "skills", label: "Skill 基线", icon: "file-code", to: "/admin/skills" },
+    { key: "mcps", label: "MCP 服务", icon: "plug-connected", to: "/admin/mcps" },
     { key: "users", label: "用户与白名单", icon: "users", to: "/admin/users" },
   { key: "alerts", label: "告警接管清单", icon: "shield-bolt", to: "/admin/alerts" },
   { key: "alerts-config", label: "告警接管配置", icon: "settings", to: "/admin/alerts-config" },

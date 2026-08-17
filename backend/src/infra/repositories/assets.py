@@ -267,6 +267,50 @@ async def create_mcp(
     return {"mcp_id": mid, "mcp_version_id": vid}
 
 
+async def list_platform_mcps_with_manifest() -> list[dict[str, Any]]:
+    """全部平台 MCP（含最新版本 id 与 manifest_json）：管理台注册/删除的同名收敛判定用
+    （上游 server_id 存在 manifest 里）。
+
+    与 list_platform_mcps 的两点区别，都是刻意的：
+    - **left** join lateral：无版本行的资产也返回（manifest 为 NULL → synced_from 判定自然豁免，
+      只跳过不误删），口径同 list_platform_skills；
+    - 投影 manifest_json。
+    不改 list_platform_mcps：reconcile 的 tools 循环依赖它的 inner join 语义（无版本行不该进 catalog 同步）。"""
+    return await q_all(
+        """
+        select m.*, v.mcp_version_id, v.manifest_json
+        from sre_mcp_asset m
+        left join lateral (
+          select mcp_version_id, manifest_json from sre_mcp_asset_version mv
+          where mv.mcp_id = m.mcp_id and mv.deleted_at is null
+          order by mv.version_no desc limit 1
+        ) v on true
+        where m.source_type='platform' and m.deleted_at is null
+        """
+    )
+
+
+async def update_mcp_endpoint(mcp_id: str, endpoint_config: dict[str, Any], by: str) -> None:
+    """原地更新 MCP 的连接配置（管理台重注册改 URL 用）。不改 display_name——它是
+    `{display_name}::{tool_name}` 复合键的左半，改了等于让全部模板绑定失配（见 domain/tool_key）。"""
+    await exec1(
+        "update sre_mcp_asset set endpoint_config_json=%(e)s, last_updated_by=%(b)s,"
+        " last_update_date=now() where mcp_id=%(m)s and deleted_at is null",
+        {"m": mcp_id, "e": jsonb(endpoint_config), "b": by},
+    )
+
+
+async def update_mcp_version_manifest(mcp_version_id: str, manifest_json: dict[str, Any]) -> None:
+    """原地刷新 MCP 版本 manifest（对称 update_skill_version_manifest）。**不新增版本**——
+    sre_mcp_tool_catalog 挂在 mcp_version_id 上，保住它就保住了整套工具标注；重注册若派生新版本，
+    全部标注失联、工具掉回 fail-closed 直到管理员重标注。"""
+    await exec1(
+        "update sre_mcp_asset_version set manifest_json=%(m)s, last_update_date=now()"
+        " where mcp_version_id=%(v)s",
+        {"m": jsonb(manifest_json), "v": mcp_version_id},
+    )
+
+
 async def latest_mcp_version(mcp_id: str) -> dict[str, Any] | None:
     """最新 MCP 版本行（manifest_json 里存着 registry 的 server_id / description）。对齐 latest_skill_version。"""
     return await q_one(

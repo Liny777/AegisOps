@@ -6,6 +6,7 @@ import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api, alertEventMeta } from "../lib/api";
 import type { AdminModelAssetOption, AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { useConnTest, ConnTestResult, HeadersEditor, headersToRecord, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
+import { PlatformAssetDialog } from "./PlatformAssetDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 import { ModelTemplateDialog } from "./ModelTemplateDialog";
@@ -20,6 +21,7 @@ const TITLES: Record<string, string> = {
   "model-assets": "模型资产",
   "model-templates": "模型模板",
   skills: "Skill 基线",
+  mcps: "MCP 服务",
   users: "用户与白名单",
   alerts: "告警接管清单",
   "alerts-config": "告警接管配置",
@@ -48,6 +50,9 @@ export function AdminConsole() {
   const [maEdit, setMaEdit] = useState<AdminModelAssetOption | null>(null);
   // B7·三：白名单添加弹窗 / 表格动作错误横幅 / 审计 Trace 过滤
   const [wlAddOpen, setWlAddOpen] = useState(false);
+  // 平台级资产写闭环（29.9）：上传 Skill / 注册 MCP 弹窗 + 成功提示（同名收敛条数要显式告知）
+  const [assetDialog, setAssetDialog] = useState<"skill" | "mcp" | null>(null);
+  const [actionOk, setActionOk] = useState("");
   const [actionErr, setActionErr] = useState("");
   const [traceFilter, setTraceFilter] = useState("");
   // 用户表关键字搜索（服务端 q 过滤 user_id/display_name，与审计过滤同做法：输入即查）
@@ -59,7 +64,7 @@ export function AdminConsole() {
   const [alertUserQ, setAlertUserQ] = useState("");
   const [alertSearchQ, setAlertSearchQ] = useState("");
 
-  const isTable = ["templates", "model-assets", "model-templates", "skills", "users", "alerts"].includes(page);
+  const isTable = ["templates", "model-assets", "model-templates", "skills", "mcps", "users", "alerts"].includes(page);
 
   const load = useCallback(async () => {
     if (page === "templates") {
@@ -116,6 +121,7 @@ export function AdminConsole() {
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
     setActionErr("");
+    setActionOk("");  // 换页/翻页即清成功提示（直接调 load() 的动作路径不触发本 effect，提示得以保留）
     void load().catch((e) => {
       const err = e as { code?: string; message?: string };
       if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，别闪错误横幅
@@ -210,6 +216,21 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteModelAsset(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "skill-delete") {
+      // 平台 Skill 下架：先回删 SkillHub 再本地软删；上游拒绝会整体失败（错误进横幅），本地不会假删
+      if (!window.confirm(
+        `确认删除平台 Skill「${rowName}」？将同时从 Skill Hub 下架，所有用户都不再可用；已绑定该 Skill 的实例其绑定项会显示「已删除」。`)) return;
+      setActionErr(""); setActionOk("");
+      void api.adminDeleteSkill(rowId).then(() => { setActionOk(`已删除「${rowName}」`); return load(); })
+        .catch((e) => setActionErr((e as Error).message));
+    }
+    else if (key === "mcp-delete") {
+      if (!window.confirm(
+        `确认删除平台 MCP「${rowName}」？将同时从 MCP Registry 注销，其工具会从模板草稿中摘除。`)) return;
+      setActionErr(""); setActionOk("");
+      void api.adminDeleteMcp(rowId).then(() => { setActionOk(`已删除「${rowName}」`); return load(); })
+        .catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "user-tags") {
       // 行内编辑领域标签（prompt 交互与「销毁容器 reason」同风格）：当前值从「标签」列单元格取（「设标签」=空）
       const ti = table?.cols.findIndex((c) => c.label === "标签") ?? -1;
@@ -280,6 +301,10 @@ export function AdminConsole() {
         {page === "model-templates" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setMtEdit({ id: null })}>{table.primary.label}</Button>
         ) : null}
+        {(page === "skills" || page === "mcps") && table?.primary ? (
+          <Button icon={table.primary.icon}
+            onClick={() => setAssetDialog(page === "skills" ? "skill" : "mcp")}>{table.primary.label}</Button>
+        ) : null}
         {page === "alerts" ? (
           <>
             <input
@@ -328,6 +353,13 @@ export function AdminConsole() {
           {actionErr ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fdecec", border: "1px solid #f5c2c0", borderRadius: radius.lg, padding: "9px 13px", marginBottom: 12, fontSize: 12, color: color.dangerText }}>
               <Icon name="alert-triangle" size={14} color={color.dangerText} />{actionErr}
+            </div>
+          ) : null}
+          {/* 成功提示（平台资产上传/注册/删除）：同名收敛清掉了几条旧记录必须显式说，否则管理员
+              只会看到"列表少了一行"而不知为何。 */}
+          {actionOk ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#eaf7ee", border: "1px solid #b7e0c2", borderRadius: radius.lg, padding: "9px 13px", marginBottom: 12, fontSize: 12, color: color.goodText }}>
+              <Icon name="circle-check" size={14} color={color.goodText} />{actionOk}
             </div>
           ) : null}
           {isTable && table ? (
@@ -445,6 +477,10 @@ export function AdminConsole() {
       <TemplateEditorModal open={!!tplEdit} templateId={tplEdit} onClose={() => setTplEdit(null)} onChanged={() => void load()} />
       {mtEdit ? <ModelTemplateDialog target={mtEdit.id} onClose={() => setMtEdit(null)} onSaved={() => { setMtEdit(null); void load(); }} /> : null}
       {wlAddOpen ? <AddWhitelistDialog onClose={() => setWlAddOpen(false)} onSaved={() => { setWlAddOpen(false); void load(); }} /> : null}
+      {assetDialog ? (
+        <PlatformAssetDialog kind={assetDialog} onClose={() => setAssetDialog(null)}
+          onSaved={(msg) => { setAssetDialog(null); setActionErr(""); setActionOk(msg); void load(); }} />
+      ) : null}
     </>
   );
 }

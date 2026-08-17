@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, File, Form, Query, UploadFile
 
 from api.deps import Admin
 from api.responses import ok
+from api.skill_upload import check_skill_zip, parse_tags  # 与用户面上传共用同一套上限/魔数/tags 口径
 from app import (
+    asset_admin_service,
     audit_trace_service,
     identity_service,
     mcp_tool_annotation_service,
@@ -17,6 +19,7 @@ from app import (
     template_service,
 )
 from domain.schemas import (
+    AdminRegisterMcpRequest,
     CreateModelTemplateRequest,
     ModelGrantsRequest,
     ModelStatusRequest,
@@ -245,3 +248,42 @@ async def model_templates_save_grants(model_template_id: str, req: ModelGrantsRe
 @router.get("/audit/recent")
 async def audit_recent(_admin: Admin):
     return ok(await audit_trace_service.admin_recent())
+
+
+# ---- 平台级 Skill / MCP 资产管理（29.9：skills upload/delete、mcps register/delete，均 is_system=true） ----
+# 读列表仍走用户面 `/assets/skills?source_type=platform` 与 `/assets/mcps?source_type=platform`
+# （本就对所有人返回平台行），此处只补写闭环。
+# 冒号坑（见上方 /model-assets 注释）：本组暂无 `POST /skills/{...}` 故不触发，但如日后新增
+# 带路径参数的 POST，必须注册在 `:upload` **之后**。
+@router.post("/skills:upload")
+async def admin_upload_skill(
+    admin: Admin,
+    file: UploadFile = File(...),
+    category: str = Form(""),
+    tags: str = Form(""),
+):
+    """上传平台级 Skill ZIP：转发 SkillHub（is_system=true）→ 写本地 platform 行 → **同名收敛**
+    （软删同 key / 同名换键的旧行，避免管理台出现两个同名 skill）。"""
+    data = await file.read()
+    check_skill_zip(data)
+    return ok(await asset_admin_service.upload_skill_package(
+        admin, file.filename or "skill.zip", data, category.strip(), parse_tags(tags)))
+
+
+@router.delete("/skills/{skill_id}")
+async def admin_delete_skill(skill_id: str, admin: Admin):
+    """删除平台级 Skill：先回删 SkillHub，再本地软删（上游明确拒绝/不可达则不本地删）。"""
+    return ok(await asset_admin_service.delete_skill(admin, skill_id))
+
+
+@router.post("/mcps")
+async def admin_register_mcp(req: AdminRegisterMcpRequest, admin: Admin):
+    """注册平台级 MCP Server（is_system=true）。命中已有行时原地更新，不改 display_name
+    ——保住 tool catalog 与模板绑定的复合键。"""
+    return ok(await asset_admin_service.register_mcp(admin, req))
+
+
+@router.delete("/mcps/{mcp_id}")
+async def admin_delete_mcp(mcp_id: str, admin: Admin):
+    """删除平台级 MCP：回删注册表 → 本地软删 → 模板草稿引用级联清理。"""
+    return ok(await asset_admin_service.delete_mcp(admin, mcp_id))

@@ -1,31 +1,14 @@
 from __future__ import annotations
 
-import json
-
 from fastapi import APIRouter, File, Form, Query, UploadFile
 
 from api.deps import User
 from api.responses import ok
+from api.skill_upload import check_skill_zip, parse_tags  # 与管理台上传共用同一套上限/魔数/tags 口径
 from app import asset_reconcile_service, asset_registry_service
-from domain.errors import ApiError, Err
 from domain.schemas import RegisterMcpRequest, UploadSkillRequest
 
 router = APIRouter(prefix="/api/openops/v1/assets", tags=["assets"])
-
-_MAX_SKILL_ZIP = 50 * 1024 * 1024  # 29.3 §2.1：ZIP ≤ 50MB
-
-
-def _parse_tags(raw: str) -> list[str]:
-    """tags 兼容 JSON 数组串 `["a","b"]` 或逗号分隔 `a,b`（中英文逗号）。"""
-    raw = (raw or "").strip()
-    if not raw:
-        return []
-    if raw.startswith("["):
-        try:
-            return [str(x).strip() for x in json.loads(raw) if str(x).strip()]
-        except (ValueError, TypeError):
-            pass
-    return [t.strip() for t in raw.replace("，", ",").split(",") if t.strip()]
 
 
 @router.post(":reconcile")
@@ -68,12 +51,9 @@ async def upload_skill_package(
 ):
     """上传 Skill ZIP（29.3 §2.1 multipart）：转发 SkillHub + 写本地目录即时可见。分类/标签可选。"""
     data = await file.read()
-    if len(data) > _MAX_SKILL_ZIP:
-        raise ApiError(Err.VALIDATION_FAILED, "ZIP 超过 50MB 上限（29.3 §2.1）")
-    if data[:2] != b"PK":  # ZIP 魔数——非 zip 直接拒，避免下游 BadZipFile 迷惑定位
-        raise ApiError(Err.SKILL_PACKAGE_INVALID, "文件不是有效的 ZIP 包")
+    check_skill_zip(data)
     return ok(await asset_registry_service.upload_skill_package(
-        user, file.filename or "skill.zip", data, category.strip(), _parse_tags(tags)))
+        user, file.filename or "skill.zip", data, category.strip(), parse_tags(tags)))
 
 
 @router.delete("/skills/{skill_id}")
