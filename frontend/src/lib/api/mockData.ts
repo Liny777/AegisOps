@@ -538,11 +538,26 @@ export const adminTables: Record<string, AdminTableData> = {
   },
   skills: {
     title: "Skill 基线",
-    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }],
+    primary: { label: "上传 Skill", icon: "upload", actionKey: "upload-skill" },
+    cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
     rows: [
       { id: "skill_inspection", cells: [
         { text: "巡检 inspection" }, { text: "inspection", mono: true }, { text: "2.0.0" },
-        { text: "2026-07-20 10:30" }, { text: "active", kind: "badge", tone: "good" } ] },
+        { text: "2026-07-20 10:30" }, { text: "active", kind: "badge", tone: "good" },
+        { text: "删除", kind: "action", onClickKey: "skill-delete" } ] },
+    ],
+  },
+  // ⚠ 这一项不能少：getAdminTable 末尾是 `M.adminTables[key] ?? M.adminTables.templates`，
+  // 缺 mock 条目会让 mock 模式下 MCP 服务页静默显示成模板表（model-assets 曾踩过同一个坑）。
+  mcps: {
+    title: "MCP 服务",
+    primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
+    cols: [{ label: "服务名称" }, { label: "endpoint" }, { label: "分类", width: "96px" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
+    rows: [
+      { id: "mcp_omodel_query", cells: [
+        { text: "oModel 查询与恢复" }, { text: "https://omode…", mono: true }, { text: "监控" },
+        { text: "active", kind: "badge", tone: "good" },
+        { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
     ],
   },
   users: {

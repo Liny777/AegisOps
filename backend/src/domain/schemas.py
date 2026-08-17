@@ -85,6 +85,21 @@ class RegisterMcpRequest(BaseModel):
     manifest_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class AdminRegisterMcpRequest(BaseModel):
+    """管理台注册**平台级** MCP（29.9 §3.1 mcps/register）。与用户面 RegisterMcpRequest 分开：
+    字段词汇随上游（server_name 兼作 server_id / server_url / transport），且 `is_system` 恒为
+    True、由服务端写死，不由客户端给。"""
+
+    client_request_id: str = Field(min_length=1)
+    server_name: str = Field(min_length=1)
+    server_url: str = Field(min_length=1)
+    description: str = ""
+    version: str = "1.0.0"
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    transport: str = Field(default="streamable_http", pattern="^(jsonrpc|sse|streamable_http)$")
+
+
 class CreateSecretRequest(BaseModel):
     client_request_id: str = Field(min_length=1)
     secret_name: str = Field(min_length=1)

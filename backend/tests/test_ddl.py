@@ -184,3 +184,94 @@ def test_ddl_008_subagent_activity_migration_executes_twice_and_preserves_data()
         finally:
             conn.execute("SET search_path TO public")
             conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_ddl_009_platform_skill_key_partial_unique_index():
+    """平台 skill_key 唯一索引：名字合规、必须带 `WHERE deleted_at IS NULL`（软删行保留 skill_key，
+    同名收敛与缺席墓碑每次都产生一条——普通唯一索引会让任何 skill 的第二次上传直接失败）。"""
+    ddl = DDL.read_text(encoding="utf-8")
+
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS ux_skill_asset_platform_key" in ddl
+    assert len("ux_skill_asset_platform_key") <= 30
+    stmt = ddl.split("ux_skill_asset_platform_key", 1)[1].split(";", 1)[0]
+    assert "sre_skill_asset (skill_key)" in stmt
+    assert "source_type = 'platform'" in stmt and "deleted_at IS NULL" in stmt
+
+
+def test_ddl_009b_platform_skill_key_index_enforced_only_on_live_platform_rows():
+    """索引语义实测：同 key 的第二条**活平台行**被拒；软删行与 user 行不受限。"""
+    schema = "test_pskey_" + uuid.uuid4().hex[:12]
+    dsn = os.environ.get("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
+
+    def _ins(conn, key, source_type="platform", deleted=None):
+        conn.execute(
+            "insert into sre_skill_asset (skill_id, source, source_type, owner_user_id, display_name,"
+            " skill_key, status, created_by, last_updated_by, deleted_at)"
+            " values (%s,'openops',%s,null,'n',%s,'active','t','t',%s)",
+            (str(uuid.uuid4()), source_type, key, deleted))
+
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        try:
+            conn.execute(f'CREATE SCHEMA "{schema}"')
+            conn.execute(f'SET search_path TO "{schema}"')
+            conn.execute(DDL.read_text(encoding="utf-8"))
+
+            _ins(conn, "system-x")
+            try:
+                _ins(conn, "system-x")
+                raise AssertionError("同 key 的第二条活平台行应被唯一索引拒绝")
+            except psycopg.errors.UniqueViolation:
+                pass
+            _ins(conn, "system-x", deleted="2020-01-01")     # 软删行：部分索引放行
+            _ins(conn, "system-x", source_type="user")       # user 行：索引只管 platform
+            assert conn.execute(
+                "select count(*) from sre_skill_asset where skill_key='system-x'").fetchone()[0] == 3
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+
+
+def test_ddl_010_platform_skill_key_migration_dedupes_and_is_idempotent():
+    """迁移脚本：存量脏库先**软删**重复（留最新一条）再建索引；连跑两次幂等、不物删任何行。
+
+    这是本仓第一条可能因存量数据失败的 DDL——脏库直接建索引会 duplicate key，
+    且 conftest 是整份 core.sql 一条 execute 跑完，会掀翻整个套件而非一个用例。"""
+    migration = (DDL.parent / "migrate-2026-08-16-platform-skill-key-unique.sql").read_text(encoding="utf-8")
+    assert "IF NOT EXISTS ux_skill_asset_platform_key" in migration
+    assert "DROP TABLE" not in migration.upper() and "DELETE FROM" not in migration.upper()  # 只软删
+
+    schema = "test_pkmig_" + uuid.uuid4().hex[:12]
+    dsn = os.environ.get("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
+    with psycopg.connect(dsn, autocommit=True) as conn:
+        try:
+            conn.execute(f'CREATE SCHEMA "{schema}"')
+            conn.execute(f'SET search_path TO "{schema}"')
+            conn.execute(DDL.read_text(encoding="utf-8"))
+            conn.execute("DROP INDEX ux_skill_asset_platform_key")  # 回到「索引之前」的存量库形态
+
+            ids = []
+            for i in range(3):
+                sid = str(uuid.uuid4())
+                ids.append(sid)
+                conn.execute(
+                    "insert into sre_skill_asset (skill_id, source, source_type, owner_user_id,"
+                    " display_name, skill_key, status, created_by, last_updated_by, creation_date)"
+                    " values (%s,'openops','platform',null,%s,'system-dup','active','t','t',"
+                    " now() + make_interval(secs => %s))", (sid, f"d{i}", i))
+
+            conn.execute(migration)
+            conn.execute(migration)  # 幂等
+
+            live = conn.execute("select skill_id::text from sre_skill_asset "
+                                "where deleted_at is null").fetchall()
+            assert [r[0] for r in live] == [ids[-1]], "应只留最新一条"
+            dead = conn.execute("select status from sre_skill_asset "
+                                "where deleted_at is not null").fetchall()
+            assert len(dead) == 2 and {r[0] for r in dead} == {"deleted"}  # 软删，非物删
+            assert conn.execute("select count(*) from sre_skill_asset").fetchone()[0] == 3
+            assert conn.execute(
+                "select count(*) from pg_indexes where schemaname=%s "
+                "and indexname='ux_skill_asset_platform_key'", (schema,)).fetchone()[0] == 1
+        finally:
+            conn.execute("SET search_path TO public")
+            conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')

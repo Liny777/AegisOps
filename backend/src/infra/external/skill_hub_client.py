@@ -19,26 +19,21 @@ from typing import Any
 
 from domain.skill_package import package_checksum
 from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三档/代理/文根/出站装配/带体报错）
+    ConsoleError,
     console_api_prefix,
     console_client_kwargs,
+    raise_biz_or_http,
     raise_with_body,
+    unwrap_console_data,
 )
 
 
-class SkillHubError(RuntimeError):
-    """Skill Hub 的结构化失败（仿 OModelError），供 app 层按类别映射 HTTP 语义。
+class SkillHubError(ConsoleError):
+    """Skill Hub 的结构化失败。kind / biz_code / status_code 语义与实现全部继承自 ConsoleError。
 
-    kind: "biz"=信封业务码错误（biz_code 有值，如 2003/2004 名称冲突）｜"http"=非 2xx 且无信封
-    （status_code 有值，404=对端接口未上线）｜"network"=传输层不可达/超时（重试语义）。
-    继承 RuntimeError：既有 `except RuntimeError` 兜底与测试断言不受影响。"""
-
-    def __init__(self, kind: str, message: str, *, biz_code: int | None = None,
-                 status_code: int | None = None):
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
-        self.biz_code = biz_code
-        self.status_code = status_code
+    保留独立类名是为了让 app 层能只捕获 Skill 面（与 McpRegistryError 区分）；
+    `SkillHubError("biz", …, biz_code=2004)` 的构造、`except SkillHubError` 与
+    `except RuntimeError` 的捕获行为均与拆基类前完全一致。"""
 
 
 def skillhub_base() -> str:
@@ -85,32 +80,14 @@ _MOCK_LIST = [
 
 
 def _unwrap_data(body: dict[str, Any]) -> dict[str, Any]:
-    """业务信封 `{code, message, data}` 解包（code 是业务状态，与 HTTP 状态分离）。
-
-    成功码收 0 和 200 两种：29.3 文档写 `code:0`，但内网实测（2026-07-11 check-net ⑤）skills 面
-    成功返回 `code:200`——2026-07-13 起 console 网关 skills/mcps 两面已统一 200（此前 mcps 面是 0）；两收兼容旧版。"""
-    code = int(body.get("code", -1))
-    if code not in (0, 200):
-        raise SkillHubError("biz", f"Skill Hub 返回业务错误：code={body.get('code')} {body.get('message', '')}",
-                            biz_code=code)
-    return body.get("data") or {}
+    """业务信封 `{code, message, data}` 解包（实现见 mcp_registry_client.unwrap_console_data）。"""
+    return unwrap_console_data(body, SkillHubError)
 
 
 def _raise_biz_or_http(r: Any) -> None:
     """非 2xx 收口（upload/delete 用；list/download 仍走 raise_with_body 保持既有文案）。
-
-    29.3 约定业务码随 HTTP 200 信封走，但对端形状常漂移（2003/2004 也可能随 4xx 返回）——
-    先试解 JSON 信封取业务码归入 "biz"，解不出（HTML 登录页/网关 5xx 裸文本）才归 "http"。"""
-    if r.status_code < 400:
-        return
-    try:
-        body = r.json()
-        code = int(body.get("code"))
-    except Exception:  # noqa: BLE001 —— 非 JSON / 无 code：登录页 HTML、网关裸错误
-        raise SkillHubError("http", f"console HTTP {r.status_code}：{r.text[:300]}",
-                            status_code=r.status_code) from None
-    raise SkillHubError("biz", str(body.get("message", "")) or f"Skill Hub HTTP {r.status_code}",
-                        biz_code=code, status_code=r.status_code)
+    实现见 mcp_registry_client.raise_biz_or_http。"""
+    raise_biz_or_http(r, SkillHubError)
 
 
 def _semver_to_int(semver: str | None) -> int:

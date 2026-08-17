@@ -127,6 +127,26 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
   "不存在"；误判也会被下轮 sync 拉回自洽）——上游缺席的僵尸行手动删除同样可清。软删被绑定的 skill 时
   绑定行保留（不可变历史），`asset-bindings` 列表将其 `asset_status` 标为 `deleted`。
   **MCP 侧同款缺口未修**（reconcile 对 MCP 仍 create-if-missing，牵扯工具目录与模板引用清洗，单独排期）。
+- **管理台平台级写闭环 + 同名收敛（2026-08-16）**：管理台可上传/删除平台 Skill、注册/删除平台 MCP，
+  上游一律 `is_system=true`（29.9 §2.1/§3.1，**需 console 超级管理员**，否则 1003 → 我们回 403 而非 502，
+  在管理面这是可操作的授权事实）。落点 `app/asset_admin_service.py`：
+  ① 上传**先打上游再写本地**（上游是事实源，未成功不碰本地），本地 `skill_key` 取响应 `data.skill_id`
+     （`system-{name}`），行是 `source_type='platform'`、owner NULL、`synced_from='platform_upload'`；
+  ② **同名收敛**——上传成功后软删幸存行以外的活平台行：同 `skill_key`（`duplicate_key`）或同
+     `display_name` 但不同 key（`same_name_rekeyed`，即 Hub 侧改键留下的孤儿，如存量裸名 `foo` 与
+     `system-foo` 并存）。危害不止管理台多一行：`resolve_skill_alias` 精确键优先，两行并存时 `/foo`
+     会解析到**过期旧行**并下载老包。护栏只有一条（`synced_from ∈ skill_hub|platform_upload`，seed/手造行
+     豁免）——**刻意不套宽限期与 asset_in_use**：此处有正向证据（上传返回了权威 key），套上反而让新
+     产生的重复永远清不掉。DB 侧兜底 `ux_skill_asset_platform_key`（部分唯一，`where deleted_at is null`），
+     并发落败者撞索引后转「加版本」；存量库先跑 `sql/migrate-2026-08-16-platform-skill-key-unique.sql`。
+  ③ MCP 注册命中已有行时**原地更新、不改 display_name、不派生新版本**——tool catalog 挂 `mcp_version_id`、
+     模板绑定用 `{display_name}::{tool_name}`，重建会让整套标注失联、工具掉回 fail-closed；
+     故 reconcile 的 MCP ingest 判重同步改为 `display_name ∪ manifest.server_id` 双维度（否则本地名与
+     上游名合法地不一致时，下一轮会把刚收敛掉的重复又造回来）。
+  ④ 删除梯子与用户面同构（http 404 降级仅本地删 / biz 1002 视作已删继续 / 1003 → 403 / network 与其余
+     biz **不本地删**），`upstream` 结果进审计使降级可观测；**不做 asset_in_use 拦截**（管理员不该被某个
+     用户的陈旧绑定卡住，绑定行走 ghost 降级显示「已删除」）。
+  异常类型：`ConsoleError`（基类，在 `mcp_registry_client`）→ `SkillHubError` / `McpRegistryError`。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或

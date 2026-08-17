@@ -1341,3 +1341,132 @@ def test_ext_omodel_sends_client_ip(monkeypatch):
     request_context.set_client_ip("")
     headers2 = _client_kwargs(_base()).get("headers", {})
     assert "IAM-Client-Ip" not in headers2  # 无 IP 上下文不硬塞
+
+
+# ==================== MCP Registry 写接口（29.9 §3.1/§3.6）+ console 异常类层级 ====================
+
+
+def test_ext_console_error_hierarchy():
+    """ConsoleError 基类下沉到 mcp_registry_client（skill_hub_client 单向 import 它，无环）后，
+    两面的异常类仍各自可捕获、且既有 `except RuntimeError` 兜底与 biz_code 语义不变。
+    这是拆基类重构没弄坏既有调用点/断言的守卫。"""
+    from infra.external import mcp_registry_client as mreg
+    from infra.external import skill_hub_client as shub
+
+    assert issubclass(shub.SkillHubError, mreg.ConsoleError)
+    assert issubclass(mreg.McpRegistryError, mreg.ConsoleError)
+    assert not issubclass(mreg.McpRegistryError, shub.SkillHubError)  # 两面互不误吞
+
+    e = shub.SkillHubError("biz", "系统级已存在同名skill", biz_code=2004, status_code=400)
+    assert isinstance(e, RuntimeError) and isinstance(e, mreg.ConsoleError)
+    assert e.kind == "biz" and e.biz_code == 2004 and e.status_code == 400 and e.message.startswith("系统级")
+    m = mreg.McpRegistryError("network", "不可达")
+    assert isinstance(m, RuntimeError) and m.kind == "network" and m.biz_code is None
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_register_posts_body_and_unwraps(monkeypatch):
+    """register：POST /mcps/register + 上游词汇 body；HTTP 201 且信封 code=201 也算成功。"""
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+
+    data = {"server_id": "svc-a", "server_name": "svc-a", "status": "active"}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(201, {"code": 201, "message": "ok", "data": data}))
+    out = await mcp_registry_client.register_server(
+        server_name="svc-a", server_url="https://svc-a/mcp", description="d", version="1.2.3",
+        category="监控", tags=["指标"], is_system=True, transport="sse")
+    method, url, kwargs = cap[0]
+    assert method == "POST" and url == "https://console/obsv/agent/management/mcps/register"
+    body = kwargs["json"]
+    assert body["server_name"] == "svc-a" and body["server_url"] == "https://svc-a/mcp"
+    assert body["is_system"] is True and body["source"] == "openops" and body["transport"] == "sse"
+    assert body["description"] == "d" and body["version"] == "1.2.3" and body["tags"] == ["指标"]
+    assert out["server_id"] == "svc-a"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_register_error_classification(monkeypatch):
+    """register 异常三分类：信封业务码（含随 4xx 返回的形状漂移）→ biz；非 JSON → http；传输层 → network。
+    传输层收口是刻意加的——list_servers 今天缺这层会把连不上漏成 500。"""
+    import httpx
+    import pytest as _pytest
+
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    kw = dict(server_name="x", server_url="https://x/mcp")
+
+    for status, code in ((200, 2001), (400, 1003), (400, 1005)):
+        _install(monkeypatch, lambda m, u, k, s=status, c=code: _Resp(s, {"code": c, "message": "no"}))
+        with _pytest.raises(mcp_registry_client.McpRegistryError) as e:
+            await mcp_registry_client.register_server(**kw)
+        assert e.value.kind == "biz" and e.value.biz_code == code
+
+    _install(monkeypatch, lambda m, u, k: _Resp(500, None, text="<html>gateway</html>"))
+    with _pytest.raises(mcp_registry_client.McpRegistryError) as eh:
+        await mcp_registry_client.register_server(**kw)
+    assert eh.value.kind == "http" and eh.value.status_code == 500
+
+    def _boom(m, u, k):
+        raise httpx.ConnectError("conn refused")
+
+    _install(monkeypatch, _boom)
+    with _pytest.raises(mcp_registry_client.McpRegistryError) as en:
+        await mcp_registry_client.register_server(**kw)
+    assert en.value.kind == "network"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_delete_posts_and_classifies(monkeypatch):
+    """delete：POST /mcps/delete + {"server_id"}；HTTP 404（对端未上线）→ kind=http+404，
+    供 app 层降级仅本地删。"""
+    import pytest as _pytest
+
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+
+    body = {"code": 0, "message": "ok", "data": {"server_id": "svc-a", "deleted_by": "u1"}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, body))
+    out = await mcp_registry_client.delete_server("svc-a")
+    method, url, kwargs = cap[0]
+    assert method == "POST" and url == "https://console/obsv/agent/management/mcps/delete"
+    assert kwargs["json"] == {"server_id": "svc-a"} and out["deleted_by"] == "u1"
+
+    _install(monkeypatch, lambda m, u, k: _Resp(404, None, text="Not Found"))
+    with _pytest.raises(mcp_registry_client.McpRegistryError) as ei:
+        await mcp_registry_client.delete_server("svc-a")
+    assert ei.value.kind == "http" and ei.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_register_delete_mock_offline(monkeypatch):
+    """mock 分支（默认）：不出网、合成成功信封——管理台注册/删除链路离线端到端可跑。"""
+    from infra.external import mcp_registry_client
+
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY", raising=False)
+
+    def _never(m, u, k):
+        raise AssertionError("mock 模式不该出网")
+
+    _install(monkeypatch, _never)
+    reg = await mcp_registry_client.register_server(server_name="m1", server_url="https://m1/mcp")
+    assert reg["server_id"] == "m1" and reg["status"] == "active"
+    assert (await mcp_registry_client.delete_server("m1"))["server_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_register_requires_base_url(monkeypatch):
+    """real 模式未配 BASE_URL → fail-loud（不静默降级到 mock）。"""
+    import pytest as _pytest
+
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY_BASE_URL", raising=False)
+    with _pytest.raises(RuntimeError, match="OPENOPS_MCPREGISTRY_BASE_URL"):
+        await mcp_registry_client.register_server(server_name="x", server_url="https://x/mcp")

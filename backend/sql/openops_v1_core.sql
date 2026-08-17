@@ -529,6 +529,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_skill_asset_version_no
 CREATE UNIQUE INDEX IF NOT EXISTS ux_mcp_asset_version_no
   ON sre_mcp_asset_version (mcp_id, version_no);
 
+-- 平台 skill 的 skill_key 唯一（29.9：Hub 在系统级作用域内保证 name → skill_id 一对一）。
+-- 用途：让并发同名上传的落败者撞唯一索引（asset_admin_service 捕获后转「加版本」），
+-- 而不是静默产生第二条活行——两条并存时 resolve_skill_alias 精确键优先会解析到过期行。
+-- `WHERE deleted_at IS NULL` 是**必须**的：软删行保留 skill_key，同名收敛与缺席墓碑每次都会
+-- 产生一条，普通唯一索引会让任何 skill 的第二次上传直接失败。
+-- 个人面对称索引 (owner_user_id, skill_key) 刻意不加：存量库更可能已有个人面重复，需先单独收敛。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_skill_asset_platform_key
+  ON sre_skill_asset (skill_key)
+  WHERE source_type = 'platform' AND deleted_at IS NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS ux_mcp_tool_catalog_name
   ON sre_mcp_tool_catalog (mcp_version_id, tool_name);
 

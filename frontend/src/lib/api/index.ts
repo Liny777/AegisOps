@@ -283,6 +283,15 @@ export interface OpenOpsApi {
   adminDeleteModelTemplate(id: string): Promise<void>;
   /** 软删模型资产（38.2）：被模板槽位引用时后端 400（提示先调整模板）。 */
   adminDeleteModelAsset(id: string): Promise<void>;
+  // ---- 平台级资产写闭环（29.9：管理台上传/删除平台 Skill、注册/删除平台 MCP，均 is_system=true） ----
+  /** 上传平台 Skill ZIP。`merged` = 顺带收敛掉的同名旧记录条数（0 时无需提示）。 */
+  adminUploadSkill(file: File, category?: string, tags?: string[]): Promise<{ skill_key: string; display_name: string; action: string; merged: number }>;
+  /** 删除平台 Skill：先回删 SkillHub 再本地软删；上游明确拒绝/不可达则整体失败、本地不删。 */
+  adminDeleteSkill(skillId: string): Promise<void>;
+  /** 注册平台 MCP Server。同名重注册为**原地更新**（保住 tool 标注），返回 action='updated'。 */
+  adminRegisterMcp(input: { server_name: string; server_url: string; description?: string; version?: string; category?: string; tags?: string[]; transport?: string }): Promise<{ server_id: string; action: string; merged: number }>;
+  /** 删除平台 MCP：回删注册表 → 本地软删 → 模板草稿引用级联清理。 */
+  adminDeleteMcp(mcpId: string): Promise<void>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -899,13 +908,14 @@ const realApi: OpenOpsApi = {
       };
     }
     if (key === "skills") {
-      // Skill 基线（只读）：系统自带（platform）skill 清单 + §2.2 semver 版本。复用 /assets/skills（含 latest_version）。
+      // Skill 基线：系统自带（platform）skill 清单 + §2.2 semver 版本。复用 /assets/skills（含 latest_version）。
       // platform 过滤走**服务端** source_type：分页后再客户端 filter 会让每页数量错乱、total 也不对。
       const d = await apiFetch<AssetPageDto>(
         `/openops/v1/assets/skills${assetQs({ ...params, sourceType: "platform" })}`);
       return {
         title: "Skill 基线",
-        cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }],
+        primary: { label: "上传 Skill", icon: "upload", actionKey: "upload-skill" },
+        cols: [{ label: "名称" }, { label: "skill_key" }, { label: "版本" }, { label: "更新时间" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
         rows: d.items.map((r) => ({
           id: String(r.skill_id),
           cells: [
@@ -915,8 +925,34 @@ const realApi: OpenOpsApi = {
             // SkillHub §2.2 updated_date（manifest 同步落库）；对账回填前为空 → 「—」
             { text: fmtLocal(r.updated_date) || "—" },
             { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+            { text: "删除", kind: "action" as const, onClickKey: "skill-delete" },
           ],
         })),
+        total: d.total, page: d.page, pageSize: d.page_size,
+      };
+    }
+    if (key === "mcps") {
+      // MCP 服务（平台级）：复用 /assets/mcps 的 platform 面。endpoint 后端已脱敏（30.5 展示铁律），
+      // 表格照展示脱敏值——管理员要看全量地址去注册表，不在此处回放。
+      const d = await apiFetch<AssetPageDto>(
+        `/openops/v1/assets/mcps${assetQs({ ...params, sourceType: "platform" })}`);
+      return {
+        title: "MCP 服务",
+        primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
+        cols: [{ label: "服务名称" }, { label: "endpoint" }, { label: "分类", width: "96px" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
+        rows: d.items.map((r) => {
+          const cfg = (r.endpoint_config_redacted ?? {}) as Record<string, unknown>;
+          return {
+            id: String(r.mcp_id),
+            cells: [
+              { text: String(r.display_name) },
+              { text: String(cfg.endpoint ?? "—"), mono: true },
+              { text: r.category ? String(r.category) : "—" },
+              { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+              { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
+            ],
+          };
+        }),
         total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
@@ -1168,6 +1204,32 @@ const realApi: OpenOpsApi = {
   async adminDeleteModelAsset(id) {
     await apiFetch(`/openops/v1/admin/model-assets/${id}`, { method: "DELETE" });
   },
+  async adminUploadSkill(file, category, tags) {
+    const fd = new FormData();  // apiFetch 识别 FormData 后不设 Content-Type（boundary 由浏览器带）
+    fd.append("file", file);
+    if (category) fd.append("category", category);
+    if (tags?.length) fd.append("tags", JSON.stringify(tags));
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/skills:upload", { method: "POST", body: fd });
+    return {
+      skill_key: String(d.skill_key ?? ""),
+      display_name: String(d.display_name ?? ""),
+      action: String(d.action ?? "created"),
+      merged: Number(d.merged ?? 0),
+    };
+  },
+  async adminDeleteSkill(skillId) {
+    await apiFetch(`/openops/v1/admin/skills/${skillId}`, { method: "DELETE" });
+  },
+  async adminRegisterMcp(input) {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/mcps", {
+      method: "POST",
+      body: { client_request_id: crid(), transport: "streamable_http", ...input },
+    });
+    return { server_id: String(d.server_id ?? ""), action: String(d.action ?? "created"), merged: Number(d.merged ?? 0) };
+  },
+  async adminDeleteMcp(mcpId) {
+    await apiFetch(`/openops/v1/admin/mcps/${mcpId}`, { method: "DELETE" });
+  },
   async getSandboxCfg() {
     const rows = await apiFetch<{ key: string; val: unknown; desc: string }[]>("/openops/v1/admin/sandbox");
     return rows.map((r) => ({ key: r.key, desc: r.desc, val: String(r.val) }));
@@ -1387,6 +1449,55 @@ const mockApi: OpenOpsApi = {
   },
   registerMcp: () => delay(undefined as unknown as void),
   deleteAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
+  // 管理台平台级资产：mock 直接改 adminTables 的行，让上传/注册/删除在 mock 模式下也能看到列表变化
+  adminUploadSkill: (file) => {
+    const raw = file.name.replace(/\.zip$/i, "").toLowerCase();
+    const key = `system-${raw}`;
+    const rows = M.adminTables.skills.rows;
+    // 镜像后端两步：① 按 skill_key upsert（命中=加版本，**不算收敛**）；
+    // ② 同名但**不同 key** 的旧行才是收敛对象（Hub 改键留下的孤儿），计入 merged。
+    const existing = rows.find((r) => String(r.cells[1]?.text) === key);
+    const stale = rows.filter((r) => String(r.cells[0]?.text) === raw && String(r.cells[1]?.text) !== key);
+    M.adminTables.skills.rows = rows.filter((r) => !stale.includes(r));
+    if (existing) {
+      existing.cells[2] = { text: "0.0.2" };
+      existing.cells[3] = { text: "刚刚" };
+    } else {
+      M.adminTables.skills.rows.push({
+        id: `skill_${key}`,
+        cells: [{ text: raw }, { text: key, mono: true }, { text: "0.0.1" },
+                { text: "刚刚" }, { text: "active", kind: "badge", tone: "good" },
+                { text: "删除", kind: "action", onClickKey: "skill-delete" }],
+      });
+    }
+    return delay({ skill_key: key, display_name: raw,
+                   action: existing ? "version_updated" : "created", merged: stale.length });
+  },
+  adminDeleteSkill: (id) => {
+    const i = M.adminTables.skills.rows.findIndex((r) => r.id === id);
+    if (i >= 0) M.adminTables.skills.rows.splice(i, 1);
+    return delay(undefined as unknown as void);
+  },
+  adminRegisterMcp: (input) => {
+    const rows = M.adminTables.mcps.rows;
+    const hit = rows.find((r) => String(r.cells[0]?.text) === input.server_name);
+    if (hit) {  // 原地更新（对齐后端：不改名、不重建，保住 tool 标注）
+      hit.cells[1] = { text: input.server_url, mono: true };
+      return delay({ server_id: input.server_name, action: "updated", merged: 0 });
+    }
+    rows.push({
+      id: `mcp_${input.server_name}`,
+      cells: [{ text: input.server_name }, { text: input.server_url, mono: true },
+              { text: input.category || "—" }, { text: "active", kind: "badge", tone: "good" },
+              { text: "删除", kind: "action", onClickKey: "mcp-delete" }],
+    });
+    return delay({ server_id: input.server_name, action: "created", merged: 0 });
+  },
+  adminDeleteMcp: (id) => {
+    const i = M.adminTables.mcps.rows.findIndex((r) => r.id === id);
+    if (i >= 0) M.adminTables.mcps.rows.splice(i, 1);
+    return delay(undefined as unknown as void);
+  },
   bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   unbindAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),
   unbindOwnAsset: (_kind, instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),

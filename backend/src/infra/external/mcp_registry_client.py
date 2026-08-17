@@ -39,6 +39,62 @@ def _schema_hash(schema: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(schema, sort_keys=True).encode()).hexdigest()[:16]
 
 
+class ConsoleError(RuntimeError):
+    """console 网关（skills / mcps 两面）的结构化失败，供 app 层按类别映射 HTTP 语义。
+
+    kind: "biz"=信封业务码错误（biz_code 有值，如 2003/2004 名称冲突、1003 非超管）｜
+    "http"=非 2xx 且无信封（status_code 有值，404=对端接口未上线）｜
+    "network"=传输层不可达/超时（重试语义）。
+    继承 RuntimeError：既有 `except RuntimeError` 兜底与测试断言不受影响。
+
+    定义在本模块（而非 skill_hub_client）是为了避免 import 环——skill_hub_client 单向
+    import 本模块，基类放在下层两面都能用。"""
+
+    def __init__(self, kind: str, message: str, *, biz_code: int | None = None,
+                 status_code: int | None = None):
+        super().__init__(message)
+        self.kind = kind
+        self.message = message
+        self.biz_code = biz_code
+        self.status_code = status_code
+
+
+class McpRegistryError(ConsoleError):
+    """MCP Registry 面（register/delete）的结构化失败。与 SkillHubError 并列，
+    让 app 层能只捕获 MCP 面而不误吞 Skill 面的异常。"""
+
+
+def raise_biz_or_http(r: Any, exc_cls: type[ConsoleError]) -> None:
+    """非 2xx 收口（写接口用；list/download 仍走 raise_with_body 保持既有文案）。
+
+    29.3 约定业务码随 HTTP 200 信封走，但对端形状常漂移（2003/2004 也可能随 4xx 返回）——
+    先试解 JSON 信封取业务码归入 "biz"，解不出（HTML 登录页/网关 5xx 裸文本）才归 "http"。"""
+    if r.status_code < 400:
+        return
+    try:
+        body = r.json()
+        code = int(body.get("code"))
+    except Exception:  # noqa: BLE001 —— 非 JSON / 无 code：登录页 HTML、网关裸错误
+        raise exc_cls("http", f"console HTTP {r.status_code}：{r.text[:300]}",
+                      status_code=r.status_code) from None
+    raise exc_cls("biz", str(body.get("message", "")) or f"console HTTP {r.status_code}",
+                  biz_code=code, status_code=r.status_code)
+
+
+def unwrap_console_data(body: dict[str, Any], exc_cls: type[ConsoleError],
+                        ok_codes: tuple[int, ...] = (0, 200)) -> dict[str, Any]:
+    """业务信封 `{code, message, data}` 解包（code 是业务状态，与 HTTP 状态分离）。
+
+    成功码默认收 0 和 200 两种：29.3 文档写 `code:0`，但内网实测 skills 面成功返回 `code:200`
+    （2026-07-13 起 console 网关两面已统一 200）；两收兼容旧版。register 类接口 HTTP 201，
+    信封里也可能带 `code:201`，由调用方经 ok_codes 显式放行。"""
+    code = int(body.get("code", -1))
+    if code not in ok_codes:
+        raise exc_cls("biz", f"console 返回业务错误：code={body.get('code')} {body.get('message', '')}",
+                      biz_code=code)
+    return body.get("data") or {}
+
+
 def console_api_prefix() -> str:
     """console 系 API 文根（mcps 列表/代理、skills 列表/下载同一网关文根）：默认 29.3 的
     `/obsv/agent/management`；测试/生产网关文根不同、或对端改文根时设 `OPENOPS_CONSOLE_API_PREFIX`
@@ -309,6 +365,73 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
                 page += 1
         return out
     return [{"server_id": "mock-mcp", "server_name": "mock MCP", "server_url": "http://mock", "description": "mock"}]
+
+
+MCP_TRANSPORTS: tuple[str, ...] = ("jsonrpc", "sse", "streamable_http")  # 29.9 §3.1；非法值上游回 1005
+
+
+def _registry_base() -> str:
+    """MCP Registry host 根（real 模式必配，未配即 fail-loud）。三处 real 分支共用。"""
+    from infra.request_context import expand_host
+
+    base = expand_host(os.getenv("OPENOPS_MCPREGISTRY_BASE_URL") or "")
+    if not base:
+        raise RuntimeError("OPENOPS_MCPREGISTRY=real 需配 OPENOPS_MCPREGISTRY_BASE_URL（29.3 未联）")
+    return base.rstrip("/")
+
+
+async def register_server(*, server_name: str, server_url: str, description: str = "",
+                          version: str = "1.0.0", category: str = "", tags: list[str] | None = None,
+                          source: str = "openops", is_system: bool = False,
+                          transport: str = "streamable_http") -> dict[str, Any]:
+    """注册 MCP Server（29.9 §3.1 `POST /mcps/register`，成功 HTTP 201）→ data{server_id, server_name, …}。
+
+    `server_name` 兼作 `server_id`（对端契约），必须唯一；已存在回 2001。
+    `is_system=True`（平台级）需 console 超级管理员权限，否则 1003。
+    mock：合成成功信封，管理台注册链路离线端到端可跑（无需 monkeypatch）。"""
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        base = _registry_base()
+        import httpx
+
+        body: dict[str, Any] = {
+            "server_name": server_name, "server_url": server_url, "source": source,
+            "is_system": is_system, "transport": transport,
+        }
+        for k, v in (("description", description), ("version", version), ("category", category)):
+            if v:
+                body[k] = v
+        if tags:
+            body["tags"] = tags
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+                r = await cli.post(f"{base}{console_api_prefix()}/mcps/register", json=body)
+        except httpx.HTTPError as e:  # 传输层不是 RuntimeError，不收口会漏成 500（同 skill_hub upload）
+            raise McpRegistryError("network", f"MCP Registry 不可达：{type(e).__name__}: {e}") from None
+        raise_biz_or_http(r, McpRegistryError)  # 非 2xx：优先解信封业务码（2001/1003/1005 随 4xx 返回也归 biz）
+        return unwrap_console_data(r.json(), McpRegistryError, ok_codes=(0, 200, 201))
+    return {"server_id": server_name, "server_name": server_name, "server_url": server_url,
+            "description": description, "version": version, "category": category, "tags": tags or [],
+            "transport": transport, "status": "active", "is_system": is_system, "source": source}
+
+
+async def delete_server(server_id: str) -> dict[str, Any]:
+    """删除 MCP Server（29.9 §3.6 `POST /mcps/delete`，**物理删除不可恢复**）→ data{server_id, deleted_by, deleted_at}。
+
+    异常分类供调用方降级判定（同 skill_hub_client.delete_skill）：kind="http" 且 404=对端接口未上线；
+    "biz" 1002=资源不存在/无权限、1003=系统级需超管；"network"=不可达可重试。
+    mock：直接回成功（本地删照走，离线端到端闭环）。"""
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        base = _registry_base()
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+                r = await cli.post(f"{base}{console_api_prefix()}/mcps/delete", json={"server_id": server_id})
+        except httpx.HTTPError as e:
+            raise McpRegistryError("network", f"MCP Registry 不可达：{type(e).__name__}: {e}") from None
+        raise_biz_or_http(r, McpRegistryError)
+        return unwrap_console_data(r.json(), McpRegistryError)
+    return {"server_id": server_id, "deleted_by": "mock", "deleted_at": "2026-01-01 00:00:00"}
 
 
 async def get_mcp_detail(server_id: str) -> dict[str, Any]:

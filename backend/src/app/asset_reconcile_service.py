@@ -2,8 +2,10 @@
 
 - 只拉 `source=openops` 资产（ASSET-001/002）。
 - Skill：按 (source_type, skill_key) upsert；checksum 变化 → 追加新版本（历史版本不动）；
-  上游列表**缺席**的平台 skill → 软删墓碑收敛（synced_from='skill_hub' 行、上游子集非空、过宽限期，
-  三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。MCP 侧缺口未修（create-if-missing）。
+  上游列表**缺席**的平台 skill → 软删墓碑收敛（synced_from ∈ PLATFORM_SKILL_SOURCES 的行、
+  上游子集非空、过宽限期，三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。
+  MCP 侧仍是 create-if-missing（无缺席墓碑），但判重已按 display_name ∪ server_id 双维度。
+- 管理台的平台级写闭环（上传/注册/删除 + 同名收敛）在 asset_admin_service。
 - 平台 MCP：`tools/list` 经 Registry 拉取 → `schema_hash` 对比 → 变化则旧 catalog 行 superseded、
   新行入库且**标注不继承**（未标注 → Tool Gateway fail-closed，需管理员重新标注；ASSET-005）。
 - 触发：登录（节流 fire-and-forget）、配置页 refresh（POST /assets:reconcile，force）、
@@ -130,8 +132,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         if not upstream_platform:
             summary["skills_tombstone_skipped"] = "empty_upstream"
         else:
+            from app.asset_admin_service import PLATFORM_SKILL_SOURCES
+
             for prow in await assets.list_platform_skills():
-                if (prow.get("manifest_json") or {}).get("synced_from") != "skill_hub":
+                # 'skill_hub'（本函数写的）与 'platform_upload'（管理台上传写的）都要放行：
+                # 漏掉后者，管理台上传的行在 Hub 侧被删后永远收敛不掉。seed 行无此键，天然豁免。
+                if (prow.get("manifest_json") or {}).get("synced_from") not in PLATFORM_SKILL_SOURCES:
                     continue
                 if str(prow.get("skill_key") or "") in upstream_platform or not _past_absent_grace(prow):
                     continue
@@ -142,19 +148,29 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
         try:
-            existing = {str(m.get("display_name")) for m in await assets.list_platform_mcps()}
+            # 判重同时看 display_name 与 manifest 里的 server_id：只按名字判会在两种情形下多造行——
+            # ① 上游改名（同 server_id 换 server_name）；② 管理台注册命中已有行时是**原地更新、
+            # 不改 display_name**（保 tool catalog 与标注），本地名与上游名会合法地不一致。
+            # 只会收紧「已有」判定，不会比原来多造行。
+            rows = await assets.list_platform_mcps_with_manifest()
+            known_names = {str(m.get("display_name")) for m in rows}
+            known_ids = {str((m.get("manifest_json") or {}).get("server_id")) for m in rows
+                         if (m.get("manifest_json") or {}).get("server_id")}
             # 平台资产对账无用户语义：不传 userId（期望对端只返回平台 server——联调确认项①）
             for srv in await mcp_registry_client.list_servers():
                 url = str(srv.get("server_url") or "")
                 if mcp_registry_client.is_placeholder_endpoint(url):  # 占位防呆（同 discover_tools 口径）
                     continue
                 name = str(srv.get("server_name") or srv.get("server_id") or "")
-                if not name or name in existing:
-                    continue  # V1 create-if-missing（改名/下线同步不做）
+                sid = str(srv.get("server_id") or "")
+                if not name or name in known_names or (sid and sid in known_ids):
+                    continue  # V1 create-if-missing（下线同步不做）
                 await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
                                         {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
                                          "description": srv.get("description", "")})
-                existing.add(name)
+                known_names.add(name)
+                if sid:
+                    known_ids.add(sid)
                 summary["mcps_created"] += 1
         except Exception as e:  # noqa: BLE001 —— 注册表不可达不炸整轮（skill 已对账完，catalog 照刷）
             log.warning("mcp registry ingest failed: %s", str(e)[:200])

@@ -1297,3 +1297,489 @@ def test_register_mcp_rejects_empty_endpoint(client):
                        json={"client_request_id": f"m_{time.time_ns()}", "display_name": "空 MCP",
                              "transport": "http", "endpoint": "", "manifest_json": {}})
     assert resp.status_code == 400
+
+
+# ==================== 管理台平台级 Skill / MCP：上传·注册·删除·同名收敛 ====================
+
+
+def _admin_upload_zip(client, name: str, **form):
+    """管理台 ZIP 上传（mock SkillHub → is_system=true，skill_key='system-{name}'）。"""
+    return client.post(
+        "/api/openops/v1/admin/skills:upload", headers=ADMIN_HEADERS,
+        files={"file": (f"{name}.zip", _make_skill_zip(name), "application/zip")},
+        data=form or None)
+
+
+def _live_platform_rows() -> list[tuple]:
+    return _sql("select skill_key, display_name, skill_id::text from sre_skill_asset "
+                "where source_type='platform' and deleted_at is null order by skill_key", {})
+
+
+def _seed_platform_row(skill_key: str, display_name: str, synced_from: str | None = "skill_hub") -> str:
+    """直塞一条活平台行（连版本行），模拟 reconcile 落的存量行 / seed 手造行。"""
+    import json as _json
+    import uuid as _uuid
+
+    sid, vid = str(_uuid.uuid4()), str(_uuid.uuid4())
+    manifest = {} if synced_from is None else {"synced_from": synced_from}
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute(
+            "insert into sre_skill_asset (skill_id, source, source_type, owner_user_id, display_name,"
+            " skill_key, status, created_by, last_updated_by) values"
+            " (%(s)s,'openops','platform',null,%(d)s,%(k)s,'active','system','system')",
+            {"s": sid, "d": display_name, "k": skill_key})
+        conn.execute(
+            "insert into sre_skill_asset_version (skill_version_id, skill_id, version_no, manifest_json,"
+            " checksum_sha256, status, created_by, last_updated_by) values"
+            " (%(v)s,%(s)s,1,%(m)s,%(c)s,'active','system','system')",
+            {"v": vid, "s": sid, "m": _json.dumps(manifest), "c": f"seed-{skill_key}"})
+    return sid
+
+
+def test_admin_skill_upload_creates_platform_row(client):
+    """管理台上传写的是**平台行**（source_type='platform'、owner 为 NULL），不是 admin 名下的个人行。
+
+    回归闸：沿用用户面 upload_skill_package 会写成 source_type='user' 的行，与 reconcile 落的
+    平台行并存 —— 这正是「管理台出现两个同名 skill」的一条来源。"""
+    res = unwrap(_admin_upload_zip(client, "plat-new", category="运维", tags="监控,告警"))
+    assert res["skill_key"] == "system-plat-new" and res["action"] == "created"
+    assert res["display_name"] == "plat-new" and res["merged"] == 0
+
+    rows = _sql("select source_type, owner_user_id from sre_skill_asset "
+                "where skill_key='system-plat-new' and deleted_at is null", {})
+    assert rows == [("platform", None)]
+
+    plat = unwrap(client.get("/api/openops/v1/assets/skills?source_type=platform",
+                             headers=ADMIN_HEADERS))["items"]
+    assert any(s["skill_key"] == "system-plat-new" for s in plat)
+    # 不该混进个人面（admin 自己的个人 skill 列表）
+    mine = unwrap(client.get("/api/openops/v1/assets/skills?source_type=user",
+                             headers=ADMIN_HEADERS))["items"]
+    assert not any(s["skill_key"] == "system-plat-new" for s in mine)
+
+
+def test_admin_skill_upload_sends_is_system_true(client, monkeypatch):
+    """上游必须收到 is_system=True（平台级），uploader_id 为管理员工号。"""
+    seen = {}
+
+    async def fake_upload(filename, zip_bytes, category, tags, source="openops",
+                          is_system=False, uploader_id=None):
+        seen.update({"source": source, "is_system": is_system, "uploader_id": uploader_id,
+                     "category": category, "tags": tags})
+        return {"skill_id": "system-flagcheck", "name": "flagcheck", "version": "0.0.1",
+                "status": "active", "action": "created"}
+
+    monkeypatch.setattr(skill_hub_client, "upload_skill", fake_upload)
+    unwrap(_admin_upload_zip(client, "flagcheck", category="运维", tags='["a","b"]'))
+    assert seen["is_system"] is True and seen["source"] == "openops"
+    assert seen["uploader_id"] == "admin" and seen["category"] == "运维" and seen["tags"] == ["a", "b"]
+
+
+def test_admin_skill_upload_converges_legacy_bare_key(client):
+    """**头号用例**：Hub 侧同名覆盖后换了键（存量裸名 `conv-me` → `system-conv-me`），
+    本地旧行必须被收敛掉，管理台不再出现两个同名 skill。
+
+    危害不止显示：resolve_skill_alias 精确键优先，两行并存时 `/conv-me` 会解析到过期旧行。"""
+    old_id = _seed_platform_row("conv-me", "conv-me")  # reconcile 落的存量裸名行
+    res = unwrap(_admin_upload_zip(client, "conv-me"))
+    assert res["skill_key"] == "system-conv-me" and res["merged"] == 1
+
+    live = [r for r in _live_platform_rows() if r[1] == "conv-me"]
+    assert len(live) == 1 and live[0][0] == "system-conv-me", f"应只剩一条，实得 {live}"
+    dead = _sql("select status, deleted_at from sre_skill_asset where skill_id=%(s)s", {"s": old_id})
+    assert dead[0][0] == "deleted" and dead[0][1] is not None  # 软删而非物删
+
+    audit = _sql("select 1 from sre_audit_event where event_type='skill.deleted' and action='converged'"
+                 " and payload_redacted_json->>'skill_key'='conv-me'"
+                 " and payload_redacted_json->>'reason'='same_name_rekeyed'", {})
+    assert audit
+
+
+def test_admin_skill_upload_converges_duplicate_same_key(client):
+    """同 skill_key 的存量双行 → 上传时自愈到单行，且收敛后库重新满足唯一索引。
+
+    这类脏行在**新库里已建不出来**（ux_skill_asset_platform_key 直接拦），故先临时摘掉索引来
+    模拟「尚未跑迁移的存量内网库」——服务层的 duplicate_key 分支正是为这种库准备的兜底。"""
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("drop index ux_skill_asset_platform_key")
+    a = _seed_platform_row("system-dup2", "dup2")
+    b = _seed_platform_row("system-dup2", "dup2")
+    assert len({a, b}) == 2
+
+    res = unwrap(_admin_upload_zip(client, "dup2"))
+    # upsert 按 key 命中**最新**那条脏行、给它加版本（幸存），收敛再扫掉另一条——
+    # 收敛按 UUID 而非按 key 排除幸存行，正是为了让这种「双行共享同一 key」在同一遍里自愈
+    assert res["skill_key"] == "system-dup2" and res["action"] == "version_updated"
+    assert res["skill_id"] == b and res["merged"] == 1
+
+    live = [r for r in _live_platform_rows() if r[0] == "system-dup2"]
+    assert len(live) == 1 and live[0][2] == b
+    assert _sql("select deleted_at from sre_skill_asset where skill_id=%(s)s", {"s": a})[0][0] is not None
+    audit = _sql("select 1 from sre_audit_event where event_type='skill.deleted' and action='converged'"
+                 " and payload_redacted_json->>'reason'='duplicate_key'", {})
+    assert audit
+    # 收敛后库已可重新建唯一索引（= 迁移脚本「先去重再建索引」的同一状态）
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("create unique index ux_skill_asset_platform_key on sre_skill_asset (skill_key)"
+                     " where source_type='platform' and deleted_at is null")
+
+
+def test_admin_skill_upload_concurrent_duplicate_hits_index(client):
+    """唯一索引是并发兜底：同 key 的第二条**活**平台行插不进去（软删行不受限，收敛后仍可再上传）。"""
+    _seed_platform_row("system-race", "race")
+    with pytest.raises(psycopg.errors.UniqueViolation):
+        _seed_platform_row("system-race", "race")
+
+
+def test_admin_skill_upload_spares_seed_and_handmade_rows(client):
+    """护栏：manifest 无 synced_from 的行（seed / 老 JSON 端点手造）即使同名也不动。"""
+    seed_id = _seed_platform_row("legacy-handmade", "spare-me", synced_from=None)
+    res = unwrap(_admin_upload_zip(client, "spare-me"))
+    assert res["merged"] == 0
+    still = _sql("select deleted_at from sre_skill_asset where skill_id=%(s)s", {"s": seed_id})
+    assert still[0][0] is None  # 豁免，未被收敛
+
+
+def test_admin_skill_upload_second_time_adds_version(client):
+    """同一平台 skill 二次上传 → 加版本、仍只有一条活行（0.05 → 0.06 的常规路径）。"""
+    unwrap(_admin_upload_zip(client, "verbump"))
+    again = unwrap(_admin_upload_zip(client, "verbump"))
+    assert again["action"] == "version_updated"
+    assert len([r for r in _live_platform_rows() if r[0] == "system-verbump"]) == 1
+    vers = _sql("select count(*) from sre_skill_asset_version v join sre_skill_asset s"
+                " on s.skill_id=v.skill_id where s.skill_key='system-verbump'", {})
+    assert vers[0][0] == 2
+
+
+@pytest.mark.parametrize("kind,biz,status,code", [
+    ("biz", 1003, 403, "FORBIDDEN"),
+    ("biz", 2003, 409, "SKILL_NAME_CONFLICT"),
+    ("biz", 2004, 409, "SKILL_NAME_CONFLICT"),
+    ("biz", 2002, 400, "VALIDATION_FAILED"),
+    ("biz", 2005, 400, "VALIDATION_FAILED"),
+    ("biz", 5001, 502, "IAM_UPSTREAM"),
+    ("network", None, 502, "IAM_UPSTREAM"),
+])
+def test_admin_skill_upload_error_mapping(client, monkeypatch, kind, biz, status, code):
+    """上游业务码 → HTTP 语义；且每种失败都**不得**在本地建行（上游优先的顺序保证）。"""
+    async def boom(*a, **k):
+        raise skill_hub_client.SkillHubError(kind, "上游说不行", biz_code=biz)
+
+    monkeypatch.setattr(skill_hub_client, "upload_skill", boom)
+    resp = _admin_upload_zip(client, "err-case")
+    assert resp.status_code == status
+    body = resp.json()["error"]
+    assert body["code"] == code
+    if kind == "network":
+        assert body["retryable"] is True
+    assert not [r for r in _live_platform_rows() if r[1] == "err-case"]
+
+
+def test_admin_skill_upload_requires_admin(client):
+    """普通用户打管理台上传端点 → 403。"""
+    resp = client.post("/api/openops/v1/admin/skills:upload", headers=USER_HEADERS,
+                       files={"file": ("x.zip", _make_skill_zip("nope"), "application/zip")})
+    assert resp.status_code == 403
+
+
+def test_admin_skill_upload_rejects_bad_package(client):
+    """非 ZIP / 缺 SKILL.md → 400，且不打上游。"""
+    assert client.post("/api/openops/v1/admin/skills:upload", headers=ADMIN_HEADERS,
+                       files={"file": ("x.zip", b"not-a-zip", "application/zip")}).status_code == 400
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("run.py", "x")
+    assert client.post("/api/openops/v1/admin/skills:upload", headers=ADMIN_HEADERS,
+                       files={"file": ("x.zip", buf.getvalue(), "application/zip")}).status_code == 400
+
+
+def test_admin_uploaded_row_tombstoned_by_reconcile(client, monkeypatch):
+    """管理台上传的行（synced_from='platform_upload'）也必须进平台缺席墓碑的允许集——
+    否则 Hub 侧删掉后本地永远收敛不掉。漏改 asset_reconcile_service 的允许集这条必挂。"""
+    unwrap(_admin_upload_zip(client, "tomb-me"))
+    _age_skill_rows("system-tomb-me")
+
+    async def without_it(uid):
+        return [_platform_skill("other-plat")]
+
+    monkeypatch.setattr(skill_hub_client, "list_skills", without_it)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["skills_tombstoned"] >= 1
+    assert not [r for r in _live_platform_rows() if r[0] == "system-tomb-me"]
+
+
+# -------------------------------- 平台 Skill 删除 --------------------------------
+
+
+def test_admin_skill_delete_calls_upstream_then_soft_deletes(client, monkeypatch):
+    """回删上游用的是命名空间化 key，再本地软删；审计记 upstream='deleted'。"""
+    res = unwrap(_admin_upload_zip(client, "del-plat"))
+    seen = {}
+
+    async def fake_delete(skill_id):
+        seen["skill_id"] = skill_id
+        return {"skill_id": skill_id, "action": "deleted"}
+
+    monkeypatch.setattr(skill_hub_client, "delete_skill", fake_delete)
+    out = unwrap(client.delete(f"/api/openops/v1/admin/skills/{res['skill_id']}", headers=ADMIN_HEADERS))
+    assert out == {"deleted": True, "upstream": "deleted"}
+    assert seen["skill_id"] == "system-del-plat"
+    assert not [r for r in _live_platform_rows() if r[0] == "system-del-plat"]
+    assert _sql("select 1 from sre_audit_event where event_type='skill.deleted' and action='admin_delete'"
+                " and payload_redacted_json->>'upstream'='deleted'", {})
+
+
+@pytest.mark.parametrize("kind,biz,st,status,code", [
+    ("biz", 1003, None, 403, "FORBIDDEN"),
+    ("biz", 5001, None, 502, "IAM_UPSTREAM"),
+    ("network", None, None, 502, "IAM_UPSTREAM"),
+])
+def test_admin_skill_delete_upstream_refusal_keeps_local(client, monkeypatch, kind, biz, st, status, code):
+    """上游明确拒绝/不可达 → 不本地删（否则本地消失、下轮同步复活，更困惑）。"""
+    res = unwrap(_admin_upload_zip(client, "del-keep"))
+
+    async def boom(skill_id):
+        raise skill_hub_client.SkillHubError(kind, "拒绝", biz_code=biz, status_code=st)
+
+    monkeypatch.setattr(skill_hub_client, "delete_skill", boom)
+    resp = client.delete(f"/api/openops/v1/admin/skills/{res['skill_id']}", headers=ADMIN_HEADERS)
+    assert resp.status_code == status and resp.json()["error"]["code"] == code
+    assert [r for r in _live_platform_rows() if r[0] == "system-del-keep"]  # 本地仍在
+
+
+@pytest.mark.parametrize("kind,biz,st,expect", [
+    ("http", None, 404, "endpoint_missing"),   # 对端接口未上线 → 降级仅本地删
+    ("biz", 1002, None, "already_absent"),     # 上游已无此 skill → 视作已删继续
+])
+def test_admin_skill_delete_degrades_and_deletes_local(client, monkeypatch, kind, biz, st, expect):
+    res = unwrap(_admin_upload_zip(client, "del-degr"))
+
+    async def boom(skill_id):
+        raise skill_hub_client.SkillHubError(kind, "x", biz_code=biz, status_code=st)
+
+    monkeypatch.setattr(skill_hub_client, "delete_skill", boom)
+    out = unwrap(client.delete(f"/api/openops/v1/admin/skills/{res['skill_id']}", headers=ADMIN_HEADERS))
+    assert out["upstream"] == expect
+    assert not [r for r in _live_platform_rows() if r[0] == "system-del-degr"]
+
+
+def test_admin_skill_delete_seed_row_skips_upstream(client, monkeypatch):
+    """seed / 手造行（无 synced_from）无上游对应 → 不回删，只本地删。"""
+    sid = _seed_platform_row("seedy", "seedy", synced_from=None)
+
+    async def never(skill_id):
+        raise AssertionError("不该回删上游")
+
+    monkeypatch.setattr(skill_hub_client, "delete_skill", never)
+    out = unwrap(client.delete(f"/api/openops/v1/admin/skills/{sid}", headers=ADMIN_HEADERS))
+    assert out["upstream"] == "skipped"
+
+
+def test_admin_skill_delete_rejects_user_scope_row(client):
+    """管理台端点只删平台级；个人 skill 走插件页（403 而非静默删别人的资产）。"""
+    row = _upload_zip_skill(client, "not-platform")
+    resp = client.delete(f"/api/openops/v1/admin/skills/{row['skill_id']}", headers=ADMIN_HEADERS)
+    assert resp.status_code == 403
+
+
+def test_admin_skill_delete_mock_mode_end_to_end(client):
+    """零 monkeypatch：mock SkillHub 下上传→删除全链闭环。"""
+    res = unwrap(_admin_upload_zip(client, "e2e-plat"))
+    out = unwrap(client.delete(f"/api/openops/v1/admin/skills/{res['skill_id']}", headers=ADMIN_HEADERS))
+    assert out["deleted"] is True and out["upstream"] == "deleted"
+    assert not [r for r in _live_platform_rows() if r[0] == "system-e2e-plat"]
+
+
+def test_admin_skill_delete_allows_in_use_asset(client):
+    """本次拍板：管理员删平台资产**不**被 active 绑定拦住（绑定行走 ghost 降级显示「已删除」）。"""
+    res = unwrap(_admin_upload_zip(client, "bound-plat"))
+    inst = create_instance(client)
+    vid = _sql("select skill_version_id::text from sre_skill_asset_version where skill_id=%(s)s",
+               {"s": res["skill_id"]})[0][0]
+    unwrap(client.post(f"/api/openops/v1/agent-teams/{inst['instance_id']}/asset-bindings",
+                       headers=USER_HEADERS,
+                       json={"client_request_id": f"b_{time.time_ns()}", "asset_type": "skill",
+                             "skill_id": res["skill_id"], "skill_version_id": vid,
+                             "mcp_id": None, "mcp_version_id": None}))
+    out = unwrap(client.delete(f"/api/openops/v1/admin/skills/{res['skill_id']}", headers=ADMIN_HEADERS))
+    assert out["deleted"] is True
+    binding = next(b for b in _bindings(client, inst["instance_id"]) if b.get("skill_id") == res["skill_id"])
+    assert binding["asset_status"] == "deleted"  # 既有 ghost 降级链接住
+
+
+# -------------------------------- 平台 MCP 注册 / 删除 --------------------------------
+
+
+def _admin_register_mcp(client, name: str, url: str = "https://plat-mcp.internal/mcp", **kw):
+    body = {"client_request_id": f"am_{time.time_ns()}", "server_name": name, "server_url": url,
+            "description": "平台 MCP", "version": "1.0.0", "category": "监控", "tags": ["指标"],
+            "transport": "streamable_http", **kw}
+    return client.post("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS, json=body)
+
+
+def _live_platform_mcps() -> list[tuple]:
+    return _sql("select display_name, mcp_id::text from sre_mcp_asset "
+                "where source_type='platform' and deleted_at is null order by display_name", {})
+
+
+def test_admin_mcp_register_creates_platform_row(client, no_egress):
+    """注册平台 MCP → 本地 platform 行；transport 列恒为 'http'，上游词汇存 manifest。"""
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-a"))
+    assert res["action"] == "created" and res["server_id"] == "plat-mcp-a" and res["merged"] == 0
+    row = _sql("select source_type, owner_user_id, transport, endpoint_config_json->>'endpoint'"
+               " from sre_mcp_asset where mcp_id=%(m)s", {"m": res["mcp_id"]})[0]
+    assert row[:3] == ("platform", None, "http") and row[3] == "https://plat-mcp.internal/mcp"
+    man = _sql("select manifest_json from sre_mcp_asset_version where mcp_id=%(m)s", {"m": res["mcp_id"]})[0][0]
+    assert man["server_id"] == "plat-mcp-a" and man["transport"] == "streamable_http"
+    assert man["synced_from"] == "platform_register"
+
+
+def test_admin_mcp_register_updates_in_place_preserving_version(client, no_egress):
+    """重注册（改 URL）**原地更新**：mcp_version_id 不变 → tool catalog 与其标注不失联。"""
+    first = unwrap(_admin_register_mcp(client, "plat-mcp-b", url="https://old.internal/mcp"))
+    vid_before = _sql("select mcp_version_id::text from sre_mcp_asset_version where mcp_id=%(m)s",
+                      {"m": first["mcp_id"]})[0][0]
+    again = unwrap(_admin_register_mcp(client, "plat-mcp-b", url="https://new.internal/mcp"))
+    assert again["action"] == "updated" and again["mcp_id"] == first["mcp_id"]
+    vid_after = _sql("select mcp_version_id::text from sre_mcp_asset_version where mcp_id=%(m)s",
+                     {"m": first["mcp_id"]})
+    assert len(vid_after) == 1 and vid_after[0][0] == vid_before  # 未派生新版本
+    ep = _sql("select endpoint_config_json->>'endpoint' from sre_mcp_asset where mcp_id=%(m)s",
+              {"m": first["mcp_id"]})[0][0]
+    assert ep == "https://new.internal/mcp"  # endpoint 已更新
+
+
+def test_admin_mcp_register_converges_duplicate(client, no_egress, monkeypatch):
+    """同 server_id 的存量重复行（上游改名留下的）→ 注册时收敛到单行。"""
+    first = unwrap(_admin_register_mcp(client, "plat-mcp-c"))
+    # 造一条同 server_id、不同 display_name 的存量行（模拟上游改名前 reconcile 落的）
+    import json as _json
+    import uuid as _uuid
+    dup, dupv = str(_uuid.uuid4()), str(_uuid.uuid4())
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("insert into sre_mcp_asset (mcp_id, source, source_type, owner_user_id, display_name,"
+                     " transport, endpoint_config_json, status, created_by, last_updated_by) values"
+                     " (%(m)s,'openops','platform',null,'plat-mcp-c-old','http',"
+                     " '{\"endpoint\":\"https://x/mcp\"}','active','system','system')", {"m": dup})
+        conn.execute("insert into sre_mcp_asset_version (mcp_version_id, mcp_id, version_no, manifest_json,"
+                     " status, created_by, last_updated_by) values"
+                     " (%(v)s,%(m)s,1,%(j)s,'active','system','system')",
+                     {"v": dupv, "m": dup, "j": _json.dumps({"synced_from": "mcp_registry",
+                                                             "server_id": "plat-mcp-c"})})
+    again = unwrap(_admin_register_mcp(client, "plat-mcp-c"))
+    assert again["mcp_id"] == first["mcp_id"] and again["merged"] == 1
+    assert _sql("select deleted_at from sre_mcp_asset where mcp_id=%(m)s", {"m": dup})[0][0] is not None
+    assert not [r for r in _live_platform_mcps() if r[0] == "plat-mcp-c-old"]
+
+
+def test_admin_mcp_register_spares_seed_placeholder(client, no_egress):
+    """seed 占位资产（manifest 为 {}）不被收敛扫到。"""
+    before = {r[1] for r in _live_platform_mcps()}
+    unwrap(_admin_register_mcp(client, "plat-mcp-d"))
+    after = {r[1] for r in _live_platform_mcps()}
+    assert before <= after  # 只增不减：既有平台行（含 seed 占位）一个没少
+
+
+def test_admin_mcp_register_rejects_bad_transport_before_upstream(client, no_egress, monkeypatch):
+    """非法 transport 在打上游前就拒。422 = schema 层 pattern 拦下（与 asset_type/status 等既有
+    Field(pattern=…) 同款口径，本仓无 RequestValidationError 处理器）；服务层同名校验作为
+    非 HTTP 调用方的兜底保留。要点是**没打上游**。"""
+    async def never(**kw):
+        raise AssertionError("不该打上游")
+
+    monkeypatch.setattr(mcp_registry_client, "register_server", never)
+    assert _admin_register_mcp(client, "bad-tp", transport="grpc").status_code == 422
+
+
+def test_admin_mcp_register_ssrf_blocked(client):
+    """平台 MCP 的 URL 同样人手填、运行时真出站 → 同一道 SSRF 闸。"""
+    resp = _admin_register_mcp(client, "evil-mcp", url="http://169.254.169.254/latest/meta-data/")
+    assert resp.status_code == 400
+
+
+@pytest.mark.parametrize("kind,biz,status,code", [
+    ("biz", 2001, 409, "ASSET_IN_USE"),
+    ("biz", 1003, 403, "FORBIDDEN"),
+    ("biz", 1005, 400, "VALIDATION_FAILED"),
+    ("biz", 5001, 502, "IAM_UPSTREAM"),
+    ("network", None, 502, "IAM_UPSTREAM"),
+])
+def test_admin_mcp_register_error_mapping(client, no_egress, monkeypatch, kind, biz, status, code):
+    async def boom(**kw):
+        raise mcp_registry_client.McpRegistryError(kind, "上游说不行", biz_code=biz)
+
+    monkeypatch.setattr(mcp_registry_client, "register_server", boom)
+    resp = _admin_register_mcp(client, "err-mcp")
+    assert resp.status_code == status and resp.json()["error"]["code"] == code
+    assert not [r for r in _live_platform_mcps() if r[0] == "err-mcp"]
+
+
+def test_admin_mcp_delete_cascades_and_audits(client, no_egress, monkeypatch):
+    """删平台 MCP：回删注册表 → 本地软删 → 模板草稿引用级联清理；审计带 upstream。"""
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-del"))
+    seen = {}
+
+    async def fake_del(server_id):
+        seen["server_id"] = server_id
+        return {"server_id": server_id, "deleted_by": "admin"}
+
+    monkeypatch.setattr(mcp_registry_client, "delete_server", fake_del)
+    out = unwrap(client.delete(f"/api/openops/v1/admin/mcps/{res['mcp_id']}", headers=ADMIN_HEADERS))
+    assert out == {"deleted": True, "upstream": "deleted"} and seen["server_id"] == "plat-mcp-del"
+    assert not [r for r in _live_platform_mcps() if r[0] == "plat-mcp-del"]
+    assert _sql("select 1 from sre_audit_event where event_type='mcp.deleted' and action='admin_delete'"
+                " and payload_redacted_json->>'upstream'='deleted'", {})
+
+
+def test_admin_mcp_delete_upstream_refusal_keeps_local(client, no_egress, monkeypatch):
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-keep"))
+
+    async def boom(server_id):
+        raise mcp_registry_client.McpRegistryError("biz", "非超管", biz_code=1003)
+
+    monkeypatch.setattr(mcp_registry_client, "delete_server", boom)
+    resp = client.delete(f"/api/openops/v1/admin/mcps/{res['mcp_id']}", headers=ADMIN_HEADERS)
+    assert resp.status_code == 403
+    assert [r for r in _live_platform_mcps() if r[0] == "plat-mcp-keep"]
+
+
+def test_admin_mcp_delete_rejects_user_scope_row(client, no_egress):
+    m = _register_mcp(client, "我的自定义 MCP")
+    resp = client.delete(f"/api/openops/v1/admin/mcps/{m['mcp_id']}", headers=ADMIN_HEADERS)
+    assert resp.status_code == 403
+
+
+def test_admin_mcp_register_delete_mock_end_to_end(client, no_egress):
+    """零 monkeypatch：mock 注册表下注册→删除全链闭环。"""
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-e2e"))
+    out = unwrap(client.delete(f"/api/openops/v1/admin/mcps/{res['mcp_id']}", headers=ADMIN_HEADERS))
+    assert out["deleted"] is True and out["upstream"] == "deleted"
+
+
+def test_reconcile_mcp_ingest_dedupes_by_server_id(client, monkeypatch):
+    """reconcile 的 MCP ingest 按 display_name ∪ server_id 双判：本地名与上游 server_name 不一致
+    （管理台原地更新不改名的正常结果）时，不得再造一条重复行。"""
+    import json as _json
+    import uuid as _uuid
+    mid, vid = str(_uuid.uuid4()), str(_uuid.uuid4())
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("insert into sre_mcp_asset (mcp_id, source, source_type, owner_user_id, display_name,"
+                     " transport, endpoint_config_json, status, created_by, last_updated_by) values"
+                     " (%(m)s,'openops','platform',null,'local-old-name','http',"
+                     " '{\"endpoint\":\"https://s/mcp\"}','active','system','system')", {"m": mid})
+        conn.execute("insert into sre_mcp_asset_version (mcp_version_id, mcp_id, version_no, manifest_json,"
+                     " status, created_by, last_updated_by) values"
+                     " (%(v)s,%(m)s,1,%(j)s,'active','system','system')",
+                     {"v": vid, "m": mid, "j": _json.dumps({"synced_from": "mcp_registry",
+                                                            "server_id": "srv-renamed"})})
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-renamed", "server_name": "upstream-new-name",
+                 "server_url": "https://s/mcp", "description": ""}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["mcps_created"] == 0, "同 server_id 已在本地，不该按新名字再造一行"
+    assert not [r for r in _live_platform_mcps() if r[0] == "upstream-new-name"]
