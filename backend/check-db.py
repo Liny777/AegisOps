@@ -75,6 +75,22 @@ def main() -> None:
                       f"；已配 Key 的平台模型 = {n_keyed} 个"
                       + ("" if n_keyed else "——0 个意味着所有平台模型都会跌 stub，"
                                             "请确认 backfill 的环境变量已注入，或在管理台补填 API Key"))
+                # 迁移未完成清单：还挂着 secret_env_var 但密文列仍空的资产 = backfill 那一刻这个
+                # 环境变量没注入（多把 Key 的部署最容易漏掉第二把）。**删 export 前必须为空。**
+                pending = conn.execute(
+                    "select model_id, secret_env_var from sre_model_asset "
+                    "where deleted_at is null and secret_ciphertext is null "
+                    "  and secret_env_var is not null and secret_env_var <> '' "
+                    "order by creation_date"
+                ).fetchall()
+                if pending:
+                    print(f"[check-db]   ⚠ 有 {len(pending)} 个模型「登记了环境变量名但 Key 还没进库」——"
+                          "删除 run-backend 里的 export 前必须先补上，否则这些模型会跌 stub：")
+                    for model_id, env_var in pending:
+                        print(f"[check-db]      · {model_id} ← {env_var}"
+                              "（注入该变量后重启一次后端即自动导入，或在管理台直接填 API Key）")
+                else:
+                    print("[check-db]      迁移未完成清单为空（所有登记过环境变量的模型都已入库，可以删 export）")
             else:
                 print("[check-db]   ❌ sre_model_asset.secret_ciphertext 列缺失——请执行 "
                       "sql/migrate-2026-08-17-model-asset-secret.sql（或重跑 core.sql，尾部增量段幂等补列），"

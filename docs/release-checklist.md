@@ -7,7 +7,9 @@
 ## 1. 数据库
 
 - [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/migrate-2026-07-14-subagent-activity.sql` → `backend/sql/migrate-2026-07-30-alert-entry-source.sql` → `backend/sql/migrate-2026-08-10-rename-run-source.sql` → `backend/sql/migrate-2026-08-09-alert-category-motype.sql` → `backend/sql/migrate-2026-08-15-model-asset-extra-headers.sql` → `backend/sql/migrate-2026-08-17-model-asset-secret.sql` → `backend/sql/slices/studio_span.sql` → `backend/sql/slices/alerts.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；迁移均可幂等重跑，任一步失败均停止发布
-- [ ] **平台模型 Key 入库（08-17）三步不可颠倒**：跑上面的迁移 → **保留** run-backend 里的 `OPENOPS_PLATFORM_*_API_KEY` export 重启后端（启动日志出现 `[seed] 平台模型 xxx 的 Key 已从环境变量 … 导入密文列（fp_…）`）→ `python backend/check-db.py` 确认「已配 Key 的平台模型 ≥ 1」后，才可从 run-backend 删除那些 export。跳过中间那步 = 所有平台模型跌 stub
+- [ ] **平台模型 Key 入库（08-17）三步不可颠倒**：跑上面的迁移 → **保留** run-backend 里的 `OPENOPS_PLATFORM_*_API_KEY` export 重启后端（每导入一把打一行 `[seed] 平台模型 xxx 的 Key 已从环境变量 … 导入密文列（fp_…）`）→ `python backend/check-db.py` 确认**「迁移未完成清单为空」**后，才可从 run-backend 删除那些 export。跳过中间那步 = 所有平台模型跌 stub
+  - 多把 Key（`..._KEY_2` 等）无需额外配置：backfill 按每个资产行登记的 `secret_env_var` 取值，几把都自动导入。但**重启那一刻所有变量都要在 env 里**，漏注入的会留在「迁移未完成清单」里（补上变量重启一次即可，幂等）
+  - ⚠ 未被任何资产行登记的环境变量 backfill 不会读——先 `select model_id, secret_env_var from sre_model_asset where deleted_at is null and secret_env_var is not null` 核对一遍，对不上的那把只能事后在管理台手工补填
   - 三种库形态：全新库=只跑 core.sql + slices/*；我方旧库=全序列；内网库（同事已有 entry_source）=07-30 的 entry_source 段自动跳过、task_origin 段生效，08-10 rename 自动空转
 - [ ] 全新库执行 `backend/sql/openops_v1_core.sql` **+ `backend/sql/slices/*.sql`**（幂等；合计 27 表）——切片 DDL 不在 core.sql 里，漏跑会让 Agent Studio 静默失效
 - [ ] Agent Studio（管理员回溯）：`sre_agent_studio_span` 存 LLM/工具**原文**（仅 /admin/studio/* 可读，30 天硬删）；不需要此能力的环境设 `OPENOPS_AGENT_STUDIO_ENABLED=false`
