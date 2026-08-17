@@ -522,9 +522,12 @@ function AddWhitelistDialog({ onClose, onSaved }: { onClose: () => void; onSaved
   );
 }
 
-/** 注册 / 编辑模型接口（30.6 五）：display_name / model_id / base_url / secret_env_var / 协议 /
+/** 注册 / 编辑模型接口（30.6 五）：display_name / model_id / base_url / API Key / 协议 /
  *  上下文长度 / 自定义 Header。38.1：授权范围已迁「模型模板」维度，注册不再选 scope。
- *  存前须「测试连接」通过（Key 走服务器环境变量探测）；走平台网关的模型（不填 base_url）可跳过测试直接存。
+ *  存前须「测试连接」通过；走平台网关的模型（不填 base_url）可跳过测试直接存。
+ *
+ *  API Key（2026-08-17 起）在此直填：上行一次后后端加密入库，**永不回显**——编辑态 Key 框
+ *  恒为空，只在旁边显示已配指纹；留空保存 = 密钥原样不动（改地址不必重录 Key）。
  *
  *  传 `editing` 即编辑态（PUT /admin/model-assets/{id}，PATCH 语义只提交改动键）：
  *  model_id 是实例 overlay.platform_model_id 的绑定键，编辑态锁定不可改（后端白名单里也没有它）。 */
@@ -533,7 +536,7 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
 }) {
   const [f, setF] = useState({
     display_name: editing?.display_name ?? "", model_id: editing?.model_id ?? "",
-    base_url: editing?.base_url ?? "", secret_env_var: editing?.secret_env_var ?? "",
+    base_url: editing?.base_url ?? "", api_key: "",  // 编辑态刻意不回填：明文不可回显
   });
   const [contextWindow, setContextWindow] = useState(editing?.context_window_tokens || DEFAULT_CONTEXT_WINDOW);
   const [headerRows, setHeaderRows] = useState<HeaderRow[]>(
@@ -541,15 +544,15 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
   );
   const [err, setErr] = useState("");
   const test = useConnTest();
-  // 探测相关字段（base_url/model_id/secret_env_var/自定义 Header）一改即让上次测试失效——
+  // 探测相关字段（base_url/model_id/api_key/自定义 Header）一改即让上次测试失效——
   // header 参与探测，不 reset 就会出现「改了头还挂着旧绿勾」
   const setField = (key: keyof typeof f, val: string) => {
     setF((d) => ({ ...d, [key]: val }));
-    if (key === "base_url" || key === "model_id" || key === "secret_env_var") test.reset();
+    if (key === "base_url" || key === "model_id" || key === "api_key") test.reset();
   };
   const onHeaders = (rows: HeaderRow[]) => { setHeaderRows(rows); test.reset(); };
-  const input = (key: keyof typeof f, placeholder: string, mono = false) => (
-    <input value={f[key]} onChange={(e) => setField(key, e.target.value)} placeholder={placeholder}
+  const input = (key: keyof typeof f, placeholder: string, mono = false, type?: string) => (
+    <input value={f[key]} onChange={(e) => setField(key, e.target.value)} placeholder={placeholder} type={type}
       style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", fontFamily: mono ? "ui-monospace, monospace" : undefined, boxSizing: "border-box" }} />
   );
 
@@ -562,24 +565,25 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
     if (!hasBaseUrl || !f.model_id.trim() || test.state === "testing") return;
     void test.run(() => api.testModelAssetConnection({
       base_url: f.base_url.trim(), model_id: f.model_id.trim(),
-      secret_env_var: f.secret_env_var.trim(), extra_headers: headersToRecord(headerRows),
+      // 新填了 Key 就用新的；编辑态没重填则给资产 id，由服务端解密库里已存的那把去探测
+      api_key: f.api_key.trim() || undefined,
+      model_asset_id: editing?.model_asset_id,
+      extra_headers: headersToRecord(headerRows),
     }));
   };
   const save = () => {
-    const env = f.secret_env_var.trim();
-    if (env && !/^[A-Z][A-Z0-9_]{2,63}$/.test(env)) {
-      setErr("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）——看起来填入了 Key 本身：Key 不落库，请配到后端环境变量后在此填变量名");
-      return;
-    }
+    const key = f.api_key.trim();
     const done = () => onSaved();
     const fail = (e: unknown) => setErr((e as Error).message);
     if (editing) {
-      // PATCH 语义：只提交改动键。base_url/secret_env_var 清空要显式传 null（后端靠 exclude_unset
-      // 区分「没传」与「传 null」），传 undefined 会被 JSON 丢掉、等同没传。
+      // PATCH 语义：只提交改动键。base_url 清空要显式传 null（后端靠 exclude_unset 区分
+      // 「没传」与「传 null」），传 undefined 会被 JSON 丢掉、等同没传。
+      // api_key **留空即不提交** = 密钥原样不动（明文不回显，留空是常态而非「想清空」）；
+      // 要清除密钥走下面那个显式的「清除密钥」按钮。
       api.adminUpdateModelAsset(editing.model_asset_id, {
         ...(f.display_name.trim() !== editing.display_name ? { display_name: f.display_name.trim() } : {}),
         ...(f.base_url.trim() !== editing.base_url ? { base_url: f.base_url.trim() || null } : {}),
-        ...(env !== editing.secret_env_var ? { secret_env_var: env || null } : {}),
+        ...(key ? { api_key: key } : {}),
         ...(contextWindow !== editing.context_window_tokens ? { context_window_tokens: contextWindow } : {}),
         ...(JSON.stringify(headersToRecord(headerRows)) !== JSON.stringify(editing.extra_headers)
           ? { extra_headers: headersToRecord(headerRows) } : {}),
@@ -588,9 +592,15 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
     }
     api.adminRegisterModel({
       display_name: f.display_name.trim(), model_id: f.model_id.trim(),
-      base_url: f.base_url.trim() || undefined, secret_env_var: env || undefined,
+      base_url: f.base_url.trim() || undefined, api_key: key || undefined,
       context_window_tokens: contextWindow, extra_headers: headersToRecord(headerRows),
     }).then(done).catch(fail);
+  };
+  /** 显式清除已存密钥（传空串，后端把密文三列置 null）——与「留空=不动」区分开。 */
+  const clearKey = () => {
+    if (!editing) return;
+    api.adminUpdateModelAsset(editing.model_asset_id, { api_key: "" }).then(() => onSaved())
+      .catch((e: unknown) => setErr((e as Error).message));
   };
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -614,10 +624,20 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
             </div>
           </div>
           {input("base_url", "OpenAI 兼容 endpoint（可空，用平台网关时）", true)}
-          {input("secret_env_var", "API Key 环境变量名，如 OPENOPS_PLATFORM_GLM_API_KEY", true)}
+          {input("api_key", editing?.has_secret ? "留空 = 不修改已配密钥" : "API Key（可空，用平台网关时）", true, "password")}
           <div style={{ fontSize: 11.5, color: color.textSubtle, lineHeight: 1.5, marginTop: -4 }}>
-            ⚠ 此处填<b>环境变量名</b>，不是 Key 本身——真实 Key 配在后端进程环境变量（run-backend 里
-            <span style={{ fontFamily: "ui-monospace, monospace" }}> export 变量名=Key</span>），绝不落库。填了 base_url 须「测试连接」通过（Key 从环境变量取）才能{editing ? "保存" : "注册"}。
+            {editing?.has_secret ? (
+              <>
+                已配密钥 <span style={{ fontFamily: "ui-monospace, monospace" }}>{editing.secret_fingerprint}</span>
+                （加密存储，明文不可回显）。留空保存即保持原 Key 不变；填入新值则覆盖。
+              </>
+            ) : (
+              <>API Key 提交后<b>加密存储</b>，之后只显示指纹、不可回显——请自行留存。</>
+            )}
+            {" "}填了 base_url 须「测试连接」通过才能{editing ? "保存" : "注册"}。
+            {editing?.has_secret ? (
+              <span onClick={clearKey} style={{ marginLeft: 6, color: color.dangerText, cursor: "pointer", textDecoration: "underline", whiteSpace: "nowrap" }}>清除密钥</span>
+            ) : null}
           </div>
           <div>
             <div style={{ fontSize: 12, fontWeight: 600, color: color.textSubtle, marginBottom: 5 }}>自定义 Header（可选）</div>

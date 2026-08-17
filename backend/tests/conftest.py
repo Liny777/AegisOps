@@ -13,6 +13,10 @@ os.environ.setdefault("OPENOPS_ORCH_DELAY_MS", "10")
 os.environ.setdefault("OPENOPS_DATABASE_URL", "postgresql://openops:openops@localhost:5432/openops")
 # 探测默认已是 real（生产 fail-closed）；测试须显式退回 mock，否则建 llm-config / 测试连接会真打网
 os.environ.setdefault("OPENOPS_LLM_PROBE", "mock")
+# ⚠ 刻意**不注入** OPENOPS_PLATFORM_GLM_API_KEY：注入了 seed 的一次性 backfill 就会把它加密进
+# sre_model_asset，于是 runtime 认为平台模型「可跑」→ 真去构建 OpenAIChatModel 并打 seed 里那个
+# 真实 bigmodel.cn 地址（实测整片 agentscope 用例 401 失败）。测试要的是 stub：无 Key = 回退 stub。
+# 需要「已配 Key」语义的用例自己经 API 注册一个带 api_key 的资产（见 test_model_acl）。
 
 import asyncio  # noqa: E402
 import sys  # noqa: E402

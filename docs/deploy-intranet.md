@@ -100,6 +100,9 @@ case "$DATABASE_MODE" in
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-09-alert-category-motype.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-15-model-asset-extra-headers.sql"
     # ↑ 平台模型资产补 extra_params_json（自定义出站 Header）；用户自带模型侧同名列早已存在
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-17-model-asset-secret.sql"
+    # ↑ 平台模型 API Key 密文列。本脚本只加列不搬数据（psql 读不到后端进程的环境变量）——
+    #   存量 Key 由后端启动时的一次性 backfill 导入，见下方「平台模型 Key 迁移」小节，顺序不可颠倒。
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/alerts.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/studio_span.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"
@@ -149,6 +152,29 @@ test "$(readlink -f "/proc/$PID/cwd")" = "$RELEASE/backend"
 journalctl -u openops-backend -n 50 | grep "build=$BUILD_ID"
 curl -s http://127.0.0.1:18082/health    # → {"status":"ok"}
 ```
+
+### 平台模型 Key 迁移（2026-08-17，仅升级到该版本时做一次）
+
+平台模型的 API Key 从「后端进程环境变量」改为「PG 密文列」（Fernet，与用户自带模型同一条加密链）。
+运行时不再读环境变量，管理员可在管理台「模型资产」弹窗里自助改 Key，不必登服务器重启。
+
+**三步顺序不可颠倒**，颠倒的后果是所有平台模型取不到 Key、全部回退 stub：
+
+1. 跑 `migrate-2026-08-17-model-asset-secret.sql`（只加列，不搬数据——psql 读不到后端进程的环境变量）。
+2. **保留** `EnvironmentFile` 里的 `OPENOPS_PLATFORM_*_API_KEY` 重启后端。启动时的一次性 backfill 会把
+   这些环境变量加密写进密文列，日志出现：
+   `[OpenOps][seed] 平台模型 glm-5.1 的 Key 已从环境变量 OPENOPS_PLATFORM_GLM_API_KEY 导入密文列（fp_…）`
+   （只补空的、不覆盖管理台已录入的；幂等，重启多次无副作用）。
+3. 验证后才删环境变量：
+
+```bash
+cd /opt/openops/current/backend && python check-db.py   # → 「已配 Key 的平台模型 = N 个」，N ≥ 1
+# 确认 N 正确后，从 EnvironmentFile 删除 OPENOPS_PLATFORM_*_API_KEY 并重启；
+# 再起一个真实任务，确认走真实模型而非 stub（journalctl 里 [model] building … key=db:fp_…）
+```
+
+⚠ `OPENOPS_ENCRYPTION_KEY` 自此成为**平台模型的可用性依赖**（原先只影响用户自带模型）：
+key 丢失 = 全部密钥不可解，只能在管理台逐个重新录入。备份它。
 
 ## 三、前端两容器（同一台机器，仅需 docker）
 

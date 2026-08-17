@@ -483,7 +483,10 @@ export interface AdminModelAssetOption {
   display_name: string;
   status: string;
   base_url: string;
-  secret_env_var: string;
+  /** 密钥指纹 fp_xxx（明文永不回显）；null = 该模型尚未配 Key。 */
+  secret_fingerprint: string | null;
+  /** 是否已配 API Key——运行时能不能真跑起来看它。 */
+  has_secret: boolean;
   context_window_tokens: number;
   extra_headers: Record<string, string>;
 }

@@ -21,6 +21,18 @@ def _assets_by_model_id(client) -> dict[str, dict]:
     return {r["model_id"]: r for r in rows}
 
 
+def _give_platform_default_a_key(client) -> None:
+    """给 glm-5.1 配一把 Key，使「平台默认」这个回退目标真实存在。
+
+    2026-08-17 起可用性判据是「密文列真有 Key」（原先只看填没填环境变量名），而 conftest 刻意
+    不注入平台 Key（注入了 runtime 会去打真网）。所有断言「降级到平台默认 = glm-5.1」的用例都要
+    先调它，否则平台默认解析为 None（无 Key 时本就该跌 stub，是正确行为而非回归）。
+    """
+    aid = _assets_by_model_id(client)["glm-5.1"]["model_asset_id"]
+    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{aid}", headers=ADMIN_HEADERS,
+                      json={"client_request_id": f"key_{time.time_ns()}", "api_key": "sk-platform-default"}))
+
+
 def _admin_templates(client) -> list[dict]:
     return unwrap(client.get("/api/openops/v1/admin/model-templates", headers=ADMIN_HEADERS))
 
@@ -265,6 +277,7 @@ def test_mt_011_degraded_template_grant_revoked(client):
     """降级留痕（38.1）：绑定 restricted 模板后撤销 grant → 起任务照常 + TEMPLATE_NOT_AUTHORIZED
     降级（主回平台默认、sub=None 跟随主）；payload 经 redact 白名单后仍含
     slot / model_template_id / reason_summary（护住脱敏白名单）。"""
+    _give_platform_default_a_key(client)  # 降级目标（平台默认）须真有 Key 才解析得出
     assets = _assets_by_model_id(client)
     tpl = unwrap(_create_template(client, "会降级的组合", assets["glm-5.1"]["model_asset_id"],
                                   assets["qwen3.5-instruct"]["model_asset_id"], access_scope="restricted"))
@@ -292,6 +305,7 @@ def test_mt_011_degraded_template_grant_revoked(client):
 def test_mt_011b_degraded_slot_asset_disabled(client):
     """槽位资产失效降级（38.1：MODEL_UNAVAILABLE，已非授权问题）：all 模板绑定后禁用 sub 槽资产 →
     起任务 sub 槽回退平台默认 + 留痕。"""
+    _give_platform_default_a_key(client)  # 降级目标（平台默认）须真有 Key 才解析得出
     assets = _assets_by_model_id(client)
     tpl = unwrap(_create_template(client, "槽位会失效的组合", assets["glm-5.1"]["model_asset_id"],
                                   assets["tx-llm-v2"]["model_asset_id"]))
@@ -318,11 +332,11 @@ def test_mt_011b_degraded_slot_asset_disabled(client):
 # ---- 纯逻辑：resolve_template_models / _child_state ----
 
 _ROWS = [
+    # has_secret=True 才是「能跑」的平台默认候选（2026-08-17：Key 已迁密文列，判据不再是 secret_env_var）
     {"model_asset_id": "a-glm", "model_id": "glm-5.1", "display_name": "GLM-5.1",
-     "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-     "secret_env_var": "OPENOPS_PLATFORM_GLM_API_KEY"},
+     "base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions", "has_secret": True},
     {"model_asset_id": "a-qwen", "model_id": "qwen3.5-instruct", "display_name": "Qwen3.5",
-     "base_url": None, "secret_env_var": None},
+     "base_url": None, "has_secret": False},
 ]
 
 
@@ -472,6 +486,7 @@ def test_mt_018_delete_template(client):
 
 def test_mt_019_delete_bound_template_degrades(client):
     """删除已绑实例的模板 → 下次起任务走 TEMPLATE_UNAVAILABLE 降级回平台默认（既有 fail-safe 链）。"""
+    _give_platform_default_a_key(client)  # 降级目标（平台默认）须真有 Key 才解析得出
     assets = _assets_by_model_id(client)
     tpl = unwrap(_create_template(client, "将被删除的组合", assets["glm-5.1"]["model_asset_id"],
                                   assets["qwen3.5-instruct"]["model_asset_id"]))

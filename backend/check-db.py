@@ -61,6 +61,27 @@ def main() -> None:
         except Exception as e:  # noqa: BLE001
             print(f"[check-db]   （run_title 列检测跳过：{type(e).__name__}: {e}）")
         try:
+            # 增量迁移哨兵：缺列=旧库没跑 08-17 迁移，平台模型取不到 Key 会全部跌 stub
+            has_secret_col = conn.execute(
+                "select 1 from information_schema.columns "
+                "where table_name='sre_model_asset' and column_name='secret_ciphertext'"
+            ).fetchone()
+            if has_secret_col:
+                n_keyed = conn.execute(
+                    "select count(*) from sre_model_asset "
+                    "where deleted_at is null and secret_ciphertext is not null"
+                ).fetchone()[0]
+                print(f"[check-db]   ✅ sre_model_asset.secret_ciphertext 列存在（Key 入库迁移已跑）"
+                      f"；已配 Key 的平台模型 = {n_keyed} 个"
+                      + ("" if n_keyed else "——0 个意味着所有平台模型都会跌 stub，"
+                                            "请确认 backfill 的环境变量已注入，或在管理台补填 API Key"))
+            else:
+                print("[check-db]   ❌ sre_model_asset.secret_ciphertext 列缺失——请执行 "
+                      "sql/migrate-2026-08-17-model-asset-secret.sql（或重跑 core.sql，尾部增量段幂等补列），"
+                      "否则平台模型取不到 API Key，全部回退 stub")
+        except Exception as e:  # noqa: BLE001
+            print(f"[check-db]   （secret_ciphertext 列检测跳过：{type(e).__name__}: {e}）")
+        try:
             sp = conn.execute("show search_path").fetchone()[0]
             print(f"[check-db]   search_path = {sp}")
         except Exception:  # noqa: BLE001

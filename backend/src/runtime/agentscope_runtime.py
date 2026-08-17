@@ -188,9 +188,9 @@ def _build_stub_model() -> Any:
 
 
 async def _build_model(st: TaskState) -> Any:
-    """构建运行模型：平台模型（env Key）或用户自定义 LLM（PG 用户 Secret，构建边界瞬时解密）；否则 stub。
+    """构建运行模型：平台模型或用户自定义 LLM——两者的 Key 都是 PG 密文，构建边界瞬时解密；否则 stub。
 
-    API Key 只在此处取用、构建 credential 后即用即弃，绝不落 PG / 日志 / 事件 / 审计（SEC-001）。
+    API Key 只在此处取用、构建 credential 后即用即弃，绝不落日志 / 事件 / 审计（SEC-001）。
     """
     spec = st.model_spec
     if not spec:
@@ -201,12 +201,11 @@ async def _build_model(st: TaskState) -> Any:
     if spec.get("is_user_llm"):  # 用户自定义 LLM（C2）：从 PG 用户 Secret 在构建边界瞬时解密
         api_key = await _decrypt_user_secret(str(spec["user_secret_ref_id"]))
         key_src = "user-secret"
-    elif spec.get("secret_env_var"):  # 平台模型：从环境变量取 Key
-        api_key = os.environ.get(spec["secret_env_var"])
-        # 日志显示脱敏：该列应是环境变量名；若被误填成 Key 值（管理台实测有人填错），原样打出=泄密（SEC-001）
-        env_name = str(spec["secret_env_var"])
-        legal = re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", env_name) is not None
-        key_src = f"env:{env_name}" if legal else "env:<非环境变量名，疑似误填了 Key 本身，已隐去>"
+    elif spec.get("model_asset_id"):  # 平台模型：从 PG 资产密文列在构建边界瞬时解密
+        api_key, fp = await _decrypt_asset_secret(str(spec["model_asset_id"]))
+        # 只打不可逆指纹——密文/明文都不进日志（原 env 分支那套「疑似误填 Key 已隐去」的脱敏
+        # 已随环境变量口径一并废弃：密文列不存在被误填明文的可能）
+        key_src = f"db:{fp or '未配置'}"
     if api_key:
         import httpx
 
@@ -246,9 +245,30 @@ async def _build_model(st: TaskState) -> Any:
             client_kwargs=client_kwargs,
         )
     print(f"[OpenOps][model] fallback to stub（{spec['model_id']} 的 key 未取到：{key_src}）——"
-          "管理台该字段填环境变量名（如 OPENOPS_PLATFORM_GLM_API_KEY），真实 Key 配到后端进程环境变量（run-backend）",
+          "请在管理台「模型资产」里编辑该模型并填写 API Key（保存后加密入库，下一个 run 即生效）",
           flush=True)
     return _build_stub_model()
+
+
+async def _decrypt_asset_secret(model_asset_id: str) -> tuple[str | None, str | None]:
+    """平台模型 Key 在模型构建边界瞬时解密（SEC-001：不落日志/事件/审计）。runtime→infra 合规。
+
+    与 [[_decrypt_user_secret]] 同构，额外回传 fingerprint 供日志标注「用的是哪把 key」——
+    换过 Key 后排查「到底生效没有」全靠这一行。
+    """
+    from infra import crypto
+    from infra.repositories import model_assets
+
+    row = await model_assets.get_secret_material(model_asset_id)
+    if row is None or not row.get("secret_ciphertext"):
+        return None, None
+    fp = row.get("secret_fingerprint")
+    try:
+        return crypto.decrypt(row["secret_ciphertext"]), fp
+    except ValueError:  # key 不匹配（OPENOPS_ENCRYPTION_KEY 换过）/ 密文损坏
+        print(f"[OpenOps][model] 资产 {model_asset_id} 的密钥解密失败（{fp}）——"
+              "OPENOPS_ENCRYPTION_KEY 变更或密文损坏，需在管理台重新录入 API Key", flush=True)
+        return None, fp
 
 
 async def _decrypt_user_secret(secret_ref_id: str) -> str | None:

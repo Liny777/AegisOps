@@ -226,12 +226,20 @@ else
     esac
   fi
 
+  # 2026-08-17 起这把 key 还兜着平台模型的 API Key（原先只兜用户 Secret）：丢了 = 平台模型全废
   if [[ ! "${OPENOPS_ENCRYPTION_KEY-}" =~ ^[A-Za-z0-9_-]{43}=$ ]]; then
-    fail "OPENOPS_ENCRYPTION_KEY 必须是合法 Fernet key（不输出值）"
+    fail "OPENOPS_ENCRYPTION_KEY 必须是合法 Fernet key（不输出值）；2026-08-17 起平台模型 Key 也用它加密，丢失=全部模型密钥不可解，务必备份"
   fi
+  # 平台模型 Key 已迁 PG 密文列：环境变量只在迁移窗口内出现（供 seed 一次性导入），
+  # 导入完成后就该从 env 删掉——所以「未设置」是迁移后的正常终态，不再是失败。
   MODEL_KEY="${OPENOPS_PLATFORM_GLM_API_KEY-}"
-  if [ "${#MODEL_KEY}" -lt 16 ]; then
+  if [ -z "$MODEL_KEY" ]; then
+    echo "   OK：未设 OPENOPS_PLATFORM_GLM_API_KEY（Key 应已在 sre_model_asset 密文列；"
+    echo "       用 backend/check-db.py 确认「已配 Key 的平台模型 ≥ 1」，为 0 则所有模型会跌 stub）"
+  elif [ "${#MODEL_KEY}" -lt 16 ]; then
     fail "OPENOPS_PLATFORM_GLM_API_KEY 长度异常"
+  else
+    echo "   OK：OPENOPS_PLATFORM_GLM_API_KEY 已设（迁移窗口用；backfill 导入后请从 env 删除）"
   fi
   for v in OPENOPS_IAM_ACCESS_TOKEN_URL OPENOPS_IAM_USERINFO_URL; do
     value="${!v-}"

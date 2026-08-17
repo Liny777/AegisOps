@@ -6,7 +6,8 @@
 
 ## 1. 数据库
 
-- [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/migrate-2026-07-14-subagent-activity.sql` → `backend/sql/migrate-2026-07-30-alert-entry-source.sql` → `backend/sql/migrate-2026-08-10-rename-run-source.sql` → `backend/sql/migrate-2026-08-09-alert-category-motype.sql` → `backend/sql/migrate-2026-08-15-model-asset-extra-headers.sql` → `backend/sql/slices/studio_span.sql` → `backend/sql/slices/alerts.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；迁移均可幂等重跑，任一步失败均停止发布
+- [ ] 存量库严格按顺序执行 `backend/sql/migrate-2026-07-14-ddl-object-names.sql` → `backend/sql/migrate-2026-07-14-subagent-activity.sql` → `backend/sql/migrate-2026-07-30-alert-entry-source.sql` → `backend/sql/migrate-2026-08-10-rename-run-source.sql` → `backend/sql/migrate-2026-08-09-alert-category-motype.sql` → `backend/sql/migrate-2026-08-15-model-asset-extra-headers.sql` → `backend/sql/migrate-2026-08-17-model-asset-secret.sql` → `backend/sql/slices/studio_span.sql` → `backend/sql/slices/alerts.sql` → `backend/sql/openops_v1_core.sql` → 发布/重启新后端；迁移均可幂等重跑，任一步失败均停止发布
+- [ ] **平台模型 Key 入库（08-17）三步不可颠倒**：跑上面的迁移 → **保留** run-backend 里的 `OPENOPS_PLATFORM_*_API_KEY` export 重启后端（启动日志出现 `[seed] 平台模型 xxx 的 Key 已从环境变量 … 导入密文列（fp_…）`）→ `python backend/check-db.py` 确认「已配 Key 的平台模型 ≥ 1」后，才可从 run-backend 删除那些 export。跳过中间那步 = 所有平台模型跌 stub
   - 三种库形态：全新库=只跑 core.sql + slices/*；我方旧库=全序列；内网库（同事已有 entry_source）=07-30 的 entry_source 段自动跳过、task_origin 段生效，08-10 rename 自动空转
 - [ ] 全新库执行 `backend/sql/openops_v1_core.sql` **+ `backend/sql/slices/*.sql`**（幂等；合计 27 表）——切片 DDL 不在 core.sql 里，漏跑会让 Agent Studio 静默失效
 - [ ] Agent Studio（管理员回溯）：`sre_agent_studio_span` 存 LLM/工具**原文**（仅 /admin/studio/* 可读，30 天硬删）；不需要此能力的环境设 `OPENOPS_AGENT_STUDIO_ENABLED=false`
@@ -16,8 +17,11 @@
 ## 2. 敏感信息与安全
 
 - [ ] `scripts/release_check.sh` ② 敏感扫描零命中（Key/Cookie/内网主机名不入库不入码）
-- [ ] `OPENOPS_ENCRYPTION_KEY` 已配且已备份（Fernet，丢失=全部 Secret 报废）
-- [ ] 平台模型 Key 只进 env（SEC-001）；审计事件抽查无 token/cookie 明文
+- [ ] **阻断项** `OPENOPS_ENCRYPTION_KEY` 已配且已备份（Fernet）。2026-08-17 起平台模型 Key 也存密文列，
+  该 key 丢失 = 全部用户 Secret **与全部平台模型**报废（只能逐个重新录入）；未配置时 crypto 会退回从
+  `OPENOPS_SECRET_KEY` 派生的开发 key，生产绝不可接受
+- [ ] 平台模型 Key 密文入库（SEC-001 新口径）：抽查 `GET /admin/model-assets` 响应无 `secret_ciphertext`、
+  无 `sk-` 明文，只有 `secret_fingerprint`/`has_secret`；审计事件抽查无 token/cookie 明文
 - [ ] 抽查 `/state`、`/events`、AG-UI CUSTOM 与页面 DOM：无完整参数/响应、stdout/stderr、
   `Authorization`/Basic/Bearer/Cookie/password/token；仅出现后端白名单摘要
 - [ ] SSRF/egress：公网部署置 `OPENOPS_LLM_EGRESS_BLOCK_PRIVATE=1`（内网默认放行，见 S3）

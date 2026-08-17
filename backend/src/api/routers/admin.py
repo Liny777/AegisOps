@@ -165,7 +165,8 @@ async def model_assets_list(_admin: Admin):
 
 @router.post("/model-assets:test-connection")
 async def model_assets_test_connection(req: TestModelAssetRequest, _admin: Admin):
-    """平台模型注册前「测试连接」：Key 由服务器读 secret_env_var 环境变量探测，不落库。"""
+    """平台模型「测试连接」：用表单新填的 Key 探测；没新填则按 model_asset_id 取库里已存的那把。
+    本端点不落库（存前探测），明文 Key 只在这一次请求内瞬时使用。"""
     return ok(await model_asset_service.test_connection(req))
 
 
