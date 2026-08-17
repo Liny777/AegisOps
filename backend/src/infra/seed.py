@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 
+from infra import crypto
 from infra.db import q_one
 from infra.external import mcp_registry_client
 from infra.repositories import assets, mcp_tools, model_assets, model_templates, runtime_config, templates, users
@@ -47,6 +48,8 @@ async def ensure_sandbox_defaults() -> None:
 # 模型资产（B7：sre_model_asset 表；替代旧 sre_platform_runtime_config platform_model 域）
 # (display_name, model_id, base_url, secret_env_var, status)
 # 38.1：授权迁模板维度，资产不再带 access_scope（受限演示上移到模型模板「交易专用（受限演示）」）
+# 2026-08-17：Key 已迁密文列，元组里的 secret_env_var 位**只剩一次性导入源**语义——
+# 种子把变量名写进去，紧随其后的 ensure_platform_key_backfill() 若发现该环境变量有值就加密入库。
 MODEL_ASSETS = [
     ("Qwen3.5", "qwen3.5-instruct", None, None, "active"),
     ("GLM-5.1", "glm-5.1", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
@@ -67,6 +70,39 @@ MODEL_TEMPLATES = [
     ("交易专用（受限演示）", "主 GLM-5.1 + 子 交易大模型-TX，部门私有组合仅白名单用户可用",
      "glm-5.1", "tx-llm-v2", False, "restricted"),
 ]
+
+
+async def ensure_platform_key_backfill() -> None:
+    """平台模型 API Key 从进程环境变量一次性导入密文列（2026-08-17 迁移，幂等）。
+
+    为什么不放在 SQL 迁移里：psql 读不到后端进程的环境变量，`migrate-2026-08-17-model-asset-secret.sql`
+    只能加列。存量库若不做这一步，迁移那一刻所有平台模型会因取不到 Key 直接跌 stub。
+
+    口径：只补 `secret_ciphertext` 为空的资产，且只在 `secret_env_var` 指向的环境变量确有值时补——
+    **绝不覆盖管理台已录入的 Key**（对齐 ensure_sandbox_defaults 的「只补缺」哲学）。
+    导入成功后即可从 run-backend 删掉那些 export：运行时已不再读环境变量。
+    旧库未跑 migrate（密文列缺失）时静默跳过不阻断启动。
+    """
+    try:
+        rows = await model_assets.list_all()
+    except Exception:  # noqa: BLE001 —— 密文列未迁移（旧库未跑 migrate-2026-08-17）
+        return
+    for row in rows:
+        env_var = (row.get("secret_env_var") or "").strip()
+        if row.get("has_secret") or not env_var:
+            continue
+        plain = (os.environ.get(env_var) or "").strip()
+        if not plain:
+            continue
+        # 明文只在本作用域存在，写入的是密文；日志只打不可逆指纹（SEC-001）
+        fp = crypto.fingerprint(plain)
+        await model_assets.update_fields(str(row["model_asset_id"]), {
+            "secret_ciphertext": crypto.encrypt(plain),
+            "secret_key_version": crypto.current_key_version(),
+            "secret_fingerprint": fp,
+        }, "system")
+        print(f"[OpenOps][seed] 平台模型 {row['model_id']} 的 Key 已从环境变量 {env_var} 导入密文列（{fp}）——"
+              "确认生效后即可从 run-backend 删除该 export", flush=True)
 
 
 async def ensure_model_template_seed() -> None:
@@ -137,6 +173,9 @@ async def seed() -> None:
     await ensure_sandbox_defaults()
     # 模型模板补种（守卫之前）：存量库跑完 migrate 重启即得种子模板（全新库靠 seed 末尾的第二次调用）
     await ensure_model_template_seed()
+    # 平台 Key 导入（守卫之前）：存量库跑完 migrate 重启即把 env 里的 Key 搬进密文列
+    # （全新库靠 seed 末尾的第二次调用——守卫前这次资产还没种下）
+    await ensure_platform_key_backfill()
     # 已播种则跳过（以模板存在为标志）
     if await q_one("select 1 ok from sre_agent_team_template where template_key='sensai_fast_recovery'"):
         return
@@ -192,5 +231,7 @@ async def seed() -> None:
     for display_name, model_id, base_url, env_var, status in MODEL_ASSETS:
         await model_assets.create(display_name, "openai_compatible", model_id, base_url, env_var, status, "system")
 
-    # 模型模板（38 号）：第二次调用覆盖全新库/pytest 库——守卫前那次因资产未种会整体跳过
+    # 模型模板 + 平台 Key 导入（38 号 / 2026-08-17）：第二次调用覆盖全新库/pytest 库——
+    # 守卫前那两次因资产尚未种下会整体跳过
     await ensure_model_template_seed()
+    await ensure_platform_key_backfill()

@@ -265,11 +265,13 @@ export interface OpenOpsApi {
   /** 模板白名单授权（38.1：授权在模板维度，原资产 /grants 已移除）。 */
   adminGetModelTemplateGrants(modelTemplateId: string): Promise<{ access_scope: string; user_ids: string[] }>;
   adminSaveModelTemplateGrants(modelTemplateId: string, accessScope: string, userIds: string[]): Promise<void>;
-  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; secret_env_var?: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
-  /** 更新平台模型连接配置（PATCH 语义：只传要改的键；显式 null 清空 base_url/secret_env_var）。 */
-  adminUpdateModelAsset(id: string, input: { display_name?: string; base_url?: string | null; secret_env_var?: string | null; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
-  /** 平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名），客户端不持 Key。 */
-  testModelAssetConnection(input: { base_url: string; model_id: string; secret_env_var: string; extra_headers?: Record<string, string> }): Promise<TestConnResult>;
+  /** 注册平台模型。api_key 明文只上行这一次，后端 Fernet 加密落库，之后只回指纹。 */
+  adminRegisterModel(fields: { display_name: string; model_id: string; base_url?: string; api_key?: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
+  /** 更新平台模型连接配置（PATCH 语义：只传要改的键；显式 null 清空 base_url）。
+   *  api_key 三态：不传=密钥不动（改地址不必重录）、传 ""=清除密钥、传值=覆盖。 */
+  adminUpdateModelAsset(id: string, input: { display_name?: string; base_url?: string | null; api_key?: string; context_window_tokens?: number; extra_headers?: Record<string, string> }): Promise<void>;
+  /** 平台模型「测试连接」：新填了 Key 就用新的；没填则传 model_asset_id，由服务端取库里已存的那把。 */
+  testModelAssetConnection(input: { base_url: string; model_id: string; api_key?: string; model_asset_id?: string; extra_headers?: Record<string, string> }): Promise<TestConnResult>;
   // admin 模型模板（38 号）：主/子 Agent 槽位编排 CRUD
   adminListModelTemplates(): Promise<AdminModelTemplate[]>;
   /** 模板编辑弹窗的槽位候选（复用 GET /admin/model-assets）。 */
@@ -798,7 +800,7 @@ const realApi: OpenOpsApi = {
   async testModelAssetConnection(input) {
     const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/model-assets:test-connection", {
       method: "POST",
-      body: { base_url: input.base_url, model_id: input.model_id, secret_env_var: input.secret_env_var, extra_headers: input.extra_headers ?? {} },
+      body: { base_url: input.base_url, model_id: input.model_id, api_key: input.api_key ?? "", model_asset_id: input.model_asset_id ?? "", extra_headers: input.extra_headers ?? {} },
     });
     return { ok: Boolean(d.ok), supports_tool_calling: Boolean(d.supports_tool_calling), reason: d.reason ? String(d.reason) : null, probe_mode: d.probe_mode === "mock" ? "mock" : "real" };
   },
@@ -969,7 +971,8 @@ const realApi: OpenOpsApi = {
         display_name: String(m.display_name),
         status: String(m.status),
         base_url: String(m.base_url ?? ""),
-        secret_env_var: String(m.secret_env_var ?? ""),
+        secret_fingerprint: m.secret_fingerprint ? String(m.secret_fingerprint) : null,
+        has_secret: Boolean(m.has_secret),
         context_window_tokens: Number(m.context_window_tokens ?? 128000),
         extra_headers: ((m.extra_params_json as Record<string, unknown> | null)?.extra_headers ?? {}) as Record<string, string>,
         protocol: String(m.protocol ?? ""),
@@ -1169,7 +1172,8 @@ const realApi: OpenOpsApi = {
       display_name: String(m.display_name),
       status: String(m.status),
       base_url: String(m.base_url ?? ""),
-      secret_env_var: String(m.secret_env_var ?? ""),
+      secret_fingerprint: m.secret_fingerprint ? String(m.secret_fingerprint) : null,
+      has_secret: Boolean(m.has_secret),
       context_window_tokens: Number(m.context_window_tokens ?? 128000),
       extra_headers: ((m.extra_params_json as Record<string, unknown> | null)?.extra_headers ?? {}) as Record<string, string>,
     }));

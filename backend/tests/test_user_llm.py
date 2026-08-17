@@ -181,26 +181,32 @@ def test_test_connection_gate_mock(client):
     assert unwrap(client.get("/api/openops/v1/llm-configs", headers=USER_HEADERS)) == []
 
 
-def test_admin_model_asset_test_connection(client, monkeypatch):
-    """平台模型「测试连接」：Key 走服务器环境变量（secret_env_var 名）；未配变量 / 缺 base_url →
-    ok=false 带清晰 reason；环境变量已注入 + base_url 合法 → mock 探测 ok=true。"""
+def test_admin_model_asset_test_connection(client):
+    """平台模型「测试连接」（2026-08-17：Key 从表单直传或取库里已存的那把）：
+    缺 base_url → ok=false 带清晰 reason；表单新填 Key + base_url 合法 → mock 探测 ok=true；
+    编辑态不重填 Key，只给 model_asset_id → 用库里已存的密钥照样测得通。"""
     from conftest import ADMIN_HEADERS
-
-    # 环境变量未注入 → 明确 reason（不 500）
-    no_env = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
-                                json={"base_url": _BASE, "model_id": "glm-5.1", "secret_env_var": "OPENOPS_NOT_SET_XYZ"}))
-    assert no_env["ok"] is False and "OPENOPS_NOT_SET_XYZ" in no_env["reason"]
 
     # 缺 base_url → 明确 reason
     no_url = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
-                                json={"base_url": "", "model_id": "glm-5.1", "secret_env_var": ""}))
+                                json={"base_url": "", "model_id": "glm-5.1", "api_key": "sk-platform"}))
     assert no_url["ok"] is False and "base_url" in no_url["reason"]
 
-    # 环境变量已注入 + base_url 合法 → mock 探测通过
-    monkeypatch.setenv("OPENOPS_TESTKEY_ENV", "sk-platform")
+    # 注册态：表单新填 Key（尚未落库）
     good = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
-                              json={"base_url": _BASE, "model_id": "glm-5.1", "secret_env_var": "OPENOPS_TESTKEY_ENV"}))
+                              json={"base_url": _BASE, "model_id": "glm-5.1", "api_key": "sk-platform"}))
     assert good["ok"] is True
+
+    # 编辑态：不重填 Key，服务端解密库里那把（先注册一个带 Key 的资产）
+    mid = f"probe-stored-{time.time_ns()}"
+    unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
+                       json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "ProbeStored",
+                             "model_id": mid, "base_url": _BASE, "api_key": "sk-stored"}))
+    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
+    aid = next(r["model_asset_id"] for r in rows if r["model_id"] == mid)
+    stored = unwrap(client.post("/api/openops/v1/admin/model-assets:test-connection", headers=ADMIN_HEADERS,
+                                json={"base_url": _BASE, "model_id": mid, "model_asset_id": aid}))
+    assert stored["ok"] is True
 
 
 def test_register_model_asset_persists_context_window(client):
@@ -210,7 +216,7 @@ def test_register_model_asset_persists_context_window(client):
     unwrap(client.post("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS,
                        json={"client_request_id": f"reg_{time.time_ns()}", "display_name": "CtxTest",
                              "model_id": f"ctx-test-{time.time_ns()}", "protocol": "openai_compatible",
-                             "base_url": _BASE, "secret_env_var": "OPENOPS_CTX_KEY",
+                             "base_url": _BASE, "api_key": "sk-ctx",
                              "context_window_tokens": 200000}))
     rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
     row = next(r for r in rows if r["display_name"] == "CtxTest")
@@ -398,6 +404,15 @@ def test_user_llm_015_delete_while_bound_degrades_and_tells_user(client):
     真链路（建 Agent → 删模型 → 起任务 → 读 /state）而非桩：降级发生在 start_task 里，
     假 TaskState 的单测抓不到「事件到底发没发」。
     """
+    from conftest import ADMIN_HEADERS
+
+    # 降级目标（平台默认）须真有 Key 才解析得出——2026-08-17 起可用性判据是「密文列有 Key」，
+    # 而 conftest 刻意不注入平台 Key（注入了 runtime 会去打真网）。
+    rows = unwrap(client.get("/api/openops/v1/admin/model-assets", headers=ADMIN_HEADERS))
+    aid = next(r["model_asset_id"] for r in rows if r["model_id"] == "glm-5.1")
+    unwrap(client.put(f"/api/openops/v1/admin/model-assets/{aid}", headers=ADMIN_HEADERS,
+                      json={"client_request_id": f"key_{time.time_ns()}", "api_key": "sk-platform-default"}))
+
     sec = _mk_secret(client)
     cid = unwrap(_mk_llm(client, sec["secret_ref_id"]))["llm_config_id"]
     templates = unwrap(client.get("/api/openops/v1/templates/available", headers=USER_HEADERS))

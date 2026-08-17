@@ -298,6 +298,9 @@ CREATE TABLE IF NOT EXISTS sre_model_asset (
   model_id text NOT NULL,
   base_url text,
   secret_env_var text,
+  secret_ciphertext text,
+  secret_key_version text,
+  secret_fingerprint text,
   context_window_tokens integer NOT NULL DEFAULT 128000,
   extra_params_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   access_scope text NOT NULL DEFAULT 'all',
@@ -949,7 +952,8 @@ COMMENT ON COLUMN sre_model_asset.display_name IS '展示名，如「交易大�
 COMMENT ON COLUMN sre_model_asset.protocol IS '协议，V1 固定 openai_compatible';
 COMMENT ON COLUMN sre_model_asset.model_id IS '模型标识（如 glm-5.1），未删行内全局唯一';
 COMMENT ON COLUMN sre_model_asset.base_url IS 'OpenAI 兼容 endpoint，可空';
-COMMENT ON COLUMN sre_model_asset.secret_env_var IS '平台侧 API Key 环境变量名，Key 本身不落库';
+-- secret_ciphertext / secret_key_version / secret_fingerprint 三列的 COMMENT 在尾部增量段（列由该段的 ALTER 补出）
+COMMENT ON COLUMN sre_model_asset.secret_env_var IS 'DEPRECATED（2026-08-17：Key 已迁 secret_ciphertext 密文列）：仅保留作首次启动的一次性导入源与回滚锚点，运行时不再读取';
 COMMENT ON COLUMN sre_model_asset.context_window_tokens IS '上下文长度（token），管理台注册时填，默认 128000';
 COMMENT ON COLUMN sre_model_asset.extra_params_json IS 'Provider 差异化参数（含 extra_headers：自定义出站 Header，schema 层禁 Authorization 等保留头），不允许保存密钥';
 COMMENT ON COLUMN sre_model_asset.access_scope IS 'DEPRECATED（38.1：授权迁至模型模板维度 sre_model_template.access_scope）：本列保留不消费，新写恒 DEFAULT all';
@@ -1252,3 +1256,14 @@ COMMENT ON COLUMN sre_agent_run.run_title IS '会话名称：首个任务输入�
 ALTER TABLE sre_idempotency_key ADD COLUMN IF NOT EXISTS request_hash varchar(64);
 ALTER TABLE sre_idempotency_key ALTER COLUMN result_json DROP NOT NULL;
 ALTER TABLE sre_idempotency_key ALTER COLUMN result_json DROP DEFAULT;  -- 旧默认 '{}' 会让占位行被误判「已有结果」
+
+-- ---- 增量（2026-08-17）：平台模型 API Key 密文入库（独立增量文件：migrate-2026-08-17-model-asset-secret.sql）----
+-- 原口径「平台 Key 只进进程环境变量」改为与用户自带模型同构的 Fernet 密文落库。
+-- 本段只加列不搬数据：存量 Key 的导入由后端启动时的一次性 backfill 完成
+-- （infra/seed.py ensure_platform_key_backfill，psql 读不到后端进程的环境变量）。
+ALTER TABLE sre_model_asset ADD COLUMN IF NOT EXISTS secret_ciphertext text;
+ALTER TABLE sre_model_asset ADD COLUMN IF NOT EXISTS secret_key_version text;
+ALTER TABLE sre_model_asset ADD COLUMN IF NOT EXISTS secret_fingerprint text;
+COMMENT ON COLUMN sre_model_asset.secret_ciphertext IS '平台模型 API Key 密文（Fernet，见 infra/crypto）；明文不可回显，只在模型构建/探测边界瞬时解密，绝不进 API 响应/审计/日志';
+COMMENT ON COLUMN sre_model_asset.secret_key_version IS '加密 key 版本（cfg=OPENOPS_ENCRYPTION_KEY / dev=派生），轮换时据此批量重加密';
+COMMENT ON COLUMN sre_model_asset.secret_fingerprint IS '脱敏指纹 fp_<sha256 前 12 位>：唯一可回显给管理台的密钥信息';

@@ -1,27 +1,36 @@
 """模型资产（B7，30.6 五；38.1 起授权迁模型模板维度，本服务只管资产 CRUD/探测）。
 
 - 授权见 model_template_service（模板 scope+grant 三闸门）；资产池对全员一致。
-- 注册走 DTO 白名单字段（api_key/token 等敏感键天然进不来）；Key 只经 `secret_env_var` 环境变量名。
+- API Key（2026-08-17 起）：管理台表单直填 → 本层 Fernet 加密 → `sre_model_asset` 密文三列。
+  明文只在本层与探测客户端之间过一次手，**不进 fields、不进审计、不进日志**（SEC-001）；
+  回显只给 `secret_fingerprint` + `has_secret`（仓储 `_PUBLIC_COLS` 保证密文不出库）。
+  原口径「Key 只进进程环境变量」已废弃，`secret_env_var` 仅剩一次性导入源（见 seed 的 backfill）。
 - is_authorized 退化为「存在 + active」（fail-closed 对未知/禁用仍 False），服务
   select-model 与 legacy platform_model_id 绑定两个旧路径。
 """
 from __future__ import annotations
 
-import re
 import uuid
 from typing import Any
 
 from domain.errors import ApiError, Err
+from infra import crypto
 from infra.db import row_json
 from infra.repositories import audit, model_assets
 
-# secret_env_var 是环境变量名（非 Key 本身）：大写惯例。实测有管理员把真实 Key 填进来 → 明文落库
-# + 日志泄漏（SEC-001），入口处直接拒绝。
-_ENV_VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,63}$")
-# register 与 update 共用同一道闸、同一段文案：更新路径若绕过它，等于给「真实 Key 落库」开后门。
-_ENV_VAR_HINT = ("「API Key 环境变量名」应填变量名（大写字母/数字/下划线，如 OPENOPS_PLATFORM_GLM_API_KEY）"
-                 "——看起来填入了 API Key 本身：真实 Key 绝不落库，请把 Key 配到后端进程环境变量"
-                 "（run-backend 里 export），此处只填变量名")
+# 密钥三列的「清除」形态：显式传空串即三列同时置 null（DTO 层靠 exclude_unset 区分「没传」）
+_SECRET_CLEARED: dict[str, Any] = {
+    "secret_ciphertext": None, "secret_key_version": None, "secret_fingerprint": None,
+}
+
+
+def _encrypt_secret(api_key: str) -> dict[str, Any]:
+    """明文 Key → 密文三列。调用方保证 api_key 非空；返回值之外不留明文副本。"""
+    return {
+        "secret_ciphertext": crypto.encrypt(api_key),
+        "secret_key_version": crypto.current_key_version(),
+        "secret_fingerprint": crypto.fingerprint(api_key),
+    }
 
 
 async def admin_list() -> list[dict[str, Any]]:
@@ -31,13 +40,13 @@ async def admin_list() -> list[dict[str, Any]]:
 async def register(req: Any, by: str) -> dict[str, Any]:
     if await model_assets.get_by_model_id(req.model_id):
         raise ApiError(Err.VALIDATION_FAILED, f"model_id 已存在：{req.model_id}")
-    if req.secret_env_var and not _ENV_VAR_RE.match(req.secret_env_var):
-        raise ApiError(Err.VALIDATION_FAILED, _ENV_VAR_HINT)
+    api_key = (getattr(req, "api_key", "") or "").strip()
     row = await model_assets.create(
         req.display_name, req.protocol, req.model_id, req.base_url,
-        req.secret_env_var, "active", by,
+        None, "active", by,  # secret_env_var 已废弃：新注册一律不写，Key 走密文列
         context_window_tokens=getattr(req, "context_window_tokens", 128000),
         extra_headers=getattr(req, "extra_headers", None),
+        secret=_encrypt_secret(api_key) if api_key else None,
     )
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.registered", user_id=by,
@@ -59,8 +68,11 @@ async def update(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
     fields.pop("client_request_id", None)
     if not fields:
         raise ApiError(Err.VALIDATION_FAILED, "未提供任何可更新字段")
-    if fields.get("secret_env_var") and not _ENV_VAR_RE.match(fields["secret_env_var"]):
-        raise ApiError(Err.VALIDATION_FAILED, _ENV_VAR_HINT)
+    if "api_key" in fields:
+        # 明文在这里立即换成密文三列后即弃：下方 audit 记的是 sorted(fields)（列名），
+        # 若 api_key 留在 fields 里，明文虽不会被记但字段名会误导——更重要的是绝不能流到别处。
+        api_key = (fields.pop("api_key") or "").strip()
+        fields.update(_encrypt_secret(api_key) if api_key else _SECRET_CLEARED)
     # 这两列 NOT NULL：显式传 null 会被 DB 拒（整条 500），入口处给出可读原因
     if "display_name" in fields and not (fields["display_name"] or "").strip():
         raise ApiError(Err.VALIDATION_FAILED, "display_name 不可置空")
@@ -73,7 +85,8 @@ async def update(model_asset_id: str, req: Any, by: str) -> dict[str, Any]:
     await audit.insert_event(
         audit_trace_id=str(uuid.uuid4()), event_type="model_asset.updated", user_id=by,
         action="update",
-        # 只记改了哪些字段名 + 新 base_url；secret_env_var 虽是变量名非 Key，也不必进审计
+        # 只记改了哪些**列名** + 新 base_url。fields 里此刻已无 api_key 明文（上面换成密文三列了），
+        # 列名 secret_ciphertext 出现在这里只表示「这次动了密钥」，不泄漏任何密钥内容（SEC-001）。
         payload_redacted={"model_asset_id": model_asset_id, "fields": sorted(fields),
                           "base_url": fields.get("base_url")},
     )
@@ -113,14 +126,14 @@ async def delete(model_asset_id: str, by: str) -> None:
 
 def _default_model_id(rows: list[dict[str, Any]]) -> str | None:
     """与 [[model_gateway.resolve_runtime_model]] 完全同口径的平台默认解析：
-    优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个带 `secret_env_var` 的模型。
-    默认**必须带 Key** 才成立——否则运行时回退 stub。避免把无 Key 的种子资产（如 Qwen3.5）
+    优先 `OPENOPS_RUNTIME_MODEL`（默认 glm-5.1），否则首个**已配 Key** 的模型（`has_secret`）。
+    默认必须带 Key 才成立——否则运行时回退 stub。避免把无 Key 的种子资产（如 Qwen3.5）
     当默认却根本跑不起来（前端初始化向导据此展示真实默认名，而非写死）。"""
     from app.model_gateway import DEFAULT_RUNTIME_MODEL
 
     by_id = {r.get("model_id"): r for r in rows}
-    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r.get("secret_env_var")), None)
-    if target is None or not target.get("secret_env_var"):
+    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r.get("has_secret")), None)
+    if target is None or not target.get("has_secret"):
         return None
     return target.get("model_id")
 
@@ -135,22 +148,25 @@ async def list_available(user: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 async def test_connection(req: Any) -> dict[str, Any]:
-    """平台模型「测试连接」：Key 从服务器环境变量取（secret_env_var 是变量名，客户端不持 Key）。
+    """平台模型「测试连接」：Key 用**本次表单新填的**，没新填就解密库里已存的那把。
+
+    两个来源缺一不可——注册态只有新填的 Key（还没落库）；编辑态用户往往不重填 Key 只改
+    base_url，此时必须能拿库里的密钥测通，否则「改个地址就得重录 Key」。
     egress SSRF 校验 + tool-calling 探测。
     返回 {ok, supports_tool_calling, reason, probe_mode}——probe_mode=mock 时前端须显示「未真实探测」。"""
-    import os
-
     from infra import egress
     from infra.external import llm_provider_client
 
-    env_var = (req.secret_env_var or "").strip()
-    if env_var and not _ENV_VAR_RE.match(env_var):
-        return {"ok": False, "supports_tool_calling": False,
-                "reason": "「API Key 环境变量名」应填变量名（大写字母/数字/下划线），此处像是填了 Key 本身"}
-    api_key = os.environ.get(env_var) if env_var else None
-    if env_var and not api_key:
-        return {"ok": False, "supports_tool_calling": False,
-                "reason": f"服务器进程未配置环境变量 {env_var}（Key 未注入，无法测试）"}
+    api_key: str | None = (getattr(req, "api_key", "") or "").strip() or None
+    asset_id = (getattr(req, "model_asset_id", "") or "").strip()
+    if api_key is None and asset_id:  # 编辑态未重填：用库里已存的密钥（瞬时解密，不外泄）
+        mat = await model_assets.get_secret_material(asset_id)
+        if mat and mat.get("secret_ciphertext"):
+            try:
+                api_key = crypto.decrypt(mat["secret_ciphertext"])
+            except ValueError:
+                return {"ok": False, "supports_tool_calling": False,
+                        "reason": "已存密钥解密失败（OPENOPS_ENCRYPTION_KEY 变更或密文损坏），请重新填写 API Key"}
     base_url = (req.base_url or "").strip()
     if not base_url:
         return {"ok": False, "supports_tool_calling": False,

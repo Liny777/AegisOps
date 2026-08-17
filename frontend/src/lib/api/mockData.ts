@@ -368,15 +368,20 @@ export const mockConfigVersions: ConfigVersionRow[] = [
 export const mockModelAssets: AdminModelAssetOption[] = [
   // glm-5.1 带自定义 Header：覆盖资产编辑弹窗的「已配 header」回填路径
   { model_asset_id: "ma_glm51", model_id: "glm-5.1", display_name: "GLM-5.1", status: "active",
-    base_url: "https://glm.internal.example.com/v1", secret_env_var: "OPENOPS_PLATFORM_GLM_API_KEY",
+    base_url: "https://glm.internal.example.com/v1",
+    secret_fingerprint: "fp_a1b2c3d4e5f6", has_secret: true,
     context_window_tokens: 128000, extra_headers: { "X-Tenant-Id": "sre-platform" } },
+  // 未配 Key：覆盖编辑弹窗「Key 框留空 + 无指纹」这一分支
   { model_asset_id: "ma_qwen35", model_id: "qwen3.5-instruct", display_name: "Qwen3.5", status: "active",
-    base_url: "", secret_env_var: "", context_window_tokens: 128000, extra_headers: {} },
+    base_url: "", secret_fingerprint: null, has_secret: false,
+    context_window_tokens: 128000, extra_headers: {} },
   { model_asset_id: "ma_deepseek", model_id: "deepseek-chat", display_name: "DeepSeek-V3", status: "active",
-    base_url: "https://api.deepseek.com/v1", secret_env_var: "OPENOPS_PLATFORM_DS_API_KEY",
+    base_url: "https://api.deepseek.com/v1",
+    secret_fingerprint: "fp_9f8e7d6c5b4a", has_secret: true,
     context_window_tokens: 65536, extra_headers: {} },
   { model_asset_id: "ma_txllm", model_id: "tx-llm-v2", display_name: "交易大模型-TX", status: "active",
-    base_url: "https://tx.internal.example.com/v1", secret_env_var: "OPENOPS_PLATFORM_TX_API_KEY",
+    base_url: "https://tx.internal.example.com/v1",
+    secret_fingerprint: "fp_0011223344ff", has_secret: true,
     context_window_tokens: 128000, extra_headers: {} },
 ];
 

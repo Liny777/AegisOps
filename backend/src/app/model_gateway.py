@@ -1,7 +1,8 @@
 """Model Gateway：解析运行应使用的平台模型元数据（B2；38.1 起授权在模型模板维度）。
 
-- 元数据（model_id / base_url / secret_env_var）来自 `model_asset` 表；**API Key 不在这里读、也不返回**，
-  只把 `secret_env_var`（环境变量名）传下去，由 runtime 构建 credential 时从环境变量取（SEC-001）。
+- 元数据（model_id / base_url）来自 `model_asset` 表；**API Key 不在这里读、也不返回**，只把
+  `model_asset_id` 传下去，由 runtime 构建 credential 时瞬时解密密文列（SEC-001；口径与自带模型
+  的 `user_secret_ref_id` 完全对称）。
 - 资产池对全员一致（list_active，38.1 资产级授权废弃）；**模板级授权二次校验**在
   resolve_template_models（第三闸门，防「先绑后撤销」）：模板失效/未授权 → 回退平台默认。
 - 返回 None 表示无可用真模型 → runtime 回退 stub（demo / pytest 不依赖真网、不需要 Key）。
@@ -36,7 +37,8 @@ def _spec(row: dict[str, Any]) -> dict[str, Any]:
         "model_id": row["model_id"],
         "display_name": row["display_name"],
         "base_url": _openai_base_url(row["base_url"]),
-        "secret_env_var": row["secret_env_var"],  # 环境变量名，非 Key 本身
+        "model_asset_id": str(row["model_asset_id"]),  # 密钥引用（不解密），runtime 在构建边界取
+        "has_secret": bool(row.get("has_secret")),
         # 自定义出站 Header（与自带模型同键名）：runtime 在两分支汇合后统一注入 default_headers
         "extra_headers": (row.get("extra_params_json") or {}).get("extra_headers") or {},
     }
@@ -74,7 +76,7 @@ async def _user_llm_spec(llm_config_id: str, user_id: str) -> dict[str, Any] | N
 async def resolve_runtime_model(selected: str | None, user_id: str) -> dict[str, Any] | None:
     """在**全部 active 平台模型**内解析运行模型（38.1：资产级授权放开）。
 
-    优先级：选中平台模型 → 选中的用户自定义 LLM → 平台默认 → 首个带 secret_env_var 的可用 → None(stub)。
+    优先级：选中平台模型 → 选中的用户自定义 LLM → 平台默认 → 首个已配 Key 的可用 → None(stub)。
     自带模型失效在这里也走 fail-safe 回退（不抛）——但**实例默认绑定**那条路应改调
     [[resolve_user_llm_models]]，它额外回传 degraded 供调用方留痕 + 告知用户；本函数的静默回退
     只服务 legacy/平台模型路径（那两条本就无声降级）。
@@ -120,11 +122,11 @@ async def resolve_user_llm_models(llm_config_id: str, user_id: str) -> dict[str,
 
 def _default_spec(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """平台默认解析（与 model_asset_service._default_model_id 同口径）：
-    `OPENOPS_RUNTIME_MODEL` → 首个带 secret_env_var 的可用 → None(stub)。
+    `OPENOPS_RUNTIME_MODEL` → 首个**已配 Key**（has_secret）的可用 → None(stub)。
     候选池 = 全部 active 资产（38.1 关键：不受任何授权约束——无模板授权的用户也不会跌 stub）。"""
     by_id = {r["model_id"]: r for r in rows}
-    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r["secret_env_var"]), None)
-    if target is None or not target.get("secret_env_var"):
+    target = by_id.get(DEFAULT_RUNTIME_MODEL) or next((r for r in rows if r.get("has_secret")), None)
+    if target is None or not target.get("has_secret"):
         return None  # 无可用真模型 → stub
     return _spec(target)
 

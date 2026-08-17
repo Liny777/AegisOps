@@ -194,11 +194,15 @@ class TestConnectionRequest(BaseModel):
 
 
 class TestModelAssetRequest(BaseModel):
-    """平台模型「测试连接」：Key 由服务器读环境变量（secret_env_var 是变量名），客户端不传 Key。
+    """平台模型「测试连接」（存前探测，不落库）：raw API Key 只在这一次请求内瞬时用于探测。
+
+    api_key 为空且带 model_asset_id 时，服务端改用该资产已存的密钥解密后探测——编辑态用户
+    只改 base_url、不重填 Key 也要能测通。
     extra_headers 与保存后的真实调用同源携带——否则会出现「测通了但跑不通」。"""
     base_url: str = ""
     model_id: str = Field(min_length=1)
-    secret_env_var: str = ""
+    api_key: str = ""
+    model_asset_id: str = ""
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     _v_headers = field_validator("extra_headers")(validate_extra_headers)
@@ -244,17 +248,20 @@ class TemplateVersionActionRequest(BaseModel):
 
 
 class RegisterModelAssetRequest(BaseModel):
-    """注册模型接口（B7 模型资产）：DTO 白名单字段，api_key/token 等敏感键天然进不来。
-    access_scope 已移除（38.1 授权迁模板维度）；旧客户端多传该键会被 Pydantic 忽略。"""
+    """注册模型接口（B7 模型资产）：DTO 白名单字段。
+    access_scope 已移除（38.1 授权迁模板维度）；secret_env_var 已移除（2026-08-17 Key 迁密文列，
+    旧客户端多传这些键会被 Pydantic 忽略）。"""
     client_request_id: str = Field(min_length=1)
     display_name: str = Field(min_length=1)
     model_id: str = Field(min_length=1)
     protocol: str = "openai_compatible"
     base_url: str | None = None
-    secret_env_var: str | None = None
+    # 明文 Key 只进这一次，服务层立即 Fernet 加密落密文三列，回显只给 fingerprint（SEC-001）。
+    # 空串 = 该模型不配 Key（走平台网关，或先建后配）。
+    api_key: str = ""
     context_window_tokens: int = 128000
     # 随每次模型请求附带的自定义 Header（内网网关路由/租户标识等），与用户自带模型同口径。
-    # Key 仍只走 secret_env_var 环境变量名，禁配 Authorization 等保留头。
+    # 鉴权走 api_key 字段，禁配 Authorization 等保留头。
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     _v_headers = field_validator("extra_headers")(validate_extra_headers)
@@ -275,15 +282,17 @@ class ModelStatusRequest(BaseModel):
 class UpdateModelAssetRequest(BaseModel):
     """更新模型资产连接配置（PATCH 语义：只改显式提供的键，服务层用 exclude_unset 取差集）。
 
-    base_url / secret_env_var 显式传 null 表示清空（走平台网关的模型本就不填 base_url），
+    base_url 显式传 null 表示清空（走平台网关的模型本就不填 base_url），
     所以「没传」和「传 null」必须可区分——靠默认值区分不了，只能靠 exclude_unset。
+    api_key 同理三态：不传=密钥原样不动（改 base_url 不必重录 Key），传空串/null=清除密钥
+    （三列置 null），传值=加密覆盖。
     刻意不含 model_id：它是实例 overlay.platform_model_id 的绑定键，改了会让已绑定实例静默失配。
-    status 亦不含——已有 :status 专用端点；access_scope 已废弃（38.1 授权迁模板维度）。
+    status 亦不含——已有 :status 专用端点；access_scope 与 secret_env_var 已废弃。
     """
     client_request_id: str = Field(min_length=1)
     display_name: str | None = Field(default=None, min_length=1)
     base_url: str | None = None
-    secret_env_var: str | None = None
+    api_key: str | None = None
     context_window_tokens: int | None = Field(default=None, gt=0)
     # 显式传 {} 表示清空全部自定义 Header；不传则原样保留（exclude_unset 区分二者）
     extra_headers: dict[str, str] | None = None

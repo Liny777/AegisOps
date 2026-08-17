@@ -58,7 +58,11 @@ async def test_real_openai_compatible_model_is_constructed_with_streaming(monkey
             captured.update(kwargs)
 
     monkeypatch.setattr(agentscope.model, "OpenAIChatModel", FakeOpenAIChatModel)
-    monkeypatch.setenv("OPENOPS_TEST_MODEL_KEY", "test-key-not-a-secret")
+    # 2026-08-17：平台 Key 走 PG 密文列，构建边界瞬时解密——这里桩掉那次解密（不打 DB）
+    async def fake_decrypt(_asset_id: str):
+        return "test-key-not-a-secret", "fp_test"
+
+    monkeypatch.setattr(agentscope_runtime, "_decrypt_asset_secret", fake_decrypt)
     state = TaskState(
         task_id="stream-model-task",
         run_id="stream-model-run",
@@ -68,7 +72,7 @@ async def test_real_openai_compatible_model_is_constructed_with_streaming(monkey
     )
     state.model_spec = {
         "model_id": "openai-compatible-test-model",
-        "secret_env_var": "OPENOPS_TEST_MODEL_KEY",
+        "model_asset_id": "11111111-1111-1111-1111-111111111111",
         "base_url": "https://model.example.invalid/v1",
     }
 
