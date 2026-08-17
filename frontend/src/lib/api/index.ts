@@ -934,27 +934,24 @@ const realApi: OpenOpsApi = {
       };
     }
     if (key === "mcps") {
-      // MCP 服务（平台级）：复用 /assets/mcps 的 platform 面。endpoint 后端已脱敏（30.5 展示铁律），
-      // 表格照展示脱敏值——管理员要看全量地址去注册表，不在此处回放。
-      const d = await apiFetch<AssetPageDto>(
-        `/openops/v1/assets/mcps${assetQs({ ...params, sourceType: "platform" })}`);
+      // MCP 服务（平台级）：走 admin 专用端点 —— 用户面 /assets/mcps 按 30.5 把 endpoint 截成前 12 字符，
+      // 管理员核对不了自己录的地址。endpoint 列 wrap 展示全量（长 URL 折行，不省略号截断）。
+      const d = await apiFetch<AssetPageDto>(`/openops/v1/admin/mcps${assetQs(params)}`);
       return {
         title: "MCP 服务",
         primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-        cols: [{ label: "服务名称" }, { label: "endpoint" }, { label: "分类", width: "96px" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
-        rows: d.items.map((r) => {
-          const cfg = (r.endpoint_config_redacted ?? {}) as Record<string, unknown>;
-          return {
-            id: String(r.mcp_id),
-            cells: [
-              { text: String(r.display_name) },
-              { text: String(cfg.endpoint ?? "—"), mono: true },
-              { text: r.category ? String(r.category) : "—" },
-              { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
-              { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
-            ],
-          };
-        }),
+        cols: [{ label: "服务名称", width: "200px" }, { label: "endpoint" }, { label: "传输", width: "132px" }, { label: "分类", width: "88px" }, { label: "状态", width: "84px" }, { label: "删除", width: "56px" }],
+        rows: d.items.map((r) => ({
+          id: String(r.mcp_id),
+          cells: [
+            { text: String(r.display_name) },
+            { text: String(r.endpoint || "—"), mono: true, wrap: true },
+            { text: r.transport ? String(r.transport) : "—", mono: true },
+            { text: r.category ? String(r.category) : "—" },
+            { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+            { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
+          ],
+        })),
         total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
@@ -1486,12 +1483,13 @@ const mockApi: OpenOpsApi = {
     const rows = M.adminTables.mcps.rows;
     const hit = rows.find((r) => String(r.cells[0]?.text) === input.server_name);
     if (hit) {  // 原地更新（对齐后端：不改名、不重建，保住 tool 标注）
-      hit.cells[1] = { text: input.server_url, mono: true };
+      hit.cells[1] = { text: input.server_url, mono: true, wrap: true };
       return delay({ server_id: input.server_name, action: "updated", merged: 0 });
     }
     rows.push({
       id: `mcp_${input.server_name}`,
-      cells: [{ text: input.server_name }, { text: input.server_url, mono: true },
+      cells: [{ text: input.server_name }, { text: input.server_url, mono: true, wrap: true },
+              { text: input.transport || "streamable_http", mono: true },
               { text: input.category || "—" }, { text: "active", kind: "badge", tone: "good" },
               { text: "删除", kind: "action", onClickKey: "mcp-delete" }],
     });

@@ -71,12 +71,20 @@ test("MCP 服务：注册平台 MCP → 同名重注册为原地更新 → 删�
   await expect(page.getByRole("main").getByText("服务名称")).toBeVisible();
   await expect(page.getByRole("main").getByText("template_key")).toHaveCount(0);
 
+  // 长 endpoint 必须**完整可见**：管理面不脱敏（用户面才截前 12 字符），且单元格 wrap 折行不省略
+  const LONG_URL = "https://mcpgateway.internal.corp.example.com:8443/api/v1/tenants/prod-payment"
+    + "/servers/alarm-and-recovery-server/streamable/mcp?region=cn-north-4";
   await page.getByRole("button", { name: "注册 MCP" }).click();
   await expect(page.getByText("注册平台 MCP")).toBeVisible();
   await page.getByPlaceholder("如：cmdb-mcp-server").fill("cmdb-mcp-server");
-  await page.getByPlaceholder("https://cmdb.internal/mcp").fill("https://cmdb.internal/mcp");
+  await page.getByPlaceholder("https://cmdb.internal/mcp").fill(LONG_URL);
   await page.getByRole("button", { name: "注册", exact: true }).click();
   await expect(page.getByText("已注册「cmdb-mcp-server」")).toBeVisible({ timeout: 10_000 });
+  // 断言整串在场（不是 "https://mcpgat…"），且该单元格没被裁剪
+  const epCell = page.getByText(LONG_URL, { exact: true });
+  await expect(epCell).toBeVisible();
+  expect(await epCell.evaluate((el) =>
+    el.scrollWidth <= el.clientWidth + 1 && el.scrollHeight <= el.clientHeight + 1)).toBe(true);
 
   // 同名重注册 = 原地更新（保住 tool 标注与模板绑定的复合键），不新增行
   await page.getByRole("button", { name: "注册 MCP" }).click();

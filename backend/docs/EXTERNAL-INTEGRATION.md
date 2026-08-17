@@ -146,6 +146,10 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
   ④ 删除梯子与用户面同构（http 404 降级仅本地删 / biz 1002 视作已删继续 / 1003 → 403 / network 与其余
      biz **不本地删**），`upstream` 结果进审计使降级可观测；**不做 asset_in_use 拦截**（管理员不该被某个
      用户的陈旧绑定卡住，绑定行走 ghost 降级显示「已删除」）。
+  ⑤ 管理面列表走 **Admin 门控的 `GET /admin/mcps`**（非用户面 `/assets/mcps`）：endpoint **不脱敏**
+     且不隐藏占位资产 —— 用户面按 30.5 截成前 12 字符（那里 endpoint 可能含用户自填凭据），但平台
+     MCP 的地址是管理员自己录的基础设施 URL，对录入者藏他自己填的地址没有意义、反而没法核对排障；
+     占位资产要能看见才能删。**用户面脱敏口径不变**（有测试双向锁死）。
   异常类型：`ConsoleError`（基类，在 `mcp_registry_client`）→ `SkillHubError` / `McpRegistryError`。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
