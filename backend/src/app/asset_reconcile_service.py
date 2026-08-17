@@ -156,7 +156,7 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
             known_names = {str(m.get("display_name")) for m in rows}
             known_ids = {str((m.get("manifest_json") or {}).get("server_id")) for m in rows
                          if (m.get("manifest_json") or {}).get("server_id")}
-            # 平台资产对账无用户语义：不传 userId（期望对端只返回平台 server——联调确认项①）
+            # 平台资产对账无用户语义：不传 user_id（期望对端只返回平台 server——联调确认项①）
             for srv in await mcp_registry_client.list_servers():
                 url = str(srv.get("server_url") or "")
                 if mcp_registry_client.is_placeholder_endpoint(url):  # 占位防呆（同 discover_tools 口径）

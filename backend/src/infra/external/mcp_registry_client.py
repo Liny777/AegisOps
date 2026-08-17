@@ -329,7 +329,7 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
     """列注册表里 source=openops 的 MCP 服务器（29.3 `POST /obsv/agent/management/mcps/list/query`）。
     real 拉真 console（翻页取全、只留 active + 有 server_url）；mock 返回内置一个（配合 discover_tools 的 _TOOLS）。
 
-    user_id=登录工号（=login_key，2026-08-16 对端定案）：机机态（告警诊断）无 cookie，
+    user_id=登录工号（=login_key）：机机态（告警诊断）无 cookie，
     console 靠此入参识别用户返回「平台+该用户自定义」的 server；空=不带该字段
     （平台资产对账等无用户语义路径，期望对端只返回平台 server——联调确认项①）。
     """
@@ -348,7 +348,7 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
             while True:
                 body_req: dict[str, Any] = {"page": page, "page_size": page_size, "source": "openops"}
                 if user_id:
-                    body_req["userId"] = user_id  # 每页都带（翻页循环内）
+                    body_req["user_id"] = user_id  # 每页都带（翻页循环内）；键名 user_id（2026-08-17 对端定案，userId 已废）
                 r = await cli.post(url, json=body_req)
                 raise_with_body(r)
                 body = r.json()
