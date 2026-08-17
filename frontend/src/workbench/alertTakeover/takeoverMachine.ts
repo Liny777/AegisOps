@@ -1,5 +1,6 @@
 // 告警接管交互状态机（纯函数，零 React）：useAlertTakeover 以 useReducer 驱动，
-// AlertTakeoverSlot 按 phase 渲染。done_* 是本会话终态（按钮不复现）；error 保留卡片可重试。
+// AlertTakeoverSlot 按 phase 渲染。done_* 是本 runKey 终态（持久化于 takeoverStore，
+// 重开会话经 HYDRATE 恢复，按钮不复现）；error 保留卡片可重试。
 import type { AlertEntryContext } from "../../lib/alertEntry";
 import type { AlertSeverity, EnsureRuleOutcome } from "../../alerts/types";
 
@@ -31,7 +32,12 @@ export type TakeoverAction =
   | { type: "RESOLVE"; outcome: EnsureRuleOutcome }
   | { type: "REJECT_NOT_GRANTED" }
   | { type: "FAIL"; message: string }
-  | { type: "RETRY" };
+  | { type: "RETRY" }
+  /** 换 runKey 整体重载。**唯一合法派发点是 useAlertTakeover 的 re-key effect**——
+   *  这是 done_* 终态唯一的出口，在别处派发会把防重放砸穿。 */
+  | { type: "RESET" }
+  /** 从 takeoverStore 恢复终态（重开会话）。仅 idle 生效：RESET→HYDRATE 重复派发天然幂等。 */
+  | { type: "HYDRATE"; outcome: EnsureRuleOutcome };
 
 const OUTCOME_PHASE: Record<EnsureRuleOutcome, TakeoverPhase> = {
   created: "done_created",
@@ -68,20 +74,24 @@ export function takeoverReducer(state: TakeoverState, action: TakeoverAction): T
       return state.phase === "submitting" ? { phase: "error", errorMessage: action.message } : state;
     case "RETRY":
       return state.phase === "error" ? { phase: "submitting", errorMessage: null } : state;
+    case "RESET":
+      return state.phase === "idle" ? state : initialTakeoverState;
+    case "HYDRATE":
+      return state.phase === "idle"
+        ? { phase: OUTCOME_PHASE[action.outcome], errorMessage: null }
+        : state;
     default:
       return state;
   }
 }
 
 export interface ComputeArmedInput {
-  /** consumeAlertContext 的捕获结果；targetKey 变化后由 hook 置 null（永久失效）。 */
+  /** pending 捕获或 takeoverStore 恢复出的上下文；换 runKey 由 re-key effect 重载。 */
   ctx: AlertEntryContext | null;
-  /** 当前展示 runId 必须仍是 ctx 绑定的那个（boundRunId=ctx 消费后首个非空 runId；
-   *  mock 档两者恒 null 也算一致）。 */
-  runId: string | null;
-  boundRunId: string | null;
-  targetKey: string;
-  boundTargetKey: string | null;
+  /** 当前 runKey 必须仍是 ctx 绑定的那个。real=canonical runId、mock=targetKey（Workbench
+   *  计算）；双 null 分支仅剩防御意义——绑定/恢复前 ctx 必为 null，armed 反正 false。 */
+  runKey: string | null;
+  boundRunKey: string | null;
   /** 模板派生类别集合（getRuleTemplates 失败=空集 → 永不 armed，禁 FALLBACK_CATEGORIES 兜底）。 */
   templateCategories: readonly string[];
   templateSeverities: readonly AlertSeverity[];
@@ -100,8 +110,7 @@ export function computeArmed(input: ComputeArmedInput): boolean {
   const { ctx } = input;
   if (!ctx) return false;
   if (!input.instanceId) return false;
-  if (input.runId !== input.boundRunId) return false;
-  if (input.targetKey !== input.boundTargetKey) return false;
+  if (input.runKey !== input.boundRunKey) return false;
   const cat = normCategory(ctx.category);
   if (!input.templateCategories.some((c) => normCategory(c) === cat)) return false;
   if (!input.templateSeverities.includes(ctx.severity)) return false;

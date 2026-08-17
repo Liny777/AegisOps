@@ -97,7 +97,18 @@ test("负例：无告警参数 / 模板外类型 / info 级别均不出按钮", 
   await expect(button(page)).toHaveCount(0);
 });
 
-test("防重放：完成后刷新，按钮与结果卡都不复现", async ({ page }) => {
+/* ---------------- 持久化语义（2026-08-17 拍板：关页重开可恢复，takeoverStore） ----------------
+ * mock 约束：reload 后 demo rca 重置为进行中 → 「按钮直接复现」不可测（真实环境由 /state 恢复
+ * concluded）；「结果卡直接复现」可测——HYDRATE 不依赖 rca。按钮复现用「reload 后再闭环一轮」验证。 */
+
+const composer = (page: Page) => page.getByPlaceholder(/描述你的排障任务/);
+const concludeOnceMore = async (page: Page, text: string) => {
+  await composer(page).fill(text);
+  await composer(page).press("Enter");
+  await expect(page.getByTestId("diagnosis-progress")).toContainText("诊断完成", { timeout: 15_000 });
+};
+
+test("R1 防重放：确认后刷新——结果卡复现、按钮不复现；再闭环一轮仍打不动", async ({ page }) => {
   await landAndDiagnose(page, { entry_source: "alert", alert_category: "MySQL", alert_severity: "warning" });
   await button(page).click();
   await card(page).getByRole("button", { name: "确认" }).click();
@@ -105,6 +116,72 @@ test("防重放：完成后刷新，按钮与结果卡都不复现", async ({ pa
 
   await page.reload();
   await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(result(page)).toBeVisible({ timeout: 10_000 }); // HYDRATE 恢复（不依赖 rca）
+  await expect(result(page)).toContainText("已并入现有规则");
   await expect(button(page)).toHaveCount(0);
+
+  await concludeOnceMore(page, "追问一轮"); // rca 重新闭环也打不动终态（防重放 L2）
+  await expect(button(page)).toHaveCount(0);
+  await expect(result(page)).toBeVisible();
+});
+
+test("R2 ctx 恢复：闭环后不点就刷新——再闭环一轮按钮复现且预填正确", async ({ page }) => {
+  await landAndDiagnose(page, { entry_source: "alert", alert_category: "MySQL", alert_severity: "warning" });
+  await expect(button(page)).toBeVisible({ timeout: 15_000 });
+
+  await page.reload();
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(button(page)).toHaveCount(0); // demo rca 重置为进行中——未闭环不 armed
+
+  await concludeOnceMore(page, "继续排查");
+  await expect(button(page)).toBeVisible({ timeout: 10_000 }); // ctx 从 takeoverStore 恢复
+  await button(page).click();
+  await expect(card(page).getByRole("textbox").first()).toHaveValue("MySQL普通告警接管规则");
+});
+
+test("R3 会话隔离：SPA 切走按钮/卡不残留，切回恢复终态", async ({ page }) => {
+  await landAndDiagnose(page, { entry_source: "alert", alert_category: "MySQL", alert_severity: "warning" });
+  await button(page).click();
+  await card(page).getByRole("button", { name: "确认" }).click();
+  await expect(result(page)).toBeVisible({ timeout: 10_000 });
+
+  // SPA 内切到历史会话（禁整页 goto——会重置 mock 内存态）
+  await page.getByText("对账任务超时排查").click();
   await expect(result(page)).toHaveCount(0);
+  await expect(button(page)).toHaveCount(0);
+
+  await page.goBack();
+  await expect(result(page)).toBeVisible({ timeout: 10_000 }); // re-key 恢复（RESET→HYDRATE）
+  await expect(result(page)).toContainText("已并入现有规则");
+});
+
+test("R4 未开通不锁死：拦截后刷新再闭环按钮复现，开通后可走到确认卡", async ({ page }) => {
+  // sessionStorage 标记让 init script 可被运行时「开通」动作关掉（否则每次导航都重置回未开通）
+  await page.addInitScript(() => {
+    if (!sessionStorage.getItem("e2e.grant.restored")) {
+      localStorage.setItem("openops.mock.alertGranted", "0");
+    }
+  });
+  await landAndDiagnose(page, { entry_source: "alert", alert_category: "MySQL", alert_severity: "warning" });
+  await button(page).click();
+  await expect(result(page)).toContainText("请联系平台管理员开通");
+
+  await page.reload();
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await expect(result(page)).toHaveCount(0); // not_granted 不持久化
+
+  await concludeOnceMore(page, "再来一轮");
+  await expect(button(page)).toBeVisible({ timeout: 10_000 }); // 未被终态锁死
+
+  // 管理员开通后（access 在 ctx 恢复时探询过，需重进页面刷新探询结果）→ 可走到确认卡
+  await page.evaluate(() => {
+    sessionStorage.setItem("e2e.grant.restored", "1");
+    localStorage.removeItem("openops.mock.alertGranted");
+  });
+  await page.reload();
+  await expect(page.getByText("活动 · 调查时间线")).toBeVisible({ timeout: 15_000 });
+  await concludeOnceMore(page, "开通后再试");
+  await expect(button(page)).toBeVisible({ timeout: 10_000 });
+  await button(page).click();
+  await expect(card(page)).toBeVisible(); // 出表单而非未开通卡
 });

@@ -233,15 +233,17 @@ export function Workbench({
   const [alertCtx] = useState(() => consumeAlertContext());
   const alertTakeover = useAlertTakeover({
     alertCtx,
-    runId,
+    // real 用 canonical runId（跨 chat/run 两条路由稳定）；mock 分支从不 setRunId（恒 null），
+    // 只能用 targetKey——**别顺手统一成 runId**，会把 mock/e2e 的持久化整个打哑。
+    runKey: API_MODE === "real" ? runId : targetKey,
     runStatus,
     // mock 档不拉 /state，`/agent-runs/:id` 落地后实例恒空——回落侧栏当前 Agent 才能演示接管；
     // real 档不回落：归属实例未解析前建规会落到侧栏那个（可能不是本 run 的）实例上。
     instanceId: effectiveInstanceId || (API_MODE === "real" ? "" : currentAgentId ?? ""),
+    instanceResolved: API_MODE === "real",
     rcaConcluded: rca?.status === "concluded",  // 唯一权威闭环信号（后端派生），禁用 steps 推断
     running: taskStatus === "running",
     inputBlocked: workbenchInputBlocked,
-    targetKey,
   });
 
   useEffect(() => {
