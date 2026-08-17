@@ -1807,3 +1807,192 @@ def test_admin_mcp_list_returns_full_endpoint(client, no_egress):
 
 def test_admin_mcp_list_requires_admin(client):
     assert client.get("/api/openops/v1/admin/mcps", headers=USER_HEADERS).status_code == 403
+
+
+# ============ 上游 MCP 改名/改 URL：本地更新路径 + 复合键稳定（Agent 工具不中断） ============
+
+
+def _seed_platform_mcp(display_name: str, server_id: str, endpoint: str,
+                       synced_from: str | None = "mcp_registry") -> tuple[str, str]:
+    """直塞一条平台 MCP 行（含版本行），模拟 reconcile 早前落的资产。返回 (mcp_id, mcp_version_id)。"""
+    import json as _json
+    import uuid as _uuid
+
+    mid, vid = str(_uuid.uuid4()), str(_uuid.uuid4())
+    manifest = {"server_id": server_id}
+    if synced_from:
+        manifest["synced_from"] = synced_from
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("insert into sre_mcp_asset (mcp_id, source, source_type, owner_user_id, display_name,"
+                     " transport, endpoint_config_json, status, created_by, last_updated_by) values"
+                     " (%(m)s,'openops','platform',null,%(d)s,'http',%(e)s,'active','system','system')",
+                     {"m": mid, "d": display_name, "e": _json.dumps({"endpoint": endpoint})})
+        conn.execute("insert into sre_mcp_asset_version (mcp_version_id, mcp_id, version_no, manifest_json,"
+                     " status, created_by, last_updated_by) values"
+                     " (%(v)s,%(m)s,1,%(j)s,'active','system','system')",
+                     {"v": vid, "m": mid, "j": _json.dumps(manifest)})
+    return mid, vid
+
+
+def _mcp_row(mcp_id: str) -> tuple:
+    return _sql("select m.display_name, m.endpoint_config_json->>'endpoint', v.mcp_version_id::text,"
+                " v.manifest_json->>'upstream_server_name'"
+                " from sre_mcp_asset m join sre_mcp_asset_version v on v.mcp_id=m.mcp_id"
+                " where m.mcp_id=%(m)s and m.deleted_at is null", {"m": mcp_id})[0]
+
+
+def test_reconcile_updates_renamed_server_and_keeps_binding_key(client, monkeypatch):
+    """**头号用例**：上游改了 server_name + server_url（server_id 不变）→
+    ① 本地 endpoint 更新到新 URL；② display_name **保持不变**（复合键左半，跟着改会断掉全部模板绑定）；
+    ③ mcp_version_id 不变（tool catalog 与标注不失联）；④ manifest 记下上游现名供管理台展示；
+    ⑤ 运行时 _dynamic_mcp_specs 给出的 server_name 仍是**本地名** → 模板里存的旧键继续命中。"""
+    mid, vid = _seed_platform_mcp("alarm-server", "srv-1", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-1", "server_name": "alarm-server-v2",
+                 "server_url": "https://new.internal/mcp", "description": "改名并搬迁"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    assert summary["mcps_created"] == 0 and summary["mcps_updated"] == 1
+    renamed = summary.get("mcps_renamed_upstream") or []
+    assert renamed and renamed[0]["local"] == "alarm-server" and renamed[0]["upstream"] == "alarm-server-v2"
+
+    name, endpoint, version_id, upstream_name = _mcp_row(mid)
+    assert endpoint == "https://new.internal/mcp", "endpoint 必须更新，否则目录同步一直打旧地址"
+    assert name == "alarm-server", "display_name 是复合键左半，不得跟随上游改名"
+    assert version_id == vid, "mcp_version_id 变了会让 tool catalog 与标注全部失联"
+    assert upstream_name == "alarm-server-v2"
+
+    # 运行时复合键：必须仍按本地名算，否则模板里的 "alarm-server::xxx" 全部失配
+    import asyncio as _asyncio
+
+    from runtime import agentscope_runtime
+
+    async def fake_discover(url, headers=None):
+        assert url == "https://new.internal/mcp", "发现应打新 URL"
+        return [{"tool_name": "query_alarm", "description": "", "input_schema": {}, "readonly": True}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    specs = _asyncio.run(agentscope_runtime._dynamic_mcp_specs("0026demo01"))
+    assert [s["server_name"] for s in specs] == ["alarm-server"], \
+        "复合键左半必须是本地稳定名，不能是上游现名"
+
+
+def test_reconcile_updates_endpoint_then_catalog_uses_new_url(client, monkeypatch):
+    """endpoint 更新后，同一轮的工具目录同步必须打**新** URL（旧 URL 会 raise → tool_sync_errors）。"""
+    mid, _ = _seed_platform_mcp("cat-server", "srv-2", "https://old.internal/mcp")
+    seen: list[str] = []
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-2", "server_name": "cat-server",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        seen.append(url)
+        if "old" in url:
+            raise RuntimeError("服务已搬走")
+        return [{"tool_name": "t1", "description": "", "input_schema": {}, "readonly": True,
+                 "schema_hash": "h1"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    assert "https://new.internal/mcp" in seen and "https://old.internal/mcp" not in seen
+    assert not summary.get("tool_sync_errors"), summary.get("tool_sync_errors")
+    assert _mcp_row(mid)[1] == "https://new.internal/mcp"
+
+
+def test_reconcile_rename_does_not_create_duplicate_row(client, monkeypatch):
+    """改名后平台行数仍为 1 —— 同时锁死两种错误形态：
+    「按名判重」时代会多造一条新名行（重复行），「加 server_id 判重」后会整条跳过（陈旧行）。"""
+    _seed_platform_mcp("dup-server", "srv-3", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-3", "server_name": "dup-server-renamed",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    rows = [r for r in _live_platform_mcps() if r[0] in ("dup-server", "dup-server-renamed")]
+    assert len(rows) == 1 and rows[0][0] == "dup-server"
+
+
+def test_reconcile_name_collision_different_server_id_not_updated(client, monkeypatch):
+    """名字撞上但 server_id 不同 = 两个不同 server 重名 → **不更新**（改错行会把别人的 endpoint
+    指到这家），记 summary 让异味暴露。"""
+    mid, _ = _seed_platform_mcp("shared-name", "srv-A", "https://a.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-B", "server_name": "shared-name",
+                 "server_url": "https://b.internal/mcp", "description": ""}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["mcps_updated"] == 0 and summary["mcps_created"] == 0
+    assert summary.get("mcps_name_collision")
+    assert _mcp_row(mid)[1] == "https://a.internal/mcp", "别人的行不得被改"
+
+
+def test_reconcile_creates_row_when_server_id_unknown(client, monkeypatch):
+    """全新 server（本地无对应 server_id / 名字）→ 照旧建行，manifest 记 upstream_server_name。"""
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-new", "server_name": "brand-new-server",
+                 "server_url": "https://new.internal/mcp", "description": "d"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["mcps_created"] == 1
+    row = _sql("select v.manifest_json->>'upstream_server_name' from sre_mcp_asset m"
+               " join sre_mcp_asset_version v on v.mcp_id=m.mcp_id"
+               " where m.display_name='brand-new-server' and m.deleted_at is null", {})
+    assert row and row[0][0] == "brand-new-server"
+
+
+def test_dynamic_specs_falls_back_to_upstream_name_without_local_row(client, monkeypatch):
+    """本地还没有该 server 的行（新 server、对账尚未跑）→ 复合键回退上游名，行为同改动前。"""
+    import asyncio as _asyncio
+
+    from runtime import agentscope_runtime
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-unknown", "server_name": "not-ingested-yet",
+                 "server_url": "https://x.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": "t", "description": "", "input_schema": {}, "readonly": True}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    specs = _asyncio.run(agentscope_runtime._dynamic_mcp_specs("0026demo01"))
+    assert [s["server_name"] for s in specs] == ["not-ingested-yet"]
+
+
+def test_admin_mcp_list_exposes_upstream_name_and_pending_annotations(client, no_egress, monkeypatch):
+    """管理面列表要给出「上游现名」与「待标注数」——本地名刻意不跟随上游改名，不显性化的话
+    管理员只会看到"名字没更新"而无从判断；未标注工具在 Tool Gateway 是 fail-closed 的，得能一眼看到。"""
+    _seed_platform_mcp("alarm-server", "srv-x", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-x", "server_name": "alarm-server-v2",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": "query_alarm", "description": "", "input_schema": {},
+                 "readonly": True, "schema_hash": "h1"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    row = next(m for m in rows if m["display_name"] == "alarm-server")
+    assert row["upstream_server_name"] == "alarm-server-v2"   # 改名显性化
+    assert row["endpoint"] == "https://new.internal/mcp"
+    assert row["tools_unannotated"] == 1                      # 刚同步进来的工具尚未标注

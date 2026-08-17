@@ -22,6 +22,7 @@ from infra.external.mcp_registry_client import (  # 同 console 口径（TLS 三
     ConsoleError,
     console_api_prefix,
     console_client_kwargs,
+    console_service_user_id,
     raise_biz_or_http,
     raise_with_body,
     unwrap_console_data,
@@ -143,9 +144,16 @@ async def list_skills(user_id: str) -> list[dict[str, Any]]:
         url = f"{base}{console_api_prefix()}/skills/list/query"
         out: list[dict[str, Any]] = []
         async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_SKILLHUB_COOKIE")) as cli:
+            # 29.9 §1.3 三级鉴权：无 Cookie 且无 user_id 入参 → 401。此前本函数收了 user_id 却
+            # **从不下发**，机机态（无请求 cookie 的后台对账）必然被拒。口径同 mcps/list/query：
+            # 真实工号才下发，`system` 这类内部伪 id 换成服务账号兜底（console_service_user_id）。
+            _uid = ("" if user_id in ("", "system") else user_id) or console_service_user_id()
             page = 1
             while True:
-                r = await cli.post(url, json={"page": page, "page_size": _LIST_PAGE_SIZE, "source": "openops"})
+                body: dict[str, Any] = {"page": page, "page_size": _LIST_PAGE_SIZE, "source": "openops"}
+                if _uid:
+                    body["user_id"] = _uid
+                r = await cli.post(url, json=body)
                 raise_with_body(r)  # 非 2xx 带响应体前 300 字（401=cookie 失效）
                 data = _unwrap_data(r.json())  # 分页对象 data{total,page,page_size,items}，非裸 list
                 items = data.get("items") or []

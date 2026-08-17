@@ -1470,3 +1470,59 @@ async def test_ext_mcpreg_register_requires_base_url(monkeypatch):
     monkeypatch.delenv("OPENOPS_MCPREGISTRY_BASE_URL", raising=False)
     with _pytest.raises(RuntimeError, match="OPENOPS_MCPREGISTRY_BASE_URL"):
         await mcp_registry_client.register_server(server_name="x", server_url="https://x/mcp")
+
+
+# ==================== 机机态服务账号身份（29.9 §1.3 三级鉴权兜底） ====================
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_list_sends_service_user_id(monkeypatch):
+    """无 Cookie 且无 user_id 入参 → 对端 401（§1.3）。调用方没给时用服务账号兜底；
+    键名必须是 snake_case `user_id`（userId 已废）。未配 env 则不带该字段。"""
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    ok_body = {"code": 0, "data": {"items": [], "total": 0}}
+
+    # 未配服务账号 + 调用方不传 → 不带 user_id（保持旧行为，不凭空造身份）
+    monkeypatch.delenv("OPENOPS_CONSOLE_SERVICE_USER_ID", raising=False)
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers()
+    assert "user_id" not in cap[0][2]["json"] and "userId" not in cap[0][2]["json"]
+
+    # 配了服务账号 + 调用方不传（后台对账）→ 兜底带上
+    monkeypatch.setenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "svc0001")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers()
+    assert cap[0][2]["json"]["user_id"] == "svc0001"
+
+    # 调用方显式传（用户态）→ 优先用调用方的，不被服务账号覆盖
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers("0026demo01")
+    assert cap[0][2]["json"]["user_id"] == "0026demo01"
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_list_sends_service_user_id(monkeypatch):
+    """Skill 面同款洞：此前收了 user_id 却**从不下发**，机机态必然 401。
+    `system` 是内部伪 id，不得当工号下发，应换服务账号兜底。"""
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "https://console")
+    ok_body = {"code": 200, "data": {"items": [], "total": 0}}
+
+    monkeypatch.delenv("OPENOPS_CONSOLE_SERVICE_USER_ID", raising=False)
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("system")
+    assert "user_id" not in cap[0][2]["json"]
+
+    monkeypatch.setenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "svc0001")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("system")           # 伪 id → 服务账号
+    assert cap[0][2]["json"]["user_id"] == "svc0001"
+
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("0026demo01")       # 真工号 → 原样下发
+    assert cap[0][2]["json"]["user_id"] == "0026demo01"

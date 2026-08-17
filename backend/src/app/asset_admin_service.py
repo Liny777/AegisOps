@@ -258,6 +258,16 @@ async def list_mcps(admin: dict[str, Any], *, page: int = 1, page_size: int = 20
         admin["user_id"], source_type="platform", q=q,
         limit=page_size, offset=(page - 1) * page_size, hide_placeholder=False,
     )
+    # 待标注计数：未标注的工具在 Tool Gateway 是 fail-closed 的，管理员必须能一眼看到还欠几个。
+    # 按 display_name 归并（catalog 行本就带 mcp_display_name）。
+    from infra.repositories import mcp_tools
+
+    pending: dict[str, int] = {}
+    for c in await mcp_tools.list_catalog_with_annotation():
+        if c.get("annotation_id") is None:
+            pending[str(c.get("mcp_display_name") or "")] = pending.get(
+                str(c.get("mcp_display_name") or ""), 0) + 1
+
     items: list[dict[str, Any]] = []
     for r in rows:
         d = row_json(r)
@@ -270,6 +280,10 @@ async def list_mcps(admin: dict[str, Any], *, page: int = 1, page_size: int = 20
             d["server_id"] = manifest.get("server_id")  # 上游唯一标识（删除/重注册按它对齐）
             d["transport"] = manifest.get("transport") or d.get("transport")  # 上游词汇优先于本地 'http' 列
             d["synced_from"] = manifest.get("synced_from")  # 让管理员看得出哪条是 seed（无值）哪条来自上游
+            # 上游现名：本地 display_name 是复合键左半、刻意不跟随上游改名（否则断掉全部模板绑定），
+            # 所以改名这件事必须在管理台显性化，否则管理员只会看到"名字没更新"而无从判断。
+            d["upstream_server_name"] = manifest.get("upstream_server_name")
+        d["tools_unannotated"] = pending.get(str(d.get("display_name") or ""), 0)
         items.append(d)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 

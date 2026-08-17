@@ -940,18 +940,31 @@ const realApi: OpenOpsApi = {
       return {
         title: "MCP 服务",
         primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-        cols: [{ label: "服务名称", width: "200px" }, { label: "endpoint" }, { label: "传输", width: "132px" }, { label: "分类", width: "88px" }, { label: "状态", width: "84px" }, { label: "删除", width: "56px" }],
-        rows: d.items.map((r) => ({
-          id: String(r.mcp_id),
-          cells: [
-            { text: String(r.display_name) },
-            { text: String(r.endpoint || "—"), mono: true, wrap: true },
-            { text: r.transport ? String(r.transport) : "—", mono: true },
-            { text: r.category ? String(r.category) : "—" },
-            { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
-            { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
-          ],
-        })),
+        cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "删除", width: "56px" }],
+        rows: d.items.map((r) => {
+          // 上游改名后本地名**刻意不跟随**（它是 server::tool 复合键的左半，跟着改会断掉全部模板绑定）。
+          // 所以必须把「上游现名」单列出来：不一致时标 warning，让管理员知道改过名而不是我们没同步。
+          const upstream = r.upstream_server_name ? String(r.upstream_server_name) : "";
+          const renamed = Boolean(upstream) && upstream !== String(r.display_name);
+          const pending = Number(r.tools_unannotated ?? 0);
+          return {
+            id: String(r.mcp_id),
+            cells: [
+              { text: String(r.display_name) },
+              renamed
+                ? { text: upstream, kind: "badge" as const, tone: "warning" as const }
+                : { text: upstream || "—" },
+              { text: String(r.endpoint || "—"), mono: true, wrap: true },
+              { text: r.transport ? String(r.transport) : "—", mono: true },
+              // 未标注工具在 Tool Gateway 是 fail-closed 的，点进去直接标注（不必再从模板三级 drill 找）
+              pending > 0
+                ? { text: `${pending} 个`, kind: "action" as const, onClickKey: "mcp-annotate" }
+                : { text: "—" },
+              { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+              { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
+            ],
+          };
+        }),
         total: d.total, page: d.page, pageSize: d.page_size,
       };
     }
@@ -1482,15 +1495,16 @@ const mockApi: OpenOpsApi = {
   adminRegisterMcp: (input) => {
     const rows = M.adminTables.mcps.rows;
     const hit = rows.find((r) => String(r.cells[0]?.text) === input.server_name);
-    if (hit) {  // 原地更新（对齐后端：不改名、不重建，保住 tool 标注）
-      hit.cells[1] = { text: input.server_url, mono: true, wrap: true };
+    if (hit) {  // 原地更新（对齐后端：不改名、不重建，保住 tool 标注）；endpoint 是第 3 列
+      hit.cells[2] = { text: input.server_url, mono: true, wrap: true };
       return delay({ server_id: input.server_name, action: "updated", merged: 0 });
     }
     rows.push({
       id: `mcp_${input.server_name}`,
-      cells: [{ text: input.server_name }, { text: input.server_url, mono: true, wrap: true },
-              { text: input.transport || "streamable_http", mono: true },
-              { text: input.category || "—" }, { text: "active", kind: "badge", tone: "good" },
+      cells: [{ text: input.server_name }, { text: "—" },
+              { text: input.server_url, mono: true, wrap: true },
+              { text: input.transport || "streamable_http", mono: true }, { text: "—" },
+              { text: "active", kind: "badge", tone: "good" },
               { text: "删除", kind: "action", onClickKey: "mcp-delete" }],
     });
     return delay({ server_id: input.server_name, action: "created", merged: 0 });
@@ -1505,7 +1519,9 @@ const mockApi: OpenOpsApi = {
   unbindOwnAsset: (_kind, instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   getMainAppend: () => delay("优先关注支付链路核心接口的 P99 与错误率。"),
   saveMainAppend: () => delay(undefined as unknown as void),
-  reconcileAssets: () => delay({ skipped: true }),
+  // mock 下也回一份真实形状的 summary：管理台「同步」按钮要读 mcps_created / mcps_updated 拼提示
+  reconcileAssets: () => delay({ trigger: "refresh", mcps_created: 0, mcps_updated: 1,
+                                 skills_created: 0, tools_created: 0 }),
   getConfigVersions: () => delay(M.mockConfigVersions),
   getModelConfigs: () => delay(M.mockModels),
   // 用户侧模板清单：active 行 ∅ 过滤交给消费方；含 disabled 行供「已绑定但被停用」的兜底展示演示

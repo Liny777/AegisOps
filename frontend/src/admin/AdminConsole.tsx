@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
@@ -33,6 +33,7 @@ const TITLES: Record<string, string> = {
 /** 管理台（30.6 2026-07-09 IA）：5 一级页；模板管理内 drill（资产治理 → Tool 标注，标注全局一份）。 */
 export function AdminConsole() {
   const { page = "templates" } = useParams();
+  const loc = useLocation();  // 见下方 drill 重置 effect：同路径重复导航也要退出钻取
   const [table, setTable] = useState<AdminTableData | null>(null);
   const [tablePage, setTablePage] = useState(1);  // 服务端分页（目前 Skill 基线消费；其余表后端不返 total → 不渲染分页器）
   const [audit, setAudit] = useState<AuditNode[]>([]);
@@ -52,6 +53,7 @@ export function AdminConsole() {
   const [wlAddOpen, setWlAddOpen] = useState(false);
   // 平台级资产写闭环（29.9）：上传 Skill / 注册 MCP 弹窗 + 成功提示（同名收敛条数要显式告知）
   const [assetDialog, setAssetDialog] = useState<"skill" | "mcp" | null>(null);
+  const [syncing, setSyncing] = useState(false);   // MCP 服务页「同步」按钮的 busy 态
   const [actionOk, setActionOk] = useState("");
   const [actionErr, setActionErr] = useState("");
   const [traceFilter, setTraceFilter] = useState("");
@@ -67,6 +69,14 @@ export function AdminConsole() {
   const isTable = ["templates", "model-assets", "model-templates", "skills", "mcps", "users", "alerts"].includes(page);
 
   const load = useCallback(async () => {
+    // Tool 标注是**全局**配置，与模板无关：MCP 服务页的「待标注」也直接钻到这里，
+    // 不必再走 模板管理 → 选个模板 → 资产治理 → 点 MCP 的三级 drill。
+    if (mcpDrill && page === "mcps") {
+      const d = await api.getAdminMcpTools(mcpDrill);
+      setToolsRaw(d.raw);
+      setTable(d);
+      return;
+    }
     if (page === "templates") {
       if (mcpDrill) {
         const d = await api.getAdminMcpTools(mcpDrill);
@@ -115,7 +125,9 @@ export function AdminConsole() {
     api.adminListUserTags().then(setUserTags).catch(() => setUserTags([]));
   }, [page]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ(""); }, [page]);
+  // 依赖用 loc.key 而非 page：在钻取态点侧边栏**当前页**（如 MCP 服务，与面包屑同名，极易误点）
+  // 时 page 不变、drill 不重置，表现为"点了没反应"。loc.key 每次导航都变，同路径也变。
+  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ(""); }, [page, loc.key]);
   useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQ, alertSearchQ]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
@@ -216,6 +228,7 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteModelAsset(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "mcp-annotate") setMcpDrill(rowName);  // rowName = 服务名称列（= catalog 的 mcp_display_name）
     else if (key === "skill-delete") {
       // 平台 Skill 下架：先回删 SkillHub 再本地软删；上游拒绝会整体失败（错误进横幅），本地不会假删
       if (!window.confirm(
@@ -271,7 +284,13 @@ export function AdminConsole() {
   };
 
   // 面包屑（drill 时替换标题）：模板管理 / 模板名 · 资产治理 / MCP名 · Tool 标注
-  const crumbs = page === "templates" && tplDrill
+  // MCP 服务页直达标注时只有两级：MCP 服务 / MCP名 · Tool 标注
+  const crumbs = page === "mcps" && mcpDrill
+    ? [
+        { label: "MCP 服务", onClick: () => setMcpDrill(null) },
+        { label: `${mcpDrill} · Tool 标注`, onClick: undefined },
+      ]
+    : page === "templates" && tplDrill
     ? [
         { label: "模板管理", onClick: () => { setTplDrill(null); setMcpDrill(null); } },
         { label: `${tplDrill.name} · 资产治理`, onClick: mcpDrill ? () => setMcpDrill(null) : undefined },
@@ -300,6 +319,23 @@ export function AdminConsole() {
         ) : null}
         {page === "model-templates" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setMtEdit({ id: null })}>{table.primary.label}</Button>
+        ) : null}
+        {/* 立即对账：唯一的手动入口此前埋在**用户**设置页的「同步资产」，管理员根本想不到去那儿点。
+            走 force，绕开 300s 节流（后台循环默认关，见 OPENOPS_RECONCILE_INTERVAL_S）。 */}
+        {page === "mcps" ? (
+          <Button variant="secondary" icon={syncing ? "loader-2" : "refresh"} disabled={syncing}
+            onClick={() => {
+              setSyncing(true); setActionErr(""); setActionOk("");
+              void api.reconcileAssets()
+                .then((s) => {
+                  const n = Number((s as Record<string, unknown>).mcps_updated ?? 0);
+                  const c = Number((s as Record<string, unknown>).mcps_created ?? 0);
+                  setActionOk(`同步完成：新增 ${c} 个、更新 ${n} 个`);
+                  return load();
+                })
+                .catch((e) => setActionErr((e as Error).message))
+                .finally(() => setSyncing(false));
+            }}>{syncing ? "同步中…" : "同步"}</Button>
         ) : null}
         {(page === "skills" || page === "mcps") && table?.primary ? (
           <Button icon={table.primary.icon}

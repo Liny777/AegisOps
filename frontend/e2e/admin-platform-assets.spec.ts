@@ -104,3 +104,29 @@ test("MCP 服务：注册平台 MCP → 同名重注册为原地更新 → 删�
   await expect(page.getByText("已删除「cmdb-mcp-server」")).toBeVisible({ timeout: 10_000 });
   await expect(page.getByRole("main").getByText("cmdb-mcp-server", { exact: true })).toHaveCount(0);
 });
+
+test("MCP 服务：上游改名显性化 + 同步 + 待标注直达 Tool 标注", async ({ page }) => {
+  await gotoAdmin(page, "mcps");
+
+  // 上游改名后本地绑定名**刻意不跟随**（它是 server::tool 复合键左半），改名靠「上游现名」列显性化，
+  // 否则管理员只会看到"名字没更新"而无从判断是我们没同步还是上游改了名。
+  // exact 必须开：endpoint 那一列的 URL 里也含 alarm-server-v2，松匹配会撞出两个元素
+  await expect(page.getByRole("main").getByText("alarm-server", { exact: true })).toHaveCount(1);
+  await expect(page.getByRole("main").getByText("alarm-server-v2", { exact: true })).toBeVisible();
+
+  // 同步：管理员的手动对账入口（此前只埋在用户设置页的「同步资产」里）
+  await page.getByRole("button", { name: "同步" }).click();
+  await expect(page.getByText(/同步完成：新增 \d+ 个、更新 \d+ 个/)).toBeVisible({ timeout: 10_000 });
+
+  // 待标注直达：未标注工具在 Tool Gateway 是 fail-closed 的，两次点击就能到标注面
+  //（此前要走 模板管理 → 选模板 → 资产治理 → 点 MCP 四步，而标注本就是全局的）
+  await page.getByRole("main").getByText("2 个").click();
+  await expect(page.getByRole("main").getByText("alarm-server · Tool 标注")).toBeVisible();
+  await expect(page.getByRole("main").getByText("query_alarm")).toBeVisible();
+  await expect(page.getByRole("main").getByText("ack_alarm")).toBeVisible();
+
+  // 钻取态点侧边栏当前页（与面包屑同名，极易误点）必须能退出——修复前 page 不变、drill 不重置
+  await page.locator("aside").getByText("MCP 服务").click();
+  await expect(page.getByRole("main").getByText("Tool 标注")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "注册 MCP" })).toBeVisible();
+});

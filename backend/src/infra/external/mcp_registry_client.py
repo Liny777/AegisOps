@@ -103,6 +103,16 @@ def console_api_prefix() -> str:
     return ("/" + p.strip("/")) if p.strip("/") else ""
 
 
+def console_service_user_id() -> str:
+    """机机态兜底身份（29.9 §1.3 三级鉴权）：无 Cookie 且无 `user_id` 入参 → 对端直接 401。
+
+    后台对账（background_loop / 无请求上下文的路径）两样都没有，整段 ingest 会静默失败在
+    `mcp_ingest_error` 里。配 `OPENOPS_CONSOLE_SERVICE_USER_ID`（服务账号工号）后，
+    调用方未显式传 user_id 时用它兜底。注意：**该工号的可见范围决定我们能同步到哪些资产**。
+    用户态请求仍优先走 cookie 透传（console_cookie ①），本值只是兜底。"""
+    return os.getenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "").strip()
+
+
 def console_cookie(specific_env: str) -> str:
     """console 系 IAM 会话 cookie 统一读取（2026-07-14 终版口径）：
 
@@ -347,8 +357,11 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
             page, page_size = 1, 50
             while True:
                 body_req: dict[str, Any] = {"page": page, "page_size": page_size, "source": "openops"}
-                if user_id:
-                    body_req["user_id"] = user_id  # 每页都带（翻页循环内）；键名 user_id（2026-08-17 对端定案，userId 已废）
+                # 键名 user_id（2026-08-17 对端定案，userId 已废）；每页都带（翻页循环内）。
+                # 调用方没给就用服务账号兜底——后台对账无 cookie 无 user_id 会被判 401（§1.3）。
+                _uid = user_id or console_service_user_id()
+                if _uid:
+                    body_req["user_id"] = _uid
                 r = await cli.post(url, json=body_req)
                 raise_with_body(r)
                 body = r.json()
