@@ -1783,3 +1783,27 @@ def test_reconcile_mcp_ingest_dedupes_by_server_id(client, monkeypatch):
     summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
     assert summary["mcps_created"] == 0, "同 server_id 已在本地，不该按新名字再造一行"
     assert not [r for r in _live_platform_mcps() if r[0] == "upstream-new-name"]
+
+
+def test_admin_mcp_list_returns_full_endpoint(client, no_egress):
+    """管理面列表 endpoint **不脱敏**：用户面按 30.5 截成前 12 字符，管理员核对不了自己录的地址。
+    同时不隐藏占位资产（能看见才能删），并透出 server_id / transport 供管理。"""
+    url = "https://mcpgateway.internal.example.com/servers/alarm-server/mcp"
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-full", url=url, category="监控"))
+
+    admin_rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    row = next(m for m in admin_rows if m["mcp_id"] == res["mcp_id"])
+    assert row["endpoint"] == url, "管理面必须给全量 endpoint"
+    assert row["server_id"] == "plat-mcp-full" and row["transport"] == "streamable_http"
+    assert row["category"] == "监控" and row["synced_from"] == "platform_register"
+
+    # 用户面维持脱敏口径不变（本次改动不得放宽 30.5）
+    user_rows = unwrap(client.get("/api/openops/v1/assets/mcps?source_type=platform",
+                                  headers=USER_HEADERS))["items"]
+    urow = next(m for m in user_rows if m["mcp_id"] == res["mcp_id"])
+    assert urow["endpoint_config_redacted"]["endpoint"] == url[:12] + "…"
+    assert "endpoint" not in urow  # 全量字段不得漏给用户面
+
+
+def test_admin_mcp_list_requires_admin(client):
+    assert client.get("/api/openops/v1/admin/mcps", headers=USER_HEADERS).status_code == 403

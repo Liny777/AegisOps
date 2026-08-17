@@ -552,10 +552,13 @@ export const adminTables: Record<string, AdminTableData> = {
   mcps: {
     title: "MCP 服务",
     primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-    cols: [{ label: "服务名称" }, { label: "endpoint" }, { label: "分类", width: "96px" }, { label: "状态", width: "88px" }, { label: "删除", width: "56px" }],
+    cols: [{ label: "服务名称", width: "200px" }, { label: "endpoint" }, { label: "传输", width: "132px" }, { label: "分类", width: "88px" }, { label: "状态", width: "84px" }, { label: "删除", width: "56px" }],
     rows: [
+      // endpoint 用真实长度的 URL（管理面不脱敏）：mock 也得能暴露"列太窄/被截断"这类问题
       { id: "mcp_omodel_query", cells: [
-        { text: "oModel 查询与恢复" }, { text: "https://omode…", mono: true }, { text: "监控" },
+        { text: "oModel 查询与恢复" },
+        { text: "https://mcpgateway.internal.example.com/servers/omodel-mcp-server/mcp", mono: true, wrap: true },
+        { text: "streamable_http", mono: true }, { text: "监控" },
         { text: "active", kind: "badge", tone: "good" },
         { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
     ],

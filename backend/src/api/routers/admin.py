@@ -276,6 +276,18 @@ async def admin_delete_skill(skill_id: str, admin: Admin):
     return ok(await asset_admin_service.delete_skill(admin, skill_id))
 
 
+@router.get("/mcps")
+async def admin_list_mcps(
+    admin: Admin,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=200),
+):
+    """管理台平台 MCP 列表：endpoint **不脱敏**（管理员要核对自己录的地址），且不隐藏占位资产
+    （能看见才能删）。用户面 `/assets/mcps` 的 30.5 脱敏口径不受影响。"""
+    return ok(await asset_admin_service.list_mcps(admin, page=page, page_size=page_size, q=q))
+
+
 @router.post("/mcps")
 async def admin_register_mcp(req: AdminRegisterMcpRequest, admin: Admin):
     """注册平台级 MCP Server（is_system=true）。命中已有行时原地更新，不改 display_name

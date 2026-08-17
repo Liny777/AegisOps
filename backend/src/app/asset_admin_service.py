@@ -22,6 +22,7 @@ from app import template_service
 from domain import tool_key
 from domain.errors import ApiError, Err
 from infra import egress
+from infra.db import row_json
 from infra.repositories import assets, audit
 
 log = logging.getLogger("openops.asset_admin")
@@ -239,6 +240,38 @@ async def delete_skill(admin: dict[str, Any], skill_id: str) -> dict[str, Any]:
                           "skill_key": row.get("skill_key"), "upstream": upstream},
     )
     return {"deleted": True, "upstream": upstream}
+
+
+# ---------------------------------------------------------------- MCP 列表（管理面）
+
+async def list_mcps(admin: dict[str, Any], *, page: int = 1, page_size: int = 20,
+                    q: str | None = None) -> dict[str, Any]:
+    """管理台平台 MCP 列表。与用户面 `/assets/mcps` 的两点差别，都是管理语义要求的：
+
+    1. **endpoint 不脱敏**：用户面按 30.5 截断展示（那里 endpoint 可能含用户自填的凭据）；
+       平台 MCP 的地址是管理员自己录进去的基础设施 URL，本端点又是 Admin 门控，
+       对录入者藏他自己填的地址没有意义，反而没法核对/排障。
+    2. **不隐藏占位资产**：用户面真机模式会滤掉 endpoint host=mock 的 demo 种子行；管理面要能看见
+       它们才能删掉，故 hide_placeholder=False。
+    """
+    rows, total = await assets.list_mcps_page(
+        admin["user_id"], source_type="platform", q=q,
+        limit=page_size, offset=(page - 1) * page_size, hide_placeholder=False,
+    )
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        d = row_json(r)
+        cfg = d.pop("endpoint_config_json", None) or {}
+        d["endpoint"] = str(cfg.get("endpoint") or "") if isinstance(cfg, dict) else ""
+        manifest = d.pop("manifest_json", None) or {}  # 内部 manifest 不整包透前端，只抽展示字段
+        if isinstance(manifest, dict):
+            d["description"] = manifest.get("description")
+            d["category"] = manifest.get("category")
+            d["server_id"] = manifest.get("server_id")  # 上游唯一标识（删除/重注册按它对齐）
+            d["transport"] = manifest.get("transport") or d.get("transport")  # 上游词汇优先于本地 'http' 列
+            d["synced_from"] = manifest.get("synced_from")  # 让管理员看得出哪条是 seed（无值）哪条来自上游
+        items.append(d)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 # ---------------------------------------------------------------- MCP 注册

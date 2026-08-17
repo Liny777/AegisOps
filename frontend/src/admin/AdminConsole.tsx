@@ -399,7 +399,9 @@ export function AdminConsole() {
                             <Icon name="chevron-right" size={13} color={color.brand} />
                           </span>
                         ) : (
-                          <span style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{cell.text}</span>
+                          /* wrap 单元格（如平台 MCP 的 endpoint）折行展示全量：长 URL 被省略号截掉
+                             管理员就核对不了地址。其余仍是 nowrap+省略号，并挂 title 便于悬停看全。 */
+                          <span title={cell.text} style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, display: "block", ...(cell.wrap ? { whiteSpace: "normal", overflowWrap: "anywhere", lineHeight: 1.5 } : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }) }}>{cell.text}</span>
                         )}
                       </div>
                     ))}
