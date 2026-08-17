@@ -42,7 +42,7 @@ def check_console() -> None:
     url = f"{base.rstrip('/')}/obsv/agent/management/mcps/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops",
-                             **({"userId": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})},
+                             **({"user_id": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})},
                        headers=hdrs, timeout=15,
                        verify=console_tls_verify(), trust_env=http_trust_env())
         print(f"[check-net]   HTTP {r.status_code}；响应前 300 字：{r.text[:300]}")
@@ -223,7 +223,7 @@ def check_skillhub() -> None:
     url = f"{base}{console_api_prefix()}/skills/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 50, "source": "openops",
-                             **({"userId": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})}, timeout=15,
+                             **({"user_id": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})}, timeout=15,
                        headers={"Cookie": cookie} if cookie else {},
                        verify=console_tls_verify(), trust_env=http_trust_env())
         if _looks_html(r):
@@ -261,7 +261,7 @@ def check_skill_download() -> None:
     url = f"{skillhub_base()}{console_api_prefix()}/skills/list/query"
     try:
         r = httpx.post(url, json={"page": 1, "page_size": 5, "source": "openops",
-                             **({"userId": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})}, timeout=15,
+                             **({"user_id": os.environ["OPENOPS_CHECK_USERID"]} if os.environ.get("OPENOPS_CHECK_USERID") else {})}, timeout=15,
                        headers={"Cookie": cookie} if cookie else {},
                        verify=console_tls_verify(), trust_env=http_trust_env())
         items = ((r.json() or {}).get("data") or {}).get("items") or []

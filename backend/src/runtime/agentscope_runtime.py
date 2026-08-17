@@ -821,7 +821,7 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
         return ToolResponse(content=[TextBlock(type="text", text=summary)])
 
     # 动态 MCP 工具先发现（决定 demo 双工具去留）：有真工具时 demo 退场——不再弹假审批卡/脚本 RCA。
-    # userId=任务 owner 工号（=login_key，2026-08-16 对端定案）：机机态（告警诊断）无
+    # user_id=任务 owner 工号（=login_key）：机机态（告警诊断）无
     # cookie，console 靠此入参识别用户返回「平台+该用户自定义」server——人对话与告警
     # 两路径 st.user_id 天然都有值（登录工号 / incident owner 工号），显式传参零魔法。
     dynamic_specs = await _dynamic_mcp_specs(st.user_id)

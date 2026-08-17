@@ -1140,7 +1140,7 @@ def test_backend_outbound_iam_only_without_cookie(monkeypatch):
 
 
 def test_list_servers_body_carries_user_id(monkeypatch):
-    """mcps/list/query 带 userId=工号（2026-08-16 对端定案：机机态靠入参识别用户）；
+    """mcps/list/query 带 user_id=工号（机机态靠入参识别用户；键名 2026-08-17 对端定案）；
     顺带立起此前从未验证过的 body 基线断言（page/page_size/source）。"""
     import httpx
 
@@ -1156,16 +1156,16 @@ def test_list_servers_body_carries_user_id(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _Srv)
     asyncio.run(mcp_registry_client.list_servers(user_id="z1234567"))
     body = _FakeClient.calls[-1]["json"]
-    assert body["userId"] == "z1234567"
+    assert body["user_id"] == "z1234567"
     assert body["page"] == 1 and body["page_size"] == 50 and body["source"] == "openops"
 
     _FakeClient.reset()
     asyncio.run(mcp_registry_client.list_servers())  # 无用户语义路径（对账循环）：不带该字段
-    assert "userId" not in _FakeClient.calls[-1]["json"]
+    assert "user_id" not in _FakeClient.calls[-1]["json"]
 
 
 def test_list_servers_user_id_on_every_page(monkeypatch):
-    """翻页时每页 body 都带 userId（body 构造在循环内，防未来重构漏页）。"""
+    """翻页时每页 body 都带 user_id（body 构造在循环内，防未来重构漏页）。"""
     import httpx
 
     monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
@@ -1182,7 +1182,7 @@ def test_list_servers_user_id_on_every_page(monkeypatch):
     monkeypatch.setattr(httpx, "AsyncClient", _Srv)
     out = asyncio.run(mcp_registry_client.list_servers(user_id="z1234567"))
     assert len(out) == 2 and len(_FakeClient.calls) == 2
-    assert all(c["json"]["userId"] == "z1234567" for c in _FakeClient.calls)
+    assert all(c["json"]["user_id"] == "z1234567" for c in _FakeClient.calls)
 
 
 def test_dynamic_specs_passes_user_id(monkeypatch):
