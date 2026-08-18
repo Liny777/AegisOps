@@ -2317,3 +2317,103 @@ def test_admin_mcp_update_discovery_timeout_bounded(client, no_egress, monkeypat
     assert "refresh_error" in t and "Timeout" in t["refresh_error"]
     assert t["blocked"] == 1 and t["removed"] == []  # 仍全拦、未清扫
     assert _catalog_state(vid)["t1"][:3] == (False, "blocked", URL_RESET_REASON)
+
+
+# ============ 手动「刷新工具」：改 URL 发现失败后的补救闭环 ============
+
+
+def _refresh_tools(client, mcp_id: str):
+    return client.post(f"/api/openops/v1/admin/mcps/{mcp_id}:refresh-tools", headers=ADMIN_HEADERS, json={})
+
+
+def test_admin_mcp_refresh_tools_sweeps_absent(client, no_egress, monkeypatch):
+    """刷新：老工具（目录+标注）软删、新工具入库未标注、schema 未变的**标注保留**（非 URL 变更不全拦）。"""
+    res = unwrap(_admin_register_mcp(client, "rt-mcp", url="https://cur.internal/mcp"))
+    schema = {"type": "object"}
+    vid = _run(_seed_catalog(res["mcp_id"], {"keep_t": schema, "old_t": schema}))
+    from infra.repositories import mcp_tools as _mt
+
+    cat = {r[0]: r[1] for r in _sql(
+        "select tool_name, tool_catalog_id::text from sre_mcp_tool_catalog where mcp_version_id=%(v)s", {"v": vid})}
+    _run(_mt.save_annotation(cat["keep_t"], False, False, "none", None, "allowed", None, "admin"))
+    _run(_mt.save_annotation(cat["old_t"], False, False, "none", None, "allowed", None, "admin"))
+
+    async def discover(url, headers=None):
+        assert url == "https://cur.internal/mcp", "刷新按**当前**地址发现"
+        return [{"tool_name": "keep_t", "description": "", "input_schema": schema,
+                 "schema_hash": mcp_registry_client._schema_hash(schema)},
+                {"tool_name": "new_t", "description": "", "input_schema": schema,
+                 "schema_hash": mcp_registry_client._schema_hash(schema)}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", discover)
+    out = unwrap(_refresh_tools(client, res["mcp_id"]))
+    assert out["created"] == 1 and out["unchanged"] == 1 and out["removed"] == ["old_t"]
+
+    state = _catalog_state(vid)
+    assert state["old_t"][0] is True and state["old_t"][3] is True   # 老工具：目录+标注双软删
+    assert state["keep_t"] == (False, "allowed", None, False)         # 未变：标注**保留**（不全拦）
+    assert state["new_t"][1] is None                                  # 新工具：未标注（fail-closed）
+    assert _sql("select 1 from sre_audit_event where event_type='mcp.tools_refreshed'"
+                " and payload_redacted_json->>'mcp_id'=%(m)s", {"m": res["mcp_id"]})
+
+
+def test_admin_mcp_refresh_tools_discovery_failure_502(client, no_egress, monkeypatch):
+    """发现失败 → 显式 502 retryable、**不清扫**（手动动作要给真错误，不塞响应侧记）。"""
+    res = unwrap(_admin_register_mcp(client, "rt-fail-mcp", url="https://cur.internal/mcp"))
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": {"type": "object"}}))
+
+    async def boom(url, headers=None):
+        raise RuntimeError("握手失败")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", boom)
+    r = _refresh_tools(client, res["mcp_id"])
+    assert r.status_code == 502 and r.json()["error"]["retryable"] is True
+    assert _catalog_state(vid)["t1"][0] is False  # 未清扫
+
+
+def test_admin_mcp_refresh_completes_after_failed_url_edit(client, no_egress, monkeypatch):
+    """**头号场景复刻**（内网 2026-08-18）：编辑改 URL 时新地址发现失败 → 保护路径全拦未清扫、
+    老工具留存；此前无任何入口完成置换（再编辑走元数据分支、同步只增不删）。
+    连通恢复后点「刷新工具」→ 老工具清除、目录与新地址一致。"""
+    res = unwrap(_admin_register_mcp(client, "rt-dead-mcp", url="https://old.internal/mcp"))
+    schema = {"type": "object"}
+    vid = _run(_seed_catalog(res["mcp_id"], {"old_only_t": schema}))
+
+    async def down(url, headers=None):
+        raise RuntimeError("新地址不可达")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", down)
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+    assert "refresh_error" in out["tools"]
+    assert _catalog_state(vid)["old_only_t"][:3] == (False, "blocked", URL_RESET_REASON)  # 死区状态
+
+    # 复现死区：URL 已保存不再变化 → 再编辑走元数据分支，不触发刷新
+    async def never(url, headers=None):
+        raise AssertionError("URL 未变不该发现")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", never)
+    out2 = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp", description="x"))
+    assert out2["url_changed"] is False and out2["tools"] == {}
+    assert _catalog_state(vid)["old_only_t"][0] is False  # 老工具仍在——这就是用户看到的现场
+
+    # 连通恢复 → 刷新工具 → 置换完成
+    async def up(url, headers=None):
+        assert url == "https://new.internal/mcp"
+        return [{"tool_name": "new_real_t", "description": "", "input_schema": schema,
+                 "schema_hash": mcp_registry_client._schema_hash(schema)}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", up)
+    out3 = unwrap(_refresh_tools(client, res["mcp_id"]))
+    assert out3["created"] == 1 and out3["removed"] == ["old_only_t"]
+    state = _catalog_state(vid)
+    assert state["old_only_t"][0] is True   # 老工具终于清掉
+    assert state["new_real_t"][0] is False  # 新工具在场（未标注待管理员标）
+
+
+def test_admin_mcp_refresh_guards(client, no_egress):
+    """非平台行 403；普通用户 403。"""
+    m = _register_mcp(client, "用户 MCP 刷新守卫")
+    assert _refresh_tools(client, m["mcp_id"]).status_code == 403
+    res = unwrap(_admin_register_mcp(client, "rt-guard-mcp"))
+    assert client.post(f"/api/openops/v1/admin/mcps/{res['mcp_id']}:refresh-tools",
+                       headers=USER_HEADERS, json={}).status_code == 403

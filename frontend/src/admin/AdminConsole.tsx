@@ -249,6 +249,19 @@ export function AdminConsole() {
       void api.adminDeleteModelAsset(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
     else if (key === "mcp-annotate") setMcpDrill(rowName);  // rowName = 服务名称列（= catalog 的 mcp_display_name）
+    else if (key === "mcp-refresh-tools") {
+      // 改 URL 时发现失败后的补救入口：按当前地址重新发现，老工具清除、新工具入库待标注
+      if (!window.confirm(
+        `按当前地址重新发现「${rowName}」的工具？已消失的工具及其标注会被移除，schema 变更的需重新标注。`)) return;
+      setActionErr(""); setActionOk("");
+      void api.adminRefreshMcpTools(rowId)
+        .then((r) => {
+          setActionOk(`「${rowName}」工具已刷新：新增 ${r.created} / 变更 ${r.schema_changed} / 移除 ${r.removed.length} / 未变 ${r.unchanged}`);
+          refreshInbox();
+          return load();
+        })
+        .catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "mcp-edit") {
       // 表格 cells 只有文本，编辑要完整配置 → 现拉一次管理面列表取整行（照 ma-edit 先例）
       setActionErr("");

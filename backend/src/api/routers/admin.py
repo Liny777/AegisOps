@@ -310,6 +310,13 @@ async def admin_update_mcp(mcp_id: str, req: AdminUpdateMcpRequest, admin: Admin
     return ok(await asset_admin_service.update_mcp(admin, mcp_id, req))
 
 
+# 冒号路由：与 POST /mcps（无路径参数）不同形无冲突；如日后加 POST /mcps/{id} 须注册在本条之后
+@router.post("/mcps/{mcp_id}:refresh-tools")
+async def admin_refresh_mcp_tools(mcp_id: str, admin: Admin):
+    """按当前地址重新发现该 MCP 的工具：老工具清除、新工具入库待标注（改 URL 时发现失败后的补救入口）。"""
+    return ok(await asset_admin_service.refresh_mcp_tools(admin, mcp_id))
+
+
 @router.delete("/mcps/{mcp_id}")
 async def admin_delete_mcp(mcp_id: str, admin: Admin):
     """删除平台级 MCP：回删注册表 → 本地软删 → 模板草稿引用级联清理。"""

@@ -557,7 +557,7 @@ export const adminTables: Record<string, AdminTableData> = {
   mcps: {
     title: "MCP 服务",
     primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-    cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
+    cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "刷新", width: "72px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
     rows: [
       // endpoint 用真实长度的 URL（管理面不脱敏）：mock 也得能暴露"列太窄/被截断"这类问题
       { id: "mcp_omodel_query", cells: [
@@ -565,6 +565,7 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "https://mcpgateway.internal.example.com/servers/omodel-mcp-server/mcp", mono: true, wrap: true },
         { text: "streamable_http", mono: true }, { text: "—" },
         { text: "active", kind: "badge", tone: "good" },
+        { text: "刷新工具", kind: "action", onClickKey: "mcp-refresh-tools" },
         { text: "编辑", kind: "action", onClickKey: "mcp-edit" },
         { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
       // 上游已改名的一行：本地名（绑定用）刻意不跟随，上游现名标 warning + 有待标注工具
@@ -575,6 +576,7 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "streamable_http", mono: true },
         { text: "2 个", kind: "action", onClickKey: "mcp-annotate" },
         { text: "active", kind: "badge", tone: "good" },
+        { text: "刷新工具", kind: "action", onClickKey: "mcp-refresh-tools" },
         { text: "编辑", kind: "action", onClickKey: "mcp-edit" },
         { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
     ],
