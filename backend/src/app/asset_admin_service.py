@@ -315,7 +315,10 @@ async def list_mcps(admin: dict[str, Any], *, page: int = 1, page_size: int = 20
             d["description"] = manifest.get("description")
             d["category"] = manifest.get("category")
             d["server_id"] = manifest.get("server_id")  # 上游唯一标识（删除/重注册按它对齐）
-            d["transport"] = manifest.get("transport") or d.get("transport")  # 上游词汇优先于本地 'http' 列
+            # 只取 manifest（上游词汇）。**不回退本地 transport 列**——那一列恒为运行时词汇 'http'，
+            # 永远不是合法的上游 transport；漏出去会经编辑弹窗预填原样回传，撞 schema pattern 422
+            # （内网实锤 2026-08-18）。未知就是未知，「传输」列显示「—」。
+            d["transport"] = manifest.get("transport")
             d["synced_from"] = manifest.get("synced_from")  # 让管理员看得出哪条是 seed（无值）哪条来自上游
             # 上游现名：本地 display_name 是复合键左半、刻意不跟随上游改名（否则断掉全部模板绑定），
             # 所以改名这件事必须在管理台显性化，否则管理员只会看到"名字没更新"而无从判断。
