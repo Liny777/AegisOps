@@ -8,7 +8,8 @@ from fastapi.responses import StreamingResponse
 from api.deps import User
 from api.responses import ok
 from app import agui_service, event_stream_service, run_state_service
-from domain.schemas import CreateRunRequest, RenameRunRequest, SelectModelRequest, StartTaskRequest
+from domain.schemas import (CheckpointDecisionRequest, CreateRunRequest, RenameRunRequest,
+                            SelectModelRequest, StartTaskRequest)
 from runtime import events
 
 router = APIRouter(prefix="/api/openops/v1", tags=["runs"])
@@ -78,6 +79,12 @@ async def close_run(run_id: str, user: User):
 @router.post("/agent-runs/{run_id}:select-model")
 async def select_model(run_id: str, req: SelectModelRequest, user: User):
     return ok(await run_state_service.select_model(user, run_id, req))
+
+
+@router.post("/agent-runs/{run_id}/diagnosis-checkpoint:decide")
+async def decide_diagnosis_checkpoint(run_id: str, req: CheckpointDecisionRequest, user: User):
+    """假设 checkpoint 决策（继续排查 / 补充假设 / hold 冻结倒计时）；重复决策幂等返回 closed。"""
+    return ok(await run_state_service.decide_diagnosis_checkpoint(user, run_id, req))
 
 
 @router.post("/agent-runs/{run_id}/ag-ui")

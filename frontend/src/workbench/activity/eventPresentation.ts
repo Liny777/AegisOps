@@ -25,6 +25,10 @@ export function eventTitle(event: ActivityEvent): string {
     [/approval\.required/, "等待人工审批"],
     [/approval\.(approved|resolved)/, "审批已通过"],
     [/approval\.rejected/, "审批被拒绝"],
+    // 假设 checkpoint（诊断 step=3 后弹卡）：不登记会回退成 action/原始串
+    [/diagnosis\.checkpoint\.opened/, "等待补充假设"],
+    [/diagnosis\.checkpoint\.extended/, "假设输入中"],
+    [/diagnosis\.checkpoint\.closed/, "假设确认完成"],
     // 两条装配缺口信号放在 tool.*/skill.* 之前：否则匹配不到会回退成 action，
     // 技术轨里显示为 mcp_not_whitelisted / skill_not_assembled 这类原始串
     [/tool\.skipped/, "工具未装配"],
@@ -49,6 +53,7 @@ export function eventIcon(event: ActivityEvent): string {
   if (type.includes("failed")) return "alert-triangle";
   if (type.includes("timeout")) return "clock-exclamation";
   if (type.includes("cancelled")) return "ban";
+  if (type.includes("checkpoint")) return "bulb";
   if (type.includes("approval")) return "hourglass";
   if (type.includes("reported")) return "message-check";
   if (type.includes("dispatched")) return "send";

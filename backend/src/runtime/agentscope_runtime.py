@@ -28,7 +28,7 @@ from domain import tool_key
 from infra.chart_contract import ChartContractError, chart_result_summary, normalize_chart_arguments
 from infra.rca_contract import RcaBoardContractError
 import studio  # Agent Studio 垂直切片：只经 facade（src/studio/__init__.py），不碰其内部结构
-from runtime import events, tool_gateway
+from runtime import diagnosis_checkpoint, events, tool_gateway
 from infra.repositories import agent_session_states, runs
 from runtime.emit import emit
 from runtime.rca_board import apply_board_update, board_owner, reopen_with_conclusion
@@ -752,6 +752,9 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
           不要把假设（3）、验证（4）的产出并进一次 step=5 收尾。
         - 若你是被派发的子任务：只提交本轮取得的内容（facts/sources/hypotheses），步骤推进、
           step_completed 与 conclusion 由主任务负责，你提交也不会生效。
+        - 提交 step=3（假设）后平台可能弹卡请用户确认，本工具的返回值会包含用户决策：
+          若返回值提示「用户补充了一条候选假设」，必须把它并入候选、重排置信度并重新提交
+          step=3（不会再次弹卡），再进入验证；返回值提示继续排查时直接进入验证。
         - 内容必须来自本轮真实取得的数据，不得虚构。
 
         Args:
@@ -783,6 +786,12 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
                 type="text",
                 text=f"诊断面板参数未通过校验：{exc}。请按工具说明修正后重新调用，且不要提交 HTML 或未列出的字段。",
             )])
+        # 假设 checkpoint：主任务首次提交 step>=3 后弹卡暂停，等用户补充假设/继续排查（超时自动继续）。
+        # 决策文本拼进本工具返回值——模型下一轮必然读到，比新事件让它「自己发现」确定得多。
+        suffix = await diagnosis_checkpoint.maybe_pause_for_user(
+            st, run, step=step, step_completed=step_completed)
+        if suffix:
+            text += suffix
         return ToolResponse(content=[TextBlock(type="text", text=text)])
 
     async def render_chart(
