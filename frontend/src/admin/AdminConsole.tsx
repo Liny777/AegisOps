@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api, alertEventMeta } from "../lib/api";
 import type { AdminModelAssetOption, AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
 import { useConnTest, ConnTestResult, HeadersEditor, headersToRecord, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
-import { PlatformAssetDialog } from "./PlatformAssetDialog";
+import { PlatformAssetDialog, type McpEditing } from "./PlatformAssetDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
 import { ModelTemplateDialog } from "./ModelTemplateDialog";
 import { STUDIO_ADMIN_PAGE } from "../studio/entry";
 import { groupCatalog, normalizeSelection } from "./toolBinding";
+
+type AnnotationInbox = Awaited<ReturnType<typeof api.adminAnnotationInbox>>;
 
 /** 管理台表格每页条数（服务端分页；后端上限 100，对齐 29.3 §2.2）。 */
 const ADMIN_PAGE_SIZE = 20;
@@ -33,6 +35,8 @@ const TITLES: Record<string, string> = {
 /** 管理台（30.6 2026-07-09 IA）：5 一级页；模板管理内 drill（资产治理 → Tool 标注，标注全局一份）。 */
 export function AdminConsole() {
   const { page = "templates" } = useParams();
+  const loc = useLocation();  // 见下方 drill 重置 effect：同路径重复导航也要退出钻取
+  const nav = useNavigate();
   const [table, setTable] = useState<AdminTableData | null>(null);
   const [tablePage, setTablePage] = useState(1);  // 服务端分页（目前 Skill 基线消费；其余表后端不返 total → 不渲染分页器）
   const [audit, setAudit] = useState<AuditNode[]>([]);
@@ -52,6 +56,14 @@ export function AdminConsole() {
   const [wlAddOpen, setWlAddOpen] = useState(false);
   // 平台级资产写闭环（29.9）：上传 Skill / 注册 MCP 弹窗 + 成功提示（同名收敛条数要显式告知）
   const [assetDialog, setAssetDialog] = useState<"skill" | "mcp" | null>(null);
+  const [mcpEdit, setMcpEdit] = useState<McpEditing | null>(null);  // 编辑平台 MCP 弹窗（预填自管理面列表）
+  const [syncing, setSyncing] = useState(false);   // MCP 服务页「同步」按钮的 busy 态
+  // 右上角「待标注」邮箱：派生状态现算（标完自动消失、无已读概念），全管理页可见
+  const [inbox, setInbox] = useState<AnnotationInbox>({ total: 0, items: [] });
+  const [inboxOpen, setInboxOpen] = useState(false);
+  const refreshInbox = useCallback(() => {
+    api.adminAnnotationInbox().then(setInbox).catch(() => setInbox({ total: 0, items: [] }));
+  }, []);
   const [actionOk, setActionOk] = useState("");
   const [actionErr, setActionErr] = useState("");
   const [traceFilter, setTraceFilter] = useState("");
@@ -67,6 +79,14 @@ export function AdminConsole() {
   const isTable = ["templates", "model-assets", "model-templates", "skills", "mcps", "users", "alerts"].includes(page);
 
   const load = useCallback(async () => {
+    // Tool 标注是**全局**配置，与模板无关：MCP 服务页的「待标注」也直接钻到这里，
+    // 不必再走 模板管理 → 选个模板 → 资产治理 → 点 MCP 的三级 drill。
+    if (mcpDrill && page === "mcps") {
+      const d = await api.getAdminMcpTools(mcpDrill);
+      setToolsRaw(d.raw);
+      setTable(d);
+      return;
+    }
     if (page === "templates") {
       if (mcpDrill) {
         const d = await api.getAdminMcpTools(mcpDrill);
@@ -115,13 +135,22 @@ export function AdminConsole() {
     api.adminListUserTags().then(setUserTags).catch(() => setUserTags([]));
   }, [page]);
 
-  useEffect(() => { setTplDrill(null); setMcpDrill(null); setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ(""); }, [page]);
+  // 依赖用 loc.key 而非 page：在钻取态点侧边栏**当前页**（如 MCP 服务，与面包屑同名，极易误点）
+  // 时 page 不变、drill 不重置，表现为"点了没反应"。loc.key 每次导航都变，同路径也变。
+  useEffect(() => {
+    // 邮箱直达带钻取意图：nav('/admin/mcps', {state:{drill}})。不能"先 nav 再 setMcpDrill"——
+    // 本 effect 按 loc.key 触发，会把刚设的钻取又清掉；意图放导航 state 里让 effect 自己消费。
+    const drill = (loc.state as { drill?: string } | null)?.drill ?? null;
+    setTplDrill(null); setMcpDrill(page === "mcps" ? drill : null);
+    setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ("");
+  }, [page, loc.key, loc.state]);
   useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQ, alertSearchQ]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
   // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
   useEffect(() => {
     setActionErr("");
     setActionOk("");  // 换页/翻页即清成功提示（直接调 load() 的动作路径不触发本 effect，提示得以保留）
+    refreshInbox();   // 邮箱与页面数据同节奏刷新（标注保存/编辑/同步各自的回调里另有显式刷新）
     void load().catch((e) => {
       const err = e as { code?: string; message?: string };
       if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，别闪错误横幅
@@ -216,6 +245,26 @@ export function AdminConsole() {
       setActionErr("");
       void api.adminDeleteModelAsset(rowId).then(() => load()).catch((e) => setActionErr((e as Error).message));
     }
+    else if (key === "mcp-annotate") setMcpDrill(rowName);  // rowName = 服务名称列（= catalog 的 mcp_display_name）
+    else if (key === "mcp-edit") {
+      // 表格 cells 只有文本，编辑要完整配置 → 现拉一次管理面列表取整行（照 ma-edit 先例）
+      setActionErr("");
+      void api.adminListMcpsFull()
+        .then((rows) => {
+          const r = rows.find((m) => String(m.mcp_id) === rowId);
+          if (!r) { setActionErr("该 MCP 已不存在，请刷新后重试"); return; }
+          setMcpEdit({
+            mcpId: rowId, display_name: String(r.display_name ?? rowName),
+            server_url: String(r.endpoint ?? ""),
+            description: r.description ? String(r.description) : "",
+            version: r.version ? String(r.version) : "",
+            category: r.category ? String(r.category) : "",
+            tags: Array.isArray(r.tags) ? r.tags.map(String) : [],
+            transport: r.transport ? String(r.transport) : "streamable_http",
+          });
+        })
+        .catch((e) => setActionErr((e as Error).message));
+    }
     else if (key === "skill-delete") {
       // 平台 Skill 下架：先回删 SkillHub 再本地软删；上游拒绝会整体失败（错误进横幅），本地不会假删
       if (!window.confirm(
@@ -271,7 +320,13 @@ export function AdminConsole() {
   };
 
   // 面包屑（drill 时替换标题）：模板管理 / 模板名 · 资产治理 / MCP名 · Tool 标注
-  const crumbs = page === "templates" && tplDrill
+  // MCP 服务页直达标注时只有两级：MCP 服务 / MCP名 · Tool 标注
+  const crumbs = page === "mcps" && mcpDrill
+    ? [
+        { label: "MCP 服务", onClick: () => setMcpDrill(null) },
+        { label: `${mcpDrill} · Tool 标注`, onClick: undefined },
+      ]
+    : page === "templates" && tplDrill
     ? [
         { label: "模板管理", onClick: () => { setTplDrill(null); setMcpDrill(null); } },
         { label: `${tplDrill.name} · 资产治理`, onClick: mcpDrill ? () => setMcpDrill(null) : undefined },
@@ -295,11 +350,68 @@ export function AdminConsole() {
           <div style={{ fontSize: 15, fontWeight: 700 }}>{TITLES[page] ?? "管理台"}</div>
         )}
         <div style={{ flex: 1 }} />
+        {/* 待标注邮箱（全管理页可见）：派生状态现算，标完自动消失。位置稳定——total=0 也不隐藏。 */}
+        <div style={{ position: "relative" }}>
+          <div onClick={() => setInboxOpen((v) => !v)} title="工具待标注提醒"
+            style={{ position: "relative", width: 34, height: 34, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: radius.md, cursor: "pointer", border: `1px solid ${inbox.total > 0 ? color.brandTintBorder : color.border}`, background: inbox.total > 0 ? color.brandTintBg : "#fff" }}>
+            <Icon name="mail" size={17} color={inbox.total > 0 ? color.brand : color.textFaint} />
+            {inbox.total > 0 ? (
+              <span style={{ position: "absolute", top: -6, right: -6, minWidth: 16, height: 16, padding: "0 4px", borderRadius: 8, background: "#e5484d", color: "#fff", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", lineHeight: 1 }}>
+                {inbox.total > 99 ? "99+" : inbox.total}
+              </span>
+            ) : null}
+          </div>
+          {inboxOpen ? (
+            <>
+              {/* 点外面关闭：透明遮罩层（z 低于面板） */}
+              <div onClick={() => setInboxOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 55 }} />
+              <div style={{ position: "absolute", top: 40, right: 0, zIndex: 56, width: 340, background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.lg, boxShadow: "0 8px 28px rgba(21,25,35,.14)", padding: "10px 0", maxHeight: 380, overflowY: "auto" }}>
+                <div style={{ padding: "2px 14px 8px", fontSize: 12.5, fontWeight: 700, color: color.textStrong, borderBottom: `1px solid ${color.borderFaint}` }}>
+                  工具待标注{inbox.total > 0 ? `（${inbox.total}）` : ""}
+                </div>
+                {inbox.items.length === 0 ? (
+                  <div style={{ padding: "14px", fontSize: 12, color: color.textSubtle }}>没有待标注的工具。</div>
+                ) : inbox.items.map((it) => (
+                  <div key={it.display_name}
+                    onClick={() => { setInboxOpen(false); nav("/admin/mcps", { state: { drill: it.display_name } }); }}
+                    style={{ padding: "9px 14px", cursor: "pointer", borderBottom: `1px solid ${color.borderFaint}` }}
+                    onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "#f4f6f9"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, fontFamily: "ui-monospace, monospace" }}>{it.display_name}</div>
+                    <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 2 }}>
+                      待标注 {it.pending} 个
+                      {it.url_reset > 0 ? ` · URL 变更重置 ${it.url_reset}` : ""}
+                      {it.unannotated > 0 ? ` · 新发现 ${it.unannotated}` : ""}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : null}
+        </div>
         {page === "model-assets" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setRegisterOpen(true)}>{table.primary.label}</Button>
         ) : null}
         {page === "model-templates" && table?.primary ? (
           <Button icon={table.primary.icon} onClick={() => setMtEdit({ id: null })}>{table.primary.label}</Button>
+        ) : null}
+        {/* 立即对账：唯一的手动入口此前埋在**用户**设置页的「同步资产」，管理员根本想不到去那儿点。
+            走 force，绕开 300s 节流（后台循环默认关，见 OPENOPS_RECONCILE_INTERVAL_S）。 */}
+        {page === "mcps" ? (
+          <Button variant="secondary" icon={syncing ? "loader-2" : "refresh"} disabled={syncing}
+            onClick={() => {
+              setSyncing(true); setActionErr(""); setActionOk("");
+              void api.reconcileAssets()
+                .then((s) => {
+                  const n = Number((s as Record<string, unknown>).mcps_updated ?? 0);
+                  const c = Number((s as Record<string, unknown>).mcps_created ?? 0);
+                  setActionOk(`同步完成：新增 ${c} 个、更新 ${n} 个`);
+                  refreshInbox();
+                  return load();
+                })
+                .catch((e) => setActionErr((e as Error).message))
+                .finally(() => setSyncing(false));
+            }}>{syncing ? "同步中…" : "同步"}</Button>
         ) : null}
         {(page === "skills" || page === "mcps") && table?.primary ? (
           <Button icon={table.primary.icon}
@@ -399,7 +511,9 @@ export function AdminConsole() {
                             <Icon name="chevron-right" size={13} color={color.brand} />
                           </span>
                         ) : (
-                          <span style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }}>{cell.text}</span>
+                          /* wrap 单元格（如平台 MCP 的 endpoint）折行展示全量：长 URL 被省略号截掉
+                             管理员就核对不了地址。其余仍是 nowrap+省略号，并挂 title 便于悬停看全。 */
+                          <span title={cell.text} style={{ fontSize: 12.5, color: color.textStrong, fontFamily: cell.mono ? "ui-monospace, monospace" : undefined, display: "block", ...(cell.wrap ? { whiteSpace: "normal", overflowWrap: "anywhere", lineHeight: 1.5 } : { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }) }}>{cell.text}</span>
                         )}
                       </div>
                     ))}
@@ -467,7 +581,7 @@ export function AdminConsole() {
         open={!!annotRow}
         row={annotRow}
         onClose={() => setAnnotRow(null)}
-        onSaved={() => { setAnnotRow(null); void load(); }}
+        onSaved={() => { setAnnotRow(null); void load(); refreshInbox(); }}
       />
       {registerOpen ? <RegisterModelDialog onClose={() => setRegisterOpen(false)} onSaved={() => { setRegisterOpen(false); void load(); }} /> : null}
       {/* 编辑态复用同一弹窗（key 强制按行重挂，换行编辑时表单不残留上一行的值） */}
@@ -479,7 +593,12 @@ export function AdminConsole() {
       {wlAddOpen ? <AddWhitelistDialog onClose={() => setWlAddOpen(false)} onSaved={() => { setWlAddOpen(false); void load(); }} /> : null}
       {assetDialog ? (
         <PlatformAssetDialog kind={assetDialog} onClose={() => setAssetDialog(null)}
-          onSaved={(msg) => { setAssetDialog(null); setActionErr(""); setActionOk(msg); void load(); }} />
+          onSaved={(msg) => { setAssetDialog(null); setActionErr(""); setActionOk(msg); void load(); refreshInbox(); }} />
+      ) : null}
+      {/* 编辑平台 MCP：key 按行重挂，换行编辑不残留上一行的预填值（照 RegisterModelDialog 先例） */}
+      {mcpEdit ? (
+        <PlatformAssetDialog key={mcpEdit.mcpId} kind="mcp" editing={mcpEdit} onClose={() => setMcpEdit(null)}
+          onSaved={(msg) => { setMcpEdit(null); setActionErr(""); setActionOk(msg); void load(); refreshInbox(); }} />
       ) : null}
     </>
   );

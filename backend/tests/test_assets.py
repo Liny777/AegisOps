@@ -1783,3 +1783,467 @@ def test_reconcile_mcp_ingest_dedupes_by_server_id(client, monkeypatch):
     summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
     assert summary["mcps_created"] == 0, "同 server_id 已在本地，不该按新名字再造一行"
     assert not [r for r in _live_platform_mcps() if r[0] == "upstream-new-name"]
+
+
+def test_admin_mcp_list_returns_full_endpoint(client, no_egress):
+    """管理面列表 endpoint **不脱敏**：用户面按 30.5 截成前 12 字符，管理员核对不了自己录的地址。
+    同时不隐藏占位资产（能看见才能删），并透出 server_id / transport 供管理。"""
+    url = "https://mcpgateway.internal.example.com/servers/alarm-server/mcp"
+    res = unwrap(_admin_register_mcp(client, "plat-mcp-full", url=url, category="监控"))
+
+    admin_rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    row = next(m for m in admin_rows if m["mcp_id"] == res["mcp_id"])
+    assert row["endpoint"] == url, "管理面必须给全量 endpoint"
+    assert row["server_id"] == "plat-mcp-full" and row["transport"] == "streamable_http"
+    assert row["category"] == "监控" and row["synced_from"] == "platform_register"
+
+    # 用户面维持脱敏口径不变（本次改动不得放宽 30.5）
+    user_rows = unwrap(client.get("/api/openops/v1/assets/mcps?source_type=platform",
+                                  headers=USER_HEADERS))["items"]
+    urow = next(m for m in user_rows if m["mcp_id"] == res["mcp_id"])
+    assert urow["endpoint_config_redacted"]["endpoint"] == url[:12] + "…"
+    assert "endpoint" not in urow  # 全量字段不得漏给用户面
+
+
+def test_admin_mcp_list_requires_admin(client):
+    assert client.get("/api/openops/v1/admin/mcps", headers=USER_HEADERS).status_code == 403
+
+
+# ============ 上游 MCP 改名/改 URL：本地更新路径 + 复合键稳定（Agent 工具不中断） ============
+
+
+def _seed_platform_mcp(display_name: str, server_id: str, endpoint: str,
+                       synced_from: str | None = "mcp_registry") -> tuple[str, str]:
+    """直塞一条平台 MCP 行（含版本行），模拟 reconcile 早前落的资产。返回 (mcp_id, mcp_version_id)。"""
+    import json as _json
+    import uuid as _uuid
+
+    mid, vid = str(_uuid.uuid4()), str(_uuid.uuid4())
+    manifest = {"server_id": server_id}
+    if synced_from:
+        manifest["synced_from"] = synced_from
+    with psycopg.connect(os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute("insert into sre_mcp_asset (mcp_id, source, source_type, owner_user_id, display_name,"
+                     " transport, endpoint_config_json, status, created_by, last_updated_by) values"
+                     " (%(m)s,'openops','platform',null,%(d)s,'http',%(e)s,'active','system','system')",
+                     {"m": mid, "d": display_name, "e": _json.dumps({"endpoint": endpoint})})
+        conn.execute("insert into sre_mcp_asset_version (mcp_version_id, mcp_id, version_no, manifest_json,"
+                     " status, created_by, last_updated_by) values"
+                     " (%(v)s,%(m)s,1,%(j)s,'active','system','system')",
+                     {"v": vid, "m": mid, "j": _json.dumps(manifest)})
+    return mid, vid
+
+
+def _mcp_row(mcp_id: str) -> tuple:
+    return _sql("select m.display_name, m.endpoint_config_json->>'endpoint', v.mcp_version_id::text,"
+                " v.manifest_json->>'upstream_server_name'"
+                " from sre_mcp_asset m join sre_mcp_asset_version v on v.mcp_id=m.mcp_id"
+                " where m.mcp_id=%(m)s and m.deleted_at is null", {"m": mcp_id})[0]
+
+
+def test_reconcile_updates_renamed_server_and_keeps_binding_key(client, monkeypatch):
+    """**头号用例**：上游改了 server_name + server_url（server_id 不变）→
+    ① 本地 endpoint 更新到新 URL；② display_name **保持不变**（复合键左半，跟着改会断掉全部模板绑定）；
+    ③ mcp_version_id 不变（tool catalog 与标注不失联）；④ manifest 记下上游现名供管理台展示；
+    ⑤ 运行时 _dynamic_mcp_specs 给出的 server_name 仍是**本地名** → 模板里存的旧键继续命中。"""
+    mid, vid = _seed_platform_mcp("alarm-server", "srv-1", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-1", "server_name": "alarm-server-v2",
+                 "server_url": "https://new.internal/mcp", "description": "改名并搬迁"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    assert summary["mcps_created"] == 0 and summary["mcps_updated"] == 1
+    renamed = summary.get("mcps_renamed_upstream") or []
+    assert renamed and renamed[0]["local"] == "alarm-server" and renamed[0]["upstream"] == "alarm-server-v2"
+
+    name, endpoint, version_id, upstream_name = _mcp_row(mid)
+    assert endpoint == "https://new.internal/mcp", "endpoint 必须更新，否则目录同步一直打旧地址"
+    assert name == "alarm-server", "display_name 是复合键左半，不得跟随上游改名"
+    assert version_id == vid, "mcp_version_id 变了会让 tool catalog 与标注全部失联"
+    assert upstream_name == "alarm-server-v2"
+
+    # 运行时复合键：必须仍按本地名算，否则模板里的 "alarm-server::xxx" 全部失配
+    import asyncio as _asyncio
+
+    from runtime import agentscope_runtime
+
+    async def fake_discover(url, headers=None):
+        assert url == "https://new.internal/mcp", "发现应打新 URL"
+        return [{"tool_name": "query_alarm", "description": "", "input_schema": {}, "readonly": True}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    specs = _asyncio.run(agentscope_runtime._dynamic_mcp_specs("0026demo01"))
+    assert [s["server_name"] for s in specs] == ["alarm-server"], \
+        "复合键左半必须是本地稳定名，不能是上游现名"
+
+
+def test_reconcile_updates_endpoint_then_catalog_uses_new_url(client, monkeypatch):
+    """endpoint 更新后，同一轮的工具目录同步必须打**新** URL（旧 URL 会 raise → tool_sync_errors）。"""
+    mid, _ = _seed_platform_mcp("cat-server", "srv-2", "https://old.internal/mcp")
+    seen: list[str] = []
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-2", "server_name": "cat-server",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        seen.append(url)
+        if "old" in url:
+            raise RuntimeError("服务已搬走")
+        return [{"tool_name": "t1", "description": "", "input_schema": {}, "readonly": True,
+                 "schema_hash": "h1"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    assert "https://new.internal/mcp" in seen and "https://old.internal/mcp" not in seen
+    assert not summary.get("tool_sync_errors"), summary.get("tool_sync_errors")
+    assert _mcp_row(mid)[1] == "https://new.internal/mcp"
+
+
+def test_reconcile_rename_does_not_create_duplicate_row(client, monkeypatch):
+    """改名后平台行数仍为 1 —— 同时锁死两种错误形态：
+    「按名判重」时代会多造一条新名行（重复行），「加 server_id 判重」后会整条跳过（陈旧行）。"""
+    _seed_platform_mcp("dup-server", "srv-3", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-3", "server_name": "dup-server-renamed",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    rows = [r for r in _live_platform_mcps() if r[0] in ("dup-server", "dup-server-renamed")]
+    assert len(rows) == 1 and rows[0][0] == "dup-server"
+
+
+def test_reconcile_name_collision_different_server_id_not_updated(client, monkeypatch):
+    """名字撞上但 server_id 不同 = 两个不同 server 重名 → **不更新**（改错行会把别人的 endpoint
+    指到这家），记 summary 让异味暴露。"""
+    mid, _ = _seed_platform_mcp("shared-name", "srv-A", "https://a.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-B", "server_name": "shared-name",
+                 "server_url": "https://b.internal/mcp", "description": ""}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["mcps_updated"] == 0 and summary["mcps_created"] == 0
+    assert summary.get("mcps_name_collision")
+    assert _mcp_row(mid)[1] == "https://a.internal/mcp", "别人的行不得被改"
+
+
+def test_reconcile_creates_row_when_server_id_unknown(client, monkeypatch):
+    """全新 server（本地无对应 server_id / 名字）→ 照旧建行，manifest 记 upstream_server_name。"""
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-new", "server_name": "brand-new-server",
+                 "server_url": "https://new.internal/mcp", "description": "d"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    summary = unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+    assert summary["mcps_created"] == 1
+    row = _sql("select v.manifest_json->>'upstream_server_name' from sre_mcp_asset m"
+               " join sre_mcp_asset_version v on v.mcp_id=m.mcp_id"
+               " where m.display_name='brand-new-server' and m.deleted_at is null", {})
+    assert row and row[0][0] == "brand-new-server"
+
+
+def test_dynamic_specs_falls_back_to_upstream_name_without_local_row(client, monkeypatch):
+    """本地还没有该 server 的行（新 server、对账尚未跑）→ 复合键回退上游名，行为同改动前。"""
+    import asyncio as _asyncio
+
+    from runtime import agentscope_runtime
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-unknown", "server_name": "not-ingested-yet",
+                 "server_url": "https://x.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": "t", "description": "", "input_schema": {}, "readonly": True}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    specs = _asyncio.run(agentscope_runtime._dynamic_mcp_specs("0026demo01"))
+    assert [s["server_name"] for s in specs] == ["not-ingested-yet"]
+
+
+def test_admin_mcp_list_exposes_upstream_name_and_pending_annotations(client, no_egress, monkeypatch):
+    """管理面列表要给出「上游现名」与「待标注数」——本地名刻意不跟随上游改名，不显性化的话
+    管理员只会看到"名字没更新"而无从判断；未标注工具在 Tool Gateway 是 fail-closed 的，得能一眼看到。"""
+    _seed_platform_mcp("alarm-server", "srv-x", "https://old.internal/mcp")
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-x", "server_name": "alarm-server-v2",
+                 "server_url": "https://new.internal/mcp", "description": ""}]
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": "query_alarm", "description": "", "input_schema": {},
+                 "readonly": True, "schema_hash": "h1"}]
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    row = next(m for m in rows if m["display_name"] == "alarm-server")
+    assert row["upstream_server_name"] == "alarm-server-v2"   # 改名显性化
+    assert row["endpoint"] == "https://new.internal/mcp"
+    assert row["tools_unannotated"] == 1                      # 刚同步进来的工具尚未标注
+
+
+# ============ 管理台编辑 MCP（29.9 §3.4）：URL 变更 → 工具刷新 + 全量重置全量拦 ============
+
+from app.asset_admin_service import URL_RESET_REASON  # noqa: E402
+
+
+def _admin_update_mcp(client, mcp_id: str, url: str, **kw):
+    body = {"client_request_id": f"upd_{time.time_ns()}", "server_url": url,
+            "description": "已编辑", "version": "1.1.0", "category": "监控",
+            "transport": "streamable_http", **kw}
+    return client.put(f"/api/openops/v1/admin/mcps/{mcp_id}", headers=ADMIN_HEADERS, json=body)
+
+
+async def _seed_catalog(mcp_id: str, tools: dict[str, dict]) -> str:
+    """给该 MCP 的最新版本直灌 catalog 行；返回 mcp_version_id。tools: name -> input_schema。"""
+    from infra.repositories import assets as _assets
+    from infra.repositories import mcp_tools as _mt
+
+    latest = await _assets.latest_mcp_version(mcp_id)
+    vid = str(latest["mcp_version_id"])
+    for name, schema in tools.items():
+        await _mt.sync_catalog_tool(vid, name, f"{name} desc", schema,
+                                    mcp_registry_client._schema_hash(schema))
+    return vid
+
+
+def _run(coro):
+    import asyncio as _a
+    return _a.run(coro)
+
+
+def _catalog_state(vid: str) -> dict[str, tuple]:
+    """{tool_name: (catalog_deleted, annotation_status, blocked_reason)}（含软删行，全景断言用）。"""
+    rows = _sql(
+        "select c.tool_name, c.deleted_at is not null, a.status, a.blocked_reason, a.deleted_at is not null"
+        " from sre_mcp_tool_catalog c left join sre_mcp_tool_annotation a on a.tool_catalog_id=c.tool_catalog_id"
+        " where c.mcp_version_id=%(v)s", {"v": vid})
+    return {r[0]: (r[1], r[2], r[3], r[4]) for r in rows}
+
+
+def test_admin_mcp_update_url_resets_and_blocks_all_tools(client, no_egress, monkeypatch):
+    """**头号用例**：改 URL → ① endpoint/manifest 更新、mcp_version_id 不变；② 消失的工具
+    catalog+标注软删；③ 存量未变的工具（原 allowed）也被写成 blocked（全量拦，拍板口径）、
+    新工具同样 blocked；④ summary 数字对；⑤ 运行时热读（get_runtime_annotation）看到的就是 blocked。"""
+    res = unwrap(_admin_register_mcp(client, "edit-mcp-a", url="https://old.internal/mcp"))
+    schema_keep = {"type": "object", "properties": {"appid": {"type": "string"}}}
+    schema_gone = {"type": "object", "properties": {"x": {"type": "string"}}}
+    vid = _run(_seed_catalog(res["mcp_id"], {"keep_tool": schema_keep, "gone_tool": schema_gone}))
+    # keep_tool 先标成 allowed——全量拦必须连它一起重置，这正是「schema 没变也不免审」的拍板
+    from infra.repositories import mcp_tools as _mt
+
+    cat = {r[0]: r[1] for r in _sql(
+        "select tool_name, tool_catalog_id::text from sre_mcp_tool_catalog where mcp_version_id=%(v)s", {"v": vid})}
+    _run(_mt.save_annotation(cat["keep_tool"], False, False, "none", None, "allowed", None, "admin"))
+    _run(_mt.save_annotation(cat["gone_tool"], False, False, "none", None, "allowed", None, "admin"))
+
+    async def fake_discover(url, headers=None):
+        assert url == "https://new.internal/mcp", "发现必须打新地址"
+        return [{"tool_name": "keep_tool", "description": "", "input_schema": schema_keep,
+                 "schema_hash": mcp_registry_client._schema_hash(schema_keep)},
+                {"tool_name": "new_tool", "description": "", "input_schema": schema_keep,
+                 "schema_hash": mcp_registry_client._schema_hash(schema_keep)}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+
+    assert out["url_changed"] is True and out["upstream"] == "updated"
+    t = out["tools"]
+    assert t["created"] == 1 and t["unchanged"] == 1 and t["removed"] == ["gone_tool"] and t["blocked"] == 2
+
+    # 本地行：endpoint 已切、version_id 未变（标注不失联的前提）
+    ep = _sql("select endpoint_config_json->>'endpoint' from sre_mcp_asset where mcp_id=%(m)s",
+              {"m": res["mcp_id"]})[0][0]
+    assert ep == "https://new.internal/mcp"
+    assert _sql("select count(*) from sre_mcp_asset_version where mcp_id=%(m)s and deleted_at is null",
+                {"m": res["mcp_id"]})[0][0] == 1
+
+    state = _catalog_state(vid)
+    assert state["gone_tool"][0] is True and state["gone_tool"][3] is True  # 消失：目录+标注双软删
+    assert state["keep_tool"] == (False, "blocked", URL_RESET_REASON, False)  # 原 allowed 也被拦
+    assert state["new_tool"] == (False, "blocked", URL_RESET_REASON, False)   # 新工具同样拦
+
+    # 运行时口径：Gateway 热读用的就是这条 repo 查询 → blocked 立即生效（含进行中任务）
+    row = _run(_mt.get_runtime_annotation("keep_tool", server="edit-mcp-a"))
+    assert row["annotation_status"] == "blocked" and row["blocked_reason"] == URL_RESET_REASON
+
+    # 重标（save_annotation 复活/覆写）→ 热读立即放行——重标完成即恢复，模板绑定无需重勾
+    _run(_mt.save_annotation(cat["keep_tool"], False, False, "none", None, "allowed", None, "admin"))
+    row2 = _run(_mt.get_runtime_annotation("keep_tool", server="edit-mcp-a"))
+    assert row2["annotation_status"] == "allowed"
+
+
+def test_admin_mcp_update_metadata_only_no_tool_churn(client, no_egress, monkeypatch):
+    """只改描述/分类不改 URL → 零工具联动：标注原样、无 blocked、无移除。"""
+    res = unwrap(_admin_register_mcp(client, "edit-mcp-b", url="https://same.internal/mcp"))
+    schema = {"type": "object"}
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": schema}))
+    from infra.repositories import mcp_tools as _mt
+
+    tcid = _sql("select tool_catalog_id::text from sre_mcp_tool_catalog where mcp_version_id=%(v)s",
+                {"v": vid})[0][0]
+    _run(_mt.save_annotation(tcid, False, False, "none", None, "allowed", None, "admin"))
+
+    async def never_discover(url, headers=None):
+        raise AssertionError("URL 未变不该重新发现")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", never_discover)
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://same.internal/mcp",
+                                   description="新描述", category="新分类"))
+    assert out["url_changed"] is False and out["tools"] == {}
+    assert _catalog_state(vid)["t1"] == (False, "allowed", None, False)
+    man = _sql("select manifest_json->>'description', manifest_json->>'category'"
+               " from sre_mcp_asset_version where mcp_id=%(m)s", {"m": res["mcp_id"]})[0]
+    assert man == ("新描述", "新分类")
+
+
+def test_admin_mcp_update_discovery_failure_blocks_but_keeps_catalog(client, no_egress, monkeypatch):
+    """新地址发现失败 → **不清扫**（防瞬时故障误清全部）但**仍全量拦停**（URL 已变是正向证据），
+    响应带 refresh_error。"""
+    res = unwrap(_admin_register_mcp(client, "edit-mcp-c", url="https://old.internal/mcp"))
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": {"type": "object"}}))
+
+    async def boom(url, headers=None):
+        raise RuntimeError("新地址握手失败")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", boom)
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+    t = out["tools"]
+    assert "refresh_error" in t and t["blocked"] == 1 and t["removed"] == []
+    assert _catalog_state(vid)["t1"][:3] == (False, "blocked", URL_RESET_REASON)  # 没清扫但拦了
+
+
+def test_admin_mcp_update_upstream_ladder(client, no_egress, monkeypatch):
+    """上游梯子：1002（上游已无此 server）拒绝且不改本地；network 不改本地；http 404 降级只改本地。"""
+    res = unwrap(_admin_register_mcp(client, "edit-mcp-d", url="https://old.internal/mcp"))
+
+    async def gone(server_id, **kw):
+        raise mcp_registry_client.McpRegistryError("biz", "不存在", biz_code=1002)
+
+    monkeypatch.setattr(mcp_registry_client, "update_server_config", gone)
+    r = _admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp")
+    assert r.status_code == 404
+    ep = _sql("select endpoint_config_json->>'endpoint' from sre_mcp_asset where mcp_id=%(m)s",
+              {"m": res["mcp_id"]})[0][0]
+    assert ep == "https://old.internal/mcp", "上游拒绝时本地不得改"
+
+    async def down(server_id, **kw):
+        raise mcp_registry_client.McpRegistryError("network", "不可达")
+
+    monkeypatch.setattr(mcp_registry_client, "update_server_config", down)
+    r = _admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp")
+    assert r.status_code == 502 and r.json()["error"]["retryable"] is True
+
+    async def not_deployed(server_id, **kw):
+        raise mcp_registry_client.McpRegistryError("http", "Not Found", status_code=404)
+
+    async def ok_discover(url, headers=None):
+        return []
+
+    monkeypatch.setattr(mcp_registry_client, "update_server_config", not_deployed)
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", ok_discover)
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+    assert out["upstream"] == "endpoint_missing"  # §3.4 未上线：降级只改本地
+    ep = _sql("select endpoint_config_json->>'endpoint' from sre_mcp_asset where mcp_id=%(m)s",
+              {"m": res["mcp_id"]})[0][0]
+    assert ep == "https://new.internal/mcp"
+
+
+def test_admin_mcp_update_rejects_user_scope_row(client, no_egress):
+    """非平台行 403：管理台端点只编辑平台级。"""
+    m = _register_mcp(client, "用户自己的 MCP")  # source_type=user
+    r = _admin_update_mcp(client, m["mcp_id"], "https://x.internal/mcp")
+    assert r.status_code == 403
+
+
+def test_admin_mcp_update_ssrf_blocked(client):
+    """SSRF：编辑改成云 metadata 地址即拦（**不带** no_egress——那个 fixture 会把 egress 检查禁掉；
+    平台行用直灌 SQL 造，绕开注册路径自身的 egress）。"""
+    mid, _vid = _seed_platform_mcp("ssrf-edit-mcp", "srv-ssrf", "https://ok.internal/mcp")
+    r = _admin_update_mcp(client, mid, "http://169.254.169.254/latest/meta-data/")
+    assert r.status_code == 400
+
+
+def test_admin_annotation_inbox_groups_and_counts(client, no_egress, monkeypatch):
+    """邮箱口径：URL 变更重置与新发现分开数；重标一个减一；全标完 server 从 items 消失；普通用户 403。"""
+    res = unwrap(_admin_register_mcp(client, "inbox-mcp", url="https://old.internal/mcp"))
+    schema = {"type": "object"}
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": schema, "t2": schema}))
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": n, "description": "", "input_schema": schema,
+                 "schema_hash": mcp_registry_client._schema_hash(schema)} for n in ("t1", "t2")]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+
+    inbox = unwrap(client.get("/api/openops/v1/admin/annotation-inbox", headers=ADMIN_HEADERS))
+    it = next(i for i in inbox["items"] if i["display_name"] == "inbox-mcp")
+    assert it["url_reset"] == 2 and it["pending"] == 2 and it["mcp_id"] == res["mcp_id"]
+    assert inbox["total"] >= 2
+
+    # 重标一个 → 减一；全标完 → server 从 items 消失
+    from infra.repositories import mcp_tools as _mt
+
+    cat = {r[0]: r[1] for r in _sql(
+        "select tool_name, tool_catalog_id::text from sre_mcp_tool_catalog"
+        " where mcp_version_id=%(v)s and deleted_at is null", {"v": vid})}
+    _run(_mt.save_annotation(cat["t1"], False, False, "none", None, "allowed", None, "admin"))
+    inbox = unwrap(client.get("/api/openops/v1/admin/annotation-inbox", headers=ADMIN_HEADERS))
+    assert next(i for i in inbox["items"] if i["display_name"] == "inbox-mcp")["pending"] == 1
+
+    _run(_mt.save_annotation(cat["t2"], False, False, "none", None, "allowed", None, "admin"))
+    inbox = unwrap(client.get("/api/openops/v1/admin/annotation-inbox", headers=ADMIN_HEADERS))
+    assert not [i for i in inbox["items"] if i["display_name"] == "inbox-mcp"]
+
+    assert client.get("/api/openops/v1/admin/annotation-inbox", headers=USER_HEADERS).status_code == 403
+
+
+def test_admin_mcp_list_counts_url_reset_as_pending(client, no_egress, monkeypatch):
+    """列表「待标注」列的口径与邮箱一致：blocked(URL_RESET_REASON) 行也计入。"""
+    res = unwrap(_admin_register_mcp(client, "pend-mcp", url="https://old.internal/mcp"))
+    _run(_seed_catalog(res["mcp_id"], {"t1": {"type": "object"}}))
+
+    async def fake_discover(url, headers=None):
+        return [{"tool_name": "t1", "description": "", "input_schema": {"type": "object"},
+                 "schema_hash": mcp_registry_client._schema_hash({"type": "object"})}]
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", fake_discover)
+    unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+    rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    assert next(m for m in rows if m["mcp_id"] == res["mcp_id"])["tools_unannotated"] == 1
+
+
+def test_catalog_tool_reappears_after_removal_revives_not_500(client, no_egress, monkeypatch):
+    """消失→软删→同名工具重新出现：sync 复活原行（撞绝对唯一索引的防呆），标注仍待重标。"""
+    res = unwrap(_admin_register_mcp(client, "revive-mcp", url="https://a.internal/mcp"))
+    schema = {"type": "object"}
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": schema}))
+    from infra.repositories import mcp_tools as _mt
+
+    tcid = _sql("select tool_catalog_id::text from sre_mcp_tool_catalog where mcp_version_id=%(v)s",
+                {"v": vid})[0][0]
+    _run(_mt.save_annotation(tcid, False, False, "none", None, "allowed", None, "admin"))
+    removed = _run(_mt.remove_absent_catalog_tools(vid, set()))
+    assert removed == ["t1"]
+    assert _catalog_state(vid)["t1"][0] is True and _catalog_state(vid)["t1"][3] is True  # 双软删
+    res2 = _run(_mt.sync_catalog_tool(vid, "t1", "back", schema, mcp_registry_client._schema_hash(schema)))
+    assert res2 == "created"  # 复活按新出现计
+    st = _catalog_state(vid)
+    assert st["t1"][0] is False and st["t1"][3] is True  # 目录活、标注仍软删（待重标）

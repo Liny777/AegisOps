@@ -103,6 +103,16 @@ def console_api_prefix() -> str:
     return ("/" + p.strip("/")) if p.strip("/") else ""
 
 
+def console_service_user_id() -> str:
+    """机机态兜底身份（29.9 §1.3 三级鉴权）：无 Cookie 且无 `user_id` 入参 → 对端直接 401。
+
+    后台对账（background_loop / 无请求上下文的路径）两样都没有，整段 ingest 会静默失败在
+    `mcp_ingest_error` 里。配 `OPENOPS_CONSOLE_SERVICE_USER_ID`（服务账号工号）后，
+    调用方未显式传 user_id 时用它兜底。注意：**该工号的可见范围决定我们能同步到哪些资产**。
+    用户态请求仍优先走 cookie 透传（console_cookie ①），本值只是兜底。"""
+    return os.getenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "").strip()
+
+
 def console_cookie(specific_env: str) -> str:
     """console 系 IAM 会话 cookie 统一读取（2026-07-14 终版口径）：
 
@@ -347,8 +357,11 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
             page, page_size = 1, 50
             while True:
                 body_req: dict[str, Any] = {"page": page, "page_size": page_size, "source": "openops"}
-                if user_id:
-                    body_req["user_id"] = user_id  # 每页都带（翻页循环内）；键名 user_id（2026-08-17 对端定案，userId 已废）
+                # 键名 user_id（2026-08-17 对端定案，userId 已废）；每页都带（翻页循环内）。
+                # 调用方没给就用服务账号兜底——后台对账无 cookie 无 user_id 会被判 401（§1.3）。
+                _uid = user_id or console_service_user_id()
+                if _uid:
+                    body_req["user_id"] = _uid
                 r = await cli.post(url, json=body_req)
                 raise_with_body(r)
                 body = r.json()
@@ -432,6 +445,35 @@ async def delete_server(server_id: str) -> dict[str, Any]:
         raise_biz_or_http(r, McpRegistryError)
         return unwrap_console_data(r.json(), McpRegistryError)
     return {"server_id": server_id, "deleted_by": "mock", "deleted_at": "2026-01-01 00:00:00"}
+
+
+async def update_server_config(server_id: str, *, server_url: str | None = None,
+                               description: str | None = None, version: str | None = None,
+                               category: str | None = None, tags: list[str] | None = None,
+                               transport: str | None = None) -> dict[str, Any]:
+    """修改 MCP Server 配置（29.9 §3.4 `POST /mcps/config/update`，PATCH 语义）→ data{server_id, …}。
+
+    body 只带非 None 字段（§3.4：不传=不修改）——调用方想改哪项就传哪项，None 恒不下发。
+    权限与错误分类同 register/delete：系统级需超管（1003）；1002=server 不存在/无权限；
+    1005=transport 非法；"http" 404=对端接口未上线；"network"=不可达可重试。
+    mock：合成成功信封（离线端到端闭环）。"""
+    body: dict[str, Any] = {"server_id": server_id}
+    for k, v in (("server_url", server_url), ("description", description), ("version", version),
+                 ("category", category), ("tags", tags), ("transport", transport)):
+        if v is not None:
+            body[k] = v
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        base = _registry_base()
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+                r = await cli.post(f"{base}{console_api_prefix()}/mcps/config/update", json=body)
+        except httpx.HTTPError as e:
+            raise McpRegistryError("network", f"MCP Registry 不可达：{type(e).__name__}: {e}") from None
+        raise_biz_or_http(r, McpRegistryError)
+        return unwrap_console_data(r.json(), McpRegistryError)
+    return {**body, "status": "active", "updated_by": "mock"}
 
 
 async def get_mcp_detail(server_id: str) -> dict[str, Any]:

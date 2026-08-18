@@ -63,14 +63,26 @@ test("资产治理：绑定列按 server 独立，绑 omodel 不改 opsdfx 状�
   await page.getByText("资产治理", { exact: false }).first().click();
   await expect(page.getByText("模板绑定")).toBeVisible({ timeout: 10_000 });
 
-  // 起始：两家 server 均未绑（mock 模板 default_tools 不含其完整工具集）→ 两处「绑定」、零「解绑」
-  await expect(page.getByText("绑定", { exact: true })).toHaveCount(2);
+  // 按**行**判定而非全局计数：资产治理表的行由 mockData.adminMcpToolsRaw 的 server 去重派生，
+  // 往 mock 里加一台 server 就会让「绑定」总数变化，全局计数式断言会假失败（且计数本就不是本用例的意图）。
+  // 两个 filter 缺一不可：只按 server 名过滤会落到「只装名字的那个单元格 div」（不含绑定文案），
+  // 再叠一个「含绑定/解绑」才锁定到整行；.last() 取最内层匹配（外层表格容器同样满足两个条件）。
+  const bindStateOf = (server: string) =>
+    page.getByRole("main").locator("div")
+      .filter({ has: page.getByText(server, { exact: true }) })
+      .filter({ hasText: /绑定|解绑/ })
+      .last();
+
+  // 起始：两家 server 均未绑（mock 模板 default_tools 不含其完整工具集）
+  await expect(bindStateOf("omodel-mcp-server")).toContainText("绑定");
+  await expect(bindStateOf("opsdfx-mcp")).toContainText("绑定");
   await expect(page.getByText("解绑", { exact: true })).toHaveCount(0);
 
-  // 绑第一家（omodel-mcp-server；弹保存成功 alert）→ 该家转「解绑」，另一家仍「绑定」
-  // （若同名工具仍联动，两家会一起转「解绑」——此断言正是非联动的直接证明）
+  // 绑第一家（omodel-mcp-server；弹保存成功 alert）→ **该家**转「解绑」，另一家仍「绑定」
+  // （若同名工具仍联动，opsdfx 会跟着转「解绑」——下面这条断言正是非联动的直接证明）
   page.once("dialog", (d) => d.accept());
-  await page.getByText("绑定", { exact: true }).first().click();
-  await expect(page.getByText("解绑", { exact: true })).toHaveCount(1, { timeout: 10_000 });
-  await expect(page.getByText("绑定", { exact: true })).toHaveCount(1);
+  await bindStateOf("omodel-mcp-server").getByText("绑定", { exact: true }).click();
+  await expect(bindStateOf("omodel-mcp-server")).toContainText("解绑", { timeout: 10_000 });
+  await expect(bindStateOf("opsdfx-mcp")).toContainText("绑定");
+  await expect(bindStateOf("opsdfx-mcp")).not.toContainText("解绑");
 });

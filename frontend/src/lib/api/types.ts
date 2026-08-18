@@ -371,6 +371,8 @@ export interface AdminCell {
   kind?: "text" | "badge" | "action";
   tone?: Tone;
   mono?: boolean;
+  /** 文本单元格默认 nowrap+省略号；置 true 改为折行展示全量（长 URL 等必须看全的内容用）。 */
+  wrap?: boolean;
   onClickKey?: string; // 前端解析成回调
 }
 export interface AdminRow {

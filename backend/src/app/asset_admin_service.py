@@ -22,6 +22,7 @@ from app import template_service
 from domain import tool_key
 from domain.errors import ApiError, Err
 from infra import egress
+from infra.db import row_json
 from infra.repositories import assets, audit
 
 log = logging.getLogger("openops.asset_admin")
@@ -33,6 +34,10 @@ log = logging.getLogger("openops.asset_admin")
 PLATFORM_SKILL_SOURCES: tuple[str, ...] = ("skill_hub", "platform_upload")
 # 平台 MCP 行的来源标记，语义同上（'mcp_registry'=reconcile ingest，'platform_register'=管理台注册）
 PLATFORM_MCP_SOURCES: tuple[str, ...] = ("mcp_registry", "platform_register")
+
+# 管理员改 URL 后的全量拦停标记（本轮拍板：URL 变了视作换了一台服务器，schema 没变的工具也不免审）。
+# 待标注计数与测试都引用本常量做精确匹配——管理员手动拉黑的行（别的 reason）不算「待标注」。
+URL_RESET_REASON = "URL 变更，待重新标注"
 
 # 上游 delete「已无此资源」的业务码：命中视作已删、继续本地删（口径同 asset_registry_service）
 _DELETE_ABSENT_CODES: tuple[int, ...] = (1002,)
@@ -241,6 +246,87 @@ async def delete_skill(admin: dict[str, Any], skill_id: str) -> dict[str, Any]:
     return {"deleted": True, "upstream": upstream}
 
 
+# ------------------------------------------------- 待标注口径（列表列 + 右上角邮箱共用）
+
+async def _pending_by_server() -> dict[str, dict[str, Any]]:
+    """按 server（mcp_display_name）归并「需要管理员标注」的工具数，两类分开数：
+
+    - `unannotated`：annotation_id IS NULL —— 新发现从未标注过的（含 schema 变更后被 sync 软删的）；
+    - `url_reset`：status='blocked' 且 reason 恰为 URL_RESET_REASON —— 管理员改 URL 触发的全量拦停。
+      管理员**手动**拉黑的行（别的 reason）不算——那是已处理完的决策，不是待办。
+
+    list_mcps 的「待标注」列与 GET /admin/annotation-inbox 共用本口径——两处各自实现必然漂移。"""
+    from infra.repositories import mcp_tools
+
+    out: dict[str, dict[str, Any]] = {}
+    for c in await mcp_tools.list_catalog_with_annotation():
+        name = str(c.get("mcp_display_name") or "")
+        slot = out.setdefault(name, {"unannotated": 0, "url_reset": 0})
+        if c.get("annotation_id") is None:
+            slot["unannotated"] += 1
+        elif c.get("annotation_status") == "blocked" and c.get("blocked_reason") == URL_RESET_REASON:
+            slot["url_reset"] += 1
+    return out
+
+
+async def annotation_inbox(admin: dict[str, Any]) -> dict[str, Any]:
+    """右上角「待标注」邮箱的数据源：派生状态现算，不建通知表。
+
+    「工具待标注」是全局平台状态（不分管理员个人），正确生命周期是**标完自动消失**而非「已读就
+    消失」——现算零状态维护，也不会出现"已读但没处理"的悬空。只返回 pending>0 的 server，
+    附本地 mcp_id 供前端直达该 server 的 Tool 标注钻取。"""
+    by_server = await _pending_by_server()
+    id_by_name = {str(m.get("display_name") or ""): str(m["mcp_id"])
+                  for m in await assets.list_platform_mcps_with_manifest()}
+    items = [{"display_name": name, "mcp_id": id_by_name.get(name),
+              "unannotated": p["unannotated"], "url_reset": p["url_reset"],
+              "pending": p["unannotated"] + p["url_reset"]}
+             for name, p in sorted(by_server.items()) if p["unannotated"] + p["url_reset"] > 0]
+    return {"total": sum(i["pending"] for i in items), "items": items}
+
+
+# ---------------------------------------------------------------- MCP 列表（管理面）
+
+async def list_mcps(admin: dict[str, Any], *, page: int = 1, page_size: int = 20,
+                    q: str | None = None) -> dict[str, Any]:
+    """管理台平台 MCP 列表。与用户面 `/assets/mcps` 的两点差别，都是管理语义要求的：
+
+    1. **endpoint 不脱敏**：用户面按 30.5 截断展示（那里 endpoint 可能含用户自填的凭据）；
+       平台 MCP 的地址是管理员自己录进去的基础设施 URL，本端点又是 Admin 门控，
+       对录入者藏他自己填的地址没有意义，反而没法核对/排障。
+    2. **不隐藏占位资产**：用户面真机模式会滤掉 endpoint host=mock 的 demo 种子行；管理面要能看见
+       它们才能删掉，故 hide_placeholder=False。
+    """
+    rows, total = await assets.list_mcps_page(
+        admin["user_id"], source_type="platform", q=q,
+        limit=page_size, offset=(page - 1) * page_size, hide_placeholder=False,
+    )
+    # 待标注计数：未标注的工具在 Tool Gateway 是 fail-closed 的，管理员必须能一眼看到还欠几个。
+    by_server = await _pending_by_server()
+    pending = {name: p["unannotated"] + p["url_reset"] for name, p in by_server.items()}
+
+    items: list[dict[str, Any]] = []
+    for r in rows:
+        d = row_json(r)
+        cfg = d.pop("endpoint_config_json", None) or {}
+        d["endpoint"] = str(cfg.get("endpoint") or "") if isinstance(cfg, dict) else ""
+        manifest = d.pop("manifest_json", None) or {}  # 内部 manifest 不整包透前端，只抽展示字段
+        if isinstance(manifest, dict):
+            d["description"] = manifest.get("description")
+            d["category"] = manifest.get("category")
+            d["server_id"] = manifest.get("server_id")  # 上游唯一标识（删除/重注册按它对齐）
+            d["transport"] = manifest.get("transport") or d.get("transport")  # 上游词汇优先于本地 'http' 列
+            d["synced_from"] = manifest.get("synced_from")  # 让管理员看得出哪条是 seed（无值）哪条来自上游
+            # 上游现名：本地 display_name 是复合键左半、刻意不跟随上游改名（否则断掉全部模板绑定），
+            # 所以改名这件事必须在管理台显性化，否则管理员只会看到"名字没更新"而无从判断。
+            d["upstream_server_name"] = manifest.get("upstream_server_name")
+            d["tags"] = manifest.get("tags")  # 编辑弹窗预填用（description 上面已投影）
+            d["version"] = manifest.get("version")
+        d["tools_unannotated"] = pending.get(str(d.get("display_name") or ""), 0)
+        items.append(d)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
 # ---------------------------------------------------------------- MCP 注册
 
 def _map_register_error(e: Any) -> ApiError:
@@ -353,6 +439,136 @@ async def _converge_platform_mcps(candidates: list[dict[str, Any]], survivor_id:
             payload_redacted={**entry, "superseded_by": survivor_id},
         )
     return merged
+
+
+# ---------------------------------------------------------------- MCP 编辑（29.9 §3.4）
+
+async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, Any]:
+    """编辑平台级 MCP 配置（URL/描述/版本/分类/标签/transport）：推 Hub §3.4 → 更新本地
+    sre_mcp_asset(endpoint) + sre_mcp_asset_version(manifest) → **URL 变更时**重新发现工具并
+    「全量重置全量拦」（本轮拍板：URL 变了视作换了一台服务器，schema 没变的工具也不免审）。
+
+    三条铁律（沿袭 PR74/80）：
+    - 不动 display_name（复合键 `{display_name}::{tool}` 左半，改了断掉全部模板绑定）；
+    - 不动 mcp_id / mcp_version_id（tool catalog 挂 version_id，换了整套标注失联）；
+    - 只改本地不推 Hub 流量不会切——运行时 _dynamic_mcp_specs 的 server_url 来自 Hub 实拉列表，
+      推 §3.4 才是让 Agent 真正走新地址的动作。
+
+    **刻意不调 renormalize_drafts**：blocked 是「待重标」不是终态，现在扫掉 draft 引用，重标完还得
+    逐个重勾。运行态由 Gateway 热读拦（不靠 scrub）；重标完成 → 绑定原样恢复，零重勾。
+    （对照 delete_mcp 调 renormalize：那是整台 server 永久没了，情形不同。）"""
+    from infra.external import mcp_registry_client
+    from infra.repositories import mcp_tools
+
+    row = await assets.get_mcp(mcp_id)
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, "MCP 不存在")
+    if row["source_type"] != "platform":
+        raise ApiError(Err.FORBIDDEN, "该端点仅编辑平台级 MCP；自定义 MCP 请在插件页管理")
+    new_url = (req.server_url or "").strip()
+    if not new_url:
+        raise ApiError(Err.VALIDATION_FAILED, "server_url 不能为空")
+    if req.transport and req.transport not in mcp_registry_client.MCP_TRANSPORTS:
+        raise ApiError(Err.VALIDATION_FAILED, "transport 仅支持 jsonrpc / sse / streamable_http（29.9 §3.4）")
+    egress.check_mcp_egress(new_url)  # SSRF：人手填的 URL，运行时真出站（与注册同一道闸）
+
+    latest = await assets.latest_mcp_version(mcp_id)
+    manifest = (latest or {}).get("manifest_json") or {}
+    old_url = str((row.get("endpoint_config_json") or {}).get("endpoint") or "")
+    url_changed = new_url != old_url
+    server_id = str(manifest.get("server_id") or row.get("display_name") or "")
+
+    # ---- ① 推 Hub（仅确实来自上游的行；seed/手造行无上游对应，只改本地）----
+    upstream = "skipped"
+    if server_id and manifest.get("synced_from") in PLATFORM_MCP_SOURCES:
+        try:
+            await mcp_registry_client.update_server_config(
+                server_id, server_url=new_url, description=req.description or None,
+                version=req.version or None, category=req.category or None,
+                tags=req.tags or None, transport=req.transport or None)
+            upstream = "updated"
+        except mcp_registry_client.McpRegistryError as e:
+            if e.kind == "http" and e.status_code == 404:
+                # 对端 §3.4 未上线：降级只改本地（同 delete 的 endpoint_missing 口径）。
+                # 注意此形态下 Agent 流量仍走 Hub 里的旧地址——文案说清，别让管理员以为已切换。
+                log.warning("mcps/config/update 接口不存在（29.9 未上线），降级仅本地改：%s", server_id)
+                upstream = "endpoint_missing"
+            elif e.kind == "biz" and e.biz_code in _DELETE_ABSENT_CODES:
+                # 上游已无此 server：编辑幽灵毫无意义（运行时流量走 Hub 列表，本地改了也不生效）
+                raise ApiError(Err.NOT_FOUND,
+                               f"MCP Registry 已无此 server（{server_id}）：请先重新注册，或删除本地记录"
+                               ) from None
+            elif e.kind == "biz" and e.biz_code == 1003:
+                raise ApiError(Err.FORBIDDEN,
+                               f"平台级 MCP 修改需 MCP Registry 超级管理员权限：{e.message}") from None
+            elif e.kind == "biz" and e.biz_code == 1005:
+                raise ApiError(Err.VALIDATION_FAILED, f"MCP Registry 拒绝该 transport：{e.message}") from None
+            elif e.kind == "network":
+                raise ApiError(Err.IAM_UPSTREAM, "MCP Registry 不可达，修改未执行，请稍后重试",
+                               retryable=True) from None
+            else:
+                raise ApiError(Err.IAM_UPSTREAM, f"MCP Registry 拒绝修改：{e.message}") from None
+
+    # ---- ② 本地更新（保 display_name / mcp_id / mcp_version_id）----
+    if url_changed:
+        await assets.update_mcp_endpoint(mcp_id, {"endpoint": new_url}, admin["user_id"])
+    # PUT 语义：弹窗全量预填后提交，发来的就是管理员的完整意图（空串=清空）；
+    # 仅 transport 保底回退（schema pattern 保证合法值，空串只可能是旧客户端缺字段）。
+    new_manifest = {**manifest,
+                    "description": req.description, "version": req.version,
+                    "category": req.category,
+                    "tags": req.tags if req.tags is not None else manifest.get("tags"),
+                    "transport": req.transport or manifest.get("transport")}
+    if latest and new_manifest != manifest:
+        await assets.update_mcp_version_manifest(str(latest["mcp_version_id"]), new_manifest)
+
+    # ---- ③ URL 变更 → 工具刷新 + 全量拦停（只改元数据不折腾标注）----
+    tools_summary: dict[str, Any] = {}
+    if url_changed and latest:
+        vid = str(latest["mcp_version_id"])
+        counts = {"created": 0, "schema_changed": 0, "unchanged": 0}
+        removed: list[str] = []
+        refresh_error: str | None = None
+        try:
+            from infra import host_ip
+            from infra.iam_headers import iam_auth_headers
+
+            discovered = await mcp_registry_client.discover_tools(
+                new_url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()})
+        except Exception as e:  # noqa: BLE001 —— 发现失败不清扫（防瞬时故障误清全部），但仍全拦（见下）
+            refresh_error = f"{type(e).__name__}: {str(e)[:200]}"
+            log.warning("[mcp-update] 新 URL 工具发现失败（不清扫、仍全量拦停）：%s", refresh_error)
+            discovered = None
+        if discovered is not None:
+            for t in discovered:
+                res = await mcp_tools.sync_catalog_tool(
+                    vid, t["tool_name"], t["description"], t["input_schema"], t["schema_hash"])
+                counts[res] += 1
+            # 发现**成功**才有资格判缺席：拿到完整新列表 → 不在列表里的 = 该 server 已没有这个工具
+            removed = await mcp_tools.remove_absent_catalog_tools(
+                vid, {str(t["tool_name"]) for t in discovered})
+        # 全量拦停（拍板口径）：URL 已变是正向证据，旧工具面必须停——发现失败也照拦。
+        # 写 blocked 行而非软删标注：动态平台工具对「标注缺失」有合成 allowed 的豁免
+        # （tool_gateway origin=dynamic），软删=放行；blocked 行经 Gateway 热读**立即**拦（含进行中任务）。
+        blocked = 0
+        for t in await mcp_tools.list_live_catalog_tools(vid):
+            await mcp_tools.save_annotation(
+                str(t["tool_catalog_id"]), True, False, "none", None,
+                "blocked", URL_RESET_REASON, admin["user_id"])
+            blocked += 1
+        tools_summary = {**counts, "removed": removed, "blocked": blocked}
+        if refresh_error:
+            tools_summary["refresh_error"] = refresh_error
+
+    await audit.insert_event(
+        audit_trace_id=_audit_id(), event_type="mcp.updated", user_id=admin["user_id"],
+        action="admin_update",
+        payload_redacted={"scope": "platform", "mcp_id": mcp_id, "server_id": server_id,
+                          "url_changed": url_changed, "old_url": old_url, "new_url": new_url,
+                          "upstream": upstream, "tools": tools_summary},
+    )
+    return {"mcp_id": mcp_id, "server_id": server_id, "upstream": upstream,
+            "url_changed": url_changed, "tools": tools_summary}
 
 
 # ---------------------------------------------------------------- MCP 删除

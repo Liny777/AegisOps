@@ -95,7 +95,11 @@ async def lifespan(_app: FastAPI):
         f"mcp={os.environ.get('OPENOPS_MCP', 'mock')}  "
         f"mcp_route={os.environ.get('OPENOPS_MCP_ROUTE', 'direct')}  "
         f"mcpregistry={os.environ.get('OPENOPS_MCPREGISTRY', 'mock')}  "
+        # base_url / 服务账号 / 对账周期：排障最常问的三项，此前一个都不打，只能靠猜
+        f"mcpregistry_base={os.environ.get('OPENOPS_MCPREGISTRY_BASE_URL') or 'unset'}  "
         f"mcp_cookie={_cookie_disp('OPENOPS_MCPREGISTRY_COOKIE')}  "
+        f"console_service_user={os.environ.get('OPENOPS_CONSOLE_SERVICE_USER_ID') or 'unset'}  "
+        f"reconcile_loop={os.environ.get('OPENOPS_RECONCILE_INTERVAL_S', '0')}s  "
         f"apptree={os.environ.get('OPENOPS_APPTREE', 'mock')}  "
         f"apptree_cookie={_cookie_disp('OPENOPS_APPTREE_COOKIE')}  "
         f"apptree_user={os.environ.get('OPENOPS_APPTREE_USER_ID') or '(登录态 user_id)'}  tls={_tls}  "

@@ -1470,3 +1470,105 @@ async def test_ext_mcpreg_register_requires_base_url(monkeypatch):
     monkeypatch.delenv("OPENOPS_MCPREGISTRY_BASE_URL", raising=False)
     with _pytest.raises(RuntimeError, match="OPENOPS_MCPREGISTRY_BASE_URL"):
         await mcp_registry_client.register_server(server_name="x", server_url="https://x/mcp")
+
+
+# ==================== 机机态服务账号身份（29.9 §1.3 三级鉴权兜底） ====================
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_list_sends_service_user_id(monkeypatch):
+    """无 Cookie 且无 user_id 入参 → 对端 401（§1.3）。调用方没给时用服务账号兜底；
+    键名必须是 snake_case `user_id`（userId 已废）。未配 env 则不带该字段。"""
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    ok_body = {"code": 0, "data": {"items": [], "total": 0}}
+
+    # 未配服务账号 + 调用方不传 → 不带 user_id（保持旧行为，不凭空造身份）
+    monkeypatch.delenv("OPENOPS_CONSOLE_SERVICE_USER_ID", raising=False)
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers()
+    assert "user_id" not in cap[0][2]["json"] and "userId" not in cap[0][2]["json"]
+
+    # 配了服务账号 + 调用方不传（后台对账）→ 兜底带上
+    monkeypatch.setenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "svc0001")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers()
+    assert cap[0][2]["json"]["user_id"] == "svc0001"
+
+    # 调用方显式传（用户态）→ 优先用调用方的，不被服务账号覆盖
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await mcp_registry_client.list_servers("0026demo01")
+    assert cap[0][2]["json"]["user_id"] == "0026demo01"
+
+
+@pytest.mark.asyncio
+async def test_ext_skillhub_list_sends_service_user_id(monkeypatch):
+    """Skill 面同款洞：此前收了 user_id 却**从不下发**，机机态必然 401。
+    `system` 是内部伪 id，不得当工号下发，应换服务账号兜底。"""
+    from infra.external import skill_hub_client
+
+    monkeypatch.setenv("OPENOPS_SKILLHUB", "real")
+    monkeypatch.setenv("OPENOPS_SKILLHUB_BASE_URL", "https://console")
+    ok_body = {"code": 200, "data": {"items": [], "total": 0}}
+
+    monkeypatch.delenv("OPENOPS_CONSOLE_SERVICE_USER_ID", raising=False)
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("system")
+    assert "user_id" not in cap[0][2]["json"]
+
+    monkeypatch.setenv("OPENOPS_CONSOLE_SERVICE_USER_ID", "svc0001")
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("system")           # 伪 id → 服务账号
+    assert cap[0][2]["json"]["user_id"] == "svc0001"
+
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
+    await skill_hub_client.list_skills("0026demo01")       # 真工号 → 原样下发
+    assert cap[0][2]["json"]["user_id"] == "0026demo01"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_config_update_posts_patch_body(monkeypatch):
+    """config/update（29.9 §3.4）：PATCH 语义 body 只带非 None 字段；错误三分类；mock 不出网。"""
+    import httpx
+    import pytest as _pytest
+
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+
+    ok = {"code": 0, "message": "ok", "data": {"server_id": "svc-a", "server_url": "https://new/mcp"}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok))
+    out = await mcp_registry_client.update_server_config("svc-a", server_url="https://new/mcp",
+                                                         transport="sse")
+    method, url, kwargs = cap[0]
+    assert method == "POST" and url == "https://console/obsv/agent/management/mcps/config/update"
+    # 只带 server_id + 显式给的两项；None 字段（description/version/category/tags）不下发
+    assert kwargs["json"] == {"server_id": "svc-a", "server_url": "https://new/mcp", "transport": "sse"}
+    assert out["server_url"] == "https://new/mcp"
+
+    for status, code in ((200, 1002), (400, 1003), (400, 1005)):
+        _install(monkeypatch, lambda m, u, k, s=status, c=code: _Resp(s, {"code": c, "message": "no"}))
+        with _pytest.raises(mcp_registry_client.McpRegistryError) as e:
+            await mcp_registry_client.update_server_config("svc-a", server_url="https://x/mcp")
+        assert e.value.kind == "biz" and e.value.biz_code == code
+
+    def _boom(m, u, k):
+        raise httpx.ConnectError("refused")
+
+    _install(monkeypatch, _boom)
+    with _pytest.raises(mcp_registry_client.McpRegistryError) as en:
+        await mcp_registry_client.update_server_config("svc-a", server_url="https://x/mcp")
+    assert en.value.kind == "network"
+
+    # mock 分支不出网
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY", raising=False)
+
+    def _never(m, u, k):
+        raise AssertionError("mock 模式不该出网")
+
+    _install(monkeypatch, _never)
+    r = await mcp_registry_client.update_server_config("m1", server_url="https://m/mcp")
+    assert r["server_id"] == "m1"

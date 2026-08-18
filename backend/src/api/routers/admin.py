@@ -20,6 +20,7 @@ from app import (
 )
 from domain.schemas import (
     AdminRegisterMcpRequest,
+    AdminUpdateMcpRequest,
     CreateModelTemplateRequest,
     ModelGrantsRequest,
     ModelStatusRequest,
@@ -277,11 +278,36 @@ async def admin_delete_skill(skill_id: str, admin: Admin):
     return ok(await asset_admin_service.delete_skill(admin, skill_id))
 
 
+@router.get("/mcps")
+async def admin_list_mcps(
+    admin: Admin,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    q: str | None = Query(default=None, max_length=200),
+):
+    """管理台平台 MCP 列表：endpoint **不脱敏**（管理员要核对自己录的地址），且不隐藏占位资产
+    （能看见才能删）。用户面 `/assets/mcps` 的 30.5 脱敏口径不受影响。"""
+    return ok(await asset_admin_service.list_mcps(admin, page=page, page_size=page_size, q=q))
+
+
 @router.post("/mcps")
 async def admin_register_mcp(req: AdminRegisterMcpRequest, admin: Admin):
     """注册平台级 MCP Server（is_system=true）。命中已有行时原地更新，不改 display_name
     ——保住 tool catalog 与模板绑定的复合键。"""
     return ok(await asset_admin_service.register_mcp(admin, req))
+
+
+@router.get("/annotation-inbox")
+async def admin_annotation_inbox(admin: Admin):
+    """右上角「待标注」邮箱：按 server 归并的待标注工具数（新发现 + URL 变更重置），现算不落库。"""
+    return ok(await asset_admin_service.annotation_inbox(admin))
+
+
+# 无冒号路由冲突（mcps 面无 `:action` 的 PUT）；如日后新增须注册在本条**之前**（见 /model-assets 注释）
+@router.put("/mcps/{mcp_id}")
+async def admin_update_mcp(mcp_id: str, req: AdminUpdateMcpRequest, admin: Admin):
+    """编辑平台级 MCP 配置：推 Hub §3.4 → 更新本地 → **URL 变更时**刷新工具目录并全量拦停待重标。"""
+    return ok(await asset_admin_service.update_mcp(admin, mcp_id, req))
 
 
 @router.delete("/mcps/{mcp_id}")

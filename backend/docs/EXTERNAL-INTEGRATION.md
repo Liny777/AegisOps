@@ -146,7 +146,45 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
   ④ 删除梯子与用户面同构（http 404 降级仅本地删 / biz 1002 视作已删继续 / 1003 → 403 / network 与其余
      biz **不本地删**），`upstream` 结果进审计使降级可观测；**不做 asset_in_use 拦截**（管理员不该被某个
      用户的陈旧绑定卡住，绑定行走 ghost 降级显示「已删除」）。
+  ⑤ 管理面列表走 **Admin 门控的 `GET /admin/mcps`**（非用户面 `/assets/mcps`）：endpoint **不脱敏**
+     且不隐藏占位资产 —— 用户面按 30.5 截成前 12 字符（那里 endpoint 可能含用户自填凭据），但平台
+     MCP 的地址是管理员自己录的基础设施 URL，对录入者藏他自己填的地址没有意义、反而没法核对排障；
+     占位资产要能看见才能删。**用户面脱敏口径不变**（有测试双向锁死）。
   异常类型：`ConsoleError`（基类，在 `mcp_registry_client`）→ `SkillHubError` / `McpRegistryError`。
+- **管理面编辑 MCP 配置 + URL 变更全量重审（2026-08-18）**：`PUT /admin/mcps/{id}` 推 Hub §3.4
+  `mcps/config/update`（PATCH 语义只带非 None 字段；1002=上游已无此 server → 拒绝并提示先重注册，
+  http 404 → 降级只改本地）→ 更新本地 endpoint + version manifest（不动 display_name/mcp_id/
+  mcp_version_id 三铁律）→ **URL 真变了**才做工具联动：按新地址 discover → sync（复活分支：被缺席
+  清除软删过的同名工具重新出现时复活原行，防撞绝对唯一索引 500）→ 发现成功才 `remove_absent_catalog_tools`
+  （软删消失工具的目录+标注）→ **该 server 全部 live 工具写 blocked 标注**（reason=URL_RESET_REASON，
+  拍板口径：URL 变了视作换了一台服务器，schema 没变也不免审）。
+  为什么写 blocked 行而不是软删标注：动态平台工具对「标注缺失」有合成 allowed 的豁免
+  （tool_gateway origin=dynamic），软删=放行；blocked 行经 Gateway 热读**立即**拦（含进行中任务）。
+  刻意不调 renormalize_drafts：blocked 是「待重标」非终态，扫掉 draft 引用重标完还得重勾；
+  重标（save_annotation 复活/覆写）→ 热读立即放行，模板绑定原样恢复。
+  管理台右上角「待标注」邮箱（`GET /admin/annotation-inbox`）：派生状态现算（unannotated ∪
+  url_reset 按 server 分组），标完自动消失，无通知表无已读态；与列表「待标注」列共用
+  `_pending_by_server()` 单一口径。
+- **上游改名/改 URL 的同步（2026-08-17，内网实锤）**：同事在 Hub 控制台上改了某个已存在 server 的
+  `server_url` + `server_name`（`server_id` 不变），我们这边管理台仍显示旧名旧址、Agent 侧该 server
+  的工具也失效。根因不是查不到，是 **ingest 只有 create-if-missing、没有 update 路径**（唯一的写是
+  `create_mcp`）。三处一起修：
+  ① **reconcile 补 update**：按 `server_id` 优先、`display_name` 次之定位既有行 → 命中即更新
+     `endpoint` 与 manifest，**保住 `mcp_id` / `mcp_version_id`**（换了它 tool catalog 与整套标注失联）。
+     endpoint 一更新，同轮的目录同步就打新 URL（此前一直拿本地旧 URL 去 discover，每轮进 `tool_sync_errors`）。
+     名字撞但 `server_id` 不同 = 两个 server 重名，**不更新**、记 `mcps_name_collision`。
+  ② **`display_name` 刻意不跟随上游改名**：它是复合键 `{display_name}::{tool}` 的左半，跟着改会断掉
+     全部模板绑定（`tool_key.py` 头注释早已自承这个代价）。上游现名只存 `manifest.upstream_server_name`
+     供管理台「上游现名」列展示。**运行时 `_dynamic_mcp_specs` 同步改为按 `server_id` 取本地
+     `display_name`** 作复合键左半（取不到才回退上游名）——这才是让 Agent 工具在上游改名后不中断的关键，
+     也让那行「与资产入库锚一致」的注释重新成立。口径与 `asset_admin_service.register_mcp` 一致
+     （重注册原地更新、不改名）。
+  ③ **机机态身份**（29.9 §1.3 新增三级鉴权：无 Cookie 且无 `user_id` 入参 → 401）：新增
+     `OPENOPS_CONSOLE_SERVICE_USER_ID`，`mcps/list/query` 与 `skills/list/query` 在调用方未显式给
+     `user_id` 时用它兜底（键名 **snake_case `user_id`**，`userId` 已废）。Skill 面此前收了 `user_id`
+     却从不下发，同一个洞。**该服务账号的可见范围决定我们能同步到哪些资产。**
+  summary 新增 `mcps_updated` / `mcps_renamed_upstream` / `mcps_name_collision`；启动横幅补打
+  `mcpregistry_base` / `console_service_user` / `reconcile_loop`（此前这三项都不打，排障只能猜）。
 - **MCP Registry（✅内网已通）**：`list_servers` → `POST /obsv/agent/management/mcps/list/query`（source=openops 翻页，
   鉴权走上述统一装配；本地无 IAM 登录态时可临时配 `OPENOPS_MCPREGISTRY_COOKIE`，会话态会过期）；`discover_tools(server_url)` 按 `OPENOPS_MCP_ROUTE` 走
   direct（默认，标准 MCP streamable-HTTP 直连 server_url：JSON-RPC `tools/list` + SSE 解析，无需 cookie）或

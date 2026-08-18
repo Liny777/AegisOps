@@ -304,6 +304,23 @@ async def _dynamic_mcp_specs(user_id: str = "") -> list[dict[str, Any]]:
     from infra import host_ip
     from infra.external import mcp_registry_client
 
+    # 复合键左半的**稳定锚**：按 server_id 映射到本地资产的 display_name。
+    # 上游改名后 srv["server_name"] 会变，而模板 default_tools 里存的是旧名的复合键——直接用上游
+    # 现名会让 `{新名}::{tool}` 与模板的 `{旧名}::{tool}` 失配，工具被白名单静默跳过
+    # （TOOL_NOT_WHITELISTED，且该路径不置 tool_blocked，对话里毫无提示）。
+    # 口径与 asset_admin_service.register_mcp 一致：display_name 是我们的绑定身份，上游名只是元数据。
+    # 取不到本地行（新 server 首轮、对账还没跑）才回退上游名——与 reconcile 建行时的取值同源。
+    local_name_by_sid: dict[str, str] = {}
+    try:
+        from infra.repositories import assets as _assets
+
+        for m in await _assets.list_platform_mcps_with_manifest():
+            _sid = str((m.get("manifest_json") or {}).get("server_id") or "")
+            if _sid and m.get("display_name"):
+                local_name_by_sid[_sid] = str(m["display_name"])
+    except Exception as e:  # noqa: BLE001 —— 读不到就退回上游名（不因一次库抖动丢掉整个工具面）
+        log.warning("平台 MCP 本地名映射读取失败，复合键回退上游 server_name：%s", _redact(str(e)))
+
     try:
         servers = await mcp_registry_client.list_servers(user_id)
     except Exception as e:  # noqa: BLE001 —— 发现失败不拖垮整个 run
@@ -334,8 +351,11 @@ async def _dynamic_mcp_specs(user_id: str = "") -> list[dict[str, Any]]:
                 "name": t["tool_name"], "description": t.get("description", ""),
                 "input_schema": schema, "server_url": surl, "readonly": bool(t.get("readonly")),
                 # server 身份（复合键 "{server_name}::{tool}" 的左半）：白名单/标注解析按它区分同名工具。
-                # 与资产入库锚一致（reconcile create-if-missing 按 server_name 作 display_name）。
-                "server_name": tool_key.sanitize_server_name(str(srv.get("server_name") or srv.get("server_id") or "")),
+                # 取**本地** display_name（按 server_id 映射）而非上游现名——见上方 local_name_by_sid：
+                # 上游改名不得改变复合键，否则模板绑定与标注全部失配。本地无对应行才回退上游名。
+                "server_name": tool_key.sanitize_server_name(
+                    local_name_by_sid.get(str(srv.get("server_id") or ""))
+                    or str(srv.get("server_name") or srv.get("server_id") or "")),
                 "scope_mode": "required" if appid_prop else "none",
                 "appid_arg_path": f"$.{appid_prop}" if appid_prop else None,
                 "source_type": "platform",  # 自证：随 spec 下传给 tool_gateway.invoke（对照 _user_mcp_specs）

@@ -4,7 +4,10 @@
 - Skill：按 (source_type, skill_key) upsert；checksum 变化 → 追加新版本（历史版本不动）；
   上游列表**缺席**的平台 skill → 软删墓碑收敛（synced_from ∈ PLATFORM_SKILL_SOURCES 的行、
   上游子集非空、过宽限期，三护栏防误删；个人面同款在 asset_registry_service.sync_user_skills）。
-  MCP 侧仍是 create-if-missing（无缺席墓碑），但判重已按 display_name ∪ server_id 双维度。
+- MCP：按 **server_id 优先、display_name 次之** 定位既有行 → 命中即**更新** endpoint 与 manifest
+  （保 mcp_id/mcp_version_id 以免标注失联；**display_name 刻意不跟随上游改名**——它是复合键
+  `{display_name}::{tool}` 的左半，跟着改会断掉全部模板绑定，上游现名只存 manifest 供展示）。
+  未命中才建行。名字撞但 server_id 不同 = 两个 server 重名，不更新、记 summary。无缺席墓碑。
 - 管理台的平台级写闭环（上传/注册/删除 + 同名收敛）在 asset_admin_service。
 - 平台 MCP：`tools/list` 经 Registry 拉取 → `schema_hash` 对比 → 变化则旧 catalog 行 superseded、
   新行入库且**标注不继承**（未标注 → Tool Gateway fail-closed，需管理员重新标注；ASSET-005）。
@@ -21,6 +24,7 @@ import time
 import uuid
 from typing import Any
 
+from domain import tool_key
 from infra import host_ip
 from infra.iam_headers import iam_auth_headers
 from infra.external import mcp_registry_client, skill_hub_client
@@ -68,7 +72,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
     summary: dict[str, Any] = {
         "trigger": trigger, "skills_created": 0, "skill_versions_added": 0, "skill_manifests_refreshed": 0,
         "skills_tombstoned": 0,
-        "mcps_created": 0, "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
+        "mcps_created": 0, "mcps_updated": 0,
+        "tools_created": 0, "tools_schema_changed": 0, "tools_unchanged": 0,
     }
     try:
         # ---- Skill Hub（ASSET-001：只 source=openops；且只收平台 skill） ----
@@ -148,14 +153,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
         # ---- MCP Registry：注册表 server → 平台 MCP 资产入库（与 Skill 分支对称；内网实测缺口：
         # 此前只刷已有资产的 catalog，真 server（如 alarm-server）永不落库 → 设置页/管理台看不到）----
         try:
-            # 判重同时看 display_name 与 manifest 里的 server_id：只按名字判会在两种情形下多造行——
-            # ① 上游改名（同 server_id 换 server_name）；② 管理台注册命中已有行时是**原地更新、
-            # 不改 display_name**（保 tool catalog 与标注），本地名与上游名会合法地不一致。
-            # 只会收紧「已有」判定，不会比原来多造行。
+            # 定位既有行：**server_id 优先、display_name 次之**（server_id 是上游稳定标识，
+            # display_name 只是我们的本地绑定身份，上游改名后两者会合法地不一致）。
             rows = await assets.list_platform_mcps_with_manifest()
-            known_names = {str(m.get("display_name")) for m in rows}
-            known_ids = {str((m.get("manifest_json") or {}).get("server_id")) for m in rows
-                         if (m.get("manifest_json") or {}).get("server_id")}
+            by_sid = {str((m.get("manifest_json") or {}).get("server_id")): m for m in rows
+                      if (m.get("manifest_json") or {}).get("server_id")}
+            by_name = {str(m.get("display_name")): m for m in rows}
             # 平台资产对账无用户语义：不传 user_id（期望对端只返回平台 server——联调确认项①）
             for srv in await mcp_registry_client.list_servers():
                 url = str(srv.get("server_url") or "")
@@ -163,15 +166,57 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                     continue
                 name = str(srv.get("server_name") or srv.get("server_id") or "")
                 sid = str(srv.get("server_id") or "")
-                if not name or name in known_names or (sid and sid in known_ids):
-                    continue  # V1 create-if-missing（下线同步不做）
-                await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
-                                        {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
-                                         "description": srv.get("description", "")})
-                known_names.add(name)
-                if sid:
-                    known_ids.add(sid)
-                summary["mcps_created"] += 1
+                if not name:
+                    continue
+                local_name = tool_key.sanitize_server_name(name)  # 比对键须与 create_mcp 入库口径同源
+                hit = by_sid.get(sid) if sid else None
+                if hit is None:
+                    hit = by_name.get(local_name)
+                    # 名字撞上但 server_id 不同 = 两个不同的 server 重名，**不能**当同一条更新
+                    # （改错行会把别人的 endpoint 指到这家）。记 summary 让异味暴露，本轮跳过。
+                    if hit is not None and sid and str((hit.get("manifest_json") or {}).get("server_id") or "") != sid:
+                        summary.setdefault("mcps_name_collision", []).append(
+                            {"display_name": local_name, "upstream_server_id": sid,
+                             "local_server_id": (hit.get("manifest_json") or {}).get("server_id")})
+                        continue
+
+                if hit is None:
+                    await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
+                                            {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
+                                             "description": srv.get("description", ""),
+                                             "upstream_server_name": name})
+                    summary["mcps_created"] += 1
+                    # 本轮内后续项的判重基（同一轮上游返回重复项时不重复建行）
+                    fresh = await assets.list_platform_mcps_with_manifest()
+                    by_sid = {str((m.get("manifest_json") or {}).get("server_id")): m for m in fresh
+                              if (m.get("manifest_json") or {}).get("server_id")}
+                    by_name = {str(m.get("display_name")): m for m in fresh}
+                    continue
+
+                # ---- 命中既有行 → **更新**（此前是 create-if-missing 直接 skip，上游改 URL/改名
+                # 后本地行永远停在旧值：管理台显示旧的、目录同步还拿旧 URL 去 discover 每轮失败）。
+                # 保住 mcp_id 与 mcp_version_id：tool catalog 挂在 mcp_version_id 上，换了它整套
+                # 标注失联、全部工具掉回 fail-closed。**display_name 不动**——它是复合键
+                # `{display_name}::{tool}` 的左半，跟着上游改名会断掉所有模板绑定；上游现名只作
+                # 展示/审计存进 manifest（运行时复合键改为按 server_id 取本地名，见 agentscope_runtime）。
+                cur_manifest = hit.get("manifest_json") or {}
+                cur_endpoint = str((hit.get("endpoint_config_json") or {}).get("endpoint") or "")
+                if cur_endpoint != url:
+                    await assets.update_mcp_endpoint(str(hit["mcp_id"]), {"endpoint": url}, "system")
+                    summary.setdefault("mcps_endpoint_updated", []).append(str(hit.get("display_name")))
+                new_manifest = {**cur_manifest, "server_id": srv.get("server_id") or cur_manifest.get("server_id"),
+                                "description": srv.get("description", ""), "upstream_server_name": name}
+                if hit.get("mcp_version_id") and new_manifest != cur_manifest:
+                    await assets.update_mcp_version_manifest(str(hit["mcp_version_id"]), new_manifest)
+                if cur_endpoint != url or new_manifest != cur_manifest:
+                    summary["mcps_updated"] += 1
+                if local_name != str(hit.get("display_name") or ""):
+                    # 上游改名：本地名刻意不跟随（保绑定），但必须让管理员看得见——否则管理台一直
+                    # 显示旧名而无人知情。管理台「上游现名」列读的就是 manifest.upstream_server_name。
+                    summary.setdefault("mcps_renamed_upstream", []).append(
+                        {"server_id": sid, "local": str(hit.get("display_name")), "upstream": name})
+                    log.info("上游 MCP 改名（本地绑定名保持不变）：server_id=%s 本地=%s 上游=%s",
+                             sid, hit.get("display_name"), name)
         except Exception as e:  # noqa: BLE001 —— 注册表不可达不炸整轮（skill 已对账完，catalog 照刷）
             log.warning("mcp registry ingest failed: %s", str(e)[:200])
             summary["mcp_ingest_error"] = str(e)[:200]
