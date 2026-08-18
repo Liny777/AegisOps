@@ -8,6 +8,7 @@ import {
 
 import { CopilotPresetQuestions } from "./CopilotPresetQuestions";
 import { AlertTakeoverSlot } from "../alertTakeover/AlertTakeoverSlot";
+import { ObserverLiveSlot } from "../observer/ObserverLiveSlot";
 import { groupToolCallsByUserTurn } from "./toolGrouping";
 
 function GroupedToolCallsView({ message, messages = [] }: CopilotChatToolCallsViewProps) {
@@ -99,6 +100,8 @@ function OpenOpsChatMessageViewImpl({ messages = [], className, ...props }: Copi
             {messageElements}
             {/* 空会话冷启动引导；首条消息落地后此分支自然不再命中。 */}
             {renderedMessages.length === 0 ? <CopilotPresetQuestions /> : null}
+            {/* 旁观直播（无头诊断的实时正文）：直播正文永远在接管按钮之上。 */}
+            <ObserverLiveSlot localRunActive={isRunning} />
             {/* 告警接管挂点（armed 按钮/确认卡/结果卡）；vm 经 Context 下发，未启用时渲染 null。 */}
             <AlertTakeoverSlot />
             {interruptElement}

@@ -297,4 +297,60 @@ test("subscribeSse 关闭语义", async (suite) => {
     assert.ok(scheduledRef.current, "应排了重连退避");
     handle.close();
   });
+
+  await suite.test("无 id 行事件不推进 Last-Event-ID 游标（瞬态 delta 契约）", async (t) => {
+    const originalFetch = globalThis.fetch;
+    const originalSetTimeout = globalThis.setTimeout;
+    t.after(() => {
+      globalThis.fetch = originalFetch;
+      globalThis.setTimeout = originalSetTimeout;
+    });
+
+    const encoder = new TextEncoder();
+    const receivedIds: (number | null)[] = [];
+    const headers: (string | null)[] = [];
+    let secondFetchSignal: AbortSignal | undefined;
+    let calls = 0;
+    globalThis.fetch = ((_input: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      headers.push(new Headers(init?.headers).get("Last-Event-ID"));
+      if (calls === 1) {
+        // 实事件（id: 7）→ 瞬态事件（无 id 行）→ 流结束触发重连
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode('id: 7\nevent: openops\ndata: {"kind":"real"}\n\n'));
+            controller.enqueue(encoder.encode('event: openops\ndata: {"kind":"transient"}\n\n'));
+            controller.close();
+          },
+        });
+        return Promise.resolve(new Response(body, { status: 200 }));
+      }
+      secondFetchSignal = init?.signal as AbortSignal;
+      return new Promise<Response>((_resolve, reject) => {
+        secondFetchSignal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), {
+          once: true,
+        });
+      });
+    }) as typeof fetch;
+    const scheduledRef: { current?: () => void } = {};
+    globalThis.setTimeout = ((callback: TimerHandler) => {
+      scheduledRef.current = callback as () => void;
+      return { id: "retry" };
+    }) as unknown as typeof setTimeout;
+
+    const handle = subscribeSse("/events", {
+      onEvent: (_data, id) => { receivedIds.push(id); },
+    });
+    // 等首连读完两块并进入退避
+    for (let index = 0; index < 40 && !scheduledRef.current; index += 1) await flushMicrotasks();
+    assert.deepEqual(receivedIds, [7, null], "两个事件都应投递，瞬态事件 id 为 null");
+    assert.ok(scheduledRef.current, "流结束应排重连");
+    scheduledRef.current!();
+    for (let index = 0; index < 40 && calls < 2; index += 1) await flushMicrotasks();
+    assert.equal(calls, 2);
+    assert.deepEqual(headers, [null, "7"], "重连游标 = 最后一个带 id 的事件，不被无 id 事件推进");
+
+    handle.close();
+    await flushMicrotasks();
+  });
 });

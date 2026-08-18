@@ -6,6 +6,7 @@ import time
 
 from conftest import ADMIN_HEADERS, USER_HEADERS, create_instance, create_run, unwrap
 from app import event_stream_service
+from runtime import events
 
 
 def _start_task(client, run_id: str) -> None:
@@ -61,6 +62,28 @@ def test_sse_last_event_id_replays_later_events(client):
 
     payload = asyncio.run(_read_one_chunk(run["agent_run_id"], 1))
     assert payload["sequence"] > 1
+
+
+def test_sse_transient_event_has_no_id_line():
+    run_id = "run_transient_id_probe"
+
+    async def collect() -> tuple[str, str]:
+        gen = event_stream_service.stream(run_id, None)
+        try:
+            assert await asyncio.wait_for(anext(gen), timeout=1) == ": connected\n\n"
+            events.publish(run_id, events.envelope(run_id, "openops.task.started"))
+            events.publish(run_id, events.envelope(run_id, "openops.assistant.delta"))
+            regular = await asyncio.wait_for(anext(gen), timeout=1)
+            transient = await asyncio.wait_for(anext(gen), timeout=1)
+            return regular, transient
+        finally:
+            await gen.aclose()
+
+    regular, transient = asyncio.run(collect())
+    assert regular.startswith("id: 1\n")
+    assert all(not line.startswith("id:") for line in transient.splitlines())
+    assert transient.startswith("event: openops\n")
+    assert '"event_type": "openops.assistant.delta"' in transient
 
 
 def test_sse_stream_owner_isolation(client):
