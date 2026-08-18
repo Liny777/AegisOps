@@ -473,12 +473,17 @@ async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, 
         raise ApiError(Err.VALIDATION_FAILED, "server_url 不能为空")
     if req.transport and req.transport not in mcp_registry_client.MCP_TRANSPORTS:
         raise ApiError(Err.VALIDATION_FAILED, "transport 仅支持 jsonrpc / sse / streamable_http（29.9 §3.4）")
-    egress.check_mcp_egress(new_url)  # SSRF：人手填的 URL，运行时真出站（与注册同一道闸）
 
     latest = await assets.latest_mcp_version(mcp_id)
     manifest = (latest or {}).get("manifest_json") or {}
     old_url = str((row.get("endpoint_config_json") or {}).get("endpoint") or "")
     url_changed = new_url != old_url
+    # SSRF 只在 URL **变更**时校验（与注册同一道闸）：存量 URL 已在库里、不引入新出站风险；
+    # 无条件校验会把两条路堵死——① seed 占位行（http://mock 解析不了）连「只改描述」都 400
+    # （内网实锤 2026-08-18）；② 占位行修成真地址的自愈路径本身没问题（新地址会被校验），
+    # 但保存时旧地址先被拦就永远走不到。
+    if url_changed:
+        egress.check_mcp_egress(new_url)
     server_id = str(manifest.get("server_id") or row.get("display_name") or "")
 
     # ---- ① 推 Hub（仅确实来自上游的行；seed/手造行无上游对应，只改本地）----

@@ -2275,3 +2275,20 @@ def test_reconcile_ingest_stores_and_backfills_transport(client, monkeypatch):
     rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
     assert next(m for m in rows if m["mcp_id"] == mid)["transport"] == "sse"          # 存量回填
     assert next(m for m in rows if m["display_name"] == "new-with-transport")["transport"] == "jsonrpc"  # 建行即落
+
+
+def test_admin_mcp_update_unchanged_url_skips_egress(client, monkeypatch):
+    """URL 不变时**不**做 SSRF 校验（内网实锤 2026-08-18）：seed 占位行（http://mock 解析不了）
+    连「只改描述」都 400，把元数据编辑和「占位行修成真地址」的自愈路都堵死。存量 URL 已在库里、
+    不引入新出站风险；改了 URL 才校验新地址（test_admin_mcp_update_ssrf_blocked 锁另一半）。"""
+    mid, _vid = _seed_platform_mcp("ph-edit-mcp", "srv-ph", "http://mock")  # 占位 endpoint
+
+    async def never_discover(url, headers=None):
+        raise AssertionError("URL 未变不该重新发现")
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", never_discover)
+    out = unwrap(_admin_update_mcp(client, mid, "http://mock", description="改个描述"))
+    assert out["url_changed"] is False
+    man = _sql("select manifest_json->>'description' from sre_mcp_asset_version where mcp_id=%(m)s",
+               {"m": mid})[0][0]
+    assert man == "改个描述"
