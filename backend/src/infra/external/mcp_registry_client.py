@@ -447,6 +447,35 @@ async def delete_server(server_id: str) -> dict[str, Any]:
     return {"server_id": server_id, "deleted_by": "mock", "deleted_at": "2026-01-01 00:00:00"}
 
 
+async def update_server_config(server_id: str, *, server_url: str | None = None,
+                               description: str | None = None, version: str | None = None,
+                               category: str | None = None, tags: list[str] | None = None,
+                               transport: str | None = None) -> dict[str, Any]:
+    """修改 MCP Server 配置（29.9 §3.4 `POST /mcps/config/update`，PATCH 语义）→ data{server_id, …}。
+
+    body 只带非 None 字段（§3.4：不传=不修改）——调用方想改哪项就传哪项，None 恒不下发。
+    权限与错误分类同 register/delete：系统级需超管（1003）；1002=server 不存在/无权限；
+    1005=transport 非法；"http" 404=对端接口未上线；"network"=不可达可重试。
+    mock：合成成功信封（离线端到端闭环）。"""
+    body: dict[str, Any] = {"server_id": server_id}
+    for k, v in (("server_url", server_url), ("description", description), ("version", version),
+                 ("category", category), ("tags", tags), ("transport", transport)):
+        if v is not None:
+            body[k] = v
+    if os.getenv("OPENOPS_MCPREGISTRY", "mock").lower() == "real":
+        base = _registry_base()
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(**console_client_kwargs(base, "OPENOPS_MCPREGISTRY_COOKIE")) as cli:
+                r = await cli.post(f"{base}{console_api_prefix()}/mcps/config/update", json=body)
+        except httpx.HTTPError as e:
+            raise McpRegistryError("network", f"MCP Registry 不可达：{type(e).__name__}: {e}") from None
+        raise_biz_or_http(r, McpRegistryError)
+        return unwrap_console_data(r.json(), McpRegistryError)
+    return {**body, "status": "active", "updated_by": "mock"}
+
+
 async def get_mcp_detail(server_id: str) -> dict[str, Any]:
     """MCP Server 详情（29.3 §3.3 `POST /mcps/detail/query`）→ {description, server_url, transport,
     version, category, tags, status, …}。供插件页「说明」展示真详情；只在用户点开时调（会递增 access_count）。"""

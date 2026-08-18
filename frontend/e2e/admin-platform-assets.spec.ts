@@ -130,3 +130,28 @@ test("MCP 服务：上游改名显性化 + 同步 + 待标注直达 Tool 标注"
   await expect(page.getByRole("main").getByText("Tool 标注")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "注册 MCP" })).toBeVisible();
 });
+
+test("MCP 服务：编辑 URL → 全量拦停提示 + 右上角邮箱直达标注", async ({ page }) => {
+  await gotoAdmin(page, "mcps");
+
+  // 编辑弹窗：预填 + 名称锁定（复合键左半不许改）
+  await page.locator('span[title="编辑"]').first().click();
+  await expect(page.getByText("编辑平台 MCP")).toBeVisible();
+  await expect(page.getByText("服务名称（不可改）")).toBeVisible();
+  const urlInput = page.getByPlaceholder("https://cmdb.internal/mcp");
+  await expect(urlInput).not.toHaveValue("https://");  // 预填了当前 endpoint
+
+  // 改 URL → 破坏性后果警示条出现（提交前必须可见）
+  await urlInput.fill("https://moved.internal.example.com/mcp");
+  await expect(page.getByText(/该服务全部工具会被拦停/)).toBeVisible();
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/已全部拦停待重新标注/)).toBeVisible({ timeout: 10_000 });
+
+  // 右上角邮箱：角标出现 → 点开 → 点 server 行 → 直达该 server 的 Tool 标注钻取
+  const mailbox = page.locator('div[title="工具待标注提醒"]');
+  await expect(mailbox).toBeVisible();
+  await mailbox.click();
+  await expect(page.getByText(/工具待标注（\d+）/)).toBeVisible();
+  await page.getByText(/URL 变更重置 \d+/).first().click();
+  await expect(page.getByRole("main").getByText(/· Tool 标注/)).toBeVisible({ timeout: 10_000 });
+});

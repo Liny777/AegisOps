@@ -294,6 +294,12 @@ export interface OpenOpsApi {
   adminRegisterMcp(input: { server_name: string; server_url: string; description?: string; version?: string; category?: string; tags?: string[]; transport?: string }): Promise<{ server_id: string; action: string; merged: number }>;
   /** 删除平台 MCP：回删注册表 → 本地软删 → 模板草稿引用级联清理。 */
   adminDeleteMcp(mcpId: string): Promise<void>;
+  /** 编辑平台 MCP 配置（29.9 §3.4）：推 Hub → 更新本地；改 URL 会刷新工具目录并全量拦停待重标。 */
+  adminUpdateMcp(mcpId: string, input: { server_url: string; description?: string; version?: string; category?: string; tags?: string[]; transport?: string }): Promise<{ mcp_id: string; upstream: string; url_changed: boolean; tools: { created?: number; schema_changed?: number; unchanged?: number; removed?: string[]; blocked?: number; refresh_error?: string } }>;
+  /** 管理面平台 MCP 原始行（编辑弹窗预填用；表格 cells 只有展示文本）。 */
+  adminListMcpsFull(): Promise<Record<string, unknown>[]>;
+  /** 右上角「待标注」邮箱：按 server 归并的待标注工具数（新发现 + URL 变更重置），现算非通知表。 */
+  adminAnnotationInbox(): Promise<{ total: number; items: { display_name: string; mcp_id: string | null; unannotated: number; url_reset: number; pending: number }[] }>;
   // init
   getTemplates(): Promise<Template[]>;
   getWorkspaces(): Promise<Workspace[]>;
@@ -940,7 +946,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "MCP 服务",
         primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-        cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "删除", width: "56px" }],
+        cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
         rows: d.items.map((r) => {
           // 上游改名后本地名**刻意不跟随**（它是 server::tool 复合键的左半，跟着改会断掉全部模板绑定）。
           // 所以必须把「上游现名」单列出来：不一致时标 warning，让管理员知道改过名而不是我们没同步。
@@ -961,6 +967,7 @@ const realApi: OpenOpsApi = {
                 ? { text: `${pending} 个`, kind: "action" as const, onClickKey: "mcp-annotate" }
                 : { text: "—" },
               { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+              { text: "编辑", kind: "action" as const, onClickKey: "mcp-edit" },
               { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
             ],
           };
@@ -1244,6 +1251,35 @@ const realApi: OpenOpsApi = {
   async adminDeleteMcp(mcpId) {
     await apiFetch(`/openops/v1/admin/mcps/${mcpId}`, { method: "DELETE" });
   },
+  async adminUpdateMcp(mcpId, input) {
+    const d = await apiFetch<Record<string, unknown>>(`/openops/v1/admin/mcps/${mcpId}`, {
+      method: "PUT",
+      body: { client_request_id: crid(), transport: "streamable_http", ...input },
+    });
+    return {
+      mcp_id: String(d.mcp_id ?? mcpId),
+      upstream: String(d.upstream ?? ""),
+      url_changed: Boolean(d.url_changed),
+      tools: (d.tools ?? {}) as { created?: number; schema_changed?: number; unchanged?: number; removed?: string[]; blocked?: number; refresh_error?: string },
+    };
+  },
+  async adminListMcpsFull() {
+    const d = await apiFetch<AssetPageDto>(`/openops/v1/admin/mcps${assetQs({ page: 1, pageSize: 100 })}`);
+    return d.items;
+  },
+  async adminAnnotationInbox() {
+    const d = await apiFetch<Record<string, unknown>>("/openops/v1/admin/annotation-inbox");
+    return {
+      total: Number(d.total ?? 0),
+      items: ((d.items ?? []) as Record<string, unknown>[]).map((i) => ({
+        display_name: String(i.display_name ?? ""),
+        mcp_id: i.mcp_id ? String(i.mcp_id) : null,
+        unannotated: Number(i.unannotated ?? 0),
+        url_reset: Number(i.url_reset ?? 0),
+        pending: Number(i.pending ?? 0),
+      })),
+    };
+  },
   async getSandboxCfg() {
     const rows = await apiFetch<{ key: string; val: unknown; desc: string }[]>("/openops/v1/admin/sandbox");
     return rows.map((r) => ({ key: r.key, desc: r.desc, val: String(r.val) }));
@@ -1513,6 +1549,53 @@ const mockApi: OpenOpsApi = {
     const i = M.adminTables.mcps.rows.findIndex((r) => r.id === id);
     if (i >= 0) M.adminTables.mcps.rows.splice(i, 1);
     return delay(undefined as unknown as void);
+  },
+  adminUpdateMcp: (mcpId, input) => {
+    const row = M.adminTables.mcps.rows.find((r) => r.id === mcpId);
+    if (!row) return Promise.reject(new Error("MCP 不存在"));
+    const urlChanged = String(row.cells[2]?.text) !== input.server_url;
+    row.cells[2] = { text: input.server_url, mono: true, wrap: true };
+    row.cells[3] = { text: input.transport || "streamable_http", mono: true };
+    if (urlChanged) {
+      // 镜像后端「全量重置全量拦」：待标注列变成动作入口，邮箱角标随 adminAnnotationInbox 现算
+      row.cells[4] = { text: "3 个", kind: "action", onClickKey: "mcp-annotate" };
+      M.mockUrlResetServers.add(String(row.cells[0]?.text));
+    }
+    return delay({
+      mcp_id: mcpId, upstream: "updated", url_changed: urlChanged,
+      tools: urlChanged ? { created: 1, schema_changed: 0, unchanged: 2, removed: ["old_tool"], blocked: 3 } : {},
+    });
+  },
+  adminListMcpsFull: () => delay(M.adminTables.mcps.rows.map((r) => ({
+    mcp_id: r.id,
+    display_name: String(r.cells[0]?.text ?? ""),
+    endpoint: String(r.cells[2]?.text ?? ""),
+    transport: String(r.cells[3]?.text ?? "streamable_http"),
+    description: "", version: "1.0.0", category: "", tags: [] as string[],
+  }))),
+  adminAnnotationInbox: () => {
+    // 现算口径与后端一致：未标注（annotation_id null）+ URL 变更重置（mock 用集合模拟）
+    const byServer = new Map<string, { unannotated: number; url_reset: number }>();
+    for (const t of M.adminMcpToolsRaw) {
+      const name = String(t.mcp_display_name);
+      const slot = byServer.get(name) ?? { unannotated: 0, url_reset: 0 };
+      if (t.annotation_id == null) slot.unannotated += 1;
+      byServer.set(name, slot);
+    }
+    for (const name of M.mockUrlResetServers) {
+      const slot = byServer.get(name) ?? { unannotated: 0, url_reset: 0 };
+      slot.url_reset += 3;
+      byServer.set(name, slot);
+    }
+    const items = [...byServer.entries()]
+      .filter(([, p]) => p.unannotated + p.url_reset > 0)
+      .map(([display_name, p]) => {
+        const row = M.adminTables.mcps.rows.find((r) => String(r.cells[0]?.text) === display_name);
+        return { display_name, mcp_id: row ? String(row.id) : null,
+                 unannotated: p.unannotated, url_reset: p.url_reset, pending: p.unannotated + p.url_reset };
+      })
+      .sort((a, b) => a.display_name.localeCompare(b.display_name));
+    return delay({ total: items.reduce((s, i) => s + i.pending, 0), items });
   },
   bindAsset: (instanceId) => delay(undefined as unknown as void).then(() => invalidateAvailableSkills(instanceId)),
   unbindAsset: () => delay(undefined as unknown as void).then(() => invalidateAvailableSkills()),

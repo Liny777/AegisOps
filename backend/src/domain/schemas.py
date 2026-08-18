@@ -85,6 +85,22 @@ class RegisterMcpRequest(BaseModel):
     manifest_json: dict[str, Any] = Field(default_factory=dict)
 
 
+class AdminUpdateMcpRequest(BaseModel):
+    """管理台编辑**平台级** MCP 配置（29.9 §3.4 mcps/config/update）。
+
+    不含 server_name：display_name 是复合键 `{server}::{tool}` 的左半 + 上游 server_id 兼作主键，
+    两头都不许改（改名=断掉全部模板绑定，见 domain/tool_key 头注释）。
+    弹窗全量预填后提交 → PUT 语义（空串=清空）；status/offline 下线流程不在此（另有删除）。"""
+
+    client_request_id: str = Field(min_length=1)
+    server_url: str = Field(min_length=1)
+    description: str = ""
+    version: str = ""
+    category: str = ""
+    tags: list[str] | None = None
+    transport: str = Field(default="streamable_http", pattern="^(jsonrpc|sse|streamable_http)$")
+
+
 class AdminRegisterMcpRequest(BaseModel):
     """管理台注册**平台级** MCP（29.9 §3.1 mcps/register）。与用户面 RegisterMcpRequest 分开：
     字段词汇随上游（server_name 兼作 server_id / server_url / transport），且 `is_system` 恒为

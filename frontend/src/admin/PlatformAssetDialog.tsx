@@ -18,19 +18,33 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
  * 用户面当初移除了这两项）；mcp 侧字段随上游词汇（server_name 兼作 server_id / server_url / transport）。
  * 两者都需要调用者在 Skill Hub / MCP Registry 侧是超级管理员，否则上游回 1003（我们转 403 并说清）。
  */
-export function PlatformAssetDialog({ kind, onClose, onSaved }: {
+/** 编辑态入参（仅 mcp）：预填当前配置；名称锁定（复合键左半 + 上游 server_id，两头都不许改）。 */
+export interface McpEditing {
+  mcpId: string;
+  display_name: string;
+  server_url: string;
+  description?: string;
+  version?: string;
+  category?: string;
+  tags?: string[];
+  transport?: string;
+}
+
+export function PlatformAssetDialog({ kind, editing, onClose, onSaved }: {
   kind: "skill" | "mcp";
+  editing?: McpEditing;
   onClose: () => void;
   onSaved: (msg: string) => void;
 }) {
   const [file, setFile] = useState<File | null>(null);
-  const [category, setCategory] = useState("");
-  const [tagsText, setTagsText] = useState("");
-  const [name, setName] = useState("");
-  const [url, setUrl] = useState("https://");
-  const [desc, setDesc] = useState("");
-  const [version, setVersion] = useState("1.0.0");
-  const [transport, setTransport] = useState<string>("streamable_http");
+  const [category, setCategory] = useState(editing?.category ?? "");
+  const [tagsText, setTagsText] = useState((editing?.tags ?? []).join(","));
+  const [name, setName] = useState(editing?.display_name ?? "");
+  const [url, setUrl] = useState(editing?.server_url ?? "https://");
+  const [desc, setDesc] = useState(editing?.description ?? "");
+  const [version, setVersion] = useState(editing?.version || "1.0.0");
+  const [transport, setTransport] = useState<string>(editing?.transport || "streamable_http");
+  const urlChanged = Boolean(editing) && url.trim() !== editing!.server_url;
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -54,6 +68,18 @@ export function PlatformAssetDialog({ kind, onClose, onSaved }: {
           const base = r.action === "version_updated" ? `已更新「${r.display_name}」` : `已上传「${r.display_name}」`;
           return r.merged > 0 ? `${base}，并清理了 ${r.merged} 条同名旧记录` : base;
         })
+      : editing
+      ? api.adminUpdateMcp(editing.mcpId, {
+          server_url: url.trim(), description: desc.trim(),
+          version: version.trim(), category: category.trim(), tags, transport,
+        }).then((r) => {
+          if (!r.url_changed) return `已更新「${editing.display_name}」的配置`;
+          const t = r.tools;
+          const parts = [`新增 ${t.created ?? 0}`, `变更 ${t.schema_changed ?? 0}`, `移除 ${(t.removed ?? []).length}`];
+          const tail = t.refresh_error ? `；⚠ 新地址工具发现失败（${t.refresh_error}），已拦停旧工具面，请稍后点「同步」重试`
+            : `（${parts.join(" / ")}）`;
+          return `已更新「${editing.display_name}」的地址，该服务 ${t.blocked ?? 0} 个工具已全部拦停待重新标注${tail}`;
+        })
       : api.adminRegisterMcp({
           server_name: name.trim(), server_url: url.trim(), description: desc.trim(),
           version: version.trim(), category: category.trim(), tags, transport,
@@ -67,7 +93,7 @@ export function PlatformAssetDialog({ kind, onClose, onSaved }: {
     <div onClick={onClose} style={{ position: "fixed", inset: 0, zIndex: 60, background: "rgba(20,24,31,.42)", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: 460, maxHeight: "86vh", overflowY: "auto", background: "#fff", borderRadius: radius.modal, padding: "22px 22px 18px" }}>
         <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14 }}>
-          {kind === "skill" ? "上传平台 Skill" : "注册平台 MCP"}
+          {kind === "skill" ? "上传平台 Skill" : editing ? "编辑平台 MCP" : "注册平台 MCP"}
         </div>
 
         {kind === "skill" ? (
@@ -90,11 +116,24 @@ export function PlatformAssetDialog({ kind, onClose, onSaved }: {
           </>
         ) : (
           <>
-            <SectionLabel>服务名称（兼作 server_id，须唯一）</SectionLabel>
-            <TextInput value={name} onChange={setName} placeholder="如：cmdb-mcp-server" mono />
+            <SectionLabel>{editing ? "服务名称（不可改）" : "服务名称（兼作 server_id，须唯一）"}</SectionLabel>
+            {editing ? (
+              /* 名称是复合键 `{server}::{tool}` 左半 + 上游 server_id：改了会断掉全部模板绑定，锁定 */
+              <div title="服务名称是绑定身份，不可修改" style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textSubtle, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box", fontFamily: "ui-monospace, monospace" }}>
+                {name}
+              </div>
+            ) : (
+              <TextInput value={name} onChange={setName} placeholder="如：cmdb-mcp-server" mono />
+            )}
             <div style={{ height: 12 }} />
             <SectionLabel>Server URL</SectionLabel>
             <TextInput value={url} onChange={setUrl} placeholder="https://cmdb.internal/mcp" mono />
+            {urlChanged ? (
+              <div style={{ display: "flex", gap: 7, alignItems: "flex-start", marginTop: 7, padding: "8px 10px", background: "#fdf4e7", border: "1px solid #f0d9b2", borderRadius: radius.md, fontSize: 11.5, lineHeight: 1.6, color: "#8a5a12" }}>
+                <Icon name="alert-triangle" size={14} color="#c07f1d" style={{ marginTop: 1 }} />
+                <span>URL 变更视作换了一台服务器：保存后将按新地址重新发现工具，<b>该服务全部工具会被拦停</b>，需逐个重新标注后才恢复可用（消失的工具将被移除）。</span>
+              </div>
+            ) : null}
             <div style={{ height: 12 }} />
             <SectionLabel>传输协议</SectionLabel>
             <select value={transport} onChange={(e) => setTransport(e.target.value)}
@@ -124,6 +163,8 @@ export function PlatformAssetDialog({ kind, onClose, onSaved }: {
         <div style={{ marginTop: 12, fontSize: 11.5, color: color.textSubtle, lineHeight: 1.6 }}>
           {kind === "skill"
             ? <>以<b>平台级</b>发布（对全部用户可见）。ZIP 内须含 SKILL.md，其 name 为技能原始名且不得以 system-/user- 开头。若平台已有同名 Skill，上传后会自动收敛为一条记录（旧记录一并清理）。</>
+            : editing
+            ? <>修改会同步推送到 MCP Registry（29.9 §3.4）。<b>改 URL 会重置该服务全部工具标注并拦停</b>——直到管理员重新逐个标注；模板绑定保留，重标完成后自动恢复，无需重新勾选。</>
             : <>以<b>平台级</b>注册（对全部用户可见）。同名重新注册为<b>原地更新</b>：仅刷新地址与元信息，已有工具标注与模板绑定保持不变。</>}
           <br />需要在 {kind === "skill" ? "Skill Hub" : "MCP Registry"} 侧具备超级管理员权限，否则会被上游拒绝（403）。
         </div>
@@ -133,7 +174,8 @@ export function PlatformAssetDialog({ kind, onClose, onSaved }: {
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
           <Button variant="secondary" onClick={onClose} disabled={busy}>取消</Button>
           <Button icon={busy ? "loader-2" : undefined} disabled={!ok || busy} onClick={submit}>
-            {busy ? (kind === "skill" ? "上传中…" : "注册中…") : (kind === "skill" ? "上传" : "注册")}
+            {busy ? (kind === "skill" ? "上传中…" : editing ? "保存中…" : "注册中…")
+                  : (kind === "skill" ? "上传" : editing ? "保存" : "注册")}
           </Button>
         </div>
       </div>

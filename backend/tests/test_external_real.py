@@ -1526,3 +1526,49 @@ async def test_ext_skillhub_list_sends_service_user_id(monkeypatch):
     cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok_body))
     await skill_hub_client.list_skills("0026demo01")       # 真工号 → 原样下发
     assert cap[0][2]["json"]["user_id"] == "0026demo01"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_config_update_posts_patch_body(monkeypatch):
+    """config/update（29.9 §3.4）：PATCH 语义 body 只带非 None 字段；错误三分类；mock 不出网。"""
+    import httpx
+    import pytest as _pytest
+
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+
+    ok = {"code": 0, "message": "ok", "data": {"server_id": "svc-a", "server_url": "https://new/mcp"}}
+    cap = _install(monkeypatch, lambda m, u, k: _Resp(200, ok))
+    out = await mcp_registry_client.update_server_config("svc-a", server_url="https://new/mcp",
+                                                         transport="sse")
+    method, url, kwargs = cap[0]
+    assert method == "POST" and url == "https://console/obsv/agent/management/mcps/config/update"
+    # 只带 server_id + 显式给的两项；None 字段（description/version/category/tags）不下发
+    assert kwargs["json"] == {"server_id": "svc-a", "server_url": "https://new/mcp", "transport": "sse"}
+    assert out["server_url"] == "https://new/mcp"
+
+    for status, code in ((200, 1002), (400, 1003), (400, 1005)):
+        _install(monkeypatch, lambda m, u, k, s=status, c=code: _Resp(s, {"code": c, "message": "no"}))
+        with _pytest.raises(mcp_registry_client.McpRegistryError) as e:
+            await mcp_registry_client.update_server_config("svc-a", server_url="https://x/mcp")
+        assert e.value.kind == "biz" and e.value.biz_code == code
+
+    def _boom(m, u, k):
+        raise httpx.ConnectError("refused")
+
+    _install(monkeypatch, _boom)
+    with _pytest.raises(mcp_registry_client.McpRegistryError) as en:
+        await mcp_registry_client.update_server_config("svc-a", server_url="https://x/mcp")
+    assert en.value.kind == "network"
+
+    # mock 分支不出网
+    monkeypatch.delenv("OPENOPS_MCPREGISTRY", raising=False)
+
+    def _never(m, u, k):
+        raise AssertionError("mock 模式不该出网")
+
+    _install(monkeypatch, _never)
+    r = await mcp_registry_client.update_server_config("m1", server_url="https://m/mcp")
+    assert r["server_id"] == "m1"

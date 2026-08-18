@@ -103,10 +103,13 @@ async def sync_catalog_tool(
     DDL 对 (mcp_version_id, tool_name) 有绝对唯一索引 → 目录行保持一行、tool_catalog_id 稳定，
     管理员在同一行上重新标注；历史标注行软删保留（审计可回放）。返回 unchanged / created / schema_changed。
     """
+    # 不过滤 deleted_at：ux_mcp_tool_catalog_name 是绝对唯一索引（软删行也占位）——被缺席清除
+    # （remove_absent_catalog_tools）软删过的工具若在新 URL 重新出现，必须**复活**原行而非 INSERT
+    # （否则撞唯一约束 500，同 save_annotation 的复活语义）。唯一索引保证至多一行。
     row = await q_one(
         """
-        select tool_catalog_id, schema_hash from sre_mcp_tool_catalog
-        where mcp_version_id=%(v)s and tool_name=%(n)s and deleted_at is null
+        select tool_catalog_id, schema_hash, deleted_at from sre_mcp_tool_catalog
+        where mcp_version_id=%(v)s and tool_name=%(n)s
         """,
         {"v": mcp_version_id, "n": tool_name},
     )
@@ -120,6 +123,19 @@ async def sync_catalog_tool(
             """,
             {"t": str(uuid.uuid4()), "v": mcp_version_id, "n": tool_name, "d": description,
              "s": jsonb(input_schema), "h": schema_hash},
+        )
+        return "created"
+    if row.get("deleted_at") is not None:
+        # 复活：从目录视角这是「重新出现的工具」→ 按 created 计；标注**不**复活（消失期间的旧标注
+        # 不可信，回到未标注/由调用方拦停的口径，管理员重标后才放行）。
+        await exec1(
+            """
+            update sre_mcp_tool_catalog set description=%(d)s, input_schema_json=%(s)s, schema_hash=%(h)s,
+                   discovered_at=now(), deleted_at=null, status='active',
+                   last_updated_by='system', last_update_date=now()
+            where tool_catalog_id=%(t)s
+            """,
+            {"t": row["tool_catalog_id"], "d": description, "s": jsonb(input_schema), "h": schema_hash},
         )
         return "created"
     if row["schema_hash"] == schema_hash:
@@ -141,6 +157,48 @@ async def sync_catalog_tool(
         {"t": row["tool_catalog_id"]},
     )
     return "schema_changed"
+
+
+async def list_live_catalog_tools(mcp_version_id: str) -> list[dict[str, Any]]:
+    """该版本全部 live 目录行（tool_catalog_id + tool_name）：URL 变更后的缺席清扫与全量拦停用。"""
+    return await q_all(
+        """
+        select tool_catalog_id, tool_name from sre_mcp_tool_catalog
+        where mcp_version_id=%(v)s and deleted_at is null
+        """,
+        {"v": mcp_version_id},
+    )
+
+
+async def remove_absent_catalog_tools(mcp_version_id: str, keep_names: set[str]) -> list[str]:
+    """缺席清除（管理台改 URL 后的工具刷新用）：该版本 live 目录行中 tool_name 不在 keep_names 的
+    → 软删目录行 + 软删其标注。返回被移除的工具名（审计/响应 summary 用）。
+
+    只软删不物删：目录行是审计资产；同名工具将来重新出现时由 sync_catalog_tool 的复活分支接住
+    （软删行占着绝对唯一索引，INSERT 会撞约束——sync 已按 save_annotation 同款复活语义处理）。
+    调用方必须在**发现成功**后才调（拿到了完整的新工具列表才有资格判缺席，防瞬时故障误清全部）。"""
+    rows = await list_live_catalog_tools(mcp_version_id)
+    removed: list[str] = []
+    for r in rows:
+        if str(r["tool_name"]) in keep_names:
+            continue
+        await exec1(
+            """
+            update sre_mcp_tool_catalog set deleted_at=now(), status='deleted',
+                   last_updated_by='system', last_update_date=now()
+            where tool_catalog_id=%(t)s and deleted_at is null
+            """,
+            {"t": r["tool_catalog_id"]},
+        )
+        await exec1(
+            """
+            update sre_mcp_tool_annotation set deleted_at=now(), last_updated_by='system', last_update_date=now()
+            where tool_catalog_id=%(t)s and deleted_at is null
+            """,
+            {"t": r["tool_catalog_id"]},
+        )
+        removed.append(str(r["tool_name"]))
+    return removed
 
 
 async def save_annotation(

@@ -151,6 +151,20 @@ Cookie 透传（env cookie 仅本地调试缝）+ 浏览器 UA + `IAM-Client-Ip`
      MCP 的地址是管理员自己录的基础设施 URL，对录入者藏他自己填的地址没有意义、反而没法核对排障；
      占位资产要能看见才能删。**用户面脱敏口径不变**（有测试双向锁死）。
   异常类型：`ConsoleError`（基类，在 `mcp_registry_client`）→ `SkillHubError` / `McpRegistryError`。
+- **管理面编辑 MCP 配置 + URL 变更全量重审（2026-08-18）**：`PUT /admin/mcps/{id}` 推 Hub §3.4
+  `mcps/config/update`（PATCH 语义只带非 None 字段；1002=上游已无此 server → 拒绝并提示先重注册，
+  http 404 → 降级只改本地）→ 更新本地 endpoint + version manifest（不动 display_name/mcp_id/
+  mcp_version_id 三铁律）→ **URL 真变了**才做工具联动：按新地址 discover → sync（复活分支：被缺席
+  清除软删过的同名工具重新出现时复活原行，防撞绝对唯一索引 500）→ 发现成功才 `remove_absent_catalog_tools`
+  （软删消失工具的目录+标注）→ **该 server 全部 live 工具写 blocked 标注**（reason=URL_RESET_REASON，
+  拍板口径：URL 变了视作换了一台服务器，schema 没变也不免审）。
+  为什么写 blocked 行而不是软删标注：动态平台工具对「标注缺失」有合成 allowed 的豁免
+  （tool_gateway origin=dynamic），软删=放行；blocked 行经 Gateway 热读**立即**拦（含进行中任务）。
+  刻意不调 renormalize_drafts：blocked 是「待重标」非终态，扫掉 draft 引用重标完还得重勾；
+  重标（save_annotation 复活/覆写）→ 热读立即放行，模板绑定原样恢复。
+  管理台右上角「待标注」邮箱（`GET /admin/annotation-inbox`）：派生状态现算（unannotated ∪
+  url_reset 按 server 分组），标完自动消失，无通知表无已读态；与列表「待标注」列共用
+  `_pending_by_server()` 单一口径。
 - **上游改名/改 URL 的同步（2026-08-17，内网实锤）**：同事在 Hub 控制台上改了某个已存在 server 的
   `server_url` + `server_name`（`server_id` 不变），我们这边管理台仍显示旧名旧址、Agent 侧该 server
   的工具也失效。根因不是查不到，是 **ingest 只有 create-if-missing、没有 update 路径**（唯一的写是

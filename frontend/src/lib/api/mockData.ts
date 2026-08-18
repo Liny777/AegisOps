@@ -557,7 +557,7 @@ export const adminTables: Record<string, AdminTableData> = {
   mcps: {
     title: "MCP 服务",
     primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-    cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "删除", width: "56px" }],
+    cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
     rows: [
       // endpoint 用真实长度的 URL（管理面不脱敏）：mock 也得能暴露"列太窄/被截断"这类问题
       { id: "mcp_omodel_query", cells: [
@@ -565,6 +565,7 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "https://mcpgateway.internal.example.com/servers/omodel-mcp-server/mcp", mono: true, wrap: true },
         { text: "streamable_http", mono: true }, { text: "—" },
         { text: "active", kind: "badge", tone: "good" },
+        { text: "编辑", kind: "action", onClickKey: "mcp-edit" },
         { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
       // 上游已改名的一行：本地名（绑定用）刻意不跟随，上游现名标 warning + 有待标注工具
       { id: "mcp_alarm_server", cells: [
@@ -574,6 +575,7 @@ export const adminTables: Record<string, AdminTableData> = {
         { text: "streamable_http", mono: true },
         { text: "2 个", kind: "action", onClickKey: "mcp-annotate" },
         { text: "active", kind: "badge", tone: "good" },
+        { text: "编辑", kind: "action", onClickKey: "mcp-edit" },
         { text: "删除", kind: "action", onClickKey: "mcp-delete" } ] },
     ],
   },
@@ -598,6 +600,9 @@ export const adminTables: Record<string, AdminTableData> = {
  * opsdfx-mcp）各有 allowed 的同名 query_resource + recover_execute（复现内网事故），外加各一个
  * 独有工具与一条未标注行。前端按「server::tool」复合键分组，勾 A 家不再联动 B 家。
  * adminTables["mcp-tools"] 亦由此派生，避免两份数据漂移。 */
+/** mock 里被「改 URL 全量拦停」过的 server（adminUpdateMcp 写入、adminAnnotationInbox 现算读取）。 */
+export const mockUrlResetServers = new Set<string>();
+
 export const adminMcpToolsRaw: Record<string, unknown>[] = [
   // 上游改名那台（本地绑定名仍是 alarm-server）名下两个**未标注**工具：对应 adminTables.mcps
   // 那行的「待标注 2 个」，让 MCP 服务页 → Tool 标注 的直达路径在 mock 下也有内容可验。
