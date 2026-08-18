@@ -68,7 +68,8 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
    后台 MCP 发现失败会在日志/活动栏现形（TOOL_DISCOVERY_EMPTY）；scope 侧另有快照兜底
    （omodel_request_id=snapshot-fallback，ctx degraded=true）。
 5. **完成通知**（2026-08-16）：completed 收割后 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
-   `OPENOPS_WEB_BASE_URL` 会话链接；未配=不发；failed/skipped 不通知——清单可见）。
+   `OPENOPS_WEB_BASE_URL` 会话链接；未配=不发；failed/skipped 不通知——清单可见，2026-08-18 复议维持）。
+   全链日志留痕：grep `[alerts][notify]` 看派发，logger `openops.welink` 发送中/已发送/Failed 三态。
 6. agent_result（已恢复/已升级）仅当 RCA 有结构化结论时回填；resolved 告警只落库不驱动状态机；
    `alert_run_idle_ttl_minutes` 旋钮预留未实现（平台 30min idle 回收兜底）。
 
