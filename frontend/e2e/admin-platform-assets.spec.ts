@@ -155,3 +155,14 @@ test("MCP 服务：编辑 URL → 全量拦停提示 + 右上角邮箱直达标�
   await page.getByText(/URL 变更重置 \d+/).first().click();
   await expect(page.getByRole("main").getByText(/· Tool 标注/)).toBeVisible({ timeout: 10_000 });
 });
+
+test("MCP 服务：刷新工具 → confirm → 计数 toast + 待标注联动", async ({ page }) => {
+  await gotoAdmin(page, "mcps");
+  page.once("dialog", (d) => {
+    expect(d.message()).toContain("重新发现");
+    void d.accept();
+  });
+  await page.locator('span[title="刷新工具"]').first().click();
+  await expect(page.getByText(/工具已刷新：新增 \d+ \/ 变更 \d+ \/ 移除 \d+ \/ 未变 \d+/))
+    .toBeVisible({ timeout: 10_000 });
+});

@@ -305,6 +305,8 @@ export interface OpenOpsApi {
   adminUpdateMcp(mcpId: string, input: { server_url: string; description?: string; version?: string; category?: string; tags?: string[]; transport?: string }): Promise<{ mcp_id: string; upstream: string; url_changed: boolean; tools: { created?: number; schema_changed?: number; unchanged?: number; removed?: string[]; blocked?: number; refresh_error?: string } }>;
   /** 管理面平台 MCP 原始行（编辑弹窗预填用；表格 cells 只有展示文本）。 */
   adminListMcpsFull(): Promise<Record<string, unknown>[]>;
+  /** 手动刷新某 MCP 的工具目录：老工具清除、新工具入库待标注（改 URL 时发现失败后的补救入口）。 */
+  adminRefreshMcpTools(mcpId: string): Promise<{ created: number; schema_changed: number; unchanged: number; removed: string[] }>;
   /** 右上角「待标注」邮箱：按 server 归并的待标注工具数（新发现 + URL 变更重置），现算非通知表。 */
   adminAnnotationInbox(): Promise<{ total: number; items: { display_name: string; mcp_id: string | null; unannotated: number; url_reset: number; pending: number }[] }>;
   // init
@@ -959,7 +961,7 @@ const realApi: OpenOpsApi = {
       return {
         title: "MCP 服务",
         primary: { label: "注册 MCP", icon: "plus", actionKey: "register-mcp" },
-        cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
+        cols: [{ label: "服务名称（绑定用）", width: "190px" }, { label: "上游现名", width: "150px" }, { label: "endpoint" }, { label: "传输", width: "126px" }, { label: "待标注", width: "78px" }, { label: "状态", width: "80px" }, { label: "刷新", width: "72px" }, { label: "编辑", width: "48px" }, { label: "删除", width: "56px" }],
         rows: d.items.map((r) => {
           // 上游改名后本地名**刻意不跟随**（它是 server::tool 复合键的左半，跟着改会断掉全部模板绑定）。
           // 所以必须把「上游现名」单列出来：不一致时标 warning，让管理员知道改过名而不是我们没同步。
@@ -980,6 +982,7 @@ const realApi: OpenOpsApi = {
                 ? { text: `${pending} 个`, kind: "action" as const, onClickKey: "mcp-annotate" }
                 : { text: "—" },
               { text: String(r.status), kind: "badge" as const, tone: r.status === "active" ? "good" as const : "neutral" as const },
+              { text: "刷新工具", kind: "action" as const, onClickKey: "mcp-refresh-tools" },
               { text: "编辑", kind: "action" as const, onClickKey: "mcp-edit" },
               { text: "删除", kind: "action" as const, onClickKey: "mcp-delete" },
             ],
@@ -1274,6 +1277,15 @@ const realApi: OpenOpsApi = {
       upstream: String(d.upstream ?? ""),
       url_changed: Boolean(d.url_changed),
       tools: (d.tools ?? {}) as { created?: number; schema_changed?: number; unchanged?: number; removed?: string[]; blocked?: number; refresh_error?: string },
+    };
+  },
+  async adminRefreshMcpTools(mcpId) {
+    const d = await apiFetch<Record<string, unknown>>(
+      `/openops/v1/admin/mcps/${mcpId}:refresh-tools`, { method: "POST", body: {} });
+    return {
+      created: Number(d.created ?? 0), schema_changed: Number(d.schema_changed ?? 0),
+      unchanged: Number(d.unchanged ?? 0),
+      removed: Array.isArray(d.removed) ? (d.removed as string[]) : [],
     };
   },
   async adminListMcpsFull() {
@@ -1587,6 +1599,13 @@ const mockApi: OpenOpsApi = {
     transport: String(r.cells[3]?.text ?? "streamable_http"),
     description: "", version: "1.0.0", category: "", tags: [] as string[],
   }))),
+  adminRefreshMcpTools: (mcpId) => {
+    const row = M.adminTables.mcps.rows.find((r) => r.id === mcpId);
+    if (!row) return Promise.reject(new Error("MCP 不存在"));
+    // 镜像后端：老工具清除、新工具待标注 → 待标注列变动作入口
+    row.cells[4] = { text: "1 个", kind: "action", onClickKey: "mcp-annotate" };
+    return delay({ created: 1, schema_changed: 0, unchanged: 1, removed: ["old_tool"] });
+  },
   adminAnnotationInbox: () => {
     // 现算口径与后端一致：未标注（annotation_id null）+ URL 变更重置（mock 用集合模拟）
     const byServer = new Map<string, { unannotated: number; url_reset: number }>();

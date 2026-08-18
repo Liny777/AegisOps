@@ -79,7 +79,8 @@ export function PlatformAssetDialog({ kind, editing, onClose, onSaved }: {
           if (!r.url_changed) return `已更新「${editing.display_name}」的配置`;
           const t = r.tools;
           const parts = [`新增 ${t.created ?? 0}`, `变更 ${t.schema_changed ?? 0}`, `移除 ${(t.removed ?? []).length}`];
-          const tail = t.refresh_error ? `；⚠ 新地址工具发现失败（${t.refresh_error}），已拦停旧工具面，请稍后点「同步」重试`
+          // 不能指去「同步」——reconcile 只增不删，完成置换要靠行内「刷新工具」（清除消失的老工具）
+          const tail = t.refresh_error ? `；⚠ 新地址工具发现失败（${t.refresh_error}），已拦停旧工具面；请排查连通性后在列表中点「刷新工具」完成置换`
             : `（${parts.join(" / ")}）`;
           return `已更新「${editing.display_name}」的地址，该服务 ${t.blocked ?? 0} 个工具已全部拦停待重新标注${tail}`;
         })

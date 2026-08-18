@@ -453,6 +453,40 @@ async def _converge_platform_mcps(candidates: list[dict[str, Any]], survivor_id:
 
 # ---------------------------------------------------------------- MCP 编辑（29.9 §3.4）
 
+async def _refresh_tool_catalog(vid: str, url: str) -> dict[str, Any]:
+    """按 url 重新发现工具并同步目录：{created, schema_changed, unchanged, removed, refresh_error?}。
+
+    发现带超时上界（_UPDATE_DISCOVER_TIMEOUT_S）；**发现失败不清扫**（没拿到完整新列表不敢判缺席，
+    防瞬时故障误清全部），错误进 refresh_error 由调用方决定语义（编辑路径=侧记不炸；手动刷新=显式报错）。
+    sync_catalog_tool 自带三态语义：新工具 created（未标注 fail-closed）、schema 变 schema_changed
+    （标注重置，28.7 不继承）、未变 unchanged（标注原样）；被清除过的同名工具重现走复活分支。"""
+    from infra.external import mcp_registry_client
+    from infra.repositories import mcp_tools
+
+    counts = {"created": 0, "schema_changed": 0, "unchanged": 0}
+    removed: list[str] = []
+    out: dict[str, Any] = counts
+    try:
+        from infra import host_ip
+        from infra.iam_headers import iam_auth_headers
+
+        discovered = await asyncio.wait_for(
+            mcp_registry_client.discover_tools(
+                url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()}),
+            _UPDATE_DISCOVER_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001
+        out = {**counts, "removed": removed, "refresh_error": f"{type(e).__name__}: {str(e)[:200]}"}
+        return out
+    for t in discovered:
+        res = await mcp_tools.sync_catalog_tool(
+            vid, t["tool_name"], t["description"], t["input_schema"], t["schema_hash"])
+        counts[res] += 1
+    # 发现**成功**才有资格判缺席：拿到完整新列表 → 不在列表里的 = 该 server 已没有这个工具
+    removed = await mcp_tools.remove_absent_catalog_tools(
+        vid, {str(t["tool_name"]) for t in discovered})
+    return {**counts, "removed": removed}
+
+
 async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, Any]:
     """编辑平台级 MCP 配置（URL/描述/版本/分类/标签/transport）：推 Hub §3.4 → 更新本地
     sre_mcp_asset(endpoint) + sre_mcp_asset_version(manifest) → **URL 变更时**重新发现工具并
@@ -541,29 +575,10 @@ async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, 
     tools_summary: dict[str, Any] = {}
     if url_changed and latest:
         vid = str(latest["mcp_version_id"])
-        counts = {"created": 0, "schema_changed": 0, "unchanged": 0}
-        removed: list[str] = []
-        refresh_error: str | None = None
-        try:
-            from infra import host_ip
-            from infra.iam_headers import iam_auth_headers
-
-            discovered = await asyncio.wait_for(
-                mcp_registry_client.discover_tools(
-                    new_url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()}),
-                _UPDATE_DISCOVER_TIMEOUT_S)
-        except Exception as e:  # noqa: BLE001 —— 发现失败不清扫（防瞬时故障误清全部），但仍全拦（见下）
-            refresh_error = f"{type(e).__name__}: {str(e)[:200]}"
-            log.warning("[mcp-update] 新 URL 工具发现失败（不清扫、仍全量拦停）：%s", refresh_error)
-            discovered = None
-        if discovered is not None:
-            for t in discovered:
-                res = await mcp_tools.sync_catalog_tool(
-                    vid, t["tool_name"], t["description"], t["input_schema"], t["schema_hash"])
-                counts[res] += 1
-            # 发现**成功**才有资格判缺席：拿到完整新列表 → 不在列表里的 = 该 server 已没有这个工具
-            removed = await mcp_tools.remove_absent_catalog_tools(
-                vid, {str(t["tool_name"]) for t in discovered})
+        tools_summary = await _refresh_tool_catalog(vid, new_url)
+        if tools_summary.get("refresh_error"):
+            log.warning("[mcp-update] 新 URL 工具发现失败（不清扫、仍全量拦停）：%s",
+                        tools_summary["refresh_error"])
         # 全量拦停（拍板口径）：URL 已变是正向证据，旧工具面必须停——发现失败也照拦。
         # 写 blocked 行而非软删标注：动态平台工具对「标注缺失」有合成 allowed 的豁免
         # （tool_gateway origin=dynamic），软删=放行；blocked 行经 Gateway 热读**立即**拦（含进行中任务）。
@@ -573,9 +588,7 @@ async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, 
                 str(t["tool_catalog_id"]), True, False, "none", None,
                 "blocked", URL_RESET_REASON, admin["user_id"])
             blocked += 1
-        tools_summary = {**counts, "removed": removed, "blocked": blocked}
-        if refresh_error:
-            tools_summary["refresh_error"] = refresh_error
+        tools_summary["blocked"] = blocked
 
     await audit.insert_event(
         audit_trace_id=_audit_id(), event_type="mcp.updated", user_id=admin["user_id"],
@@ -586,6 +599,46 @@ async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, 
     )
     return {"mcp_id": mcp_id, "server_id": server_id, "upstream": upstream,
             "url_changed": url_changed, "tools": tools_summary}
+
+
+# ---------------------------------------------------------------- MCP 工具手动刷新
+
+async def refresh_mcp_tools(admin: dict[str, Any], mcp_id: str) -> dict[str, Any]:
+    """按**当前**地址重新发现工具并同步目录（管理台「刷新工具」）：老工具清除、新工具入库待标注。
+
+    补的是一个死区：工具刷新此前只挂在「编辑且 URL 变更」上，而 reconcile 只增不删——若改 URL 时
+    对新地址的发现失败（连通性差），保护路径不清扫；连通修好后 URL 已不再变化、再编辑走元数据分支、
+    「同步」也不清老工具——**没有任何入口能完成这次工具面置换**（内网实锤 2026-08-18）。
+
+    与编辑路径的两点刻意差异：
+    - 发现失败 → **显式报错**（502 retryable）——手动动作要给真错误，不是塞进响应侧记；失败不清扫。
+    - **不做全量拦停**——这不是 URL 变更：新工具本就未标注（fail-closed 且不可绑模板），
+      schema 变了的走 sync_catalog_tool 既有标注重置（28.7 不继承），没变的标注原样保留。"""
+    row = await assets.get_mcp(mcp_id)
+    if row is None:
+        raise ApiError(Err.NOT_FOUND, "MCP 不存在")
+    if row["source_type"] != "platform":
+        raise ApiError(Err.FORBIDDEN, "该端点仅刷新平台级 MCP 的工具")
+    latest = await assets.latest_mcp_version(mcp_id)
+    if latest is None:
+        raise ApiError(Err.NOT_FOUND, "MCP 无版本行，无法同步工具")
+    url = str((row.get("endpoint_config_json") or {}).get("endpoint") or "")
+    if not url:
+        raise ApiError(Err.VALIDATION_FAILED, "该 MCP 未配置 endpoint，请先编辑填入地址")
+
+    summary = await _refresh_tool_catalog(str(latest["mcp_version_id"]), url)
+    if summary.get("refresh_error"):
+        raise ApiError(Err.IAM_UPSTREAM,
+                       f"无法连接 {url} 完成工具发现（{summary['refresh_error']}）；"
+                       "目录未改动，请先排查 console 主机到该地址的连通性后重试", retryable=True)
+
+    await audit.insert_event(
+        audit_trace_id=_audit_id(), event_type="mcp.tools_refreshed", user_id=admin["user_id"],
+        action="manual_refresh",
+        payload_redacted={"scope": "platform", "mcp_id": mcp_id,
+                          "display_name": row.get("display_name"), "endpoint": url, **summary},
+    )
+    return {"mcp_id": mcp_id, "display_name": row.get("display_name"), **summary}
 
 
 # ---------------------------------------------------------------- MCP 删除
