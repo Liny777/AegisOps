@@ -181,10 +181,12 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                         continue
 
                 if hit is None:
-                    await assets.create_mcp(None, "platform", name, "http", {"endpoint": url},
-                                            {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
-                                             "description": srv.get("description", ""),
-                                             "upstream_server_name": name})
+                    manifest_new = {"synced_from": "mcp_registry", "server_id": srv.get("server_id"),
+                                    "description": srv.get("description", ""),
+                                    "upstream_server_name": name}
+                    if srv.get("transport"):  # 上游给了才落（编辑弹窗预填的唯一合法来源）
+                        manifest_new["transport"] = srv.get("transport")
+                    await assets.create_mcp(None, "platform", name, "http", {"endpoint": url}, manifest_new)
                     summary["mcps_created"] += 1
                     # 本轮内后续项的判重基（同一轮上游返回重复项时不重复建行）
                     fresh = await assets.list_platform_mcps_with_manifest()
@@ -206,6 +208,8 @@ async def reconcile(*, force: bool = False, trigger: str = "manual") -> dict[str
                     summary.setdefault("mcps_endpoint_updated", []).append(str(hit.get("display_name")))
                 new_manifest = {**cur_manifest, "server_id": srv.get("server_id") or cur_manifest.get("server_id"),
                                 "description": srv.get("description", ""), "upstream_server_name": name}
+                if srv.get("transport"):  # 存量行 manifest 缺 transport → 下一轮同步即自愈（治 422 预填源头）
+                    new_manifest["transport"] = srv.get("transport")
                 if hit.get("mcp_version_id") and new_manifest != cur_manifest:
                     await assets.update_mcp_version_manifest(str(hit["mcp_version_id"]), new_manifest)
                 if cur_endpoint != url or new_manifest != cur_manifest:

@@ -43,7 +43,10 @@ export function PlatformAssetDialog({ kind, editing, onClose, onSaved }: {
   const [url, setUrl] = useState(editing?.server_url ?? "https://");
   const [desc, setDesc] = useState(editing?.description ?? "");
   const [version, setVersion] = useState(editing?.version || "1.0.0");
-  const [transport, setTransport] = useState<string>(editing?.transport || "streamable_http");
+  // 白名单守卫（最后一道闸）：存量行/旧后端可能预填出非法值（如本地列漏出的 'http'），
+  // 受控 select 显示上像选中了第一项、state 却带着脏值提交 → 422。非法一律落回默认。
+  const [transport, setTransport] = useState<string>(
+    (TRANSPORTS as readonly string[]).includes(editing?.transport ?? "") ? editing!.transport! : "streamable_http");
   const urlChanged = Boolean(editing) && url.trim() !== editing!.server_url;
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
