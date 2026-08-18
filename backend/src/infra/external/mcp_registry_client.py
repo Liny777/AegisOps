@@ -372,7 +372,8 @@ async def list_servers(user_id: str = "") -> list[dict[str, Any]]:
                 for it in items:
                     if str(it.get("status")) == "active" and it.get("server_url"):
                         out.append({"server_id": it.get("server_id"), "server_name": it.get("server_name"),
-                                    "server_url": it.get("server_url"), "description": it.get("description", "")})
+                                    "server_url": it.get("server_url"), "description": it.get("description", ""),
+                                    "transport": it.get("transport")})  # §3.2 本就返回；ingest 落 manifest 供编辑预填
                 if not items or page * page_size >= int(data.get("total", 0)):
                     break
                 page += 1

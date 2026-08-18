@@ -2247,3 +2247,31 @@ def test_catalog_tool_reappears_after_removal_revives_not_500(client, no_egress,
     assert res2 == "created"  # 复活按新出现计
     st = _catalog_state(vid)
     assert st["t1"][0] is False and st["t1"][3] is True  # 目录活、标注仍软删（待重标）
+
+
+def test_admin_mcp_list_transport_not_leaked_from_local_column(client):
+    """管理面列表的 transport 只取 manifest（上游词汇）：manifest 没有该键时必须是 None，
+    **不得**回退本地 'http' 列——那个值会经编辑弹窗预填原样回传，撞 schema pattern 422（内网实锤）。"""
+    mid, _vid = _seed_platform_mcp("t422-mcp", "srv-t422", "https://a.internal/mcp")  # manifest 无 transport
+    rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    row = next(m for m in rows if m["mcp_id"] == mid)
+    assert row["transport"] is None, f"不得漏出本地列的 'http'，实得 {row['transport']!r}"
+
+
+def test_reconcile_ingest_stores_and_backfills_transport(client, monkeypatch):
+    """上游 §3.2 带 transport → ingest 建行落 manifest；存量行缺该键 → 下一轮同步回填自愈；
+    管理面列表随之透出（编辑弹窗预填的唯一合法来源）。"""
+    mid, _vid = _seed_platform_mcp("tfill-mcp", "srv-tfill", "https://a.internal/mcp")  # 存量：无 transport
+
+    async def upstream(user_id=""):
+        return [{"server_id": "srv-tfill", "server_name": "tfill-mcp",
+                 "server_url": "https://a.internal/mcp", "description": "", "transport": "sse"},
+                {"server_id": "srv-new-t", "server_name": "new-with-transport",
+                 "server_url": "https://b.internal/mcp", "description": "", "transport": "jsonrpc"}]
+
+    monkeypatch.setattr(mcp_registry_client, "list_servers", upstream)
+    unwrap(client.post("/api/openops/v1/assets:reconcile", headers=ADMIN_HEADERS))
+
+    rows = unwrap(client.get("/api/openops/v1/admin/mcps", headers=ADMIN_HEADERS))["items"]
+    assert next(m for m in rows if m["mcp_id"] == mid)["transport"] == "sse"          # 存量回填
+    assert next(m for m in rows if m["display_name"] == "new-with-transport")["transport"] == "jsonrpc"  # 建行即落

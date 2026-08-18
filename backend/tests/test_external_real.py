@@ -1572,3 +1572,19 @@ async def test_ext_mcpreg_config_update_posts_patch_body(monkeypatch):
     _install(monkeypatch, _never)
     r = await mcp_registry_client.update_server_config("m1", server_url="https://m/mcp")
     assert r["server_id"] == "m1"
+
+
+@pytest.mark.asyncio
+async def test_ext_mcpreg_list_maps_transport(monkeypatch):
+    """list_servers 必须把 §3.2 的 transport 带回来——它是编辑弹窗预填/ingest 落 manifest 的唯一来源，
+    不带则存量行 manifest 永远缺该键、投影层曾回退本地 'http' 列引发 422。"""
+    from infra.external import mcp_registry_client
+
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY", "real")
+    monkeypatch.setenv("OPENOPS_MCPREGISTRY_BASE_URL", "https://console")
+    body = {"code": 0, "data": {"total": 1, "items": [
+        {"server_id": "s1", "server_name": "s1", "server_url": "https://s1/mcp",
+         "status": "active", "transport": "streamable_http"}]}}
+    _install(monkeypatch, lambda m, u, k: _Resp(200, body))
+    out = await mcp_registry_client.list_servers()
+    assert out[0]["transport"] == "streamable_http"
