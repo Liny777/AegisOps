@@ -98,7 +98,15 @@ export async function apiFetch<T = unknown>(
       // 浏览器即将跳登录页：抛专用码，启动链据此保持加载态而非闪错误屏
       throw new ApiError("AUTH_REDIRECT", "正在跳转登录…", false);
     }
-    throw new ApiError(err?.code ?? `HTTP_${res.status}`, err?.message ?? res.statusText, err?.retryable);
+    // 非信封错误（如 FastAPI 422 的 {detail:[...]}）也必须给出**非空**文案：statusText 在
+    // HTTP/2/网关下是空串，落到 UI 就是"点了保存什么都没发生"（内网实锤 2026-08-18——422 静默，
+    // 用户以为按钮失效/弹窗卡死）。优先抽 detail 的字段级信息，最后兜底带状态码的通用文案。
+    const detail = (json as { detail?: { msg?: string; loc?: unknown[] }[] | string }).detail;
+    const detailMsg = Array.isArray(detail)
+      ? detail.map((d) => `${(d.loc ?? []).slice(1).join(".")}：${d.msg ?? ""}`).join("；")
+      : typeof detail === "string" ? detail : "";
+    throw new ApiError(err?.code ?? `HTTP_${res.status}`,
+      err?.message || detailMsg || res.statusText || `请求失败（HTTP ${res.status}）`, err?.retryable);
   }
   return (json as { data?: T }).data as T;
 }
