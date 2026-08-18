@@ -5,7 +5,7 @@ import { toneColor } from "../theme/tokens";
 import { Icon, Button, Dot, Pill, Pagination } from "../ui";
 import { api, alertEventMeta } from "../lib/api";
 import type { AdminModelAssetOption, AdminTableData, AlertOpsConfig, SandboxCfg, SandboxContainer, AuditNode } from "../lib/api/types";
-import { useConnTest, ConnTestResult, HeadersEditor, headersToRecord, PROTOCOL_LABEL, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
+import { useConnTest, ConnTestResult, HeadersEditor, headersToRecord, DEFAULT_CONTEXT_WINDOW, type HeaderRow } from "../settings/AddCustomModelDialog";
 import { PlatformAssetDialog, type McpEditing } from "./PlatformAssetDialog";
 import { ToolAnnotationSlideIn } from "./ToolAnnotationSlideIn";
 import { TemplateEditorModal } from "./TemplateEditorModal";
@@ -733,13 +733,21 @@ function RegisterModelDialog({ onClose, onSaved, editing }: {
               {f.model_id}<span style={{ marginLeft: 8, fontFamily: "inherit", fontSize: 11.5 }}>（model_id 不可改）</span>
             </div>
           ) : input("model_id", "model_id，如：tx-llm-v2", true)}
+          {/* 这一行两个控件外形相近但性质不同：左边是**只读展示**（V1 只支持 OpenAI 兼容协议，
+              没有第二个选项），右边才是输入框。右边的标签必须**常驻**——它恒有预填值 128000，
+              placeholder 永远不会显示，把说明写在 placeholder 里等于没写（实测管理员看不懂要填啥）。 */}
           <div style={{ display: "flex", gap: 10 }}>
-            <div style={{ flex: 1 }}>
-              <div style={{ height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box" }}>接口协议：{PROTOCOL_LABEL}</div>
+            {/* 左块按内容定宽（flex 0 0 auto + nowrap）：等分会把「（固定）」挤到第二行、撑破 36px 行高 */}
+            <div title="V1 固定 OpenAI 兼容协议，不可修改" style={{ flex: "0 0 auto", height: 36, display: "flex", alignItems: "center", padding: "0 11px", fontSize: 12.5, color: color.textSubtle, background: color.neutralBg, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box", whiteSpace: "nowrap" }}>
+              {/* 用中文协议名而非 PROTOCOL_LABEL（"OpenAI Compatible"）：与本页表格「协议」列同款措辞，
+                  且短出来的宽度留给右边的数字（英文名会把 128000 挤到看不全） */}
+              接口协议：OpenAI 兼容<span style={{ marginLeft: 6, fontSize: 11.5 }}>（固定）</span>
             </div>
-            <div style={{ flex: 1 }}>
-              <input type="number" min={1} step={1000} value={contextWindow} onChange={(e) => setContextWindow(Number(e.target.value) || 0)} placeholder="上下文长度，默认 128000"
-                style={{ width: "100%", height: 36, border: `1px solid ${color.borderInput}`, borderRadius: radius.md, padding: "0 11px", fontSize: 12.5, outline: "none", boxSizing: "border-box" }} />
+            <div title="模型的上下文窗口，单位 token；按模型规格填，默认 128000" style={{ flex: 1, minWidth: 0, height: 36, display: "flex", alignItems: "center", border: `1px solid ${color.borderInput}`, borderRadius: radius.md, boxSizing: "border-box", overflow: "hidden" }}>
+              <span style={{ padding: "0 8px 0 11px", fontSize: 12.5, color: color.textSubtle, whiteSpace: "nowrap" }}>上下文</span>
+              <input type="number" min={1} step={1000} value={contextWindow} onChange={(e) => setContextWindow(Number(e.target.value) || 0)}
+                style={{ flex: 1, minWidth: 0, height: "100%", border: "none", background: "transparent", padding: 0, fontSize: 12.5, outline: "none" }} />
+              <span style={{ padding: "0 11px 0 6px", fontSize: 11.5, color: color.textSubtle, whiteSpace: "nowrap" }}>token</span>
             </div>
           </div>
           {input("base_url", "OpenAI 兼容 endpoint（可空，用平台网关时）", true)}

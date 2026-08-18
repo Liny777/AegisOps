@@ -17,6 +17,9 @@ os.environ.setdefault("OPENOPS_LLM_PROBE", "mock")
 # sre_model_asset，于是 runtime 认为平台模型「可跑」→ 真去构建 OpenAIChatModel 并打 seed 里那个
 # 真实 bigmodel.cn 地址（实测整片 agentscope 用例 401 失败）。测试要的是 stub：无 Key = 回退 stub。
 # 需要「已配 Key」语义的用例自己经 API 注册一个带 api_key 的资产（见 test_model_acl）。
+# 假设 checkpoint 默认关（0=禁用）：防无关用例在 update_diagnosis_board 上被动等 10s；
+# 要测它的用例用 monkeypatch.setattr(diagnosis_checkpoint, "CHECKPOINT_TIMEOUT_S", ...) 显式开
+os.environ.setdefault("OPENOPS_DIAG_CHECKPOINT_TIMEOUT_S", "0")
 
 import asyncio  # noqa: E402
 import sys  # noqa: E402

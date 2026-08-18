@@ -20,6 +20,9 @@ import type { PendingSend } from "./programmaticSend";
 import { ChatPresetsProvider } from "./CopilotPresetQuestions";
 import { AlertTakeoverProvider } from "../alertTakeover/AlertTakeoverContext";
 import type { TakeoverVm } from "../alertTakeover/useAlertTakeover";
+import { ObserverLiveProvider } from "../observer/ObserverLiveContext";
+import { ObserverHistoryRefresh } from "../observer/ObserverHistoryRefresh";
+import type { ObserverStreamStore } from "../observer/observerStore";
 import { CopilotSkillSlash } from "./CopilotSkillSlash";
 import { ControlledVisualizationTools } from "./rich-ui";
 import { MermaidFullscreenBoundary } from "./MermaidFullscreenBoundary";
@@ -60,6 +63,8 @@ export function CopilotChatPanel({
   onOpenOps,
   onRetryConnection,
   alertTakeover,
+  observerLive,
+  onLocalRunChange,
 }: {
   runId: string;
   instanceId: string;
@@ -84,6 +89,11 @@ export function CopilotChatPanel({
   onRetryConnection?: () => void;
   /** 告警直达接管交互的 vm（Workbench 的 useAlertTakeover 产出）；缺省即不挂交互。 */
   alertTakeover?: TakeoverVm;
+  /** 旁观直播（dispatcher 无头驱动的诊断）：store 由 Workbench 持有并经 SSE delta 喂入；
+   *  缺省即不挂直播 Slot 与终局刷新桥。 */
+  observerLive?: { store: ObserverStreamStore; inputText: string | null };
+  /** 本端 CopilotKit 回合状态上报（agent.isRunning）——Workbench 旁观守卫用。 */
+  onLocalRunChange?: (running: boolean) => void;
 }) {
   const [connectionStatus, setConnectionStatus] = useState<"connecting" | "ready" | "error">(
     "connecting",
@@ -103,6 +113,14 @@ export function CopilotChatPanel({
     const timer = window.setTimeout(() => setSyncing(false), SYNCING_FALLBACK_MS);
     return () => window.clearTimeout(timer);
   }, [syncing]);
+
+  // 旁观直播 vm：AGENT_ID 在此补齐（Slot 经 context 取，避免反向 import 成环）。
+  const observerStore = observerLive?.store;
+  const observerInputText = observerLive?.inputText ?? null;
+  const observerVm = useMemo(
+    () => (observerStore ? { store: observerStore, inputText: observerInputText, agentId: AGENT_ID } : null),
+    [observerStore, observerInputText],
+  );
 
   // 活动态输入槽：稳定类名 + 在免责行只读展示当前模型（modelLabel 变才重建，避免流式时反复解析）。
   const activeInputSlot = useMemo(() => ({
@@ -130,6 +148,14 @@ export function CopilotChatPanel({
       onRetryConnection={onRetryConnection}
     >
       {onOpenOps ? <OpenOpsCustomEventBridge onOpenOps={onOpenOps} /> : null}
+      {/* 旁观终局桥：finalizing → 一次 connectAgent 刷入真实历史；顺带上报本端回合状态。 */}
+      {observerLive ? (
+        <ObserverHistoryRefresh
+          store={observerLive.store}
+          agentId={AGENT_ID}
+          onLocalRunChange={onLocalRunChange}
+        />
+      ) : null}
       <ReplayCaughtUpBridge onCaughtUp={handleCaughtUp} />
       {/* 先于 CopilotChat 订阅 connect 首帧/终态，恢复开始前 composer 始终不可用。 */}
       <CopilotConnectMonitor onConnected={handleConnected} />
@@ -150,6 +176,8 @@ export function CopilotChatPanel({
         <ChatPresetsProvider enabled={!readOnly && connectionStatus === "ready"}>
           {/* 接管交互与 presets 同门（历史恢复期不闪现）；Slot 在 messageView 的 children 里消费。 */}
           <AlertTakeoverProvider vm={alertTakeover} enabled={!readOnly && connectionStatus === "ready"}>
+          {/* 旁观直播与 presets/takeover 同门；Slot 在 messageView children 里消费。 */}
+          <ObserverLiveProvider vm={observerVm} enabled={!readOnly && connectionStatus === "ready"}>
             <CopilotChat
               key={`${runId}:${readOnly ? "readonly" : "active"}`}
               agentId={AGENT_ID}
@@ -163,6 +191,7 @@ export function CopilotChatPanel({
                 setConnectionStatus((current) => (current === "ready" ? current : "error"))
               }
             />
+          </ObserverLiveProvider>
           </AlertTakeoverProvider>
         </ChatPresetsProvider>
         {!readOnly ? <CopilotSkillSlash instanceId={instanceId} /> : null}

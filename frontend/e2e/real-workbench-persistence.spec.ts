@@ -1,5 +1,12 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 
+/** 断言片段在全文中恰出现一次（旁观终局切换不得与直播泡翻倍）。 */
+function assertOnce(haystack: string, needle: string) {
+  const first = haystack.indexOf(needle);
+  expect(first).toBeGreaterThanOrEqual(0);
+  expect(haystack.indexOf(needle, first + 1)).toBe(-1);
+}
+
 async function waitForComposerIdle(page: Page) {
   const chat = page.getByTestId("copilot-chat");
   // thread-ready 表示恢复快照已挂上；CopilotKit 还会在下一帧收口本次 connect 的运行态。
@@ -232,6 +239,60 @@ test.describe("真实 AG-UI 会话常驻", () => {
       (window as typeof window & { __openopsGrowthObserver?: MutationObserver })
         .__openopsGrowthObserver?.disconnect();
     });
+  });
+
+  test("旁观直播：API 直启无头任务，对话区实时增长，终局切换真实历史无翻倍", async ({ page }) => {
+    test.skip(
+      process.env.OPENOPS_E2E_STUB_STREAM !== "1",
+      "需以 AgentScope stub（无模型凭证）启动真实 backend + sidecar",
+    );
+    test.setTimeout(240_000);
+
+    // 关键：任务必须绕过 sidecar 直启（模拟 alerts/dispatcher 无头驱动）。经页面 composer
+    // 发送会命中 sidecar 内存 → attachMemory 回放 + agent.isRunning=true，测的是 CopilotChat
+    // 自身而非旁观直播。app 内 import api 自带身份头（手工 fetch 会 401）。
+    await page.goto("./");
+    await expect(page.getByTestId("copilot-thread-gate")).toHaveAttribute("data-thread-ready", "true", {
+      timeout: 30_000,
+    });
+    const rid = await page.evaluate(async (question) => {
+      const { api } = await import("/src/lib/api/index.ts");
+      const me = await api.getMe();
+      if (!me.recent_instance_id) throw new Error("无可用实例");
+      const newRid = await api.createRun(me.recent_instance_id);
+      await api.startTask(newRid, question);
+      return newRid;
+    }, `旁观直播验收-${Date.now()}`);
+
+    await page.goto(`/agent-runs/${rid}`);
+    const live = page.getByTestId("observer-live");
+    await expect(live).toBeVisible({ timeout: 60_000 });
+
+    // 直播正文多次增长（采样 ≥2 个递增长度）
+    const sampleLength = () => live.locator(".oa-chat-markdown, [class*='assistant']").last()
+      .textContent().then((t) => t?.length ?? 0).catch(() => 0);
+    const lengths = new Set<number>();
+    await expect.poll(async () => {
+      const n = await sampleLength();
+      if (n > 0) lengths.add(n);
+      return lengths.size;
+    }, { timeout: 90_000, intervals: [500] }).toBeGreaterThanOrEqual(2);
+
+    // stub 第三步是写动作 → 旁观者同样会收到审批卡；批准放行到终局（卡不出现的路径也兼容）
+    const approve = page.getByRole("button", { name: "批准", exact: true });
+    await approve.waitFor({ state: "visible", timeout: 90_000 }).catch(() => undefined);
+    if (await approve.isVisible().catch(() => false)) await approve.click();
+
+    // 终局：直播区撤下（connectAgent 刷入真实历史后 clear），正文出现在正式消息列表且无翻倍
+    await expect(live).toHaveCount(0, { timeout: 120_000 });
+    await expect(page.locator(".oa-chat-assistant-message").first()).toBeVisible({ timeout: 30_000 });
+    const finalTexts = await page.locator(".oa-chat-assistant-message").allTextContents();
+    const joined = finalTexts.join("\n");
+    // 无翻倍：任一段落不应在拼接文本中出现两次（取一段足够长的片段判重）
+    const probe = finalTexts.find((t) => t.trim().length > 40)?.trim().slice(0, 40);
+    if (probe) {
+      assertOnce(joined, probe);
+    }
   });
 
   test("诊断面板：完成后出卡 → reload → /state 恢复且 revision 不回退", async ({ page }) => {

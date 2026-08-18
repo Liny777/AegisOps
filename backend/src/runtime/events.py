@@ -100,8 +100,20 @@ def envelope(
     }
 
 
+# 高频瞬态流（增量非事实）：只广播给在线订阅者，不占 sequence、不进环形缓冲——
+# 千级 delta 不得把 tool.call/rca.updated 挤出缓冲导致 Last-Event-ID 恒 resync。
+_TRANSIENT_EVENT_TYPES = frozenset({
+    "openops.assistant.delta",
+    "openops.assistant.thinking.delta",
+})
+
+
 def publish(run_id: str, event: dict[str, Any]) -> dict[str, Any]:
     ch = _chan(run_id)
+    if event.get("event_type") in _TRANSIENT_EVENT_TYPES:
+        for q in list(ch.subscribers):
+            q.put_nowait(event)
+        return event
     ch.seq += 1
     event["sequence"] = ch.seq
     ch.buffer.append(event)

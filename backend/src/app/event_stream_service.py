@@ -12,7 +12,11 @@ HEARTBEAT_SECONDS = 15
 
 
 def _sse(event: dict[str, Any]) -> str:
-    return f"id: {event['sequence']}\nevent: openops\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
+    # 瞬态事件（sequence=None）不带 id 行：SSE id 有粘性，带上会污染客户端
+    # Last-Event-ID 游标，导致断线补发按不存在的序号判定。
+    seq = event.get("sequence")
+    id_line = f"id: {seq}\n" if isinstance(seq, int) else ""
+    return f"{id_line}event: openops\ndata: {json.dumps(event, ensure_ascii=False)}\n\n"
 
 
 async def stream(run_id: str, last_event_id: int | None) -> AsyncIterator[str]:

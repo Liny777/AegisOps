@@ -162,15 +162,30 @@ curl -s http://127.0.0.1:18082/health    # → {"status":"ok"}
 
 1. 跑 `migrate-2026-08-17-model-asset-secret.sql`（只加列，不搬数据——psql 读不到后端进程的环境变量）。
 2. **保留** `EnvironmentFile` 里的 `OPENOPS_PLATFORM_*_API_KEY` 重启后端。启动时的一次性 backfill 会把
-   这些环境变量加密写进密文列，日志出现：
+   这些环境变量加密写进密文列，每导入一把打一行日志：
    `[OpenOps][seed] 平台模型 glm-5.1 的 Key 已从环境变量 OPENOPS_PLATFORM_GLM_API_KEY 导入密文列（fp_…）`
    （只补空的、不覆盖管理台已录入的；幂等，重启多次无副作用）。
 3. 验证后才删环境变量：
 
 ```bash
-cd /opt/openops/current/backend && python check-db.py   # → 「已配 Key 的平台模型 = N 个」，N ≥ 1
-# 确认 N 正确后，从 EnvironmentFile 删除 OPENOPS_PLATFORM_*_API_KEY 并重启；
-# 再起一个真实任务，确认走真实模型而非 stub（journalctl 里 [model] building … key=db:fp_…）
+cd /opt/openops/current/backend && python check-db.py
+# 看两行：「已配 Key 的平台模型 = N 个」+「迁移未完成清单」。
+# 清单为空才可以删 export；清单里点名的模型 = 那把 Key 的环境变量当时没注入。
+# 删除 EnvironmentFile 里的 OPENOPS_PLATFORM_*_API_KEY 并重启，
+# 再起一个真实任务确认走真实模型而非 stub（journalctl 里 [model] building … key=db:fp_…）
+```
+
+**多把 Key 的部署**（如 `OPENOPS_PLATFORM_GLM_API_KEY` 之外还有 `..._KEY_2`）：backfill **不认变量名**，
+它遍历每个资产、读那一行 `secret_env_var` 列里登记的名字，所以几把都一样自动导入，无需额外配置。
+但两个前提要先确认：
+
+```bash
+# ① 每把 Key 都得有资产行登记着它的变量名——没登记的变量 backfill 根本不会去读，
+#    删掉 export 就丢了（这类 Key 只能事后在管理台手工补填）
+psql "$OPENOPS_DATABASE_URL" -c "select model_id, display_name, secret_env_var from sre_model_asset \
+  where deleted_at is null and secret_env_var is not null order by creation_date;"
+# ② 重启那一刻**所有**变量都在 env 里。漏注入某一把 → 那个资产会留在 check-db 的
+#    「迁移未完成清单」里；补上变量再重启一次即可（幂等，已导入的不受影响）。
 ```
 
 ⚠ `OPENOPS_ENCRYPTION_KEY` 自此成为**平台模型的可用性依赖**（原先只影响用户自带模型）：

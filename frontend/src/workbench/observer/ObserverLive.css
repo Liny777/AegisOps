@@ -1,0 +1,18 @@
+/* 旁观直播区：泡视觉复用 vendor 消息组件（.oa-chat-* 在 CopilotChatPanel.css），
+   这里只管容器间距与缺段提示条。 */
+.oa-observer-live {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+.oa-observer-gap {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #8a93a3;
+  background: #f6f7f9;
+  border: 1px dashed #d9dee6;
+  border-radius: 10px;
+  padding: 8px 12px;
+}

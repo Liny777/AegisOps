@@ -13,6 +13,12 @@ import { mockRcaFinal, mockRecoveryClosureEvents } from "../lib/api/mockData";
 import { parseRcaCard } from "../lib/rca/schema";
 import { initialRcaGuard, nextRcaGuard, shouldApplyRca, type RcaGuard } from "../lib/rca/model";
 import { deriveRecoveryState } from "../lib/rca/recovery";
+import {
+  applyCheckpointClosed,
+  applyCheckpointExtended,
+  checkpointFromOpened,
+  type CheckpointCardState,
+} from "../lib/checkpoint/model";
 import type {
   ActivityNode,
   ChatMessage,
@@ -25,6 +31,8 @@ import type {
 } from "../lib/api/types";
 import { newSendNonce, type PendingSend } from "./copilot/programmaticSend";
 import { HitlCard } from "./HitlCard";
+import { HypothesisCheckpointCard } from "./HypothesisCheckpointCard";
+import { CopilotCheckpointFloat } from "./copilot/CopilotCheckpointFloat";
 import { Composer } from "./Composer";
 import { resolveModelLabel } from "./modelLabel";
 import { ActivityRail } from "./ActivityRail";
@@ -37,6 +45,8 @@ import { consumeAlertContext } from "../lib/alertEntry";
 import { AlertTakeoverProvider } from "./alertTakeover/AlertTakeoverContext";
 import { AlertTakeoverSlot } from "./alertTakeover/AlertTakeoverSlot";
 import { useAlertTakeover } from "./alertTakeover/useAlertTakeover";
+import { createObserverStreamStore, type ObserverStreamStore } from "./observer/observerStore";
+import { OBSERVER_BUBBLE_CHAR_LIMIT, isObserverDelta } from "./observer/observerStream";
 import type { ResolvedWorkbenchSession, WorkbenchTarget } from "../layout/workbenchSession";
 import {
   clearRunRecoveryIssue,
@@ -161,6 +171,8 @@ export function Workbench({
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
+  // 假设 checkpoint 卡（诊断 step=3 后弹出：添加假设/继续排查/超时自动继续；服务端权威计时）
+  const [checkpoint, setCheckpoint] = useState<CheckpointCardState | undefined>(undefined);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
   // rcaGuard 分段键（board_task_id ?? task_id）的可渲染镜像：ref 不触发重渲染，恢复节点
   // 的段过滤需要它进 useMemo 依赖。与 rcaGuardRef 在同四处赋值点同步 set。
@@ -228,6 +240,51 @@ export function Workbench({
   // copilot 路径经 CopilotAutoSend 发送，自建/mock 路径由下方 effect 调 send()
   const [autoQuestion, setAutoQuestion] = useState<string | null>(() => consumeAutoQuestion());
   const autoSentRef = useRef(false);
+  // 旁观直播（dispatcher 无头驱动的诊断）：SSE assistant.delta → store → copilot 列表内 Slot。
+  // handleOpenOpsEvent 是稳定回调，观测信号一律走 ref 镜像（避免陈旧闭包/回调重建引发 SSE 重订阅）。
+  const observerStoreRef = useRef<ObserverStreamStore | null>(null);
+  if (observerStoreRef.current === null) observerStoreRef.current = createObserverStreamStore();
+  const observerStore = observerStoreRef.current;
+  const [activeInputText, setActiveInputText] = useState<string | null>(null);
+  const taskStatusRef = useRef<string | null>(null);
+  useEffect(() => { taskStatusRef.current = taskStatus; }, [taskStatus]);
+  const runStatusRef = useRef<"active" | "closed">("active");
+  useEffect(() => { runStatusRef.current = runStatus; }, [runStatus]);
+  const pendingSendRef = useRef<PendingSend | null>(null);
+  useEffect(() => { pendingSendRef.current = pendingSend; }, [pendingSend]);
+  const autoQuestionRef = useRef<string | null>(autoQuestion);
+  useEffect(() => { autoQuestionRef.current = autoQuestion; }, [autoQuestion]);
+  // 本端 CopilotKit 回合状态（面板桥上报）：copilot 路径本端发送不写 aguiActive，靠它挡本端 delta
+  const copilotLocalRunRef = useRef(false);
+  // agui 尾窗抑制（fallback 档）：onDone 清 aguiActive 后、task 终态事件到达前，同批 SSE delta
+  // 仍会迟到——旧代码无条件丢 delta 天然免疫，新守卫必须显式重建该不变量（终态分支清除）。
+  const aguiTailRunRef = useRef<string | null>(null);
+  const handleCopilotLocalRun = useCallback((running: boolean) => {
+    copilotLocalRunRef.current = running;
+    // 本端回合开始：只清「live 中误混入」的直播泡；finalizing/frozen 是终局资产，
+    // 清了而历史又没刷进来就是两头空（ObserverHistoryRefresh 的 freeze 语义）。
+    if (running && observerStore.getState().phase === "live") observerStore.dispatch({ type: "clear" });
+  }, [observerStore]);
+  // 旁观 task.started 时经状态位触发一次 /state 补拉用户提问原文（refresh 幂等；
+  // 不做「已有值就跳过」——同 run 第二轮无头任务复用旧值会问答错配且自锁）
+  const [observerStateSync, setObserverStateSync] = useState(0);
+  /** 旁观守卫信号装配（唯一装配点）：全走 ref/常量，回调稳定不随渲染重建。
+   *  overrides 供快照路径用——replaceSession 时 activeRunRef/runStatusRef 尚未推进，
+   *  权威值在调用方手里（:702 早于 :704 的 activeRunRef 赋值，靠 ref 必然误判）。 */
+  const observerSignals = useCallback((
+    eventRunId: string,
+    overrides?: { taskStatus?: string; runId?: string; runStatus?: "active" | "closed" },
+  ) => ({
+    apiMode: API_MODE,
+    runId: overrides?.runId ?? activeRunRef.current,
+    eventRunId,
+    taskStatus: overrides?.taskStatus ?? taskStatusRef.current,
+    runStatus: overrides?.runStatus ?? runStatusRef.current,
+    aguiStreamRunId: aguiActive.current?.runId ?? aguiTailRunRef.current,
+    copilotLocalRun: copilotLocalRunRef.current,
+    pendingSend: pendingSendRef.current !== null,
+    autoQuestion: autoQuestionRef.current !== null,
+  }), []);
   // 告警外链直达：挂载即消费（sessionStorage 一次性），仅驱动本会话的「设置告警接管」交互。
   // ctx 绝不进 WorkbenchTarget/workbenchSession——那会触发 AppShell latest-wins 重建 SSE/CopilotKit。
   const [alertCtx] = useState(() => consumeAlertContext());
@@ -309,13 +366,25 @@ export function Workbench({
     setMessages((m) => (m.some((x) => x.id === msg.id) ? m : [...m, msg]));
   }, []);
 
-  /** 助手流式增量：同 messageId 累加，首个增量建气泡。 */
+  /** 助手流式增量：同 messageId 累加，首个增量建气泡。超长截断口径与旁观直播一致
+   *  （截停并显式标注，不静默丢尾；slice 只在越界时发生，避免每 delta 全量拷贝）。 */
   const streamDelta = useCallback((messageId: string, delta: string) => {
     setMessages((m) => {
       const i = m.findIndex((x) => x.id === messageId);
-      if (i < 0) return [...m, { id: messageId, role: "bot", text: delta, showCopy: true }];
+      if (i < 0) {
+        const text = delta.length > OBSERVER_BUBBLE_CHAR_LIMIT
+          ? delta.slice(0, OBSERVER_BUBBLE_CHAR_LIMIT) : delta;
+        return [...m, { id: messageId, role: "bot", text, showCopy: true }];
+      }
+      if (m[i].text.length >= OBSERVER_BUBBLE_CHAR_LIMIT) return m; // 已截停（含标注），后续增量丢弃
       const next = m.slice();
-      next[i] = { ...next[i], text: next[i].text + delta };
+      const combined = next[i].text + delta;
+      next[i] = {
+        ...next[i],
+        text: combined.length > OBSERVER_BUBBLE_CHAR_LIMIT
+          ? `${combined.slice(0, OBSERVER_BUBBLE_CHAR_LIMIT)}\n\n…（内容过长已截断，全文见任务结束后的完整记录）`
+          : combined,
+      };
       return next;
     });
   }, []);
@@ -324,7 +393,21 @@ export function Workbench({
   const handleOpenOpsEvent = useCallback((e: OpenOpsEvent) => {
     // 快速切换会话时，旧 SSE/AG-UI 队列里可能仍有一条已出队事件；不得污染新 Run。
     if (!activeRunRef.current || e.agent_run_id !== activeRunRef.current) return;
-    if (e.event_type === "openops.assistant.delta") return; // 文本增量走 TEXT_MESSAGE_*，不进活动线
+    if (e.event_type === "openops.assistant.delta") {
+      // 旁观直播（2026-08-17）：无头诊断的正文增量只此一条通道（AG-UI CUSTOM 不带 delta）。
+      // 本端回合仍由 TEXT_MESSAGE_*/agui 渲染——守卫挡掉，绝不双写。
+      const dp = (e.payload_redacted_json ?? {}) as Record<string, unknown>;
+      const delta = typeof dp.delta === "string" ? dp.delta : "";
+      // 无 message_id 时回退稳定值聚合为一泡（与 agui_service.py 同口径）；
+      // 回退 event_id 会一泡一 token，40 泡上限后整段丢弃。
+      const messageId = dp.message_id ? String(dp.message_id) : "assistant";
+      if (delta && isObserverDelta(observerSignals(e.agent_run_id))) {
+        if (USE_COPILOT_CHAT) observerStore.dispatch({ type: "delta", messageId, delta });
+        else streamDelta(messageId, delta); // fallback：与本端 agui 路径同构，终态泡逻辑原样接管
+      }
+      return; // 无论何种情况都不进活动线
+    }
+    if (e.event_type === "openops.assistant.thinking.delta") return; // 修漏：不进 nodes/seen（本期不渲染思考）
     dispatchActivity({ type: "merge_events", events: [e], source: "live" });
     const node = eventToNode(e);
     // 双通道竞态：AG-UI CUSTOM 先到（aguiActive=true 不冒泡），SSE 同 event 迟到时 aguiActive 已复位
@@ -335,8 +418,16 @@ export function Workbench({
     switch (e.event_type) {
       case "openops.task.started":
         setTaskStatus("running");
+        taskStatusRef.current = "running"; // 镜像同步收紧：紧随其后的首批 delta 不吃 effect 延迟
         setQueuePosition(null);           // 轮到自己了，排队条撤下
         if (e.task_id) setTaskId(e.task_id);
+        if (USE_COPILOT_CHAT && isObserverDelta(observerSignals(e.agent_run_id, { taskStatus: "running" }))) {
+          observerStore.dispatch({ type: "task_started", taskId: e.task_id ?? null });
+          // 旁观者用户气泡：task.started payload 无 input_text——旧值先清（防同 run 第二轮
+          // 任务问答错配），再无条件补拉一次 /state（refresh 幂等）
+          setActiveInputText(null);
+          setObserverStateSync((n) => n + 1);
+        }
         break;
       // 名额满时入队：位次随队列变化实时下推（复用本 run 的 SSE 通道，无需额外轮询）
       case "openops.task.queued":
@@ -377,19 +468,50 @@ export function Workbench({
         );
         break;
       }
+      // 假设 checkpoint：opened 弹卡；extended（hold 冻结倒计时）更新 deadline；closed 定格
+      // 结果态后按 id 守卫计时器淡出（与审批卡同口径）。倒计时纯展示，超时判定在服务端。
+      case "openops.diagnosis.checkpoint.opened": {
+        const next = checkpointFromOpened(p);
+        if (next) setCheckpoint(next);
+        break;
+      }
+      case "openops.diagnosis.checkpoint.extended":
+        setCheckpoint((cur) => applyCheckpointExtended(cur, p));
+        break;
+      case "openops.diagnosis.checkpoint.closed": {
+        setCheckpoint((cur) => applyCheckpointClosed(cur, p));
+        const cid = String(p.checkpoint_id ?? "");
+        window.setTimeout(
+          () => setCheckpoint((cur) => (cur && (!cid || cur.checkpointId === cid) && cur.status !== "pending" ? undefined : cur)),
+          HITL_RESULT_LINGER_MS,
+        );
+        break;
+      }
       case "openops.task.completed":
         setTaskStatus("completed");
+        taskStatusRef.current = "completed";
         setQueuePosition(null);
+        aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
+        observerStore.dispatch({ type: "task_terminal" }); // 直播 → finalizing（非 live 时 no-op）
+        setCheckpoint(undefined); // 任务终态：挂起的 checkpoint 卡随之撤下（run 已不在等）
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message, showCopy: true });
         break;
       case "openops.task.failed":
         setTaskStatus("failed");
+        taskStatusRef.current = "failed";
         setQueuePosition(null);
+        aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
+        observerStore.dispatch({ type: "task_terminal" });
+        setCheckpoint(undefined);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.task.cancelled":
         setTaskStatus("cancelled");
+        taskStatusRef.current = "cancelled";
         setQueuePosition(null);
+        aguiTailRunRef.current = null; // 本回合的迟到 delta 到此为止
+        observerStore.dispatch({ type: "task_terminal" });
+        setCheckpoint(undefined);
         if (aguiActive.current?.runId !== e.agent_run_id && firstDelivery) appendMessage({ id: e.event_id, role: "bot", text: e.message });
         break;
       case "openops.rca.updated": {
@@ -421,7 +543,7 @@ export function Workbench({
       default:
         break;
     }
-  }, [pushNode, appendMessage]);
+  }, [pushNode, appendMessage, streamDelta, observerStore]);
 
   const applyStateSnapshot = useCallback((
     d: Record<string, any>,
@@ -440,16 +562,31 @@ export function Workbench({
     setAgentName(d.instance?.instance_name ? String(d.instance.instance_name) : null);
     setRunStatus(nextRunStatus);
     if (nextRunStatus === "closed") forgetEnsuredRun(stateInstanceId, rid);
+    const observeSnapshotTask = () => {
+      // 中途打开页面的旁观者：task.started 事件早已发过（其 seq 含在 last_event_seq 里，
+      // SSE 不会补发）——live 相位只能从快照恢复进入，否则后续 delta 全被相位守卫丢弃、
+      // 终局也不触发 finalizing 刷新。reducer 对同任务幂等重入（泡保留），refresh 重放安全。
+      if (!USE_COPILOT_CHAT || activeTask?.status !== "running") return;
+      taskStatusRef.current = "running"; // 快照路径的镜像 effect 晚一渲染帧，这里先行收紧
+      if (isObserverDelta(observerSignals(rid, { taskStatus: "running", runId: rid, runStatus: nextRunStatus }))) {
+        observerStore.dispatch({ type: "task_started", taskId: activeTask.task_id ? String(activeTask.task_id) : null });
+      }
+    };
     if (replaceSession) {
       setEditingTitle(false);
       setTaskId(activeTask?.task_id ? String(activeTask.task_id) : null);
       setTaskStatus(activeTask?.status ? String(activeTask.status) : null);
+      setActiveInputText(activeTask?.input_text ? String(activeTask.input_text) : null);
+      observerStore.dispatch({ type: "clear" }); // 换会话：直播态不得跨 run 残留
+      observeSnapshotTask();
       setMessages(recoverSnapshotMessages(d, rid));
       setNodes([]);
       seen.current = new Set();
     } else if (activeTask) {
       setTaskId(activeTask.task_id ? String(activeTask.task_id) : null);
       setTaskStatus(activeTask.status ? String(activeTask.status) : null);
+      observeSnapshotTask();
+      if (activeTask.input_text) setActiveInputText(String(activeTask.input_text));
       if (activeTask.input_text) {
         setMessages((messages) => messages.length
           ? messages
@@ -469,6 +606,19 @@ export function Workbench({
     if (pending.length) setHitl(approvalToHitl(pending[0]));
     else if (replaceSession) setHitl(undefined);
     else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
+
+    // 假设 checkpoint 恢复：/state.diagnosis_checkpoint 是内存挂起态投影（刷新后倒计时按
+    // deadline-now 续算）。快照缺失时：换会话清空；同 Run resync 只清仍 pending 的旧卡
+    // （结果态短暂驻留由 linger 计时器收尾，不在这里打断）。
+    const snapshotCheckpoint = d.diagnosis_checkpoint as Record<string, unknown> | null | undefined;
+    if (snapshotCheckpoint?.checkpoint_id) {
+      const restored = checkpointFromOpened(snapshotCheckpoint);
+      if (restored) setCheckpoint((cur) => (cur && cur.checkpointId === restored.checkpointId ? cur : restored));
+    } else if (replaceSession) {
+      setCheckpoint(undefined);
+    } else {
+      setCheckpoint((cur) => (cur && cur.status !== "pending" ? cur : undefined));
+    }
 
     // 诊断面板恢复：`/state` 顶层 rca 与 rca.updated payload 同形。切换会话（replaceSession）
     // 无条件恢复并重置守卫；同 Run resync/refresh 仅 revision 守卫通过才覆盖，且
@@ -503,7 +653,7 @@ export function Workbench({
       runStatus: nextRunStatus,
       lastEventSeq: Number.isFinite(lastEventSeq) && lastEventSeq >= 0 ? lastEventSeq : null,
     };
-  }, [setCurrentAgentId]);
+  }, [setCurrentAgentId, observerStore]);
 
   const refresh = useCallback(async (
     rid: string,
@@ -532,6 +682,14 @@ export function Workbench({
     }
   }, [applyStateSnapshot]);
 
+  // 旁观 task.started 触发的一次性 /state 补拉：拿用户提问原文（task.started payload 无 input_text）。
+  // 经状态位间接触发而非在事件回调里直调 refresh——避免 handleOpenOpsEvent 依赖 refresh 引发重建/重订阅。
+  useEffect(() => {
+    if (!observerStateSync || API_MODE !== "real") return;
+    const rid = activeRunRef.current;
+    if (rid) void refresh(rid, activeInstanceRef.current ?? "");
+  }, [observerStateSync, refresh]);
+
   const openSse = useCallback((
     rid: string,
     fallbackInstanceId: string,
@@ -541,10 +699,14 @@ export function Workbench({
     onStateChange: (state) => {
       if (activeRunRef.current !== rid) return;
       sseOpenRef.current = state === "open";
+      // 瞬态 delta 不占游标不可补发：断线窗口内若只发过 delta，重连不会触发 resync
+      // （seq 没动）——正文已静默缺段。任何重连都标缺段（宁多提示勿静默拼接断句）。
+      if (state === "reconnecting") observerStore.dispatch({ type: "resync" });
       setConn(state);
     },
     onResync: () => {
       if (activeRunRef.current !== rid) return;
+      observerStore.dispatch({ type: "resync" }); // 瞬态增量不可补发：直播正文可能缺段，标提示条
       refreshRequestRef.current?.abort();
       const controller = new AbortController();
       refreshRequestRef.current = controller;
@@ -570,6 +732,7 @@ export function Workbench({
     if (API_MODE !== "real" || (!instanceId && !explicitRunId)) {
       setMessages(demo.messages);
       setHitl(demo.hitl);
+      setCheckpoint(undefined);
       setRca(demo.rca);
       rcaGuardRef.current = initialRcaGuard();
       // 镜像同步：demo 板无任务归属（boardTaskId=null → 恢复推导不过滤，吃下 demo 快照全部事件）
@@ -718,6 +881,13 @@ export function Workbench({
     }
     if (API_MODE !== "real") {
       setTaskStatus("running");  // mock 也走按钮两态，便于演示
+      // 假设 checkpoint 演示（e2e/手验专用，默认关不动既有 mock 时序）：
+      // localStorage 置 openops.mock.checkpoint=1 后，发送即弹卡（8s 假 deadline）。
+      // mock 无服务端事件，超时/决策翻态全靠本端（onDecide 乐观翻态 + onExpired 本地判超时）。
+      if (window.localStorage.getItem("openops.mock.checkpoint") === "1") {
+        setCheckpoint({ checkpointId: `ckpt-demo-${Date.now()}`,
+                        deadlineAt: new Date(Date.now() + 8_000).toISOString(), status: "pending" });
+      }
       // 诊断两段式推进：发送即回到进行中变体，900ms 后 mockRcaFinal() 定格闭环
       // ——mock/e2e 可完整演示「实时步骤 → 五步全绿定格」全程。
       if (demo.rca) setRca(demo.rca);
@@ -740,6 +910,7 @@ export function Workbench({
       const streamRunId = actionRunId;
       const streamToken = Symbol(streamRunId);
       aguiActive.current = { runId: streamRunId, token: streamToken };
+      aguiTailRunRef.current = streamRunId; // 尾窗抑制：终态事件到达才解除（onDone 清 aguiActive 早于它）
       const ownsVisibleRun = () => isCurrentRunStream(
         activeRunRef.current,
         streamRunId,
@@ -813,6 +984,32 @@ export function Workbench({
       HITL_RESULT_LINGER_MS,
     );
   }, [hitl]);
+
+  // 假设 checkpoint 决策（本端点击）：hold 只冻结服务端倒计时（不翻态，等 extended 事件更新
+  // deadline）；continue/add_hypothesis 乐观翻结果态 + linger 淡出，服务端 closed 事件幂等兜底。
+  const resolveCheckpoint = useCallback((action: "continue" | "add_hypothesis" | "hold", text?: string) => {
+    if (!checkpoint) return;
+    const id = checkpoint.checkpointId;
+    const rid = activeRunRef.current;
+    if (API_MODE === "real" && rid) void api.decideDiagnosisCheckpoint(rid, id, action, text);
+    if (action === "hold") return;
+    setCheckpoint((cur) => (cur && cur.checkpointId === id
+      ? { ...cur, status: action === "continue" ? "continued" : "added" }
+      : cur));
+    window.setTimeout(
+      () => setCheckpoint((cur) => (cur && cur.checkpointId === id ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, [checkpoint]);
+
+  // mock 专用：倒计时归零本地翻超时态（real 由服务端 closed 事件定格，不传此回调）
+  const expireCheckpointLocally = useCallback(() => {
+    setCheckpoint((cur) => (cur && cur.status === "pending" ? { ...cur, status: "timed_out" } : cur));
+    window.setTimeout(
+      () => setCheckpoint((cur) => (cur && cur.status !== "pending" ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, []);
 
   const running = taskStatus === "running";
 
@@ -933,6 +1130,15 @@ export function Workbench({
           <AlertTakeoverProvider vm={alertTakeover} enabled={runStatus === "active"}>
             <AlertTakeoverSlot />
           </AlertTakeoverProvider>
+          {checkpoint ? (
+            <HypothesisCheckpointCard
+              key={checkpoint.checkpointId}
+              checkpoint={checkpoint}
+              rca={rca}
+              onDecide={resolveCheckpoint}
+              onExpired={API_MODE === "real" ? undefined : expireCheckpointLocally}
+            />
+          ) : null}
           {running ? (
             <div style={{ display: "flex", alignItems: "center", gap: 8, color: color.textSubtle, fontSize: 12.5 }}>
               <Icon name="loader-2" size={14} color={color.brand} spin />Agent 正在调查…（工具细节见右侧活动栏）
@@ -968,12 +1174,19 @@ export function Workbench({
         onPendingSent={() => setPendingSend(null)}
         onOpenOps={handleOpenOpsEvent}
         alertTakeover={alertTakeover}
+        observerLive={{ store: observerStore, inputText: activeInputText }}
+        onLocalRunChange={handleCopilotLocalRun}
         onRetryConnection={() => setCopilotConnectionGeneration((generation) => generation + 1)}
       />
       {/* 面板 flex:1 → 排队条挂在其后即贴着输入框下沿（用户刚打完字，视线就在这儿） */}
       {queueBanner}
       {runStatus === "active" && shouldShowWorkbenchPortal(visible, workbenchInputBlocked)
-        ? <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+        ? (
+          <>
+            <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+            <CopilotCheckpointFloat checkpoint={checkpoint} rca={rca} onDecide={resolveCheckpoint} />
+          </>
+        )
         : null}
     </div>
   ) : fallbackChat;

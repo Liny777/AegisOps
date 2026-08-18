@@ -1,3 +1,5 @@
+import pytest
+
 from runtime import events
 
 
@@ -54,3 +56,41 @@ def test_recreated_channel_marks_a_newer_client_cursor_for_resync(monkeypatch):
     assert replay == []
     assert need_resync is True
     events.unsubscribe("run-1", queue)
+
+
+@pytest.mark.parametrize(
+    "transient_type",
+    ["openops.assistant.delta", "openops.assistant.thinking.delta"],
+)
+def test_transient_delta_broadcasts_without_buffering(transient_type):
+    run_id = "run-transient"
+    queue, _replay, _resync = events.subscribe(run_id, None)
+
+    events.publish(run_id, events.envelope(run_id, "openops.task.started"))
+    deltas = [
+        events.publish(run_id, events.envelope(run_id, transient_type))
+        for _ in range(5)
+    ]
+    events.publish(run_id, events.envelope(run_id, "openops.rca.updated"))
+
+    assert all(delta["sequence"] is None for delta in deltas)
+    buffered = list(events._channels[run_id].buffer)
+    assert [e["event_type"] for e in buffered] == [
+        "openops.task.started",
+        "openops.rca.updated",
+    ]
+    assert [e["sequence"] for e in buffered] == [1, 2]
+    assert queue.qsize() == 5 + 2
+    events.unsubscribe(run_id, queue)
+
+
+def test_delta_flood_does_not_evict_buffer_or_force_resync():
+    run_id = "run-flood"
+    events.publish(run_id, events.envelope(run_id, "openops.task.started"))
+    for _ in range(1000):
+        events.publish(run_id, events.envelope(run_id, "openops.assistant.delta"))
+
+    queue, replay, need_resync = events.subscribe(run_id, 1)
+    assert need_resync is False
+    assert replay == []
+    events.unsubscribe(run_id, queue)

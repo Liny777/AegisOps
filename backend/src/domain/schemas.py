@@ -252,6 +252,15 @@ class DecisionRequest(BaseModel):
     reason: str = ""
 
 
+class CheckpointDecisionRequest(BaseModel):
+    """假设 checkpoint 决策：continue=继续排查；add_hypothesis=补充假设（text 必填，服务层清洗）；
+    hold=用户开始输入，冻结倒计时（服务端延长窗口）。timed_out 只由服务端产生，不在枚举内。"""
+    client_request_id: str = Field(min_length=1)
+    checkpoint_id: str = Field(min_length=1)
+    action: str = Field(pattern="^(continue|add_hypothesis|hold)$")
+    text: str = ""
+
+
 class SaveTemplateVersionRequest(BaseModel):
     """保存模板草稿版本（B7·二）：全量 content_json（main/sub_agents；
     default_llm 已废弃仅兼容展示——模型改由「模型模板」sre_model_template 编排）。"""
