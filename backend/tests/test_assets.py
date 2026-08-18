@@ -2292,3 +2292,28 @@ def test_admin_mcp_update_unchanged_url_skips_egress(client, monkeypatch):
     man = _sql("select manifest_json->>'description' from sre_mcp_asset_version where mcp_id=%(m)s",
                {"m": mid})[0][0]
     assert man == "改个描述"
+
+
+def test_admin_mcp_update_discovery_timeout_bounded(client, no_egress, monkeypatch):
+    """新地址发现挂死 → PUT 必须在超时上界内返回（无界会让前端 busy 锁死、网关吊死请求，
+    体感「窗口关不掉」）。超时走 refresh_error 路径：不清扫、仍全量拦停。"""
+    import asyncio as _a
+    import time as _t
+
+    from app import asset_admin_service
+
+    res = unwrap(_admin_register_mcp(client, "hang-mcp", url="https://old.internal/mcp"))
+    vid = _run(_seed_catalog(res["mcp_id"], {"t1": {"type": "object"}}))
+
+    async def hang(url, headers=None):
+        await _a.sleep(60)
+
+    monkeypatch.setattr(mcp_registry_client, "discover_tools", hang)
+    monkeypatch.setattr(asset_admin_service, "_UPDATE_DISCOVER_TIMEOUT_S", 0.3)
+    t0 = _t.monotonic()
+    out = unwrap(_admin_update_mcp(client, res["mcp_id"], "https://new.internal/mcp"))
+    assert _t.monotonic() - t0 < 5, "PUT 必须有界返回，不得等发现挂满"
+    t = out["tools"]
+    assert "refresh_error" in t and "Timeout" in t["refresh_error"]
+    assert t["blocked"] == 1 and t["removed"] == []  # 仍全拦、未清扫
+    assert _catalog_state(vid)["t1"][:3] == (False, "blocked", URL_RESET_REASON)

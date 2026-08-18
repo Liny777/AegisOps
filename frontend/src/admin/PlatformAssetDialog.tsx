@@ -173,9 +173,17 @@ export function PlatformAssetDialog({ kind, editing, onClose, onSaved }: {
         </div>
 
         {err ? <div style={{ fontSize: 12, color: color.dangerText, marginTop: 10, lineHeight: 1.6 }}>{err}</div> : null}
+        {busy && urlChanged ? (
+          <div style={{ fontSize: 11.5, color: color.textSubtle, marginTop: 10, lineHeight: 1.6 }}>
+            正在按新地址重新发现工具，可能需要数十秒；可关闭本窗口，稍后在列表或「同步」结果中查看。
+          </div>
+        ) : null}
 
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 18 }}>
-          <Button variant="secondary" onClick={onClose} disabled={busy}>取消</Button>
+          {/* 取消**永远可点**（内网实锤：改 URL 保存要对新地址重新发现工具，可达性差时 PUT 会挂
+              几十秒——busy 锁死取消就是「窗口关不掉」的本体）。关闭不影响服务端请求继续执行，
+              结果丢 toast 可接受，管理员可点「同步」核对；口径与遮罩点击（本就未 gated）拉平。 */}
+          <Button variant="secondary" onClick={onClose}>取消</Button>
           <Button icon={busy ? "loader-2" : undefined} disabled={!ok || busy} onClick={submit}>
             {busy ? (kind === "skill" ? "上传中…" : editing ? "保存中…" : "注册中…")
                   : (kind === "skill" ? "上传" : editing ? "保存" : "注册")}
