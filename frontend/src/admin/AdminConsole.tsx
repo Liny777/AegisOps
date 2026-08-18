@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { color, radius } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
@@ -57,6 +57,9 @@ export function AdminConsole() {
   // 平台级资产写闭环（29.9）：上传 Skill / 注册 MCP 弹窗 + 成功提示（同名收敛条数要显式告知）
   const [assetDialog, setAssetDialog] = useState<"skill" | "mcp" | null>(null);
   const [mcpEdit, setMcpEdit] = useState<McpEditing | null>(null);  // 编辑平台 MCP 弹窗（预填自管理面列表）
+  // mcp-edit 竞态守卫：点击后要异步拉一次列表才开弹窗，快速多点「编辑」再点取消时，
+  // 迟到的响应会把刚关的弹窗**重新打开**。只认最新一次点击的代次；关闭时清零使迟到响应全部作废。
+  const mcpEditSeq = useRef(0);
   const [syncing, setSyncing] = useState(false);   // MCP 服务页「同步」按钮的 busy 态
   // 右上角「待标注」邮箱：派生状态现算（标完自动消失、无已读概念），全管理页可见
   const [inbox, setInbox] = useState<AnnotationInbox>({ total: 0, items: [] });
@@ -249,8 +252,10 @@ export function AdminConsole() {
     else if (key === "mcp-edit") {
       // 表格 cells 只有文本，编辑要完整配置 → 现拉一次管理面列表取整行（照 ma-edit 先例）
       setActionErr("");
+      const seq = ++mcpEditSeq.current;
       void api.adminListMcpsFull()
         .then((rows) => {
+          if (seq !== mcpEditSeq.current) return;  // 已有更新的点击/弹窗已关闭：迟到响应作废
           const r = rows.find((m) => String(m.mcp_id) === rowId);
           if (!r) { setActionErr("该 MCP 已不存在，请刷新后重试"); return; }
           setMcpEdit({
@@ -597,8 +602,9 @@ export function AdminConsole() {
       ) : null}
       {/* 编辑平台 MCP：key 按行重挂，换行编辑不残留上一行的预填值（照 RegisterModelDialog 先例） */}
       {mcpEdit ? (
-        <PlatformAssetDialog key={mcpEdit.mcpId} kind="mcp" editing={mcpEdit} onClose={() => setMcpEdit(null)}
-          onSaved={(msg) => { setMcpEdit(null); setActionErr(""); setActionOk(msg); void load(); refreshInbox(); }} />
+        <PlatformAssetDialog key={mcpEdit.mcpId} kind="mcp" editing={mcpEdit}
+          onClose={() => { mcpEditSeq.current++; setMcpEdit(null); }}
+          onSaved={(msg) => { mcpEditSeq.current++; setMcpEdit(null); setActionErr(""); setActionOk(msg); void load(); refreshInbox(); }} />
       ) : null}
     </>
   );

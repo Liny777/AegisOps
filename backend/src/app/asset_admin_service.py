@@ -13,8 +13,10 @@ run_platform_skill 下载老包。故上传成功后立即收敛到单行。
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
+import os
 import uuid
 from typing import Any
 
@@ -38,6 +40,11 @@ PLATFORM_MCP_SOURCES: tuple[str, ...] = ("mcp_registry", "platform_register")
 # 管理员改 URL 后的全量拦停标记（本轮拍板：URL 变了视作换了一台服务器，schema 没变的工具也不免审）。
 # 待标注计数与测试都引用本常量做精确匹配——管理员手动拉黑的行（别的 reason）不算「待标注」。
 URL_RESET_REASON = "URL 变更，待重新标注"
+
+# 编辑 URL 后对新地址重新发现工具的超时上界：无界会让 PUT 挂到网关吊死——前端 busy 期间
+# 「取消」曾被禁用，体感即「窗口关不掉」（内网实锤 2026-08-18）。超时走 refresh_error 路径
+# （不清扫、仍全量拦停），管理员稍后点「同步」重试。对照运行时用户 MCP 发现的 5s wait_for。
+_UPDATE_DISCOVER_TIMEOUT_S = float(os.getenv("OPENOPS_MCP_UPDATE_DISCOVER_TIMEOUT_S", "20"))
 
 # 上游 delete「已无此资源」的业务码：命中视作已删、继续本地删（口径同 asset_registry_service）
 _DELETE_ABSENT_CODES: tuple[int, ...] = (1002,)
@@ -541,8 +548,10 @@ async def update_mcp(admin: dict[str, Any], mcp_id: str, req: Any) -> dict[str, 
             from infra import host_ip
             from infra.iam_headers import iam_auth_headers
 
-            discovered = await mcp_registry_client.discover_tools(
-                new_url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()})
+            discovered = await asyncio.wait_for(
+                mcp_registry_client.discover_tools(
+                    new_url, {**host_ip.ec2_ip_headers(), **iam_auth_headers()}),
+                _UPDATE_DISCOVER_TIMEOUT_S)
         except Exception as e:  # noqa: BLE001 —— 发现失败不清扫（防瞬时故障误清全部），但仍全拦（见下）
             refresh_error = f"{type(e).__name__}: {str(e)[:200]}"
             log.warning("[mcp-update] 新 URL 工具发现失败（不清扫、仍全量拦停）：%s", refresh_error)
