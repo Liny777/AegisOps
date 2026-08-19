@@ -115,8 +115,20 @@ async def _instance_scope(instance_id: str, owner_uid: str,
         appids = await scope_service.peek_effective_appids(owner_uid, inst) or None
         if appids is None:  # omodel 拿不到：退最近任务边界的审计快照
             snap = await runs_repo.latest_scope_snapshot_by_instance(instance_id)
-            snap_appids = [a for a in ((snap or {}).get("effective_appids_snapshot") or []) if a]
-            appids = snap_appids or None
+            snap_rev = str((snap or {}).get("scope_revision") or "")
+            inst_rev = str(inst.get("scope_revision") or "")
+            if snap is not None and snap_rev != inst_rev:
+                # 范围已变更（写路径已推进实例行 revision）：旧快照代表旧边界，采信=越权
+                # （2026-08-19，宁漏勿越权口径）。fail-closed，等 omodel 恢复或属主跑一次任务刷新快照。
+                log.warning("[alerts][ingest] scope 已变更，历史快照作废 instance=%s "
+                            "snap_rev=%s inst_rev=%s（omodel 恢复或属主跑一次任务后自愈）",
+                            instance_id, snap_rev[:16], inst_rev[:16])
+            else:
+                snap_appids = [a for a in ((snap or {}).get("effective_appids_snapshot") or []) if a]
+                appids = snap_appids or None
+                if appids is not None:  # 兜底成功留痕（此前零日志，2026-08-19 排查盲区）
+                    log.info("[alerts][ingest] scope 快照兜底 instance=%s appids=%d computed_at=%s",
+                             instance_id, len(appids), (snap or {}).get("computed_at"))
     scope_cache[instance_id] = appids
     return appids
 

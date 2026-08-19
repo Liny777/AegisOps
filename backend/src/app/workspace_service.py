@@ -1,6 +1,7 @@
 """Workspace（oModel 契约面，EXT-001/002）：包 omodel_client，router 只调本服务（22 号分层）。"""
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from typing import Any
@@ -8,6 +9,8 @@ from typing import Any
 from domain.errors import ApiError, Err
 from infra.external import apptree_client, omodel_client
 from infra.repositories import audit
+
+log = logging.getLogger("openops.workspace")
 
 
 async def list_apps(user_id: str) -> list[dict[str, Any]]:
@@ -118,6 +121,17 @@ async def update_workspace(name: str, app_ids: list[str], *, workspace_id: str,
         raise ApiError(Err.INTERNAL_ERROR, f"更新系统范围失败：{str(e)[:300]}", retryable=True) from e
     if ws is None:
         raise ApiError(Err.NOT_FOUND, "workspace 不存在")
+    # 范围内容变更闭环（2026-08-19：改范围后告警仍按旧 scope 接管）：①引用实例的
+    # revision 推进到新值——恢复「内容变则版本变」，scope 缓存键翻新、旧快照兜底的
+    # revision 校验得以生效；②清本进程 scope 缓存——不再硬等 30s TTL。
+    from app import scope_service
+    from infra.repositories import agent_teams
+
+    bumped = await agent_teams.bump_scope_revision_by_workspace(
+        workspace_id, str(ws.get("scope_revision") or ""), owner or "system")
+    scope_service.invalidate_workspace(workspace_id)
+    if bumped:
+        log.info("[workspace] 范围变更已推进 %d 个引用实例的 scope_revision ws=%s", bumped, workspace_id)
     return ws
 
 

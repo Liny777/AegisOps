@@ -42,6 +42,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 | **双键幂等释放**（close/delete/idle 回收对 alert run 释放 owner+共享键两本账） | run_state_service `_sandbox_release_keys` ×3 调用点 | dispatch e2e：close 后两账归零 |
 | 销毁反查 `running_by_sandbox`（告警任务 user_id≠容器键） | sandbox_admin_service 强制销毁 | test_core_seams |
 | scope 夜间降级 / 追问自动复开 / 会话历史过滤 entry_source | start_task / list_runs / runs repo | e2e + 联调 |
+| **scope 快照兜底 revision 校验**（2026-08-19：范围变更后旧快照 fail-closed；写路径 update_workspace 推进引用实例 revision + 失效缓存） | ingest._instance_scope / scope_service.resolve_from_last_snapshot / workspace_service | test_ingest_scope_filter + test_init 闭环用例 |
 | lifespan：converge 恒执行；real=Kafka 消费，mock=轮询 | main.py + dispatcher.start_background | e2e 重启收敛 + test_kafka_source |
 
 ## 运行旋钮
