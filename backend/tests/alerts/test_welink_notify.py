@@ -77,7 +77,8 @@ def test_welink_client_success_logs_and_strips_url(monkeypatch, caplog):
 
 
 def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
-    """_notify_owner_done：data 含标题/结论中文/会话链接，收件人=owner 工号；
+    """_notify_owner_done：data 含品牌标题/结论中文/会话直达链接，收件人=owner 工号；
+    结论只带接管结果不带 summary（2026-08-19：并发中断的残缺摘要看不懂，详情进会话）；
     OPENOPS_WEB_BASE_URL 未配退化为文字指引（通知仍发）；派发时留 info 痕。"""
     import logging
 
@@ -88,14 +89,15 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     monkeypatch.setattr(welink_client, "send_welink_message_for_person",
                         lambda uid, data: sent.append((uid, data)))
     inc = {"alert_incident_id": "i1", "owner_user_id": "w_owner", "title": "MySQL 主库延迟>5s",
-           "severity": "fatal", "category": "MySQL"}
+           "severity": "fatal", "category": "MySQL",
+           "result_summary": "主从延迟已恢复，同步位点追平"}
 
     async def _run():
         monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.example.com/")
-        dispatcher._notify_owner_done(inc, "run-123", "主从延迟已恢复", "recovered")
+        dispatcher._notify_owner_done(inc, "run-123", "recovered")
         await asyncio.sleep(0.05)  # 驱动 to_thread fire-and-forget
         monkeypatch.delenv("OPENOPS_WEB_BASE_URL")
-        dispatcher._notify_owner_done(inc, "run-456", None, None)
+        dispatcher._notify_owner_done(inc, "run-456", None)
         await asyncio.sleep(0.05)
 
     with caplog.at_level(logging.INFO, logger="openops.alerts.dispatcher"):
@@ -104,7 +106,10 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     assert len(sent) == 2
     uid, data = sent[0]
     assert uid == "w_owner"
-    assert "MySQL 主库延迟>5s" in data and "已恢复" in data
+    assert "【感知快恢Agent 告警接管】" in data
+    assert "MySQL 主库延迟>5s" in data and "结论：已恢复" in data
+    assert "主从延迟已恢复" not in data  # summary 摘要不进通知（残缺文本防看不懂）
     assert "https://openops.example.com/agent-runs/run-123" in data  # rstrip 后无双斜杠
     _, data2 = sent[1]
-    assert "详见会话" in data2 and "请登录 OpenOps" in data2 and "agent-runs" not in data2
+    assert "详见会话" in data2 and "请登录感知快恢Agent" in data2 and "agent-runs" not in data2
+    assert "OpenOps" not in data2  # 品牌词全量替换
