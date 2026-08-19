@@ -278,15 +278,23 @@ async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
             event_id = str(existing["alert_event_id"])
             await repo.bump_open_incident_counts(event_id)
             # 窗口内补路由（2026-08-19 多用户反馈）：touch 每次推进 last_seen → 持续重发的
-            # 告警窗口**永不过期**（滚动窗口），首见时刻没接上的实例（规则后建/当时被范围闸拦/
-            # 当时无快照）会被永久拦在这——对「命中但从未建过单」的实例补走一次完整路由
-            # （范围/附着/冷却/陈旧/上限闸照过）；接过的实例（含已完结）不补，重建节奏归组冷却。
-            linked = await repo.instances_linked_to_event(event_id)
-            missing = {iid: rules for iid, rules in by_instance.items() if iid not in linked}
+            # 告警窗口**永不过期**（滚动窗口），首见时刻没接上的 (实例, prompt 组)（规则后建/
+            # 当时被范围闸拦/当时无快照）会被永久拦在这——对「命中但从未建过单」的组补走一次
+            # 完整路由（范围/附着/冷却/陈旧/上限闸照过）；接过的组（含已完结）不补，重建节奏
+            # 归组冷却。组标 None 的存量单视为该实例全组已接（宁漏勿双建）。
+            linked = await repo.linked_pairs(event_id)
+            missing: dict[str, list[dict[str, Any]]] = {}
+            for iid, rules in by_instance.items():
+                if (iid, None) in linked:
+                    continue
+                if any((iid, matcher.prompt_hash(eff)) not in linked
+                       for eff, _ in matcher.prompt_groups(rules)):
+                    missing[iid] = rules
             if missing:
                 if trace:
                     log.warning("[alerts][trace] %s 去重窗口内补路由 %d 个未接实例", alarm, len(missing))
-                await _route_matched(event_id, alert, missing, cfg, counters, scope_cache)
+                await _route_matched(event_id, alert, missing, cfg, counters, scope_cache,
+                                     linked=frozenset(linked))
             elif trace:
                 log.warning("[alerts][trace] %s 去重窗口内合并（同指纹 %s），不重复建单",
                             alarm, alert["fingerprint"])
@@ -312,7 +320,8 @@ async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
 async def _route_matched(event_id: str, alert: dict[str, Any],
                          by_instance: dict[str, list[dict[str, Any]]], cfg: dict[str, Any],
                          counters: dict[str, Any],
-                         scope_cache: dict[str, list[str] | None] | None) -> None:
+                         scope_cache: dict[str, list[str] | None] | None,
+                         linked: frozenset[tuple[str, str | None]] = frozenset()) -> None:
     """范围过滤 + 逐实例路由（首见全量 / 去重窗口内补路由缺失实例 两处共用）。
 
     应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
@@ -340,49 +349,80 @@ async def _route_matched(event_id: str, alert: dict[str, Any],
                             "归属=%s 交集空——核对 Agent 圈选的应用与消息 appIdList 口径",
                             alarm, instance_id, appids, sorted(alert_apps))
             continue
-        await _route_to_instance(event_id, alert, instance_id, matched_rules, cfg, counters)
+        await _route_to_instance(event_id, alert, instance_id, matched_rules, cfg, counters,
+                                 linked)
 
 
 async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: str,
                              matched_rules: list[dict[str, Any]], cfg: dict[str, Any],
-                             counters: dict[str, Any]) -> None:
-    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
-    owner = str(matched_rules[0]["owner_user_id"])
-    rule_ids = [str(r["alert_rule_id"]) for r in matched_rules]
-    gk = matcher.group_key(instance_id, alert["app_id"], alert["title"])
+                             counters: dict[str, Any],
+                             linked: frozenset[tuple[str, str | None]] = frozenset()) -> None:
+    """逐 prompt 组路由（2026-08-19 拍板：提示词不同的命中规则分开建单各自诊断）。
 
-    open_inc = await repo.find_open_incident_by_group(gk)
+    每组各过一遍 附着/冷却/陈旧/上限 闸并各建一单；⑤ 层的实例/全局计数是不分组
+    总量，留在组循环内逐组重查——N 个组无法绕过总闸。存量无组标（prompt_group
+    IS NULL）的未完结单按旧「一实例一单」语义整体附着并终止本实例（过渡期兼容）。
+    """
+    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
+    gk = matcher.group_key(instance_id, alert["app_id"], alert["title"])
+    for eff, rules_g in matcher.prompt_groups(matched_rules):
+        pg = matcher.prompt_hash(eff)
+        if (instance_id, pg) in linked or (instance_id, None) in linked:
+            continue  # 补路由护栏：接过的组不重复（bump 已在去重分支做过）
+        legacy_attached = await _route_prompt_group(
+            event_id, alert, instance_id, pg, rules_g, matched_rules, gk, cfg, counters)
+        if legacy_attached:
+            return
+
+
+async def _route_prompt_group(event_id: str, alert: dict[str, Any], instance_id: str,
+                              pg: str, rules_g: list[dict[str, Any]],
+                              matched_rules: list[dict[str, Any]], gk: str,
+                              cfg: dict[str, Any], counters: dict[str, Any]) -> bool:
+    """单个 prompt 组的路由；返回 True 表示附着到了存量无组标旧单（调用方终止本实例）。"""
+    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
+    owner = str(rules_g[0]["owner_user_id"])
+    rule_ids = [str(r["alert_rule_id"]) for r in rules_g]
+    rules_snapshot = [{"rule_id": str(r["alert_rule_id"]), "rule_name": r["rule_name"]}
+                      for r in rules_g]
+
+    open_inc = await repo.find_open_incident_by_group(gk, pg)
     if open_inc is not None:  # ③ 附着：不新建不打断
         iid = str(open_inc["alert_incident_id"])
+        legacy = open_inc.get("prompt_group") is None
         await repo.attach_alert(iid)
         if matcher.severity_rank(alert["severity"]) < matcher.severity_rank(str(open_inc["severity"])):
             await repo.escalate_severity(iid, alert["severity"])
-        await repo.link_event(iid, event_id, rule_ids)
+        # 旧单（无组标）按旧语义整体附着：link 带全部命中规则，且不再走后续组
+        await repo.link_event(iid, event_id,
+                              [str(r["alert_rule_id"]) for r in matched_rules] if legacy
+                              else rule_ids)
         counters["attached"] += 1
         if trace:
-            log.warning("[alerts][trace] %s 附着到未完结单 incident=%s（同组不新建）", alarm, iid)
-        return
+            log.warning("[alerts][trace] %s 附着到未完结单 incident=%s（同组不新建%s）",
+                        alarm, iid, "，存量旧单整体附着" if legacy else "")
+        return legacy
 
-    last = await repo.latest_ended_at_by_group(gk)
+    last = await repo.latest_ended_at_by_group(gk, pg)
     if last is not None and _age_s(last["ended_at"]) < float(cfg["alert_group_cooldown_s"]):
         counters["cooldown"] += 1  # ④ 组冷却：event 有痕，清单不刷屏
         if trace:
             log.warning("[alerts][trace] %s 组冷却中（窗口 %ss）不建新单", alarm,
                         cfg["alert_group_cooldown_s"])
-        return
+        return False
 
     # ④' 陈旧留痕跳过（2026-08-15 拍板：消费延迟不静默丢）：告警时间距今超阈值 →
     # 自动诊断已无意义，但命中了用户规则必须有交代——建 skipped 单留痕，清单显示
     # 「延迟放弃」可手动重试/自行诊断。附着与冷却在前（同组陈旧风暴只留痕一条）；
+    # 每 prompt 组各留一张——retry 按各自 alert_rule_id 注入各自提示词。
     # started_at 缺失 fail-open 不误杀；0=关闭年龄闸。
     stale_max = int(cfg.get("alert_stale_message_age_s", 1800) or 0)
     alert_age = _age_s(alert["started_at"]) if alert.get("started_at") else 0.0
     if stale_max and alert_age > stale_max:
         iid = await repo.create_incident(
             instance_id=instance_id, owner=owner, rule_id=rule_ids[0],
-            matched_rules=[{"rule_id": str(r["alert_rule_id"]), "rule_name": r["rule_name"]}
-                           for r in matched_rules],
-            group_key=gk, title=alert["title"], severity=alert["severity"],
+            matched_rules=rules_snapshot,
+            group_key=gk, prompt_group=pg, title=alert["title"], severity=alert["severity"],
             category=alert["category"], state="skipped", state_reason="stale_consumer_lag",
             first_alert_at=alert["started_at"])
         await repo.link_event(iid, event_id, rule_ids)
@@ -391,14 +431,13 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
             log.warning("[alerts][trace] %s 陈旧跳过（告警时间距今 %d 秒 > 阈值 %d）"
                         "建单留痕 incident=%s（清单可见，可手动重试/自行诊断）",
                         alarm, int(alert_age), stale_max, iid)
-        return
+        return False
 
     async def _skip(reason: str) -> None:
         iid = await repo.create_incident(
             instance_id=instance_id, owner=owner, rule_id=rule_ids[0],
-            matched_rules=[{"rule_id": str(r["alert_rule_id"]), "rule_name": r["rule_name"]}
-                           for r in matched_rules],
-            group_key=gk, title=alert["title"], severity=alert["severity"],
+            matched_rules=rules_snapshot,
+            group_key=gk, prompt_group=pg, title=alert["title"], severity=alert["severity"],
             category=alert["category"], state="skipped", state_reason=reason,
             first_alert_at=alert["started_at"])
         await repo.link_event(iid, event_id, rule_ids)
@@ -410,7 +449,7 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
     max_open = int(cfg["alert_max_open_incidents_per_instance"])  # 实例级覆盖随订阅下线（2026-08-15）
     if await repo.count_open_by_instance(instance_id) >= max_open:
         await _skip("overflow_instance")  # ⑤ 实例上限：留痕不入队
-        return
+        return False
 
     if await repo.count_queued_global() >= int(cfg["alert_queue_max"]):
         victim = await repo.lowest_queued(matcher.SEVERITY_ORDER,
@@ -423,13 +462,12 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
             counters["skipped"] += 1
         else:
             await _skip("overflow_global")
-            return
+            return False
 
     iid = await repo.create_incident(
         instance_id=instance_id, owner=owner, rule_id=rule_ids[0],
-        matched_rules=[{"rule_id": str(r["alert_rule_id"]), "rule_name": r["rule_name"]}
-                       for r in matched_rules],
-        group_key=gk, title=alert["title"], severity=alert["severity"],
+        matched_rules=rules_snapshot,
+        group_key=gk, prompt_group=pg, title=alert["title"], severity=alert["severity"],
         category=alert["category"], state="queued", state_reason=None,
         first_alert_at=alert["started_at"])
     await repo.link_event(iid, event_id, rule_ids)
@@ -437,3 +475,4 @@ async def _route_to_instance(event_id: str, alert: dict[str, Any], instance_id: 
     if trace:
         log.warning("[alerts][trace] %s 入队成功 incident=%s instance=%s（等待派发诊断）",
                     alarm, iid, instance_id)
+    return False

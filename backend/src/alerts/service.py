@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from alerts import matcher
 from alerts import repository as repo
 from alerts.rule_templates import DEFAULT_RULE_PROMPT, RULE_TEMPLATES
 from alerts.schemas import (
@@ -276,9 +277,9 @@ async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str,
 
 
 def _effective_prompt(p: str | None) -> str:
-    """prompt 归一判等口径：空白 ≡ 系统默认（与 dispatcher 派发时 rule_prompt or
-    DEFAULT_RULE_PROMPT 同源——归一后相等的两条规则派发行为完全一致，才可合并）。"""
-    return (p or "").strip() or DEFAULT_RULE_PROMPT
+    """prompt 归一判等口径：委托 matcher.effective_prompt（ensure 合并判等与 ingest
+    分组建单必须同一口径，归一不一致会出现「可合并却分单」的裂缝）。"""
+    return matcher.effective_prompt(p)
 
 
 def _is_generic(match: dict[str, Any]) -> bool:
@@ -545,8 +546,6 @@ def _duration_s(row: dict[str, Any]) -> int | None:
 
 
 def incident_out(row: dict[str, Any]) -> dict[str, Any]:
-    from alerts import matcher
-
     matched = row.get("matched_rules_json") or []
     j = row_json(row)
     return {

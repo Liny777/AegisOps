@@ -116,6 +116,7 @@ CREATE TABLE IF NOT EXISTS sre_alert_incident (
   alert_rule_id uuid,
   matched_rules_json jsonb NOT NULL DEFAULT '[]'::jsonb,
   group_key text NOT NULL,
+  prompt_group text,
   title text NOT NULL DEFAULT '',
   severity text NOT NULL DEFAULT 'warning',
   category text NOT NULL DEFAULT '',
@@ -156,9 +157,10 @@ COMMENT ON TABLE sre_alert_incident IS '告警聚合单（接管清单行，兼�
 COMMENT ON COLUMN sre_alert_incident.alert_incident_id IS '聚合单主键';
 COMMENT ON COLUMN sre_alert_incident.agent_team_instance_id IS '接管方 AgentTeam 实例 ID（每实例各自成单）';
 COMMENT ON COLUMN sre_alert_incident.owner_user_id IS '实例 owner 工号（诊断 run 以此身份创建）';
-COMMENT ON COLUMN sre_alert_incident.alert_rule_id IS '首个命中规则 ID（全部命中见 matched_rules_json）';
-COMMENT ON COLUMN sre_alert_incident.matched_rules_json IS '全部命中规则 [{rule_id,rule_name}] 快照';
-COMMENT ON COLUMN sre_alert_incident.group_key IS '聚合键：instance_id|appid|alert_name；附着与组冷却按此判定';
+COMMENT ON COLUMN sre_alert_incident.alert_rule_id IS '本单 prompt 组的首个命中规则 ID（派发按它取提示词；组内全部见 matched_rules_json）';
+COMMENT ON COLUMN sre_alert_incident.matched_rules_json IS '本单 prompt 组内命中规则 [{rule_id,rule_name}] 快照（2026-08-19 前的存量行为全部命中）';
+COMMENT ON COLUMN sre_alert_incident.group_key IS '聚合键：instance_id|appid|alert_name；附着与组冷却按 (group_key, prompt_group) 判定';
+COMMENT ON COLUMN sre_alert_incident.prompt_group IS 'prompt 组标：归一提示词（空白≡系统默认）的 sha256 前 12 位；同 group_key 下按组附着/冷却。NULL=本列上线前的存量单，查询按通配处理';
 COMMENT ON COLUMN sre_alert_incident.title IS '展示标题（取首条告警名，附着聚合时追加计数）';
 COMMENT ON COLUMN sre_alert_incident.severity IS '组内最高严重度（附着时可升级）：fatal/critical/warning/info';
 COMMENT ON COLUMN sre_alert_incident.category IS '告警类型（取首条告警 category）';

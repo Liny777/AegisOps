@@ -172,8 +172,14 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | Non
         link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
                 else "请登录感知快恢Agent，在告警接管清单查看诊断会话")
         verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
+        matched = inc.get("matched_rules_json") or []
+        rule_name = str((matched[0] or {}).get("rule_name") or "") if matched else ""
+        # 规则名必带（2026-08-19 按 prompt 分单后同一告警可有多张姊妹单先后完成，
+        # 不带规则名的多条通知长得一样，会被当成重复发送的 bug 上报）
+        rule_line = f"命中规则：{rule_name}\n" if rule_name else ""
         data = ("【感知快恢Agent 告警接管】您的告警已完成自动诊断\n"
                 f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
+                f"{rule_line}"
                 f"结论：{verdict}\n"
                 f"{link}")
         log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s",
@@ -240,11 +246,20 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
         await runs_repo.set_run_title(run_id, f"[告警] {inc.get('title')}"[:60], "system")
 
     events, _total = await repo.list_incident_events(iid, limit=10)
+    # 本单 prompt 组的提示词（多规则命中按组分单，各单各注入）：组首 alert_rule_id 优先；
+    # 组首被软删时按 matched_rules_json 序回落组内下一条存活规则——同组建单时归一 prompt
+    # 必相同，任一存活规则等价。不回落会静默换成默认五步法且 skill_hint 一并丢失，
+    # 而删除同 prompt 冗余规则恰是合并语义鼓励的清理动作（2026-08-19 审查实证）。
     rule_prompt = ""
-    if inc.get("alert_rule_id"):  # 规则自定义提示词（配置弹窗可编辑；空=系统默认五步法）
-        rule = await repo.get_rule(str(inc["alert_rule_id"]))
-        if rule:
-            rule_prompt = (rule.get("prompt") or "").strip()
+    candidates = [str(inc["alert_rule_id"])] if inc.get("alert_rule_id") else []
+    candidates += [rid for m in (inc.get("matched_rules_json") or [])
+                   if (rid := str((m or {}).get("rule_id") or "")) and rid not in candidates]
+    if candidates:
+        alive = {str(r["alert_rule_id"]): r for r in await repo.list_rules_by_ids(candidates)}
+        for rid in candidates:
+            if rid in alive:
+                rule_prompt = (alive[rid].get("prompt") or "").strip()
+                break
     treq = _AlertTaskReq(client_request_id=f"alert-task-{iid}-r{retry}",
                          input_text=_build_prompt(inc, events,
                                                   rule_prompt or DEFAULT_RULE_PROMPT),

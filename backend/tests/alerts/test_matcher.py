@@ -104,6 +104,41 @@ def test_severity_rank_order():
     assert matcher.severity_rank("unknown") > matcher.severity_rank("info")
 
 
+# ---------------- prompt 分组（2026-08-19 按提示词分单） ----------------
+
+
+def test_effective_prompt_blank_equals_default():
+    from alerts.rule_templates import DEFAULT_RULE_PROMPT
+
+    assert matcher.effective_prompt(None) == DEFAULT_RULE_PROMPT
+    assert matcher.effective_prompt("   \n") == DEFAULT_RULE_PROMPT
+    assert matcher.effective_prompt(f"  {DEFAULT_RULE_PROMPT}  ") == DEFAULT_RULE_PROMPT
+    assert matcher.effective_prompt("自定义指引") == "自定义指引"
+
+
+def test_prompt_hash_stable_and_distinct():
+    assert matcher.prompt_hash("") == matcher.prompt_hash(None)  # 空白与缺省同组
+    assert matcher.prompt_hash("指引A") == matcher.prompt_hash("  指引A  ")
+    assert matcher.prompt_hash("指引A") != matcher.prompt_hash("指引B")
+    assert len(matcher.prompt_hash("指引A")) == 12
+
+
+def test_prompt_groups_merges_and_keeps_first_seen_order():
+    from alerts.rule_templates import DEFAULT_RULE_PROMPT
+
+    rules = [
+        {"alert_rule_id": "r0", "prompt": "指引A"},
+        {"alert_rule_id": "r1", "prompt": ""},                  # → 默认组
+        {"alert_rule_id": "r2", "prompt": DEFAULT_RULE_PROMPT}, # → 默认组（归一相等）
+        {"alert_rule_id": "r3", "prompt": " 指引A "},           # → A 组（strip 相等）
+    ]
+    groups = matcher.prompt_groups(rules)
+    assert [(eff, [r["alert_rule_id"] for r in rs]) for eff, rs in groups] == [
+        ("指引A", ["r0", "r3"]),
+        (DEFAULT_RULE_PROMPT, ["r1", "r2"]),
+    ]
+
+
 # ---------------- category 倒排索引（2026-08-14 吞吐） ----------------
 
 RULES = [
