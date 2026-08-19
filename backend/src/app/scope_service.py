@@ -37,6 +37,18 @@ def _reset_cache() -> None:  # 测试隔离
     _peek_cache.clear()
 
 
+def invalidate_workspace(workspace_id: str) -> None:
+    """workspace 范围内容变更后的主动失效（2026-08-19：改范围后告警仍按旧 scope 接管 30s）。
+
+    写路径（workspace_service.update_workspace）成功后调用，清掉两张缓存里该
+    workspace 的全部键——下一次 peek/resolve 立即实时解析新范围，不再硬等 TTL。
+    进程内存缓存，多副本部署时其余副本仍靠 30s TTL 兜底（与现状一致）。
+    """
+    for cache in (_cache, _peek_cache):
+        for key in [k for k in cache if k[0] == workspace_id]:
+            del cache[key]
+
+
 async def _blocked(run_id: str, task_id: str, instance_id: str, trace: str,
                    user_id: str, reason_code: str, msg: str) -> None:
     """fail-closed：写审计 scope.blocked + 推 openops.scope.blocked。"""
@@ -201,6 +213,10 @@ async def resolve_from_last_snapshot(
     instance_id = str(instance["agent_team_instance_id"])
     last = await runs.latest_scope_snapshot_by_instance(instance_id)
     if last is None:
+        return None
+    # 范围已变更（实例行 revision 被写路径推进）后旧快照作废——用旧边界起诊断=越权
+    # （2026-08-19，宁漏勿越权口径同 2026-08-11 拍板）。revision 未变的夜间降级不受影响。
+    if str(last.get("scope_revision") or "") != str(instance.get("scope_revision") or ""):
         return None
     appids = list(last.get("effective_appids_snapshot") or [])
     if not appids:

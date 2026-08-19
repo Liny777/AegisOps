@@ -125,6 +125,21 @@ async def update_scope_revision(instance_id: str, scope_revision: str, by: str) 
     )
 
 
+async def bump_scope_revision_by_workspace(workspace_id: str, scope_revision: str, by: str) -> int:
+    """workspace 范围内容变更后，把**所有引用实例**的 revision 推进到新值（2026-08-19）。
+
+    恢复「内容变则版本变」语义：scope 缓存键与快照兜底的 revision 校验都以实例行
+    为准，不推进则原地改范围对它们不可见。返回受影响实例数。
+    """
+    return await exec1(
+        """
+        update sre_agent_team_instance set scope_revision=%(sr)s, last_updated_by=%(b)s, last_update_date=now()
+        where workspace_id=%(w)s and deleted_at is null and scope_revision <> %(sr)s
+        """,
+        {"w": workspace_id, "sr": scope_revision, "b": by},
+    )
+
+
 async def soft_delete(instance_id: str, by: str) -> int:
     return await exec1(
         """

@@ -108,6 +108,31 @@ def test_workspace_update_404(client):
     assert r.json()["error"]["code"] == "NOT_FOUND"
 
 
+def test_workspace_update_bumps_instance_revision_and_invalidates_scope_cache(client):
+    """范围内容变更闭环（2026-08-19：改范围后告警仍按旧 scope 接管的修复）：
+    更新 workspace 应用集 → ①引用实例的 scope_revision 推进到新值（缓存键翻新、
+    旧快照兜底的 revision 校验生效）；②本进程 scope 缓存立即失效（不等 30s TTL）。"""
+    import asyncio
+
+    from app import scope_service
+    from conftest import create_instance
+    from infra.repositories import agent_teams
+
+    iid = create_instance(client, "范围变更闭环")["instance_id"]
+    inst0 = asyncio.run(agent_teams.get_instance(iid))
+    old_rev = str(inst0["scope_revision"])
+    asyncio.run(scope_service.peek_effective_appids("0026demo01", inst0))  # 预填 peek 缓存
+    assert any(k[0] == "ws_pay_abc" for k in scope_service._peek_cache)
+
+    unwrap(client.put("/api/openops/v1/workspaces/ws_pay_abc", headers=USER_HEADERS,
+                      json={"client_request_id": "ws_bump_put", "name": "支付范围",
+                            "app_ids": ["APP-C"]}))
+    inst1 = asyncio.run(agent_teams.get_instance(iid))
+    assert str(inst1["scope_revision"]) != old_rev, "引用实例 revision 未推进"
+    assert not any(k[0] == "ws_pay_abc" for k in scope_service._peek_cache), "peek 缓存未失效"
+    assert not any(k[0] == "ws_pay_abc" for k in scope_service._cache)
+
+
 def test_workspace_delete_then_get_404_and_absent_from_list(client):
     ws = _create_ws(client, "ws_del_create", name="待删范围")
     wid = ws["workspace_id"]

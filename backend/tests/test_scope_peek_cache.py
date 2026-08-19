@@ -156,3 +156,22 @@ async def test_reset_cache_clears_both(monkeypatch):
     scope_service._reset_cache()
     assert scope_service._peek_cache == {}
     assert scope_service._cache == {}
+
+
+async def test_invalidate_workspace_scoped_and_immediate(monkeypatch):
+    """invalidate_workspace（2026-08-19 范围变更失效缝）：只清目标 workspace 的键，
+    失效后下一次 peek 立即真打 omodel 拿新范围——不再硬等 30s TTL。"""
+    calls = {"n": 0}
+    _stub_resolve(monkeypatch, OK, calls)
+    other = {"workspace_id": "ws_other", "scope_revision": "rev-9",
+             "agent_team_instance_id": "inst-9"}
+    await scope_service.peek_effective_appids(UID, INSTANCE)
+    await scope_service.peek_effective_appids(UID, other)
+    assert calls["n"] == 2
+
+    scope_service.invalidate_workspace(WS)
+    _stub_resolve(monkeypatch, {"status": "ok", "effective_appids": ["APP-C"]}, calls)
+    assert await scope_service.peek_effective_appids(UID, INSTANCE) == ["APP-C"]  # 立即新范围
+    assert calls["n"] == 3
+    await scope_service.peek_effective_appids(UID, other)  # 其他 workspace 缓存未被误伤
+    assert calls["n"] == 3
