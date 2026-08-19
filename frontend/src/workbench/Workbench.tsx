@@ -46,7 +46,7 @@ import { AlertTakeoverProvider } from "./alertTakeover/AlertTakeoverContext";
 import { AlertTakeoverSlot } from "./alertTakeover/AlertTakeoverSlot";
 import { useAlertTakeover } from "./alertTakeover/useAlertTakeover";
 import { createObserverStreamStore, type ObserverStreamStore } from "./observer/observerStore";
-import { OBSERVER_BUBBLE_CHAR_LIMIT, isObserverDelta } from "./observer/observerStream";
+import { OBSERVER_BUBBLE_CHAR_LIMIT, explainObserverSignals } from "./observer/observerStream";
 import type { ResolvedWorkbenchSession, WorkbenchTarget } from "../layout/workbenchSession";
 import {
   clearRunRecoveryIssue,
@@ -263,8 +263,15 @@ export function Workbench({
     copilotLocalRunRef.current = running;
     // 本端回合开始：只清「live 中误混入」的直播泡；finalizing/frozen 是终局资产，
     // 清了而历史又没刷进来就是两头空（ObserverHistoryRefresh 的 freeze 语义）。
-    if (running && observerStore.getState().phase === "live") observerStore.dispatch({ type: "clear" });
+    if (running && observerStore.getState().phase === "live") {
+      // 慢网下 CopilotChat 挂载首连也会短暂 isRunning=true——误清后无自愈路径（task.started
+      // 不补发），这行 warn 是那个时序的唯一痕迹；断网数秒触发 resync 可重新快照入场。
+      console.warn("[observer] 本端回合开始，清空旁观直播（若本端并未发送消息即为误清，断网数秒重连可恢复）");
+      observerStore.dispatch({ type: "clear" });
+    }
   }, [observerStore]);
+  // delta 守卫打点节流：记上次判定（"pass" 或拒绝原因），变化才打——delta 每 token 一条，逐条打会刷屏。
+  const observerDeltaTraceRef = useRef<string | null>(null);
   // 旁观 task.started 时经状态位触发一次 /state 补拉用户提问原文（refresh 幂等；
   // 不做「已有值就跳过」——同 run 第二轮无头任务复用旧值会问答错配且自锁）
   const [observerStateSync, setObserverStateSync] = useState(0);
@@ -401,9 +408,18 @@ export function Workbench({
       // 无 message_id 时回退稳定值聚合为一泡（与 agui_service.py 同口径）；
       // 回退 event_id 会一泡一 token，40 泡上限后整段丢弃。
       const messageId = dp.message_id ? String(dp.message_id) : "assistant";
-      if (delta && isObserverDelta(observerSignals(e.agent_run_id))) {
-        if (USE_COPILOT_CHAT) observerStore.dispatch({ type: "delta", messageId, delta });
-        else streamDelta(messageId, delta); // fallback：与本端 agui 路径同构，终态泡逻辑原样接管
+      if (delta) {
+        const reject = explainObserverSignals(observerSignals(e.agent_run_id));
+        if (observerDeltaTraceRef.current !== (reject ?? "pass")) {
+          observerDeltaTraceRef.current = reject ?? "pass";
+          console.info(reject
+            ? `[observer] delta 丢弃：${reject} run=${e.agent_run_id}`
+            : `[observer] 旁观直播出泡 run=${e.agent_run_id}`);
+        }
+        if (reject === null) {
+          if (USE_COPILOT_CHAT) observerStore.dispatch({ type: "delta", messageId, delta });
+          else streamDelta(messageId, delta); // fallback：与本端 agui 路径同构，终态泡逻辑原样接管
+        }
       }
       return; // 无论何种情况都不进活动线
     }
@@ -421,12 +437,18 @@ export function Workbench({
         taskStatusRef.current = "running"; // 镜像同步收紧：紧随其后的首批 delta 不吃 effect 延迟
         setQueuePosition(null);           // 轮到自己了，排队条撤下
         if (e.task_id) setTaskId(e.task_id);
-        if (USE_COPILOT_CHAT && isObserverDelta(observerSignals(e.agent_run_id, { taskStatus: "running" }))) {
-          observerStore.dispatch({ type: "task_started", taskId: e.task_id ?? null });
-          // 旁观者用户气泡：task.started payload 无 input_text——旧值先清（防同 run 第二轮
-          // 任务问答错配），再无条件补拉一次 /state（refresh 幂等）
-          setActiveInputText(null);
-          setObserverStateSync((n) => n + 1);
+        if (USE_COPILOT_CHAT) {
+          const reject = explainObserverSignals(observerSignals(e.agent_run_id, { taskStatus: "running" }));
+          if (reject === null) {
+            console.info(`[observer] task.started 入场 live run=${e.agent_run_id}`);
+            observerStore.dispatch({ type: "task_started", taskId: e.task_id ?? null });
+            // 旁观者用户气泡：task.started payload 无 input_text——旧值先清（防同 run 第二轮
+            // 任务问答错配），再无条件补拉一次 /state（refresh 幂等）
+            setActiveInputText(null);
+            setObserverStateSync((n) => n + 1);
+          } else {
+            console.info(`[observer] task.started 未入场：${reject} run=${e.agent_run_id}`);
+          }
         }
         break;
       // 名额满时入队：位次随队列变化实时下推（复用本 run 的 SSE 通道，无需额外轮询）
@@ -566,10 +588,19 @@ export function Workbench({
       // 中途打开页面的旁观者：task.started 事件早已发过（其 seq 含在 last_event_seq 里，
       // SSE 不会补发）——live 相位只能从快照恢复进入，否则后续 delta 全被相位守卫丢弃、
       // 终局也不触发 finalizing 刷新。reducer 对同任务幂等重入（泡保留），refresh 重放安全。
-      if (!USE_COPILOT_CHAT || activeTask?.status !== "running") return;
+      if (!USE_COPILOT_CHAT) return;
+      if (activeTask?.status !== "running") {
+        // 头号内网分叉：后端重启后影子快照给出 interrupted——旁观从此永不入场而时间线照常有内容
+        if (activeTask?.status) console.info(`[observer] 快照未入场：任务态=${activeTask.status} run=${rid}`);
+        return;
+      }
       taskStatusRef.current = "running"; // 快照路径的镜像 effect 晚一渲染帧，这里先行收紧
-      if (isObserverDelta(observerSignals(rid, { taskStatus: "running", runId: rid, runStatus: nextRunStatus }))) {
+      const reject = explainObserverSignals(observerSignals(rid, { taskStatus: "running", runId: rid, runStatus: nextRunStatus }));
+      if (reject === null) {
+        console.info(`[observer] 快照入场 live run=${rid}`);
         observerStore.dispatch({ type: "task_started", taskId: activeTask.task_id ? String(activeTask.task_id) : null });
+      } else {
+        console.info(`[observer] 快照未入场：${reject} run=${rid}`);
       }
     };
     if (replaceSession) {

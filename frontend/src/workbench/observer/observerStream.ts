@@ -116,17 +116,23 @@ export interface ObserverDeltaSignals {
   autoQuestion: boolean;
 }
 
+/** 守卫诊断：返回第一条不满足的守卫名（Workbench 的 [observer] 信标打点用），全过返回 null。
+ *  顺序即 isObserverDelta 的 AND 链；task_not_running 附实际任务态——「时间线动但对话空白」
+ *  的内网排查里，interrupted（后端重启影子快照）与 running 的区分是头号分叉。 */
+export function explainObserverSignals(input: ObserverDeltaSignals): string | null {
+  if (input.apiMode !== "real") return "api_mode";
+  if (input.runId === null) return "no_run";
+  if (input.runId !== input.eventRunId) return "run_mismatch";
+  if (input.taskStatus !== "running") return `task_not_running(${input.taskStatus ?? "null"})`;
+  if (input.runStatus !== "active") return "run_not_active";
+  if (input.aguiStreamRunId === input.eventRunId) return "agui_streaming";
+  if (input.copilotLocalRun) return "copilot_local_run";
+  if (input.pendingSend) return "pending_send";
+  if (input.autoQuestion) return "auto_question";
+  return null;
+}
+
 /** 旁观守卫：这条 delta 属于「别人（后台）在跑、我在看」才放行。任一不满足即丢。 */
 export function isObserverDelta(input: ObserverDeltaSignals): boolean {
-  return (
-    input.apiMode === "real" &&
-    input.runId !== null &&
-    input.runId === input.eventRunId &&
-    input.taskStatus === "running" &&
-    input.runStatus === "active" &&
-    input.aguiStreamRunId !== input.eventRunId &&
-    !input.copilotLocalRun &&
-    !input.pendingSend &&
-    !input.autoQuestion
-  );
+  return explainObserverSignals(input) === null;
 }

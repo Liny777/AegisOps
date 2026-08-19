@@ -5,6 +5,7 @@ import {
   OBSERVER_BUBBLE_CHAR_LIMIT,
   OBSERVER_BUBBLE_MAX_COUNT,
   initialObserverStream,
+  explainObserverSignals,
   isObserverDelta,
   observerStreamReducer,
   type ObserverDeltaSignals,
@@ -156,4 +157,37 @@ test("isObserverDelta 逐维翻转均为 false", () => {
   for (const [label, patch] of flips) {
     assert.equal(isObserverDelta({ ...signalsBase, ...patch }), false, label);
   }
+});
+
+/* --------------------------- explainObserverSignals --------------------------- */
+
+test("explainObserverSignals：全过返回 null", () => {
+  assert.equal(explainObserverSignals(signalsBase), null);
+});
+
+test("explainObserverSignals：逐维翻转返回对应守卫名（[observer] 打点口径）", () => {
+  const cases: [Partial<ObserverDeltaSignals>, string][] = [
+    [{ apiMode: "mock" }, "api_mode"],
+    [{ runId: null }, "no_run"],
+    [{ eventRunId: "run_2" }, "run_mismatch"],
+    [{ taskStatus: "interrupted" }, "task_not_running(interrupted)"],
+    [{ taskStatus: null }, "task_not_running(null)"],
+    [{ runStatus: "closed" }, "run_not_active"],
+    [{ aguiStreamRunId: "run_1" }, "agui_streaming"],
+    [{ copilotLocalRun: true }, "copilot_local_run"],
+    [{ pendingSend: true }, "pending_send"],
+    [{ autoQuestion: true }, "auto_question"],
+  ];
+  for (const [patch, expected] of cases) {
+    assert.equal(explainObserverSignals({ ...signalsBase, ...patch }), expected, expected);
+  }
+});
+
+test("explainObserverSignals：多守卫同时不满足时按 AND 链序报首条", () => {
+  assert.equal(
+    explainObserverSignals({ ...signalsBase, apiMode: "mock", copilotLocalRun: true }),
+    "api_mode");
+  assert.equal(
+    explainObserverSignals({ ...signalsBase, taskStatus: "interrupted", runStatus: "closed" }),
+    "task_not_running(interrupted)");
 });
