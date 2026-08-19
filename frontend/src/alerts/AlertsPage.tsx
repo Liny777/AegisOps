@@ -6,7 +6,7 @@ import { Button, Icon, Interactive, Pagination, Pill, TextInput } from "../ui";
 import { useApp } from "../lib/appState";
 import { isAbortError } from "../lib/api/singleFlight";
 import { alertsApi, subscribeAlerts } from "./api";
-import { FALLBACK_CATEGORIES, SEVERITY_LABEL, SEVERITY_TONE } from "./constants";
+import { FALLBACK_CATEGORIES, SEVERITY_LABEL, SEVERITY_TONE, STATE_REASON_TEXT } from "./constants";
 import type {
   AlertEventRow,
   AlertEventsPage,
@@ -55,10 +55,23 @@ const TakeoverCell = ({ takeover, stateReason }: { takeover: AlertTakeoverStatus
   );
 };
 
-/** 接管结果：已恢复/失败/已升级；未出结果显「—」。 */
+/** 接管结果：已恢复/失败/已升级；未出结果显「—」。
+ * 失败附原因短文案（state_reason → 用户话术，未知码显原始 code）——此前原因只能查库/查日志。 */
 const ResultCell = ({ it }: { it: AlertEventRow }) => {
   if (it.agent_result === "recovered") return <Pill tone="good" icon="check">已恢复</Pill>;
-  if (it.agent_result === "failed") return <Pill tone="danger">失败</Pill>;
+  if (it.agent_result === "failed") {
+    const reason = it.state_reason ? (STATE_REASON_TEXT[it.state_reason] ?? it.state_reason) : "";
+    return (
+      <span title={reason || undefined} style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0, maxWidth: "100%" }}>
+        <Pill tone="danger">失败</Pill>
+        {reason ? (
+          <span style={{ fontSize: 12, color: color.textSubtle, maxWidth: 150, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            {reason}
+          </span>
+        ) : null}
+      </span>
+    );
+  }
   if (it.agent_result === "escalated") return <Pill tone="warning" icon="arrow-up-right">已升级</Pill>;
   return <span style={{ color: color.textFaint }}>—</span>;
 };

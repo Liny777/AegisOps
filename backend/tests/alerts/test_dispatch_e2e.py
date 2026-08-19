@@ -322,3 +322,36 @@ def test_converge_requeues_interrupted_diagnosis():
     finally:
         _reset_process_state()
         alert_platform_mock._reset()
+
+
+def test_start_failure_exhausted_marks_agent_result_failed(client, monkeypatch):
+    """起诊断失败（容量满等）超重试预算 → agent_result 与其余失败路径同口径回填 'failed'。
+
+    此前该路径走 repo.transition 不写 agent_result，清单结果列显「—」看不出失败。"""
+    from alerts import dispatcher
+    from alerts import service as alerts_service
+    from domain.errors import ApiError, Err
+
+    real_get_config = alerts_service.get_config
+
+    async def _no_retry_config():
+        cfg = dict(await real_get_config())
+        cfg["alert_max_retries"] = 0
+        return cfg
+
+    async def _capacity_full(inc):
+        raise ApiError(Err.SANDBOX_CAPACITY_FULL, "单机沙箱名额已满")
+
+    monkeypatch.setattr(alerts_service, "get_config", _no_retry_config)
+    monkeypatch.setattr(dispatcher, "_ensure_run_and_task", _capacity_full)
+
+    iid = _setup_instance(client)
+    alert_platform_mock._inject(title="MySQL 容量演练", category="MySQL", severity="critical",
+                                app_id="APP-A")
+    assert _pull(client)["queued"] == 1
+    assert _dispatch(client) == 1
+
+    inc = _wait_incident(client, iid, "failed", timeout=10)
+    assert inc["state_reason"] == Err.SANDBOX_CAPACITY_FULL
+    assert inc["agent_result"] == "failed"
+    assert inc["run_id"] is None  # 起跑即败：未绑定 run，清单「查看处理会话」不可点

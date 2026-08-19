@@ -292,8 +292,8 @@ async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
         return
     reason = ("no_scope" if code in (Err.SCOPE_RESOLVE_FAILED, Err.EMPTY_SCOPE,
                                      Err.WORKSPACE_NOT_READY) else str(code))
-    await repo.transition(iid, from_states=["diagnosing"], to_state="failed",
-                          state_reason=reason, set_ended=True)
+    await repo.finish(iid, to_state="failed", state_reason=reason,
+                      result_summary=None, agent_result="failed")  # 清单结果列显「失败」
     await audit.insert_event(
         audit_trace_id=_AUDIT_TRACE, event_type="alert.diagnosis_failed", user_id="system",
         instance_id=str(inc["agent_team_instance_id"]), action="dispatch",
