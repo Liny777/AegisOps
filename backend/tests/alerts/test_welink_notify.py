@@ -59,16 +59,18 @@ def test_welink_client_success_logs_and_strips_url(monkeypatch, caplog):
     from infra.external import welink_client
 
     monkeypatch.setenv("SEND_WELINK_MESSAGE_URL", "http://welink.internal/send  ")
-    seen_urls: list[str] = []
+    calls: list[tuple[str, dict]] = []
 
     class _Ok:
         def json(self):
             return {"code": 200}
 
-    monkeypatch.setattr(httpx, "post", lambda url, **k: (seen_urls.append(url), _Ok())[1])
+    monkeypatch.setattr(httpx, "post", lambda url, **k: (calls.append((url, k["json"])), _Ok())[1])
     with caplog.at_level(logging.INFO, logger="openops.welink"):
         welink_client.send_welink_message_for_person("w_u1", "告警敏感正文")
-    assert seen_urls == ["http://welink.internal/send"]  # 尾随空格已 strip
+    assert calls[0][0] == "http://welink.internal/send"  # 尾随空格已 strip
+    # 对端契约守卫：键名 user_id（带下划线，2026-08-18 核对——userid 会被宽容 200 但不投递）
+    assert calls[0][1] == {"user_id": "w_u1", "data": "告警敏感正文"}
     assert "WeLink 通知发送中 user=w_u1" in caplog.text
     assert "WeLink 通知已发送 user=w_u1" in caplog.text
     assert "告警敏感正文" not in caplog.text  # 成功路径只打工号，data 不落日志
