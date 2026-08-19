@@ -99,17 +99,25 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
         monkeypatch.delenv("OPENOPS_WEB_BASE_URL")
         dispatcher._notify_owner_done(inc, "run-456", None)
         await asyncio.sleep(0.05)
+        # 按 prompt 分单后姊妹单通知靠规则名区分（2026-08-19）：带 matched_rules_json 时必有此行
+        dispatcher._notify_owner_done(
+            dict(inc, matched_rules_json=[{"rule_id": "r1", "rule_name": "Docker 接管 A"}]),
+            "run-789", "recovered")
+        await asyncio.sleep(0.05)
 
     with caplog.at_level(logging.INFO, logger="openops.alerts.dispatcher"):
         asyncio.run(_run())
-    assert caplog.text.count("[alerts][notify] WeLink 通知派发 incident=i1 owner=w_owner") == 2
-    assert len(sent) == 2
+    assert caplog.text.count("[alerts][notify] WeLink 通知派发 incident=i1 owner=w_owner") == 3
+    assert len(sent) == 3
     uid, data = sent[0]
     assert uid == "w_owner"
     assert "【感知快恢Agent 告警接管】" in data
     assert "MySQL 主库延迟>5s" in data and "结论：已恢复" in data
     assert "主从延迟已恢复" not in data  # summary 摘要不进通知（残缺文本防看不懂）
     assert "https://openops.example.com/agent-runs/run-123" in data  # rstrip 后无双斜杠
+    assert "命中规则" not in data  # 无 matched_rules_json（存量单）时该行整体省略
     _, data2 = sent[1]
     assert "详见会话" in data2 and "请登录感知快恢Agent" in data2 and "agent-runs" not in data2
     assert "OpenOps" not in data2  # 品牌词全量替换
+    _, data3 = sent[2]
+    assert "命中规则：Docker 接管 A\n" in data3  # 姊妹单通知的唯一区分项

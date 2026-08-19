@@ -50,6 +50,7 @@
 ## 3. 关键机制速览（实施时按此口径，论证见设计文档 §6–§8）
 
 - **管线**：poller（`OPENOPS_ALERT_PULL_INTERVAL_S=0` 默认关；照 sandbox_admin 循环范式）→ ingest（指纹 upsert 去重 300s 窗 → 内存匹配 enabled 规则 → 同 group_key 附着 / 冷却 900s / 上限判定 → incident(queued) 或 skipped）→ dispatcher（2~5s 短询 + Event kick；并发闸默认 2 热更新；条件 UPDATE 抢占 queued→diagnosing）→ create_run（幂等键 `alert-{incident}-r{n}`）+ start_task(origin=alert) → `await wait_for(shield(st.orchestrator), 900s)` → 收割 result_summary（st.rca.conclusion → transcript 末条 assistant → completed message）→ completed/failed（失败退避 60s 重试 1 次）。
+- **按 prompt 分单**（2026-08-19 拍板：提示词不同的命中规则分开处理，支持 A/B 对比）：同实例多规则命中同一告警时，按归一 prompt（空白≡系统默认；`matcher.effective_prompt`）分组，**每组各建一单各自诊断**，归一相同合并一单；`sre_alert_incident.prompt_group`（归一 prompt 哈希前 12 位）参与附着/冷却/窗口补路由判定，NULL=分单上线前存量单按通配兼容（旧未完结单整体附着、旧完结单冷却全组）。规则加载 `list_enabled_rules` 加 ORDER BY（最老优先）消除「哪条生效」的行序漂移。**计数口径变化**：queued/skipped/stale/attached 计数从「按告警×实例」变「按告警×实例×prompt 组」；每多一个 prompt 组=多一次诊断 run+一条完成通知（文案带命中规则名以区分姊妹单），实例上限 10/全局 50 为总量闸被组共享。已明示不做：组级原子 admission（触顶时可能一组入队一组留痕，留痕可 retry）、派发期组间去重（排队期改 prompt 可能出现两组同 prompt 的重复诊断）。
 - **重启收敛**：alerts.start() 在 converge_orphan_tasks 之后跑 converge_incidents()：diagnosing+快照 completed→补收割；interrupted 未超龄(3600s)→回 queued 复用同一 run；否则 failed(stale)。queued 零处理。
 - **防风暴七层**：拉取背压(200×5批) → 指纹去重 → 附着聚合 → 组冷却 → 有界队列(实例 10/全局 50，低严重度先丢，skipped 留痕) → 并发闸(**峰值模型并发=闸×(1+max_children=3)，闸 2 即 8，上线初期设 1**) → 三级开关(DB alert_enabled ＞ 实例订阅 ＞ 规则)。
 - **容器口径**（已核实）：容器按用户一只、refcount 计 run——同 owner 多告警 run 共享，诊断完不 close，30min idle 回收兜底；`alert_run_idle_ttl_minutes`(默认 0=跟随) 可提前关。
@@ -98,7 +99,7 @@
 1. 模型并发预算贴下限：闸 2×扇出 4=峰值 8，初期设 1 观测；跨池全局模型信号量是平台级 Phase2 课题（现状全仓无模型级并发控制）。
 2. 夜间降级是已知限制：scope 走快照、需登录态 MCP 工具失败留痕；B9 服务态凭证为撤降级前提，需正式立项。
 3. owner 容器常驻：占位数=启用接管的 owner 数（26 上限），admin overview 展示供容量规划。
-4. 多实例命中同一告警各自诊断，放大被 per-instance 上限兜住。
+4. 多实例命中同一告警各自诊断，放大被 per-instance 上限兜住；2026-08-19 按 prompt 分单后放大系数升为「实例数×prompt 组数」，上限仍为总量闸但实际容量被组均摊——上线评审重述。另注意 DEFAULT_RULE_PROMPT 文案升级会使「拷贝默认文案」与「留空」的规则归一值分裂成两组（视为「改了提示词即重测」语义的自然延伸）。
 5. 对方排期：Pull 两端点是 Phase1 唯一硬依赖，契约文档先行交付；mock 保证我方不被阻塞。
 
 ## 2026-08-09 内网契约切换（决策追加）
