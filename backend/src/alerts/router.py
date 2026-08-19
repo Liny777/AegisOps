@@ -91,7 +91,7 @@ async def list_events(
 @admin_router.get("/events")
 async def admin_list_events(
     admin: Admin,
-    user_id: str | None = Query(default=None, description="按用户查看（空=全量任意 owner）"),
+    user_id: str | None = Query(default=None, description="按用户查看：只看该用户接管过的行（空=全量任意 owner）"),
     alert_status: str | None = Query(default=None),
     severity: str | None = Query(default=None),
     takeover: str | None = Query(default=None),

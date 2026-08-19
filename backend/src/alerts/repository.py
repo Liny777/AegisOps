@@ -635,18 +635,27 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
                       alert_status: str | None, severities: list[str] | None,
                       takeover: str | None, category: str | None, search: str | None,
                       since_days: int | None = None, categories: list[str] | None = None,
-                      matched_only: bool = False,
+                      matched_only: bool = False, owner_filter: str | None = None,
                       page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
     """事件 LEFT JOIN LATERAL「该视角下最新聚合单」。
 
     - lateral_owner/lateral_instance：接管投影取谁的单（用户视角=本人[+实例]；admin 按用户查看=目标用户；
       admin 全量=None 取任意 owner 最新单）。
+    - owner_filter：行集收窄为「该用户接管过的事件」（admin 按用户查看，2026-08-19 语义修正：
+      原纯 LATERAL 投影不收窄行集，管理员输了 user_id 看到的仍是全量行、只有接管列变化——
+      与直觉相悖）。与 lateral_owner 配套传同一用户：过滤+投影，接管人列全是他。
     - scope_appids：普通用户可见性——`有本人单` 或 `未接管但 appid ∈ 范围`；None=admin 不加可见性子句。
       注意：他人接管的告警若 appid 在我范围内，会以「未接管」形态出现（他人单不投影，隐私口径）。
     """
     params: dict[str, Any] = {"lat_owner": lateral_owner, "lat_inst": lateral_instance,
                               "scope": scope_appids}
     where = ["1=1"]
+    if owner_filter:
+        where.append("""exists (select 1 from sre_alert_incident_event lo
+            join sre_alert_incident xo on xo.alert_incident_id = lo.alert_incident_id
+            where lo.alert_event_id = e.alert_event_id and lo.deleted_at is null
+              and xo.deleted_at is null and xo.owner_user_id = %(owner_f)s)""")
+        params["owner_f"] = owner_filter
     if matched_only:
         # 管理台清单默认口径（2026-08-15）：只看「命中规则建过单 ∧ 属主仍在白名单」的行。
         # 用与 LATERAL 解耦的 EXISTS——朴素 i.inc_id is not null 会在「按用户查看」时把
