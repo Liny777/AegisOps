@@ -102,6 +102,17 @@ export function CopilotChatPanel({
     () => setConnectionStatus((current) => (current === "error" ? current : "ready")),
     [],
   );
+  // 首连期（ready 之前）的 isRunning=true 一律是挂载 connect 回放的误报——Composer 在 ready
+  // 前本就禁用，真本端回合不可能存在；直接上报会把旁观 live 误清回 idle（内网实锤）。
+  // 依赖 connectionStatus：翻 ready 时回调换身份，ObserverHistoryRefresh 的上报 effect 会
+  // 重跑一次、以当前 isRunning（彼时应为 false）补报——良性。
+  const handleLocalRun = useCallback((running: boolean) => {
+    if (running && connectionStatus !== "ready") {
+      console.info("[observer] 首连期 isRunning 误报已抑制（不清旁观直播）");
+      return;
+    }
+    onLocalRunChange?.(running);
+  }, [connectionStatus, onLocalRunChange]);
 
   // 「正在同步对话」:重连回放期间(gate ready 后、追平信号到达前)的轻提示。
   // 组件随 Provider key(runId:generation)重挂,每次连接自然重置;sidecar 已把
@@ -153,7 +164,7 @@ export function CopilotChatPanel({
         <ObserverHistoryRefresh
           store={observerLive.store}
           agentId={AGENT_ID}
-          onLocalRunChange={onLocalRunChange}
+          onLocalRunChange={handleLocalRun}
         />
       ) : null}
       <ReplayCaughtUpBridge onCaughtUp={handleCaughtUp} />

@@ -248,6 +248,8 @@ export function Workbench({
   const [activeInputText, setActiveInputText] = useState<string | null>(null);
   const taskStatusRef = useRef<string | null>(null);
   useEffect(() => { taskStatusRef.current = taskStatus; }, [taskStatus]);
+  const taskIdRef = useRef<string | null>(null);
+  useEffect(() => { taskIdRef.current = taskId; }, [taskId]);
   const runStatusRef = useRef<"active" | "closed">("active");
   useEffect(() => { runStatusRef.current = runStatus; }, [runStatus]);
   const pendingSendRef = useRef<PendingSend | null>(null);
@@ -264,10 +266,16 @@ export function Workbench({
     // 本端回合开始：只清「live 中误混入」的直播泡；finalizing/frozen 是终局资产，
     // 清了而历史又没刷进来就是两头空（ObserverHistoryRefresh 的 freeze 语义）。
     if (running && observerStore.getState().phase === "live") {
-      // 慢网下 CopilotChat 挂载首连也会短暂 isRunning=true——误清后无自愈路径（task.started
-      // 不补发），这行 warn 是那个时序的唯一痕迹；断网数秒触发 resync 可重新快照入场。
-      console.warn("[observer] 本端回合开始，清空旁观直播（若本端并未发送消息即为误清，断网数秒重连可恢复）");
+      console.warn("[observer] 本端回合开始，清空旁观直播（若本端并未发送消息即为误清，回合结束将自愈重入）");
       observerStore.dispatch({ type: "clear" });
+    }
+    // 误清自愈（内网实锤的首连误报兜底）：本端回合/连接放行后，无头任务仍在跑而旁观停在
+    // idle ⇒ 重入 live。reducer 对同任务幂等；activeInputText 未被 clear 动过，用户泡自然恢复。
+    if (!running && observerStore.getState().phase === "idle"
+        && taskStatusRef.current === "running" && runStatusRef.current === "active"
+        && activeRunRef.current) {
+      console.info("[observer] 本端回合结束、无头任务仍在跑——自愈重入 live");
+      observerStore.dispatch({ type: "task_started", taskId: taskIdRef.current });
     }
   }, [observerStore]);
   // delta 守卫打点节流：记上次判定（"pass" 或拒绝原因），变化才打——delta 每 token 一条，逐条打会刷屏。
@@ -410,11 +418,17 @@ export function Workbench({
       const messageId = dp.message_id ? String(dp.message_id) : "assistant";
       if (delta) {
         const reject = explainObserverSignals(observerSignals(e.agent_run_id));
-        if (observerDeltaTraceRef.current !== (reject ?? "pass")) {
-          observerDeltaTraceRef.current = reject ?? "pass";
+        // 相位感知：守卫放行 ≠ 出泡——store 非 live 时 reducer 会静默吞掉（内网排查曾被
+        // 「出泡」字样误导）；fallback 档无相位机，视同 live。
+        const phase = USE_COPILOT_CHAT ? observerStore.getState().phase : "live";
+        const verdict = reject ?? (phase === "live" ? "pass" : `pass_but_${phase}`);
+        if (observerDeltaTraceRef.current !== verdict) {
+          observerDeltaTraceRef.current = verdict;
           console.info(reject
             ? `[observer] delta 丢弃：${reject} run=${e.agent_run_id}`
-            : `[observer] 旁观直播出泡 run=${e.agent_run_id}`);
+            : phase === "live"
+              ? `[observer] 旁观直播出泡 run=${e.agent_run_id}`
+              : `[observer] delta 已过守卫但旁观相位=${phase}，被吞——等待入场/自愈 run=${e.agent_run_id}`);
         }
         if (reject === null) {
           if (USE_COPILOT_CHAT) observerStore.dispatch({ type: "delta", messageId, delta });

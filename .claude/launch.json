@@ -9,6 +9,13 @@
       "port": 5175
     },
     {
+      "name": "openops-real-dev",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": ["-lc", "npm run dev -- --port 5175 --strictPort"],
+      "cwd": "frontend",
+      "port": 5175
+    },
+    {
       "name": "openops-mock-alerts",
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-lc", "VITE_OPENOPS_API_MODE=mock npm run dev -- --port 5199 --strictPort"],
