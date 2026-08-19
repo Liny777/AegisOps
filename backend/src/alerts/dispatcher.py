@@ -153,13 +153,14 @@ async def dispatch_once() -> int:
 _RESULT_TEXT = {"recovered": "已恢复", "escalated": "已升级"}
 
 
-def _notify_owner_done(inc: dict[str, Any], run_id: str,
-                       summary: str | None, agent_result: str | None) -> None:
+def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | None) -> None:
     """诊断完成 WeLink 通知 owner（2026-08-16，Phase2 通知项部分落地：仅 completed）。
 
     fire-and-forget + to_thread：send_welink_message_for_person 是 sync httpx
     （timeout 30s）且全吞错——通知失败绝不影响收割主流程；仅日志留痕。
-    链接根=OPENOPS_WEB_BASE_URL（内网前端域名）；未配则退化为文字指引（通知仍发）。
+    链接根=OPENOPS_WEB_BASE_URL（感知快恢 Agent 前端域名）；未配则退化为文字指引（通知仍发）。
+    结论只发接管结果不带 summary 摘要（2026-08-19 拍板：并发中断的诊断收割出的残缺
+    文本会让通知看不懂——详情点链接进会话看）。
     """
     try:
         from infra.external.welink_client import send_welink_message_for_person
@@ -169,12 +170,11 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str,
             return
         base = os.environ.get("OPENOPS_WEB_BASE_URL", "").strip().rstrip("/")
         link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
-                else "请登录 OpenOps 在告警清单查看诊断会话")
+                else "请登录感知快恢Agent，在告警接管清单查看诊断会话")
         verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
-        brief = f"｜{str(summary)[:100]}" if summary else ""
-        data = ("【OpenOps 告警接管】您的告警已完成自动诊断\n"
+        data = ("【感知快恢Agent 告警接管】您的告警已完成自动诊断\n"
                 f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
-                f"结论：{verdict}{brief}\n"
+                f"结论：{verdict}\n"
                 f"{link}")
         log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s",
                  inc.get("alert_incident_id"), owner, run_id)
@@ -348,7 +348,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
             action="harvest", payload_redacted={"incident_id": iid,
                                                 "summary_chars": len(summary or "")})
-        _notify_owner_done(inc_now, run_id, summary, agent_result)
+        _notify_owner_done(inc_now, run_id, agent_result)
     else:
         await repo.finish(iid, to_state="failed", state_reason=f"task_{st.status}",
                           result_summary=None, agent_result="failed")
@@ -382,7 +382,7 @@ async def converge_incidents() -> dict[str, int]:
                               result_summary=summary, agent_result=agent_result)
             counts["harvested"] += 1
             if inc.get("agent_run_id"):  # 重启补收割：owner 同样没收到过完成通知
-                _notify_owner_done(inc, str(inc["agent_run_id"]), summary, agent_result)
+                _notify_owner_done(inc, str(inc["agent_run_id"]), agent_result)
             continue
         stale = _age_s(inc.get("last_alert_at")) > float(cfg["alert_requeue_max_age_s"])
         if not stale and int(inc.get("retry_count") or 0) < int(cfg["alert_max_retries"]):
