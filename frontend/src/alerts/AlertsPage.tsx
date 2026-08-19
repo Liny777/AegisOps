@@ -73,7 +73,9 @@ const ResultCell = ({ it }: { it: AlertEventRow }) => {
     );
   }
   if (it.agent_result === "escalated") return <Pill tone="warning" icon="arrow-up-right">已升级</Pill>;
-  return <span style={{ color: color.textFaint }}>—</span>;
+  return (
+    <span title="Agent 未给出恢复/升级判定，可查看处理会话了解详情" style={{ color: color.textFaint }}>—</span>
+  );
 };
 
 /** 用户评价（占位功能）：整列置灰由 td 样式统一处理，这里只管内容。 */

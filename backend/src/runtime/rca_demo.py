@@ -15,6 +15,8 @@ def rca(revision: int, phase: str, extra: dict[str, Any] | None = None) -> dict[
         "phaseLabel": phase,
         # status 与真流程（rca_board 派生）同形：revision 3 = demo 剧本「已闭环」
         "status": "concluded" if revision >= 3 else "in_progress",
+        # verdict 与真流程（模型经契约提交）同形：闭环即已恢复——mock 档清单「结果」列显「已恢复」
+        **({"verdict": "recovered"} if revision >= 3 else {}),
         "tiles": [
             {"label": "症状", "value": "下单 P99 180ms→1.4s"},
             {"label": "时间窗", "value": "10:02 起 · 持续 9min"},

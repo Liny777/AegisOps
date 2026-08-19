@@ -51,6 +51,7 @@ def test_board_contract_normalizes_and_maps_to_card_field_names() -> None:
         lambda b: b.update({"revision": 7}),                               # revision 服务端权威，拒收
         lambda b: b.update({"steps": [{"num": 1, "state": "done"}]}),      # steps 派生键拒收
         lambda b: b.update({"status": "concluded"}),                       # status 派生键拒收
+        lambda b: b.update({"verdict": "resolved"}),                       # verdict 枚举外值拒收
         lambda b: b.update({"title": "<img src=x onerror=alert(1)>"}),     # HTML
         lambda b: b.update({"why": "隐藏\u202e文本"}),                     # 控制字符
         lambda b: b.update({"step": 0}),
@@ -75,6 +76,13 @@ def test_board_contract_rejects_unknown_derived_or_invalid_values(mutate) -> Non
     mutate(board)
     with pytest.raises(RcaBoardContractError):
         normalize_board_arguments(board)
+
+
+def test_board_contract_accepts_verdict_enum() -> None:
+    """verdict（2026-08-19 告警清单「结果」列数据源）：合法枚举收、空=未提交（增量语义）。"""
+    normalized = normalize_board_arguments({**VALID_BOARD, "verdict": "recovered"})
+    assert normalized["verdict"] == "recovered"
+    assert "verdict" not in normalize_board_arguments({**VALID_BOARD, "verdict": ""})
 
 
 def test_board_contract_fills_safe_defaults_for_optional_item_fields() -> None:
