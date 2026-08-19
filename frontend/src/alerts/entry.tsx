@@ -24,7 +24,7 @@ export const alertsRoutes: ReactElement[] = [
 ];
 
 /** 侧栏项：**位置**（插在哪两项之间）是 core 的信息架构决策，**内容**（label/icon/路径）归切片。 */
-export const ALERTS_USER_NAV: NavItem = { key: "alerts", label: "告警清单", icon: "bell-bolt", to: "/alerts" };
+export const ALERTS_USER_NAV: NavItem = { key: "alerts", label: "告警接管清单", icon: "bell-bolt", to: "/alerts" };
 
 /** 用户侧侧栏高亮：命中切片自己的路由就返回 nav key，否则 null（core 继续走它自己的分支）。 */
 export const alertsActiveKey = (pathname: string): string | null =>

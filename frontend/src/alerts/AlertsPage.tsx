@@ -240,7 +240,7 @@ export function AlertsPage() {
   return (
     <>
       <header style={{ flex: "0 0 auto", height: 56, borderBottom: `1px solid ${color.border}`, background: "#fff", display: "flex", alignItems: "center", padding: "0 24px", gap: 12 }}>
-        <div style={{ fontSize: 15, fontWeight: 700 }}>告警清单</div>
+        <div style={{ fontSize: 15, fontWeight: 700 }}>告警接管清单</div>
         {/* 只读徽标（样式对齐 Workbench「当前使用」）：清单归属当前 Agent，切换在侧栏做 */}
         {agentName ? (
           <span title="清单跟随左侧「选择 Agent」；在侧栏切换 Agent 即切换清单" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.border}`, padding: "4px 10px", borderRadius: radius.pill, whiteSpace: "nowrap", flex: "0 0 auto" }}>

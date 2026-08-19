@@ -187,7 +187,7 @@ test("白名单未开通：导航层锁定 + 直链空态兜底（mock 缝切换
   await page.addInitScript(() => localStorage.setItem("openops.mock.alertGranted", "0"));
   // 侧栏「告警清单」锁定：置灰不可点，点击不发生跳转
   await page.goto("/");
-  const lockedNav = page.locator('[title="告警清单"]');
+  const lockedNav = page.locator('[title="告警接管清单"]');
   await expect(lockedNav).toBeVisible({ timeout: 15_000 });
   await expect(lockedNav).toHaveCSS("cursor", "not-allowed");
   await lockedNav.click();
