@@ -530,6 +530,10 @@ _SKIP_REASON_TEXT = {
     "disabled": "接管开关已关闭",
     "queue_expired": "排队超时未接管（超过配置时限自动放弃，可手动重试）",
     "stale_consumer_lag": "消费延迟超阈值，自动放弃处理（告警到达时已陈旧；可手动重试，或到对话界面自行诊断）",
+    "task_failed": "诊断执行失败（模型或工具调用异常，详见会话活动栏）",
+    "task_cancelled": "诊断任务被取消",
+    "SANDBOX_CAPACITY_FULL": "沙箱容量已满，起诊断失败（超出重试预算）",
+    "SANDBOX_CONTAINER_FAILED": "沙箱容器启动失败，起诊断失败（超出重试预算）",
 }
 
 

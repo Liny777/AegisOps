@@ -301,6 +301,7 @@ export const mockEvents: MockEventRow[] = [
     severity: "critical",
     takeover_status: "done",
     agent_result: "failed",
+    state_reason: "timeout", // 失败原因副文案样本（结果列「失败 · 诊断超时被取消」）
     user_feedback: "negative",
     feedback_note: "没定位到根因，还得人工来",
     detail_url: "https://alert.example.com/alerts/ALM-20260730-000103",
