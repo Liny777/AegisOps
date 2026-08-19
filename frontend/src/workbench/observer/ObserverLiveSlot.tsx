@@ -13,6 +13,10 @@ import type { AssistantMessage, UserMessage } from "@ag-ui/core";
 import { useObserverLiveVm, type ObserverLiveVm } from "./ObserverLiveContext";
 import "./ObserverLive.css";
 
+// [observer] 信标兼压缩后部署校验 token（同 [autosend]/[alertentry] 纪律）：内网 console 无此行
+// = 前端产物不含旁观直播模块，先重建部署再排别的。
+console.info("[observer] 旁观直播模块已装载");
+
 const noToolbar = () => null;
 
 function ObserverLiveInner({ vm, localRunActive }: { vm: ObserverLiveVm; localRunActive: boolean }) {
