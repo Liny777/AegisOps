@@ -275,8 +275,19 @@ async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
             return
         if within_window:
             counters["deduped"] += 1  # ② 去重窗口内：计数前进 + 所在未完结单 alert_count 同步前进
-            await repo.bump_open_incident_counts(str(existing["alert_event_id"]))
-            if trace:
+            event_id = str(existing["alert_event_id"])
+            await repo.bump_open_incident_counts(event_id)
+            # 窗口内补路由（2026-08-19 多用户反馈）：touch 每次推进 last_seen → 持续重发的
+            # 告警窗口**永不过期**（滚动窗口），首见时刻没接上的实例（规则后建/当时被范围闸拦/
+            # 当时无快照）会被永久拦在这——对「命中但从未建过单」的实例补走一次完整路由
+            # （范围/附着/冷却/陈旧/上限闸照过）；接过的实例（含已完结）不补，重建节奏归组冷却。
+            linked = await repo.instances_linked_to_event(event_id)
+            missing = {iid: rules for iid, rules in by_instance.items() if iid not in linked}
+            if missing:
+                if trace:
+                    log.warning("[alerts][trace] %s 去重窗口内补路由 %d 个未接实例", alarm, len(missing))
+                await _route_matched(event_id, alert, missing, cfg, counters, scope_cache)
+            elif trace:
                 log.warning("[alerts][trace] %s 去重窗口内合并（同指纹 %s），不重复建单",
                             alarm, alert["fingerprint"])
             return
@@ -295,11 +306,22 @@ async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
                 log.warning("[alerts][trace] %s 恢复消息：命中规则落库为已恢复，不建单", alarm)
             return
 
-    # 应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
-    # 匹配，还须 告警归属应用 ∩ 实例的 omodel 应用范围 非空——否则一条 MySQL 规则会接管
-    # 全网 MySQL 告警，诊断越权读别人应用的数据。范围不可得（omodel 挂且无快照）整实例
-    # 拦截并 warning 留痕；归属应用缺失同拦（无法判定归属即越权风险，R14 联调观察计数）。
-    # 正常越权过滤不打日志（风暴期会刷屏），计数走批摘要 warning；event 行已落库可查 appid。
+    await _route_matched(event_id, alert, by_instance, cfg, counters, scope_cache)
+
+
+async def _route_matched(event_id: str, alert: dict[str, Any],
+                         by_instance: dict[str, list[dict[str, Any]]], cfg: dict[str, Any],
+                         counters: dict[str, Any],
+                         scope_cache: dict[str, list[str] | None] | None) -> None:
+    """范围过滤 + 逐实例路由（首见全量 / 去重窗口内补路由缺失实例 两处共用）。
+
+    应用范围过滤（2026-08-11 拍板「宁漏勿越权」fail-closed）：规则命中只代表 类型/级别
+    匹配，还须 告警归属应用 ∩ 实例的 omodel 应用范围 非空——否则一条 MySQL 规则会接管
+    全网 MySQL 告警，诊断越权读别人应用的数据。范围不可得（omodel 挂且无快照）整实例
+    拦截并 warning 留痕；归属应用缺失同拦（无法判定归属即越权风险，R14 联调观察计数）。
+    正常越权过滤不打日志（风暴期会刷屏），计数走批摘要 warning；event 行已落库可查 appid。
+    """
+    trace, alarm = _trace_hit(alert), alert["external_alert_id"]
     scope_cache = scope_cache if scope_cache is not None else {}
     alert_apps = set(_alert_appids(alert))
     for instance_id, matched_rules in by_instance.items():
