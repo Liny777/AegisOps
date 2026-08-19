@@ -255,10 +255,14 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
     return run_id, str(res["task_id"]), st
 
 
-async def _harvest_summary(inc: dict[str, Any], st: Any | None) -> tuple[str | None, str | None]:
-    """result_summary 提取（优先级：rca 结论 → transcript 末条 assistant）；agent_result Phase1
-    仅在 rca 有结构化结论字段时回填，否则 None（UI 显「已完成」）。"""
-    rca = getattr(st, "rca", None) if st is not None else None
+async def _harvest_summary(inc: dict[str, Any],
+                           rca: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    """result_summary 提取（优先级：rca 结论 → transcript 末条 assistant）；agent_result 仅在
+    模型经诊断板提交了 verdict（recovered/escalated）时回填，否则 None（UI 显「—」详见会话）。
+
+    rca 参数化（2026-08-19）：主链传 st.rca（内存），converge 补收割传 task 快照的
+    rca_json——此前 converge 传 None，重启补收割的单连 conclusion 都拿不到。
+    """
     if rca and rca.get("conclusion"):
         return str(rca["conclusion"])[:500], _agent_result_from_rca(rca)
     run_id = str(inc["agent_run_id"]) if inc.get("agent_run_id") else None
@@ -277,8 +281,11 @@ async def _harvest_summary(inc: dict[str, Any], st: Any | None) -> tuple[str | N
 
 
 def _agent_result_from_rca(rca: dict[str, Any] | None) -> str | None:
-    status = str((rca or {}).get("status") or "").lower()
-    return {"recovered": "recovered", "escalated": "escalated"}.get(status)
+    """结果列数据源=诊断板 verdict（模型经契约提交；2026-08-19 修）。此前误读 rca["status"]
+    ——其值域只有 in_progress/concluded（服务端派生、契约拒收模型提交），completed 单的
+    agent_result 因此恒 NULL，「已恢复/已升级」上线以来从未显示过。"""
+    verdict = str((rca or {}).get("verdict") or "").lower()
+    return verdict if verdict in ("recovered", "escalated") else None
 
 
 async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
@@ -340,7 +347,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
 
     inc_now = await repo.get_incident(iid) or inc
     if st.status == "completed":
-        summary, agent_result = await _harvest_summary(inc_now, st)
+        summary, agent_result = await _harvest_summary(inc_now, getattr(st, "rca", None))
         await repo.finish(iid, to_state="completed", state_reason=None,
                           result_summary=summary, agent_result=agent_result)
         await audit.insert_event(
@@ -377,7 +384,8 @@ async def converge_incidents() -> dict[str, int]:
         snap = await task_states.get_by_task(str(task_id)) if task_id else None
         status = (snap or {}).get("task_status")
         if status == "completed":
-            summary, agent_result = await _harvest_summary(inc, None)
+            # 快照 rca_json：重启后内存 TaskState 已失，结论/verdict 从落盘快照取（select * 已含）
+            summary, agent_result = await _harvest_summary(inc, (snap or {}).get("rca_json"))
             await repo.finish(iid, to_state="completed", state_reason=None,
                               result_summary=summary, agent_result=agent_result)
             counts["harvested"] += 1

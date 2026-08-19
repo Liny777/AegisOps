@@ -73,7 +73,9 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 5. **完成通知**（2026-08-16）：completed 收割后 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
    `OPENOPS_WEB_BASE_URL` 会话链接；未配=不发；failed/skipped 不通知——清单可见，2026-08-18 复议维持）。
    全链日志留痕：grep `[alerts][notify]` 看派发，logger `openops.welink` 发送中/已发送/Failed 三态。
-6. agent_result（已恢复/已升级）仅当 RCA 有结构化结论时回填；resolved 告警只落库不驱动状态机；
+6. agent_result（已恢复/已升级）=模型在诊断板 update_diagnosis_board 的 **verdict** 提交
+   （recovered/escalated，契约枚举校验；2026-08-19 修——此前误读派生 status 恒 NULL），未提交
+   显「—」详见会话；converge 补收割同样取 task 快照 rca_json。resolved 告警只落库不驱动状态机；
    `alert_run_idle_ttl_minutes` 旋钮预留未实现（平台 30min idle 回收兜底）。
 
 ## 本地全链路演示
