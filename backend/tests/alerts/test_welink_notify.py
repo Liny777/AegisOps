@@ -49,9 +49,36 @@ def test_welink_client_swallows_errors(monkeypatch, caplog):
     assert caplog.text.count("Failed to send_welink_message_for_person") == 2
 
 
-def test_notify_owner_done_builds_link_and_dispatches(monkeypatch):
+def test_welink_client_success_logs_and_strips_url(monkeypatch, caplog):
+    """成功链路可观测（2026-08-18 内网排查补）：发送前后各一条 info（告警内容不进日志），
+    URL 尾随空格 strip（启动脚本 export 引号内带空格实见会 404）。"""
+    import logging
+
+    import httpx
+
+    from infra.external import welink_client
+
+    monkeypatch.setenv("SEND_WELINK_MESSAGE_URL", "http://welink.internal/send  ")
+    seen_urls: list[str] = []
+
+    class _Ok:
+        def json(self):
+            return {"code": 200}
+
+    monkeypatch.setattr(httpx, "post", lambda url, **k: (seen_urls.append(url), _Ok())[1])
+    with caplog.at_level(logging.INFO, logger="openops.welink"):
+        welink_client.send_welink_message_for_person("w_u1", "告警敏感正文")
+    assert seen_urls == ["http://welink.internal/send"]  # 尾随空格已 strip
+    assert "WeLink 通知发送中 user=w_u1" in caplog.text
+    assert "WeLink 通知已发送 user=w_u1" in caplog.text
+    assert "告警敏感正文" not in caplog.text  # 成功路径只打工号，data 不落日志
+
+
+def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     """_notify_owner_done：data 含标题/结论中文/会话链接，收件人=owner 工号；
-    OPENOPS_WEB_BASE_URL 未配退化为文字指引（通知仍发）。"""
+    OPENOPS_WEB_BASE_URL 未配退化为文字指引（通知仍发）；派发时留 info 痕。"""
+    import logging
+
     from alerts import dispatcher
     from infra.external import welink_client
 
@@ -69,7 +96,9 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch):
         dispatcher._notify_owner_done(inc, "run-456", None, None)
         await asyncio.sleep(0.05)
 
-    asyncio.run(_run())
+    with caplog.at_level(logging.INFO, logger="openops.alerts.dispatcher"):
+        asyncio.run(_run())
+    assert caplog.text.count("[alerts][notify] WeLink 通知派发 incident=i1 owner=w_owner") == 2
     assert len(sent) == 2
     uid, data = sent[0]
     assert uid == "w_owner"

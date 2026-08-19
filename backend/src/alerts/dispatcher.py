@@ -176,6 +176,8 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str,
                 f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
                 f"结论：{verdict}{brief}\n"
                 f"{link}")
+        log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s",
+                 inc.get("alert_incident_id"), owner, run_id)
         asyncio.create_task(asyncio.to_thread(send_welink_message_for_person, owner, data))
     except Exception:  # noqa: BLE001 —— 组装/派发失败也不许影响收割
         log.warning("[alerts][notify] WeLink 通知派发失败 incident=%s",
