@@ -1664,37 +1664,44 @@ const mockApi: OpenOpsApi = {
       : { ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const },
   ),
   testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const }),
-  getAdminTable: (key) =>
-    key === "model-templates"
-      ? delay(M.buildModelTemplateTable([...M.mockModelTemplates]))  // 从可变数组现算：创建/启停后重拉即反映
-      : key === "model-assets"
-      ? delay(M.buildModelAssetTable([...M.mockModelAssets]))  // 同上：注册/编辑/删除后重拉即反映
-      : key === "alert-events"
-      ? delay({
-          title: "告警接管",
-          cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
-                 { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
-                 { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
-                 { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
-          rows: [
-            { id: "mock-inc-1", cells: [
-              { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
-              { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
-              { text: "fatal", kind: "badge" as const, tone: "danger" as const },
-              { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
-              { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
-            ] },
-            { id: "mock-inc-2", cells: [
-              { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
-              { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
-              { text: "warning", kind: "badge" as const, tone: "neutral" as const },
-              { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },
-              { text: "0099other", mono: true }, { text: "—" },
-            ] },
-          ],
-          total: 2, page: 1, pageSize: 20,
-        })
-      : delay(M.adminTables[key] ?? M.adminTables.templates),
+  getAdminTable: (key, params) => {
+    if (key === "model-templates") return delay(M.buildModelTemplateTable([...M.mockModelTemplates]));  // 从可变数组现算：创建/启停后重拉即反映
+    if (key === "model-assets") return delay(M.buildModelAssetTable([...M.mockModelAssets]));  // 同上：注册/编辑/删除后重拉即反映
+    if (key === "alert-events") {
+      const rows = [
+        { id: "mock-inc-1", cells: [
+          { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
+          { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
+          { text: "fatal", kind: "badge" as const, tone: "danger" as const },
+          { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
+          { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
+        ] },
+        { id: "mock-inc-2", cells: [
+          { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
+          { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
+          { text: "warning", kind: "badge" as const, tone: "neutral" as const },
+          { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },
+          { text: "0099other", mono: true }, { text: "—" },
+        ] },
+        // 与 real 档同语义的过滤（2026-08-19）：search 模糊搜 编号[1]/类型[2]/对象[3]，userId 精确匹配接管人[8]
+      ].filter((r) => {
+        const q = (params?.q ?? "").trim().toLowerCase();
+        const hitQ = !q || [1, 2, 3].some((i) => r.cells[i].text.toLowerCase().includes(q));
+        const uid = (params?.userId ?? "").trim();
+        return hitQ && (!uid || r.cells[8].text === uid);
+      });
+      return delay({
+        title: "告警接管",
+        cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
+               { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
+               { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+               { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
+        rows,
+        total: rows.length, page: 1, pageSize: 20,
+      });
+    }
+    return delay(M.adminTables[key] ?? M.adminTables.templates);
+  },
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getSandboxContainers: () => delay([] as SandboxContainer[]),

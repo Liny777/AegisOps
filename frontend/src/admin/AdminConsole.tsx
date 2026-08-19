@@ -75,62 +75,94 @@ export function AdminConsole() {
   // 用户表标签筛选（服务端 tag 过滤，与 q 为 AND）：tagFilter=""=全部；userTags=下拉候选（标签全集）
   const [tagFilter, setTagFilter] = useState("");
   const [userTags, setUserTags] = useState<string[]>([]);
-  // 告警事件表（管理员全量视角 §3.0 D1）：按用户精确 + 编号/类型/对象模糊，两者 AND
+  // 告警事件表（管理员全量视角 §3.0 D1）：按用户精确 + 编号/类型/对象模糊，两者 AND。
+  // raw=输入框受控值；D=300ms 防抖后的生效值（load 只认 D）——输入即查在内网延迟下逐字符
+  // 打请求，且「按用户查看」是精确匹配，中间前缀全不命中，表会整页闪「未接管」（2026-08-19）。
   const [alertUserQ, setAlertUserQ] = useState("");
   const [alertSearchQ, setAlertSearchQ] = useState("");
+  const [alertUserQD, setAlertUserQD] = useState("");
+  const [alertSearchQD, setAlertSearchQD] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => { setAlertUserQD(alertUserQ); setAlertSearchQD(alertSearchQ); }, 300);
+    return () => clearTimeout(t);
+  }, [alertUserQ, alertSearchQ]);
 
   const isTable = ["templates", "model-assets", "model-templates", "skills", "mcps", "users", "alerts"].includes(page);
 
+  // 请求代次守卫：load 竞态下只认最新一次调用（逐字符搜索/快速切页签时先发后至的
+  // 响应会把新表覆盖回旧数据——2026-08-19 管理面搜索「像没生效」的真凶）。
+  const loadSeq = useRef(0);
+
   const load = useCallback(async () => {
-    // Tool 标注是**全局**配置，与模板无关：MCP 服务页的「待标注」也直接钻到这里，
-    // 不必再走 模板管理 → 选个模板 → 资产治理 → 点 MCP 的三级 drill。
-    if (mcpDrill && page === "mcps") {
-      const d = await api.getAdminMcpTools(mcpDrill);
-      setToolsRaw(d.raw);
-      setTable(d);
-      return;
-    }
-    if (page === "templates") {
-      if (mcpDrill) {
+    const seq = ++loadSeq.current;
+    const alive = () => seq === loadSeq.current;
+    try {
+      // Tool 标注是**全局**配置，与模板无关：MCP 服务页的「待标注」也直接钻到这里，
+      // 不必再走 模板管理 → 选个模板 → 资产治理 → 点 MCP 的三级 drill。
+      if (mcpDrill && page === "mcps") {
         const d = await api.getAdminMcpTools(mcpDrill);
+        if (!alive()) return;
         setToolsRaw(d.raw);
         setTable(d);
-      } else if (tplDrill) {
-        // 资产治理（drill 1）：平台资产表 + 按模板 default_tools 计算「绑定/解绑」列（B7·二写路径）
-        const [assets, detail, toolsData] = await Promise.all([
-          api.getAdminTemplateAssets(),
-          api.getAdminTemplateDetail(tplDrill.id),
-          api.getAdminMcpTools(null),
-        ]);
-        const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
-        // 绑定判定按「server::tool」复合键（读时归一存量裸名）：同名工具跨 server 不再互相点亮绑定列
-        const groups = groupCatalog(toolsData.raw);
-        const boundRaw = (((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[];
-        const bound = new Set(normalizeSelection(boundRaw, groups).keys);
-        setTable({
-          ...assets,
-          cols: [...assets.cols, { label: "模板绑定", width: "72px" }],
-          rows: assets.rows.map((r) => {
-            const keys = (groups[r.id] ?? []).map((t) => t.key);
-            const isBound = keys.length > 0 && keys.every((k) => bound.has(k));
-            return { ...r, cells: [...r.cells, { text: isBound ? "解绑" : "绑定", kind: "action" as const, onClickKey: "toggle-bind" }] };
-          }),
-        });
-      } else {
-        setTable(await api.getAdminTable("templates"));
+        return;
       }
-    } else if (isTable) {
-      setTable(await api.getAdminTable(page === "alerts" ? "alert-events" : page, {
-        page: tablePage, pageSize: ADMIN_PAGE_SIZE,
-        q: page === "users" ? userQ.trim() || undefined
-           : page === "alerts" ? alertSearchQ.trim() || undefined : undefined,
-        tag: page === "users" ? tagFilter || undefined : undefined,
-        userId: page === "alerts" ? alertUserQ.trim() || undefined : undefined,
-      }));
-    } else if (page === "audit") {
-      setAudit(traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline());
+      if (page === "templates") {
+        if (mcpDrill) {
+          const d = await api.getAdminMcpTools(mcpDrill);
+          if (!alive()) return;
+          setToolsRaw(d.raw);
+          setTable(d);
+        } else if (tplDrill) {
+          // 资产治理（drill 1）：平台资产表 + 按模板 default_tools 计算「绑定/解绑」列（B7·二写路径）
+          const [assets, detail, toolsData] = await Promise.all([
+            api.getAdminTemplateAssets(),
+            api.getAdminTemplateDetail(tplDrill.id),
+            api.getAdminMcpTools(null),
+          ]);
+          if (!alive()) return;
+          const base = (detail.draft_version ?? detail.active_version) as Record<string, unknown> | null;
+          // 绑定判定按「server::tool」复合键（读时归一存量裸名）：同名工具跨 server 不再互相点亮绑定列
+          const groups = groupCatalog(toolsData.raw);
+          const boundRaw = (((base?.content_json as Record<string, unknown>)?.main as Record<string, unknown>)?.default_tools ?? []) as string[];
+          const bound = new Set(normalizeSelection(boundRaw, groups).keys);
+          setTable({
+            ...assets,
+            cols: [...assets.cols, { label: "模板绑定", width: "72px" }],
+            rows: assets.rows.map((r) => {
+              const keys = (groups[r.id] ?? []).map((t) => t.key);
+              const isBound = keys.length > 0 && keys.every((k) => bound.has(k));
+              return { ...r, cells: [...r.cells, { text: isBound ? "解绑" : "绑定", kind: "action" as const, onClickKey: "toggle-bind" }] };
+            }),
+          });
+        } else {
+          const d = await api.getAdminTable("templates");
+          if (!alive()) return;
+          setTable(d);
+        }
+      } else if (isTable) {
+        const d = await api.getAdminTable(page === "alerts" ? "alert-events" : page, {
+          page: tablePage, pageSize: ADMIN_PAGE_SIZE,
+          q: page === "users" ? userQ.trim() || undefined
+             : page === "alerts" ? alertSearchQD.trim() || undefined : undefined,
+          tag: page === "users" ? tagFilter || undefined : undefined,
+          userId: page === "alerts" ? alertUserQD.trim() || undefined : undefined,
+        });
+        if (!alive()) return;
+        setTable(d);
+      } else if (page === "audit") {
+        const d = traceFilter ? await api.getAuditTrace(traceFilter) : await api.getAuditTimeline();
+        if (!alive()) return;
+        setAudit(d);
+      }
+    } catch (e) {
+      if (!alive()) return;  // 旧代次的迟到失败不许清最新的表
+      const err = e as { code?: string; message?: string };
+      if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，别闪错误横幅
+      // 失败清 table：留着上一视图的旧表会顶着新面包屑冒充本页数据
+      setTable(null);
+      setActionErr(err.message || "加载失败");
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter, alertUserQ, alertSearchQ]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter, alertUserQD, alertSearchQD]);
 
   // 进用户页拉标签下拉候选（标签全集）；离开或失败置空，不阻断列表
   useEffect(() => {
@@ -146,20 +178,19 @@ export function AdminConsole() {
     const drill = (loc.state as { drill?: string } | null)?.drill ?? null;
     setTplDrill(null); setMcpDrill(page === "mcps" ? drill : null);
     setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ("");
+    setAlertUserQD(""); setAlertSearchQD("");  // 同步清生效值：否则 300ms 内还会带旧词打一发
+    // 切页签立即清表：table 是跨页签复用的单一容器，不清会拿旧页的行顶着新页签标题
+    // 继续渲染到新请求 resolve（2026-08-19 反馈：告警清单搜索结果挂到 MCP/Skill 页上）。
+    setTable(null);
   }, [page, loc.key, loc.state]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQ, alertSearchQ]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
-  // 加载失败进错误横幅：否则 load() 内任一请求 reject 都只留一条 unhandled rejection，界面静默空白。
-  // 同时清掉 table——失败时留着上一个视图的旧表，会让它顶着新面包屑冒充本页数据。
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQD, alertSearchQD]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
+  // 错误处理（含失败清 table）已随请求代次守卫收进 load 自身——effect 级 catch 拿不到
+  // 代次，旧请求的迟到失败会误清新表。
   useEffect(() => {
     setActionErr("");
     setActionOk("");  // 换页/翻页即清成功提示（直接调 load() 的动作路径不触发本 effect，提示得以保留）
     refreshInbox();   // 邮箱与页面数据同节奏刷新（标注保存/编辑/同步各自的回调里另有显式刷新）
-    void load().catch((e) => {
-      const err = e as { code?: string; message?: string };
-      if (err.code === "AUTH_REDIRECT") return; // 正在跳 IAM 登录页，别闪错误横幅
-      setTable(null);
-      setActionErr(err.message || "加载失败");
-    });
+    void load();
   }, [load]);
 
   const tabs = table?.tabs;

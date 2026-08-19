@@ -105,14 +105,44 @@ def test_admin_full_view_and_per_user_projection(client):
     e1 = next(r for r in full if r["alert_no"] == "ALM-E1")
     assert e1["takeover_status"] == "processing"  # 任意 owner 最新单投影
 
+    # 按用户查看=过滤+投影（2026-08-19 语义修正，原纯投影不收窄行集）：
+    # 0099other 没接管过任何单 → 空；接管者 0026demo01 → 只见其接管的 E1
     per_other = unwrap(client.get("/api/openops/v1/admin/alerts/events",
                                   headers=ADMIN_HEADERS,
                                   params={"user_id": "0099other"}))["items"]
-    e1_other = next(r for r in per_other if r["alert_no"] == "ALM-E1")
-    assert e1_other["takeover_status"] == "none"  # 按该用户视角：他没接管
+    assert per_other == []
+    per_owner = unwrap(client.get("/api/openops/v1/admin/alerts/events",
+                                  headers=ADMIN_HEADERS,
+                                  params={"user_id": "0026demo01"}))["items"]
+    assert {r["alert_no"] for r in per_owner} == {"ALM-E1"}
+    assert per_owner[0]["takeover_status"] == "processing"
+    assert per_owner[0]["owner_user_id"] == "0026demo01"
 
     assert client.get(f"{BASE.replace('/alerts', '/admin/alerts')}/events",
                       headers=USER_HEADERS).status_code == 403
+
+
+def test_admin_search_and_pagination(client):
+    """admin 面 search（编号/类型/对象 ilike）与 page/page_size/total（此前零覆盖，
+    2026-08-19 管理台「搜索没生效」排查后补）。"""
+    _setup_with_scope(client)
+    _seed_three(client)
+
+    admin_events = "/api/openops/v1/admin/alerts/events"
+    hit = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                            params={"search": "mysql-prod-03"}))["items"]
+    assert [r["alert_no"] for r in hit] == ["ALM-E1"]
+    assert unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                             params={"search": "不存在关键词"}))["items"] == []
+
+    # 分页走全量留痕口径（matched_only=false 时 ≥3 行）：total 稳定，两页行不重复
+    p1 = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                           params={"matched_only": "false", "page": 1, "page_size": 1}))
+    p2 = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                           params={"matched_only": "false", "page": 2, "page_size": 1}))
+    assert p1["total"] == p2["total"] >= 3
+    assert len(p1["items"]) == len(p2["items"]) == 1
+    assert p1["items"][0]["alert_no"] != p2["items"][0]["alert_no"]
 
 
 def test_filters_search_and_status_projection(client):

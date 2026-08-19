@@ -30,7 +30,8 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 - **接管清单**（全量告警视角，v2 需求 1.3）：`GET /alerts/events`——事件 LEFT JOIN LATERAL 本人最新
   聚合单；普通用户可见=本人接管 ∪（未接管 ∧ appid∈所选 Agent scope 快照）；三值投影
   告警状态（未分派/已分派/已关闭）与接管状态（未接管/处理中/已完成，skipped/ignored 归未接管）；
-  `GET /admin/alerts/events?user_id=`（管理员全量/按用户视角）。incidents 系列端点保留（动作与详情）。
+  `GET /admin/alerts/events?user_id=`（管理员全量；user_id=按接管人过滤+投影，2026-08-19 语义
+  修正，原为纯投影不收窄行集）。incidents 系列端点保留（动作与详情）。
 
 ## 与 core 的接缝（封闭清单，全部有测试守着）
 

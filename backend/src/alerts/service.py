@@ -951,11 +951,12 @@ async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
                                   search: str | None, since_days: int | None = None,
                                   matched_only: bool = True,
                                   page: int, page_size: int) -> dict[str, Any]:
-    """管理员视角：默认只看「命中规则+白名单」行（matched_only）；user_id 非空=按该
-    用户视角投影接管状态。全量留痕排查（R14 out_of_scope 等）走 ?matched_only=false。"""
+    """管理员视角：默认只看「命中规则+白名单」行（matched_only）；user_id 非空=只看该
+    用户接管过的行（owner_filter 收窄行集 + LATERAL 投影其接管状态，2026-08-19 语义修正，
+    原为纯投影不收窄）。全量留痕排查（R14 out_of_scope 等）走 ?matched_only=false。"""
     rows, total = await repo.list_events(
         lateral_owner=user_id or None, lateral_instance=None, scope_appids=None,
-        matched_only=matched_only,
+        matched_only=matched_only, owner_filter=user_id or None,
         alert_status=_check_enum(alert_status, EVENT_STATUSES, "告警状态"),
         severities=_parse_severities(severities),
         takeover=_check_enum(takeover, TAKEOVER_STATUSES, "接管状态"),
