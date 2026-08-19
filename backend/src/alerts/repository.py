@@ -568,6 +568,23 @@ async def summary_counts(*, owner: str, instance_id: str | None) -> dict[str, in
 # ---- incident ↔ event 关联 ----
 
 
+async def instances_linked_to_event(event_id: str) -> set[str]:
+    """该事件已链接过单的实例集（含已完结单——接过≠再接，重建节奏归组冷却管）。
+
+    去重窗口补路由（2026-08-19）用：滚动窗口下持续重发永不过窗，仅对
+    「命中规则但从未建过单」的实例补路由，接过的实例不重复。alert_event_id 有索引。
+    """
+    rows = await q_all(
+        """
+        select distinct i.agent_team_instance_id from sre_alert_incident_event l
+        join sre_alert_incident i on i.alert_incident_id = l.alert_incident_id
+        where l.alert_event_id=%(e)s and l.deleted_at is null and i.deleted_at is null
+        """,
+        {"e": event_id},
+    )
+    return {str(r["agent_team_instance_id"]) for r in rows}
+
+
 async def link_event(incident_id: str, event_id: str, rule_ids: list[str]) -> None:
     await exec1(
         """

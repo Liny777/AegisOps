@@ -11,7 +11,8 @@
   --real 档: kafka_source.consume_loop（getmany → ingest_batch → 手动 commit；先落库后提交）-->
   --mock 档: 内存变更流 + 轮询 run_once（OPENOPS_ALERT_PULL_INTERVAL_S，0=关，admin :pull 手动）-->
 ingest.ingest_batch()（传输无关入口）
-  ① fingerprint 去重（dedup_window_s 内同指纹仅 seen_count++）
+  ① fingerprint 去重（dedup_window_s 内同指纹仅 seen_count++；窗口按 last_seen 滚动——
+     持续重发永不过窗，故窗口内对「命中但从未建过单」的实例补路由，2026-08-19 多用户修复）
   ② matcher 内存匹配（白名单+规则开；v2 规则=类型单值 ∧ 级别 ∧ 命中勾选策略集，空集=该类型全部）
   ③ 附着式聚合（group_key=instance|appid|title 有未完结单 → 附着，severity 取高）
   ④ 组冷却（group_cooldown_s 内同组不建新单）
