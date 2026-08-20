@@ -84,16 +84,53 @@ const ResultCell = ({ it }: { it: AlertEventRow }) => {
   );
 };
 
-/** 接管策略：投影单的组内规则快照（首条 + 等 N 条）；未接管/存量无快照显「—」。 */
-const RuleCell = ({ it }: { it: AlertEventRow }) => {
-  if (!it.matched_rule) {
-    return <span title="未命中接管规则，或存量数据无规则快照" style={{ color: color.textFaint }}>—</span>;
+/** 姊妹单状态短标（接管策略列多策略行的后缀）。 */
+const TAKEOVER_STATE_LABEL: Record<string, string> = {
+  queued: "排队中", diagnosing: "诊断中", completed: "已完成",
+  failed: "失败", skipped: "已跳过", ignored: "已忽略",
+};
+const TAKEOVER_RESULT_LABEL: Record<string, string> = {
+  recovered: "已恢复", escalated: "已升级", failed: "失败", processing: "处理中",
+};
+
+/** 接管策略：按提示词分单后一条告警可被多条策略各接管一次（2026-08-20 测试反馈：
+ *  此前只显投影单的一条策略，第二次诊断在页面上无入口，被当成「只跑了一次」）。
+ *  takeovers 逐条展示：策略名（可点 → 该策略自己的处理会话）+ 状态短标（多条时）；
+ *  历史预览行/存量后端无 takeovers → 回落旧的单条投影口径。未接管显「—」。 */
+const RuleCell = ({ it, onOpenRun }: { it: AlertEventRow; onOpenRun: (runId: string) => void }) => {
+  const line: React.CSSProperties = { display: "block", maxWidth: 150, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
+  const list = it.takeovers?.filter((t) => t.matched_rule) ?? [];
+  if (!list.length) {
+    if (!it.matched_rule) {
+      return <span title="未命中接管规则，或存量数据无规则快照" style={{ color: color.textFaint }}>—</span>;
+    }
+    const total = it.matched_rule_total ?? 1;
+    const text = `${it.matched_rule.name}${total > 1 ? ` 等${total}条` : ""}`;
+    return <span style={{ ...line, color: color.textMuted }} title={text}>{text}</span>;
   }
-  const total = it.matched_rule_total ?? 1;
-  const text = `${it.matched_rule.name}${total > 1 ? ` 等${total}条` : ""}`;
+  const multi = list.length > 1;
   return (
-    <span style={{ display: "block", maxWidth: 150, color: color.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={text}>
-      {text}
+    <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+      {list.map((tk) => {
+        const name = `${tk.matched_rule!.name}${tk.matched_rule_total > 1 ? ` 等${tk.matched_rule_total}条` : ""}`;
+        const state = TAKEOVER_STATE_LABEL[tk.incident_state] ?? tk.incident_state;
+        // 结果后缀只在已完结单上拼（processing 态的 result 与状态短标同义，拼上是噪音）
+        const result = tk.takeover_status === "done" && tk.agent_result
+          ? TAKEOVER_RESULT_LABEL[tk.agent_result] ?? tk.agent_result : "";
+        const clickable = tk.run_clickable && !!tk.run_id;
+        const title = `策略「${tk.matched_rule!.name}」·${state}${result && result !== state ? `·${result}` : ""}${clickable ? "，点击查看该策略的处理会话" : ""}`;
+        return (
+          <span key={tk.incident_id} style={line} title={title}>
+            <span
+              onClick={clickable ? () => onOpenRun(tk.run_id!) : undefined}
+              style={clickable ? { color: color.brand, fontWeight: 600, cursor: "pointer" } : { color: color.textMuted }}
+            >
+              {name}
+            </span>
+            {multi ? <span style={{ color: color.textFaint, fontSize: 11 }}>·{state}</span> : null}
+          </span>
+        );
+      })}
     </span>
   );
 };
@@ -382,7 +419,12 @@ export function AlertsPage() {
               </thead>
               <tbody>
                 {items.map((it) => {
-                  const clickable = it.run_clickable && !!it.run_id;
+                  // 主链接回退首个可点姊妹会话（审查实证：A 完结+B 排队时行级投影单是 B、
+                  // run_id=null，旧逻辑灰显还宣称「无处理会话」——A 的会话明明存在）
+                  const sessionRuns = it.takeovers?.filter((t) => t.run_clickable && t.run_id) ?? [];
+                  const primaryRun = (it.run_clickable && it.run_id) ? it.run_id : sessionRuns[0]?.run_id ?? null;
+                  const clickable = !!primaryRun;
+                  const sessions = sessionRuns.length;
                   return (
                     <Interactive
                       key={it.alert_no}
@@ -394,14 +436,17 @@ export function AlertsPage() {
                       <td style={td}>
                         {clickable ? (
                           <span
-                            onClick={() => nav(`/agent-runs/${it.run_id}`)}
+                            onClick={() => nav(`/agent-runs/${primaryRun}`)}
+                            title={sessions > 1 ? `本告警被 ${sessions} 条策略各接管一次；此处打开最新会话，其余会话点「接管策略」列的策略名` : undefined}
                             style={{ fontSize: 12, fontWeight: 600, color: color.brand, cursor: "pointer", whiteSpace: "nowrap" }}
                           >
-                            查看处理会话
+                            查看处理会话{sessions > 1 ? `（${sessions}）` : ""}
                           </span>
                         ) : (
                           <span
-                            title={it.run_id ? "处理会话已过期清理" : "该告警未被 Agent 接管，无处理会话"}
+                            title={it.run_id ? "处理会话已过期清理"
+                              : it.takeover_status === "processing" ? "排队等待接管，轮到后此处即可点开处理会话"
+                              : "该告警未被 Agent 接管，无处理会话"}
                             style={{ fontSize: 12, fontWeight: 600, color: color.textFaint, cursor: "not-allowed", whiteSpace: "nowrap" }}
                           >
                             查看处理会话
@@ -443,7 +488,7 @@ export function AlertsPage() {
                       <td style={td}><Pill tone={EVENT_STATUS_META[it.alert_status].tone}>{EVENT_STATUS_META[it.alert_status].label}</Pill></td>
                       <td style={td}><SeverityPill severity={it.severity} /></td>
                       <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} incidentState={it.incident_state} /></td>
-                      <td style={{ ...td, maxWidth: 150 }}><RuleCell it={it} /></td>
+                      <td style={{ ...td, maxWidth: 150 }}><RuleCell it={it} onOpenRun={(runId) => nav(`/agent-runs/${runId}`)} /></td>
                       <td style={td}><ResultCell it={it} /></td>
                       <td style={{ ...td, ...feedbackDim }}><FeedbackCell it={it} /></td>
                       <td style={{ ...td, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.started_at)}</td>

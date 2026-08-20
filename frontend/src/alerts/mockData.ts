@@ -101,6 +101,22 @@ export const mockEvents: MockEventRow[] = [
     matched_rule: { rule_id: "rule_gw_docker", name: "容器重启监控" },
     run_id: "run_alert_evt_110",
     run_clickable: true,
+    // A/B 双策略样本（2026-08-20 按提示词分单）：同一条告警被两条不同提示词的策略
+    // 各接管一次——策略列逐条展示、各自会话可点，操作列显「查看处理会话（2）」
+    takeovers: [
+      {
+        incident_id: "inc_evt_110", incident_state: "diagnosing", takeover_status: "processing",
+        agent_result: "processing", state_reason: null,
+        matched_rule: { rule_id: "rule_gw_docker", name: "容器重启监控" }, matched_rule_total: 1,
+        run_id: "run_alert_evt_110", run_clickable: true,
+      },
+      {
+        incident_id: "inc_evt_110b", incident_state: "completed", takeover_status: "done",
+        agent_result: "recovered", state_reason: null,
+        matched_rule: { rule_id: "rule_gw_docker_oom", name: "容器OOM深查" }, matched_rule_total: 1,
+        run_id: "run_alert_evt_110b", run_clickable: true,
+      },
+    ],
     started_at: iso(1, "10:40:21"),
     ended_at: null,
     duration_s: null,
@@ -198,6 +214,21 @@ export const mockEvents: MockEventRow[] = [
     matched_rule: { rule_id: "rule_pay_pg_order", name: "连接池耗尽监控" },
     run_id: null,
     run_clickable: false,
+    // 排队+留痕双策略样本：灰名不可点、「排队中/已跳过」短标——「第二条为什么没跑」在策略列有交代
+    takeovers: [
+      {
+        incident_id: "inc_evt_112", incident_state: "queued", takeover_status: "processing",
+        agent_result: "processing", state_reason: null,
+        matched_rule: { rule_id: "rule_pay_pg_order", name: "连接池耗尽监控" }, matched_rule_total: 1,
+        run_id: null, run_clickable: false,
+      },
+      {
+        incident_id: "inc_evt_112b", incident_state: "skipped", takeover_status: "none",
+        agent_result: null, state_reason: "overflow_instance",
+        matched_rule: { rule_id: "rule_gw_pg_deep", name: "死锁根因深查" }, matched_rule_total: 1,
+        run_id: null, run_clickable: false,
+      },
+    ],
     started_at: iso(2, "09:52:12"),
     ended_at: null,
     duration_s: null,
