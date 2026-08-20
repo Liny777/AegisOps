@@ -23,6 +23,22 @@ export type AlertTakeoverStatus = "done" | "processing" | "none";
 /** 事件行的接管结果（「处理中」语义归 takeover_status，故无 processing 档）。 */
 export type AlertEventAgentResult = "recovered" | "escalated" | "failed";
 
+/** 单次接管（姊妹聚合单）投影：按提示词分单后，一条告警可被多条策略各接管一次。
+ *  每元素 = 一张聚合单的 策略/状态/结果/会话；排序活跃优先→最近更新，首元素恒等于
+ *  行级投影单（matched_rule/run_id 等旧字段）。 */
+export interface AlertEventTakeover {
+  incident_id: string;
+  incident_state: IncidentStatus;
+  takeover_status: AlertTakeoverStatus;
+  agent_result: AlertEventAgentResult | "processing" | null;
+  state_reason: string | null;
+  matched_rule: { rule_id: string; name: string } | null;
+  /** 该单组内命中规则总数（同提示词多规则合并时 >1）。 */
+  matched_rule_total: number;
+  run_id: string | null;
+  run_clickable: boolean;
+}
+
 /** 告警事件行（清单页主形态，GET /alerts/events 的行口径）。
  *  `duration` 是前端投影列：api 层由 `duration_s` 生成中文文案（<60s「N秒」否则「N分」）。 */
 export interface AlertEventRow {
@@ -55,6 +71,9 @@ export interface AlertEventRow {
   matched_rule?: { rule_id: string; name: string } | null;
   /** 组内命中规则总数（同提示词多规则合并一单时 >1，前端补「等 N 条」）。 */
   matched_rule_total?: number;
+  /** 全部姊妹单（2026-08-20）：多策略各自接管时逐条展示 + 各自会话入口；
+   *  历史预览行/存量后端缺省（前端回落 matched_rule 单条口径）。 */
+  takeovers?: AlertEventTakeover[];
   /** 诊断会话 id（run_alert_* 前缀）；未接管时为 null。 */
   run_id: string | null;
   /** 会话是否可打开（run 可能已过期清理，此时置 false）。 */

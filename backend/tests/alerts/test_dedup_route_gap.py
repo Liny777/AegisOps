@@ -83,6 +83,14 @@ def test_window_resend_routes_to_late_subscriber(client):
     inc2 = _incidents(client, OTHER_HEADERS, iid2)
     assert len(inc2) == 1 and inc2[0]["app_id"] == "APP-A"
 
+    # takeovers 的 owner 可见性（2026-08-20 审查：过滤此前零覆盖）：同一事件两家各一单，
+    # 各自清单行只见本人的姊妹单——他人单混入即隐私口径（他人单不投影）被绕过
+    inc1_id = _incidents(client, USER_HEADERS, iid1)[0]["incident_id"]
+    ev1 = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS))["items"][0]
+    assert [t["incident_id"] for t in ev1["takeovers"]] == [inc1_id]
+    ev2 = unwrap(client.get(f"{BASE}/events", headers=OTHER_HEADERS))["items"][0]
+    assert [t["incident_id"] for t in ev2["takeovers"]] == [inc2[0]["incident_id"]]
+
     _inject_same()
     counters = _pull(client)
     assert counters["deduped"] == 1 and counters["queued"] == 0  # 双方都接过：回到纯合并
