@@ -112,15 +112,16 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     uid, data = sent[0]
     assert uid == "w_owner"
     assert "【感知快恢Agent 告警接管】" in data
-    assert "MySQL 主库延迟>5s" in data and "结论：已恢复" in data
+    assert "告警标题：MySQL 主库延迟>5s" in data and "接管结果：已恢复" in data
+    assert "告警开始时间" not in data  # inc 无 first_alert_at：整行省略
     assert "主从延迟已恢复" not in data  # summary 摘要不进通知（残缺文本防看不懂）
     assert "https://openops.example.com/agent-runs/run-123" in data  # rstrip 后无双斜杠
-    assert "命中规则" not in data  # 无 matched_rules_json（存量单）时该行整体省略
+    assert "命中策略" not in data  # 无 matched_rules_json（存量单）时该行整体省略
     _, data2 = sent[1]
     assert "详见会话" in data2 and "请登录感知快恢Agent" in data2 and "agent-runs" not in data2
     assert "OpenOps" not in data2  # 品牌词全量替换
     _, data3 = sent[2]
-    assert "命中规则：Docker 接管 A\n" in data3  # 姊妹单通知的唯一区分项
+    assert "命中策略：Docker 接管 A\n" in data3  # 姊妹单通知的唯一区分项
 
 
 def test_notify_completed_carries_rca_conclusion(monkeypatch):
@@ -133,8 +134,11 @@ def test_notify_completed_carries_rca_conclusion(monkeypatch):
     monkeypatch.setattr(welink_client, "send_welink_message_for_person",
                         lambda uid, data: sent.append((uid, data)))
     monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.example.com")
+    from datetime import datetime, timezone
+
     inc = {"alert_incident_id": "i2", "owner_user_id": "w_owner", "title": "MySQL 主库延迟>5s",
-           "severity": "fatal", "category": "MySQL"}
+           "severity": "fatal", "category": "MySQL",
+           "first_alert_at": datetime(2026, 8, 20, 3, 38, 29, tzinfo=timezone.utc)}
 
     async def _run():
         dispatcher._notify_owner_done(inc, "run-1", "recovered",
@@ -143,7 +147,9 @@ def test_notify_completed_carries_rca_conclusion(monkeypatch):
         await asyncio.sleep(0.05)
 
     asyncio.run(_run())
-    assert "结论：已恢复｜Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
+    # 验收拍板（2026-08-20）：接管结果与结论拆行，不再「已恢复｜根因」混排
+    assert "接管结果：已恢复\n结论：Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
+    assert "告警开始时间：2026-08-20 " in sent[0][1]  # first_alert_at 本地时区单独一行
     assert "长" * 200 + "……" in sent[1][1] and "长" * 201 not in sent[1][1]  # 无句读硬截+省略号
 
 

@@ -75,7 +75,8 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
    transcript 兜底文本不进通知）；failed 结论=原因中文（reason_text 词表：诊断超时/执行失败等），
    无 run 时链接退化清单深链 /alerts/{incident_id}。**queue_expired/skipped 不通知**（拍板：防
    批量轰炸，清单可见）。结论经 `_notify_brief` 清洗：剥 Markdown 标记+按句边界截断（2026-08-19
-   内网样本反馈）。全链日志：grep `[alerts][notify]`（含 outcome=），logger `openops.welink` 三态。
+   内网样本反馈）。行格式（2026-08-20 验收）：告警标题/告警开始时间/命中策略/接管结果与结论
+   **分行**。全链日志：grep `[alerts][notify]`（含 outcome=），logger `openops.welink` 三态。
 6. agent_result（已恢复/已升级）=模型在诊断板 update_diagnosis_board 的 **verdict** 提交
    （recovered/escalated，契约枚举校验；2026-08-19 修——此前误读派生 status 恒 NULL），未提交
    显「—」详见会话；converge 补收割同样取 task 快照 rca_json。resolved 告警只落库不驱动状态机；
