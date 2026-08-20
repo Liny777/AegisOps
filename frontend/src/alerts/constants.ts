@@ -15,6 +15,7 @@ export const STATE_REASON_TEXT: Record<string, string> = {
   task_failed: "诊断执行失败（模型或工具调用异常，详见会话活动栏）",
   task_cancelled: "诊断任务被取消",
   queue_expired: "排队超时未接管（超过配置时限自动放弃，可手动重试）",
+  rule_revoked: "命中的告警策略已被停用或删除，本单不再自动诊断（留痕）",
   no_scope: "无可用范围快照（实例从未成功解析过 scope）",
   stale: "重启后发现告警已陈旧，不再补诊",
   interrupted_by_restart: "服务重启中断且超出重试预算",
