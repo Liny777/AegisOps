@@ -9,6 +9,8 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from alerts.rule_templates import DEFAULT_RULE_PROMPT
+
 SEVERITIES = ("fatal", "critical", "warning", "info")
 SEVERITY_ORDER = list(SEVERITIES)  # 下标越小越严重
 
@@ -47,6 +49,28 @@ def app_id_from_group_key(gk: str) -> str:
     return parts[1]
 
 
+def effective_prompt(p: str | None) -> str:
+    """prompt 归一判等口径：空白 ≡ 系统默认（与 dispatcher 派发时 rule_prompt or
+    DEFAULT_RULE_PROMPT 同源——归一后相等的两条规则派发行为完全一致，才可同组/合并）。"""
+    return (p or "").strip() or DEFAULT_RULE_PROMPT
+
+
+def prompt_hash(p: str | None) -> str:
+    """prompt 组标（sre_alert_incident.prompt_group）：归一 prompt 的 sha256 前 12 位。
+    内容哈希而非 rule_id——同组最老规则被删时组标不漂移，附着/冷却判定不断裂。"""
+    return hashlib.sha256(effective_prompt(p).encode("utf-8")).hexdigest()[:12]
+
+
+def prompt_groups(rules: list[dict[str, Any]]) -> list[tuple[str, list[dict[str, Any]]]]:
+    """按归一 prompt 分组（2026-08-19 拍板：提示词不同的命中规则分开建单各自诊断，
+    相同的合并一单）。dict 插入序保序：组序=组内首规则在入参中的原序，组内保原序
+    ——入参已由 list_enabled_rules 的 ORDER BY 固化为最老规则优先。"""
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for rule in rules:
+        groups.setdefault(effective_prompt(rule.get("prompt")), []).append(rule)
+    return list(groups.items())
+
+
 def rule_categories(match_json: dict[str, Any]) -> list[str]:
     """规则的类别集合归一：categories 多值 ∪ legacy 单值 category 回退。
 
@@ -63,7 +87,8 @@ def rule_categories(match_json: dict[str, Any]) -> list[str]:
 def build_rule_index(rules: list[dict[str, Any]]) -> dict[str, Any]:
     """category 倒排索引（2026-08-14 吞吐：3000 条/s × 千级规则 = 每秒百万次 match 全扫
     扛不住）。桶里存**规则下标**：candidate_rules 按下标排序合并，保持与 rules 原序一致
-    ——`matched_rules[0]["owner_user_id"]` 依赖组内顺序，乱序会让 owner 归属抖动。
+    ——`matched_rules[0]["owner_user_id"]` 与各 prompt 组的首规则都依赖组内顺序
+    （2026-08-19 起源头顺序由 list_enabled_rules 的 ORDER BY 固化为最老规则优先）。
     空类别规则（不限类型）进 wildcard 桶，每条告警都要带上它精判。
     只倒排 category 一维：severities/strategies 区分度低，keywords/label_selectors
     是子串/逐键语义不可倒排——候选集仍逐条跑完整 match() 精判，六维语义零变。

@@ -11,6 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from alerts import matcher
 from alerts import repository as repo
 from alerts.rule_templates import DEFAULT_RULE_PROMPT, RULE_TEMPLATES
 from alerts.schemas import (
@@ -276,9 +277,9 @@ async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str,
 
 
 def _effective_prompt(p: str | None) -> str:
-    """prompt 归一判等口径：空白 ≡ 系统默认（与 dispatcher 派发时 rule_prompt or
-    DEFAULT_RULE_PROMPT 同源——归一后相等的两条规则派发行为完全一致，才可合并）。"""
-    return (p or "").strip() or DEFAULT_RULE_PROMPT
+    """prompt 归一判等口径：委托 matcher.effective_prompt（ensure 合并判等与 ingest
+    分组建单必须同一口径，归一不一致会出现「可合并却分单」的裂缝）。"""
+    return matcher.effective_prompt(p)
 
 
 def _is_generic(match: dict[str, Any]) -> bool:
@@ -537,6 +538,12 @@ _SKIP_REASON_TEXT = {
 }
 
 
+def reason_text(reason: str | None) -> str:
+    """state_reason → 用户话术（WeLink 失败通知/详情面板共用词表）；未收录裸 code 显原码。"""
+    key = str(reason or "")
+    return _SKIP_REASON_TEXT.get(key, key)
+
+
 def _duration_s(row: dict[str, Any]) -> int | None:
     start, end = row.get("first_alert_at"), row.get("ended_at")
     if start is None or end is None:
@@ -545,8 +552,6 @@ def _duration_s(row: dict[str, Any]) -> int | None:
 
 
 def incident_out(row: dict[str, Any]) -> dict[str, Any]:
-    from alerts import matcher
-
     matched = row.get("matched_rules_json") or []
     j = row_json(row)
     return {
@@ -791,6 +796,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
     duration_s = max(0, int((end_dt - start_dt).total_seconds())) \
         if (start_dt is not None and end_dt is not None) else None
     run_id = str(row["inc_run_id"]) if row.get("inc_run_id") else None
+    # 接管策略列（2026-08-19 分单后 UI 后续）：投影单的组内规则快照，口径同 incident_out——
+    # 首条展示、total 供前端补「等 N 条」；未接管/存量空快照为 None（前端「—」）
+    matched = row.get("inc_matched_rules") or []
     return {
         "alert_no": row.get("external_alert_id") or str(row["alert_event_id"]),
         "category": row.get("category") or "",
@@ -809,6 +817,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
         # 处理中细分（2026-08-19）：queued/diagnosing 原始态透出，前端把排队单显「排队中」
         # （灰色「查看处理会话」多因还没绑 run）；takeover_status 三值投影与筛选桶不动。
         "incident_state": row.get("inc_state"),
+        "matched_rule": ({"rule_id": matched[0].get("rule_id"), "name": matched[0].get("rule_name")}
+                         if matched else None),
+        "matched_rule_total": len(matched),
         "user_feedback": row.get("inc_user_feedback"),
         "feedback_note": row.get("inc_feedback_note") or "",
         "detail_url": detail_url,
@@ -954,11 +965,12 @@ async def admin_list_alert_events(admin: dict[str, Any], *, user_id: str | None,
                                   search: str | None, since_days: int | None = None,
                                   matched_only: bool = True,
                                   page: int, page_size: int) -> dict[str, Any]:
-    """管理员视角：默认只看「命中规则+白名单」行（matched_only）；user_id 非空=按该
-    用户视角投影接管状态。全量留痕排查（R14 out_of_scope 等）走 ?matched_only=false。"""
+    """管理员视角：默认只看「命中规则+白名单」行（matched_only）；user_id 非空=只看该
+    用户接管过的行（owner_filter 收窄行集 + LATERAL 投影其接管状态，2026-08-19 语义修正，
+    原为纯投影不收窄）。全量留痕排查（R14 out_of_scope 等）走 ?matched_only=false。"""
     rows, total = await repo.list_events(
         lateral_owner=user_id or None, lateral_instance=None, scope_appids=None,
-        matched_only=matched_only,
+        matched_only=matched_only, owner_filter=user_id or None,
         alert_status=_check_enum(alert_status, EVENT_STATUSES, "告警状态"),
         severities=_parse_severities(severities),
         takeover=_check_enum(takeover, TAKEOVER_STATUSES, "接管状态"),

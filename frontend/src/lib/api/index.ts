@@ -459,14 +459,10 @@ const realApi: OpenOpsApi = {
     };
   },
   async listAgents() {
-    // 并取实例 + oModel workspace 清单：卡片「系统范围」显示工作空间名称而非 id；
-    // 名字拉不到（oModel 瞬断/会话过期）不阻塞列表，回退显示 id
-    const [rows, wss] = await Promise.all([
-      apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams"),
-      realApi.getWorkspaces().catch(() => []),
-    ]);
-    const wsNames = new Map(wss.map((w) => [w.workspace_id, w.name]));
-    return rows.map((r) => projectInstance(r, wsNames));
+    // 只打自家 /agent-teams：workspace 中文名由 appState 异步补齐（getWorkspaces 走外部
+    // oModel、超时 8s，捆在这里曾把冷启动整屏拖到白等）。名字未到/拉不到回退显示 id。
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams");
+    return rows.map((r) => projectInstance(r));
   },
   async getOmodelPageBase() {
     const d = await apiFetch<{ page_base?: string }>("/openops/v1/omodel/console-page");
@@ -859,10 +855,12 @@ const realApi: OpenOpsApi = {
         title: "告警接管",
         cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
                { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
-               { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+               { label: "接管", width: "72px" }, { label: "策略", width: "120px" }, { label: "结果", width: "64px" },
                { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
         rows: d.items.map((r, i) => {
           const rowId = String(r.incident_id || `${r.alert_no}-${i}`);
+          const rule = r.matched_rule as { name?: string } | null | undefined;
+          const ruleTotal = Number(r.matched_rule_total ?? 1);
           alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
                                     incidentId: r.incident_id ? String(r.incident_id) : undefined,
                                     prioritized: Boolean(r.manual_priority) };
@@ -879,6 +877,7 @@ const realApi: OpenOpsApi = {
               { text: String(r.severity), kind: "badge" as const, tone: sevTone(String(r.severity)) },
               { text: queued ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
+              { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
               { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },
               { text: String(r.owner_user_id ?? "—"), mono: true },
               queued
@@ -1664,37 +1663,45 @@ const mockApi: OpenOpsApi = {
       : { ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const },
   ),
   testModelAssetConnection: () => delay({ ok: true, supports_tool_calling: true, reason: null, probe_mode: "mock" as const }),
-  getAdminTable: (key) =>
-    key === "model-templates"
-      ? delay(M.buildModelTemplateTable([...M.mockModelTemplates]))  // 从可变数组现算：创建/启停后重拉即反映
-      : key === "model-assets"
-      ? delay(M.buildModelAssetTable([...M.mockModelAssets]))  // 同上：注册/编辑/删除后重拉即反映
-      : key === "alert-events"
-      ? delay({
-          title: "告警接管",
-          cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
-                 { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
-                 { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
-                 { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
-          rows: [
-            { id: "mock-inc-1", cells: [
-              { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
-              { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
-              { text: "fatal", kind: "badge" as const, tone: "danger" as const },
-              { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
-              { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
-            ] },
-            { id: "mock-inc-2", cells: [
-              { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
-              { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
-              { text: "warning", kind: "badge" as const, tone: "neutral" as const },
-              { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },
-              { text: "0099other", mono: true }, { text: "—" },
-            ] },
-          ],
-          total: 2, page: 1, pageSize: 20,
-        })
-      : delay(M.adminTables[key] ?? M.adminTables.templates),
+  getAdminTable: (key, params) => {
+    if (key === "model-templates") return delay(M.buildModelTemplateTable([...M.mockModelTemplates]));  // 从可变数组现算：创建/启停后重拉即反映
+    if (key === "model-assets") return delay(M.buildModelAssetTable([...M.mockModelAssets]));  // 同上：注册/编辑/删除后重拉即反映
+    if (key === "alert-events") {
+      const rows = [
+        { id: "mock-inc-1", cells: [
+          { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
+          { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
+          { text: "fatal", kind: "badge" as const, tone: "danger" as const },
+          { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "MySQL 全量接管" }, { text: "—" },
+          { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
+        ] },
+        { id: "mock-inc-2", cells: [
+          { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
+          { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
+          { text: "warning", kind: "badge" as const, tone: "neutral" as const },
+          { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "Docker 巡检接管" }, { text: "已恢复" },
+          { text: "0099other", mono: true }, { text: "—" },
+        ] },
+        // 与 real 档同语义的过滤（2026-08-19）：search 模糊搜 编号[1]/类型[2]/对象[3]，userId 精确匹配接管人[9]
+        // （策略列插在下标 7，接管人 8→9——插列必须同步这里的下标）
+      ].filter((r) => {
+        const q = (params?.q ?? "").trim().toLowerCase();
+        const hitQ = !q || [1, 2, 3].some((i) => r.cells[i].text.toLowerCase().includes(q));
+        const uid = (params?.userId ?? "").trim();
+        return hitQ && (!uid || r.cells[9].text === uid);
+      });
+      return delay({
+        title: "告警接管",
+        cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
+               { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
+               { label: "接管", width: "72px" }, { label: "策略", width: "120px" }, { label: "结果", width: "64px" },
+               { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
+        rows,
+        total: rows.length, page: 1, pageSize: 20,
+      });
+    }
+    return delay(M.adminTables[key] ?? M.adminTables.templates);
+  },
   getSandboxCfg: () => delay(M.sandboxCfg),
   saveSandboxCfg: () => delay(undefined as unknown as void),
   getSandboxContainers: () => delay([] as SandboxContainer[]),

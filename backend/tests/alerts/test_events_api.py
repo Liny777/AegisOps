@@ -78,12 +78,19 @@ def test_visibility_matrix_and_projection(client):
     assert e1["incident_state"] == "queued"  # 原始态透传：前端把排队单的「处理中」细分为「排队中」
     assert e1["detail_url"] == "https://alert.example/e1"
     assert e1["alert_object"] == "mysql-prod-03" and e1["appid"] == "APP-A"
+    # 接管策略列（2026-08-19）：投影单的组内规则快照透出——rule_id 对具体值断言
+    # （对自身比较是恒真式，rule_id 映射错键测不出来）
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    assert e1["matched_rule"] == {"rule_id": rules[0]["rule_id"], "name": "MySQL 接管"}
+    assert e1["matched_rule_total"] == 1
     assert _events(client, instance_id=iid, takeover="none") == []  # 清单无未命中行
 
     # 弹窗预览（since_days）：scope 内已恢复的 E2 以未接管形态可见，范围外 E3 仍不可见
     pv = {r["alert_no"]: r for r in _events(client, instance_id=iid, since_days=3)}
     assert set(pv) == {"ALM-E1", "ALM-E2"}
     assert pv["ALM-E2"]["takeover_status"] == "none" and pv["ALM-E2"]["alert_status"] == "closed"
+    assert pv["ALM-E2"]["matched_rule"] is None  # 未建单行无策略（前端「—」）
     assert pv["ALM-E2"]["run_clickable"] is False
 
     # 他人视角：未白名单直接 403（比空清单更强的隔离）
@@ -106,14 +113,44 @@ def test_admin_full_view_and_per_user_projection(client):
     e1 = next(r for r in full if r["alert_no"] == "ALM-E1")
     assert e1["takeover_status"] == "processing"  # 任意 owner 最新单投影
 
+    # 按用户查看=过滤+投影（2026-08-19 语义修正，原纯投影不收窄行集）：
+    # 0099other 没接管过任何单 → 空；接管者 0026demo01 → 只见其接管的 E1
     per_other = unwrap(client.get("/api/openops/v1/admin/alerts/events",
                                   headers=ADMIN_HEADERS,
                                   params={"user_id": "0099other"}))["items"]
-    e1_other = next(r for r in per_other if r["alert_no"] == "ALM-E1")
-    assert e1_other["takeover_status"] == "none"  # 按该用户视角：他没接管
+    assert per_other == []
+    per_owner = unwrap(client.get("/api/openops/v1/admin/alerts/events",
+                                  headers=ADMIN_HEADERS,
+                                  params={"user_id": "0026demo01"}))["items"]
+    assert {r["alert_no"] for r in per_owner} == {"ALM-E1"}
+    assert per_owner[0]["takeover_status"] == "processing"
+    assert per_owner[0]["owner_user_id"] == "0026demo01"
 
     assert client.get(f"{BASE.replace('/alerts', '/admin/alerts')}/events",
                       headers=USER_HEADERS).status_code == 403
+
+
+def test_admin_search_and_pagination(client):
+    """admin 面 search（编号/类型/对象 ilike）与 page/page_size/total（此前零覆盖，
+    2026-08-19 管理台「搜索没生效」排查后补）。"""
+    _setup_with_scope(client)
+    _seed_three(client)
+
+    admin_events = "/api/openops/v1/admin/alerts/events"
+    hit = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                            params={"search": "mysql-prod-03"}))["items"]
+    assert [r["alert_no"] for r in hit] == ["ALM-E1"]
+    assert unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                             params={"search": "不存在关键词"}))["items"] == []
+
+    # 分页走全量留痕口径（matched_only=false 时 ≥3 行）：total 稳定，两页行不重复
+    p1 = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                           params={"matched_only": "false", "page": 1, "page_size": 1}))
+    p2 = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                           params={"matched_only": "false", "page": 2, "page_size": 1}))
+    assert p1["total"] == p2["total"] >= 3
+    assert len(p1["items"]) == len(p2["items"]) == 1
+    assert p1["items"][0]["alert_no"] != p2["items"][0]["alert_no"]
 
 
 def test_filters_search_and_status_projection(client):
@@ -148,6 +185,35 @@ def test_filters_search_and_status_projection(client):
     assert [r["alert_no"] for r in _events(client, instance_id=iid, search="ALM-E2",
                                            since_days=3)] == ["ALM-E2"]
     assert _events(client, instance_id=iid, search="不存在关键词") == []
+
+
+def test_total_matches_items_across_count_paths(client):
+    """count 与 rows 的 SQL 自 2026-08-20 起按 needs_lateral 分叉（count 视条件省掉 LATERAL、
+    scope 行集过滤 EXISTS 化）——total 与行集背离是该分叉的核心回归面，逐路径钉死一致性。
+    既有用例大多只断言 items 集合，这里显式对 total。"""
+    iid = _setup_with_scope(client)
+    _seed_three(client)
+
+    admin_events = "/api/openops/v1/admin/alerts/events"
+    cases = [
+        # 覆盖 count 去 LATERAL（EXISTS/matched_only/全量）与保留 LATERAL（投影列筛选）两类路径
+        ("用户默认", f"{BASE}/events", USER_HEADERS, {"instance_id": iid}),
+        ("用户接管筛选", f"{BASE}/events", USER_HEADERS,
+         {"instance_id": iid, "takeover": "processing"}),
+        ("用户分派态筛选", f"{BASE}/events", USER_HEADERS,
+         {"instance_id": iid, "alert_status": "assigned"}),
+        ("admin 默认 matched_only", admin_events, ADMIN_HEADERS, {}),
+        ("admin 全量留痕", admin_events, ADMIN_HEADERS, {"matched_only": "false"}),
+        ("admin 按用户查看", admin_events, ADMIN_HEADERS, {"user_id": "0026demo01"}),
+        ("admin 按无单用户查看", admin_events, ADMIN_HEADERS, {"user_id": "0099other"}),
+    ]
+    for label, url, headers, params in cases:
+        d = unwrap(client.get(url, headers=headers, params=params))
+        assert d["total"] == len(d["items"]), \
+            f"{label}: total={d['total']} != items={len(d['items'])}"
+    # 行集语义本身有可见性矩阵专测；这里只锚一个绝对值防两边一起错成 0
+    d = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS, params={"instance_id": iid}))
+    assert {r["alert_no"] for r in d["items"]} == {"ALM-E1"} and d["total"] == 1
 
 
 def test_since_days_window_for_rule_preview(client):

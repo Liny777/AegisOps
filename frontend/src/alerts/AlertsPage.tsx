@@ -79,7 +79,23 @@ const ResultCell = ({ it }: { it: AlertEventRow }) => {
     );
   }
   if (it.agent_result === "escalated") return <Pill tone="warning" icon="arrow-up-right">已升级</Pill>;
-  return <span style={{ color: color.textFaint }}>—</span>;
+  return (
+    <span title="Agent 未给出恢复/升级判定，可查看处理会话了解详情" style={{ color: color.textFaint }}>—</span>
+  );
+};
+
+/** 接管策略：投影单的组内规则快照（首条 + 等 N 条）；未接管/存量无快照显「—」。 */
+const RuleCell = ({ it }: { it: AlertEventRow }) => {
+  if (!it.matched_rule) {
+    return <span title="未命中接管规则，或存量数据无规则快照" style={{ color: color.textFaint }}>—</span>;
+  }
+  const total = it.matched_rule_total ?? 1;
+  const text = `${it.matched_rule.name}${total > 1 ? ` 等${total}条` : ""}`;
+  return (
+    <span style={{ display: "block", maxWidth: 150, color: color.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={text}>
+      {text}
+    </span>
+  );
 };
 
 /** 用户评价（占位功能）：整列置灰由 td 样式统一处理，这里只管内容。 */
@@ -151,11 +167,13 @@ const td: React.CSSProperties = { padding: "10px 12px", borderTop: `1px solid ${
 /** 用户评价整列置灰（占位功能未开放）：td 内容 + 列头一起淡。 */
 const feedbackDim: React.CSSProperties = { opacity: 0.4, filter: "grayscale(1)" };
 
-/** 告警清单（侧栏一级导航）：事件视角全宽表格页 = 56px header + 四下拉筛选条 + 十五列表格 + 分页。
+/** 告警清单（侧栏一级导航）：事件视角全宽表格页 = 56px header + 四下拉筛选条 + 十六列表格 + 分页。
  *  v2 起不再有行内详情抽屉/忽略/重试——事件详情归告警平台外链，处理过程看诊断会话。 */
 export function AlertsPage() {
   const nav = useNavigate();
-  const { agents, currentAgentId } = useApp();
+  // alertGranted 直接用 appState 启动时探询的结果（2026-08-20：原本页挂载再拉一次
+  // /alerts/access，纯重复请求）；默认 true 不闪锁、探询失败不锁，口径与原本页实现一致。
+  const { agents, currentAgentId, alertGranted } = useApp();
 
   // 清单跟随侧栏「选择 Agent」（不设本页的 Agent 筛选下拉）：每个 Agent 只看自己的
   // 接管清单（自己接管的 + 尚未被接管的）。切 Agent 由侧栏统一完成，本页自动重拉。
@@ -169,14 +187,6 @@ export function AlertsPage() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<AlertEventsPage | null>(null);
   const [err, setErr] = useState("");
-  const [granted, setGranted] = useState<boolean | null>(null);  // 2026-08-09 算力白名单
-
-  useEffect(() => {
-    let alive = true;
-    alertsApi.getAccess().then((a) => { if (alive) setGranted(a.granted); })
-      .catch(() => { if (alive) setGranted(true); });  // 探询失败不拦（清单只读，无数据自然空）
-    return () => { alive = false; };
-  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 300);
@@ -227,7 +237,7 @@ export function AlertsPage() {
   const items = data?.items ?? [];
   const agentName = agents.find((a) => a.instance_id === currentAgentId)?.name;
 
-  if (granted === false) {
+  if (alertGranted === false) {
     return (
       <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ textAlign: "center", maxWidth: 440, padding: 24 }} data-testid="alerts-not-granted">
@@ -332,7 +342,12 @@ export function AlertsPage() {
           </div>
         ) : null}
 
-        {data && items.length === 0 ? (
+        {!data && !err ? (
+          /* 首次加载态（2026-08-20）：原先渲染"有表头没有行"的空表格，等待期观感差 */
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "72px 0", color: color.textSubtle, fontSize: 13 }} data-testid="alerts-loading">
+            <Icon name="loader-2" size={18} color={color.brand} spin />加载告警清单…
+          </div>
+        ) : data && items.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "72px 0", color: color.textSubtle }}>
             <Icon name="bell-bolt" size={36} color={color.textFaint} />
             <div style={{ fontSize: 13 }}>暂无告警记录</div>
@@ -342,8 +357,8 @@ export function AlertsPage() {
           </div>
         ) : (
           <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflowX: "auto" }}>
-            {/* overflowX auto（宿主 div）：十五列在窄视口整体横向滚动，操作列不被裁掉 */}
-            <table style={{ width: "100%", minWidth: 1560, borderCollapse: "collapse", fontSize: 12.5 }}>
+            {/* overflowX auto（宿主 div）：十六列在窄视口整体横向滚动，操作列不被裁掉 */}
+            <table style={{ width: "100%", minWidth: 1700, borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr>
                   <th style={th}>操作</th>{/* 2026-08-15 挪首列（用户反馈：操作是高频入口） */}
@@ -356,6 +371,7 @@ export function AlertsPage() {
                   <th style={th}>告警状态</th>
                   <th style={th}>告警等级</th>
                   <th style={th}>Agent 接管状态</th>
+                  <th style={th}>接管策略</th>
                   <th style={th}>接管结果</th>
                   {/* 用户评价整列占位置灰：列头一起浅灰 */}
                   <th style={{ ...th, color: color.textFaint, ...feedbackDim }}>用户评价</th>
@@ -427,6 +443,7 @@ export function AlertsPage() {
                       <td style={td}><Pill tone={EVENT_STATUS_META[it.alert_status].tone}>{EVENT_STATUS_META[it.alert_status].label}</Pill></td>
                       <td style={td}><SeverityPill severity={it.severity} /></td>
                       <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} incidentState={it.incident_state} /></td>
+                      <td style={{ ...td, maxWidth: 150 }}><RuleCell it={it} /></td>
                       <td style={td}><ResultCell it={it} /></td>
                       <td style={{ ...td, ...feedbackDim }}><FeedbackCell it={it} /></td>
                       <td style={{ ...td, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.started_at)}</td>

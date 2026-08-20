@@ -35,7 +35,7 @@ log = logging.getLogger("openops.rca_board")
 
 # 面板骨架：前端 RcaCardData 必填字段全部就位、内容为空（模型漏提交也不缺键）
 _SKELETON: dict[str, Any] = {
-    "title": "", "currentQ": "", "why": "", "conclusion": "",
+    "title": "", "currentQ": "", "why": "", "conclusion": "", "verdict": "",
     "tiles": [], "facts": [], "unknowns": [], "sources": [], "hypotheses": [], "actions": [],
 }
 _MERGE_KEYS = tuple(_SKELETON)
@@ -109,6 +109,8 @@ async def apply_board_update(st: TaskState, run: dict[str, Any], raw: dict[str, 
             demoted.append("步骤推进")
         if args.pop("conclusion", None):
             demoted.append("conclusion")
+        if args.pop("verdict", None):  # 结论级判定与 conclusion 同权：只认主任务提交
+            demoted.append("verdict")
         if args.pop("step_summary", None):
             demoted.append("step_summary")
         args["step"], args["step_completed"] = child_step, child_completed

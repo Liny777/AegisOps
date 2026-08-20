@@ -46,8 +46,14 @@ def _age_queued(incident_id: str, seconds: int) -> None:
                      "where alert_incident_id = %s", (seconds, incident_id))
 
 
-def test_expire_stale_queued_flips_to_failed_visible(client):
+def test_expire_stale_queued_flips_to_failed_visible(client, monkeypatch):
     from alerts import repository as repo
+    from infra.external import welink_client
+
+    # 2026-08-19 拍板守卫：queue_expired 批量翻转不发 WeLink（防重启追赶期轰炸，清单可见即可）
+    notified: list = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: notified.append((uid, data)))
 
     iid, inc_id = _queued_incident(client)
     _age_queued(inc_id, 90000)  # 拨老过默认 86400
@@ -60,6 +66,7 @@ def test_expire_stale_queued_flips_to_failed_visible(client):
     ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
                            params={"instance_id": iid}))["items"][0]
     assert ev["takeover_status"] == "done" and ev["agent_result"] == "failed"
+    assert notified == []  # 批量过期零通知
 
 
 def test_retry_resets_clock_and_survives_expiry(client):

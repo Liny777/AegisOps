@@ -11,7 +11,8 @@
   --real 档: kafka_source.consume_loop（getmany → ingest_batch → 手动 commit；先落库后提交）-->
   --mock 档: 内存变更流 + 轮询 run_once（OPENOPS_ALERT_PULL_INTERVAL_S，0=关，admin :pull 手动）-->
 ingest.ingest_batch()（传输无关入口）
-  ① fingerprint 去重（dedup_window_s 内同指纹仅 seen_count++）
+  ① fingerprint 去重（dedup_window_s 内同指纹仅 seen_count++；窗口按 last_seen 滚动——
+     持续重发永不过窗，故窗口内对「命中但从未建过单」的实例补路由，2026-08-19 多用户修复）
   ② matcher 内存匹配（白名单+规则开；v2 规则=类型单值 ∧ 级别 ∧ 命中勾选策略集，空集=该类型全部）
   ③ 附着式聚合（group_key=instance|appid|title 有未完结单 → 附着，severity 取高）
   ④ 组冷却（group_cooldown_s 内同组不建新单）
@@ -30,7 +31,8 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 - **接管清单**（全量告警视角，v2 需求 1.3）：`GET /alerts/events`——事件 LEFT JOIN LATERAL 本人最新
   聚合单；普通用户可见=本人接管 ∪（未接管 ∧ appid∈所选 Agent scope 快照）；三值投影
   告警状态（未分派/已分派/已关闭）与接管状态（未接管/处理中/已完成，skipped/ignored 归未接管）；
-  `GET /admin/alerts/events?user_id=`（管理员全量/按用户视角）。incidents 系列端点保留（动作与详情）。
+  `GET /admin/alerts/events?user_id=`（管理员全量；user_id=按接管人过滤+投影，2026-08-19 语义
+  修正，原为纯投影不收窄行集）。incidents 系列端点保留（动作与详情）。
 
 ## 与 core 的接缝（封闭清单，全部有测试守着）
 
@@ -41,6 +43,7 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
 | **双键幂等释放**（close/delete/idle 回收对 alert run 释放 owner+共享键两本账） | run_state_service `_sandbox_release_keys` ×3 调用点 | dispatch e2e：close 后两账归零 |
 | 销毁反查 `running_by_sandbox`（告警任务 user_id≠容器键） | sandbox_admin_service 强制销毁 | test_core_seams |
 | scope 夜间降级 / 追问自动复开 / 会话历史过滤 entry_source | start_task / list_runs / runs repo | e2e + 联调 |
+| **scope 快照兜底 revision 校验**（2026-08-19：范围变更后旧快照 fail-closed；写路径 update_workspace 推进引用实例 revision + 失效缓存） | ingest._instance_scope / scope_service.resolve_from_last_snapshot / workspace_service | test_ingest_scope_filter + test_init 闭环用例 |
 | lifespan：converge 恒执行；real=Kafka 消费，mock=轮询 | main.py + dispatcher.start_background | e2e 重启收敛 + test_kafka_source |
 
 ## 运行旋钮
@@ -67,9 +70,15 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
    OPENOPS_MCPREGISTRY_COOKIE（会被 cookie 优先策略选中且必过期→1001）。对端双鉴权上线前，
    后台 MCP 发现失败会在日志/活动栏现形（TOOL_DISCOVERY_EMPTY）；scope 侧另有快照兜底
    （omodel_request_id=snapshot-fallback，ctx degraded=true）。
-5. **完成通知**（2026-08-16）：completed 收割后 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
-   `OPENOPS_WEB_BASE_URL` 会话链接；未配=不发；failed/skipped 不通知——清单可见）。
-6. agent_result（已恢复/已升级）仅当 RCA 有结构化结论时回填；resolved 告警只落库不驱动状态机；
+5. **终态通知 v3**（2026-08-19）：completed 与 failed 均 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
+   `OPENOPS_WEB_BASE_URL`；未配=不发）。completed 结论=接管结果+根因结论（只取 rca.conclusion 截 200 字，
+   transcript 兜底文本不进通知）；failed 结论=原因中文（reason_text 词表：诊断超时/执行失败等），
+   无 run 时链接退化清单深链 /alerts/{incident_id}。**queue_expired/skipped 不通知**（拍板：防
+   批量轰炸，清单可见）。结论经 `_notify_brief` 清洗：剥 Markdown 标记+按句边界截断（2026-08-19
+   内网样本反馈）。全链日志：grep `[alerts][notify]`（含 outcome=），logger `openops.welink` 三态。
+6. agent_result（已恢复/已升级）=模型在诊断板 update_diagnosis_board 的 **verdict** 提交
+   （recovered/escalated，契约枚举校验；2026-08-19 修——此前误读派生 status 恒 NULL），未提交
+   显「—」详见会话；converge 补收割同样取 task 快照 rca_json。resolved 告警只落库不驱动状态机；
    `alert_run_idle_ttl_minutes` 旋钮预留未实现（平台 30min idle 回收兜底）。
 
 ## 本地全链路演示

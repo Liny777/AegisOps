@@ -119,6 +119,9 @@ def test_full_diagnosis_chain(client, monkeypatch):
     done = _wait_incident(client, iid, "completed", timeout=10)
     assert done["result_summary"], "收割的诊断摘要为空"
     assert done["run_id"] == run_id
+    # 结果列数据源=诊断板 verdict（2026-08-19 修——此前误读 status，completed 恒无结果）：
+    # demo 剧本闭环带 verdict=recovered，清单「结果」列应显「已恢复」
+    assert done["agent_result"] == "recovered"
 
     detail = unwrap(client.get(f"{BASE}/incidents/{done['incident_id']}", headers=USER_HEADERS))
     assert detail["timeline"][-1]["event"].startswith("诊断完成")
@@ -162,6 +165,8 @@ def test_full_diagnosis_chain(client, monkeypatch):
     assert notified and notified[0][0] == "0026demo01"
     assert "MySQL 主库延迟>5s" in notified[0][1]
     assert "https://openops.test/agent-runs/" in notified[0][1]
+    # v3：结论行带根因结论（demo 剧本闭环 rca.conclusion——竖线后是模型结论原文）
+    assert "结论：已恢复｜" in notified[0][1] and "H1" in notified[0][1]
     assert ev["run_clickable"] is True and ev["run_id"] == run_id
     assert ev["user_feedback"] == "positive"
 
@@ -326,12 +331,19 @@ def test_converge_requeues_interrupted_diagnosis():
 
 
 def test_start_failure_exhausted_marks_agent_result_failed(client, monkeypatch):
-    """起诊断失败（容量满等）超重试预算 → agent_result 与其余失败路径同口径回填 'failed'。
+    """起诊断失败（容量满等）超重试预算 → agent_result 与其余失败路径同口径回填 'failed'，
+    并发 WeLink 失败通知（v3 2026-08-19：原因中文 + 无 run 退化清单深链）。
 
     此前该路径走 repo.transition 不写 agent_result，清单结果列显「—」看不出失败。"""
     from alerts import dispatcher
     from alerts import service as alerts_service
     from domain.errors import ApiError, Err
+    from infra.external import welink_client
+
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: notified.append((uid, data)))
+    monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.test")
 
     real_get_config = alerts_service.get_config
 
@@ -356,3 +368,57 @@ def test_start_failure_exhausted_marks_agent_result_failed(client, monkeypatch):
     assert inc["state_reason"] == Err.SANDBOX_CAPACITY_FULL
     assert inc["agent_result"] == "failed"
     assert inc["run_id"] is None  # 起跑即败：未绑定 run，清单「查看处理会话」不可点
+
+    import time as _t
+    for _ in range(50):  # to_thread fire-and-forget
+        if notified:
+            break
+        _t.sleep(0.02)
+    assert notified, "失败通知未派发"
+    d = notified[0][1]
+    assert "您的告警自动诊断失败" in d and "沙箱容量已满" in d
+    assert "处理入口：https://openops.test/alerts/" in d and "agent-runs" not in d
+
+
+def test_converge_harvests_completed_with_rca_verdict(client):
+    """重启补收割取落盘 rca_json（2026-08-19 修）：此前 converge 传 st=None，连 conclusion
+    都拿不到——summary 退化 transcript 末条、agent_result 恒 NULL。现从 task 快照的
+    rca_json 取：summary=rca 结论、agent_result=verdict。"""
+    import asyncio as _aio
+    import json as _json
+    import os as _os
+    import uuid as _uuid
+
+    import psycopg
+
+    from alerts import dispatcher
+
+    iid = _setup_instance(client)
+    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL",
+                                severity="fatal", app_id="APP-A")
+    assert _pull(client)["queued"] == 1
+    inc = unwrap(client.get(f"{BASE}/incidents", headers=USER_HEADERS,
+                            params={"instance_id": iid}))["items"][0]
+
+    # 模拟重启前现场：单停 diagnosing、task 快照已 completed 且 rca_json 落盘（内存 TaskState 已失）
+    run_id, task_id = str(_uuid.uuid4()), f"t_conv_{_uuid.uuid4().hex[:8]}"
+    rca = {"conclusion": "Redis 连接泄漏已修复，P99 恢复 210ms", "verdict": "recovered",
+           "status": "concluded"}
+    with psycopg.connect(_os.environ["OPENOPS_DATABASE_URL"], autocommit=True) as conn:
+        conn.execute(
+            "update sre_alert_incident set incident_state='diagnosing', agent_run_id=%s, "
+            "diagnosis_task_id=%s where alert_incident_id=%s",
+            (run_id, task_id, inc["incident_id"]))
+        conn.execute(
+            "insert into sre_task_state (task_id, run_id, user_id, instance_id, task_status, "
+            "task_origin, input_text, rca_json, audit_trace_id, created_by, last_updated_by) "
+            "values (%s, %s, %s, %s, 'completed', 'alert', '诊断输入', %s, %s, 'test', 'test')",
+            (task_id, run_id, "0026demo01", iid, _json.dumps(rca), str(_uuid.uuid4())))
+
+    counts = _aio.run(dispatcher.converge_incidents())
+    assert counts["harvested"] == 1
+
+    done = unwrap(client.get(f"{BASE}/incidents", headers=USER_HEADERS,
+                             params={"instance_id": iid, "state": "completed"}))["items"][0]
+    assert done["agent_result"] == "recovered"
+    assert done["result_summary"] == "Redis 连接泄漏已修复，P99 恢复 210ms"

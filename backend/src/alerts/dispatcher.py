@@ -152,14 +152,41 @@ async def dispatch_once() -> int:
 
 _RESULT_TEXT = {"recovered": "已恢复", "escalated": "已升级"}
 
+_MD_MARK_RE = re.compile(r"#{1,6}\s*|\*{1,2}|`+")
 
-def _notify_owner_done(inc: dict[str, Any], run_id: str,
-                       summary: str | None, agent_result: str | None) -> None:
-    """诊断完成 WeLink 通知 owner（2026-08-16，Phase2 通知项部分落地：仅 completed）。
+
+def _notify_brief(text: str) -> str:
+    """通知里的结论摘要（2026-08-19 内网反馈两个「看不懂」来源的确定性清洗）：
+
+    ① 剥 Markdown 标记——模型爱用 #/**/` 写结论，契约把换行压成空格后全成纯文本噪音
+    （「## 诊断结论 ### 影响边界」）；列表分隔「 - 」换「 · 」。
+    ② 按句边界截断——200 字硬截会拦腰砍句（「…堆内存趋势确」）：前 200 字内找最后的
+    句读（。；！？）收口；全段无句读才硬截 200 补省略号。
+    只影响通知文案；诊断面板/result_summary 的 conclusion 原文不动。
+    """
+    t = _MD_MARK_RE.sub("", str(text)).replace(" - ", " · ")
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) <= 200:
+        return t
+    head = t[:200]
+    cut = max(head.rfind(ch) for ch in "。；！？")
+    if cut >= 80:
+        return head[:cut + 1]
+    return head + "……"
+
+
+def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | None, *,
+                       conclusion: str | None = None, failed: bool = False,
+                       state_reason: str | None = None) -> None:
+    """诊断终态 WeLink 通知 owner（completed 与 failed 双形态，2026-08-19 v3）。
 
     fire-and-forget + to_thread：send_welink_message_for_person 是 sync httpx
     （timeout 30s）且全吞错——通知失败绝不影响收割主流程；仅日志留痕。
-    链接根=OPENOPS_WEB_BASE_URL（内网前端域名）；未配则退化为文字指引（通知仍发）。
+    链接根=OPENOPS_WEB_BASE_URL（感知快恢 Agent 前端域名）；未配则退化为文字指引（通知仍发）。
+    - completed：结论=接管结果 + 根因结论（只取模型经诊断板提交的 rca.conclusion，
+      transcript 兜底文本刻意不带——残缺文本会让通知看不懂）。
+    - failed：结论=失败原因中文（service.reason_text）；无 run 时链接退化为清单深链
+      /alerts/{incident_id}（可定位重试）。queue_expired/skipped 不通知（拍板：防批量轰炸）。
     """
     try:
         from infra.external.welink_client import send_welink_message_for_person
@@ -168,14 +195,32 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str,
         if not owner:
             return
         base = os.environ.get("OPENOPS_WEB_BASE_URL", "").strip().rstrip("/")
-        link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
-                else "请登录 OpenOps 在告警清单查看诊断会话")
-        verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
-        brief = f"｜{str(summary)[:100]}" if summary else ""
-        data = ("【OpenOps 告警接管】您的告警已完成自动诊断\n"
+        if run_id:
+            link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
+                    else "请登录感知快恢Agent，在告警接管清单查看诊断会话")
+        else:  # 起跑即败未绑定 run：深链到清单定位该单（前端 /alerts/:incidentId? 支持）
+            link = (f"处理入口：{base}/alerts/{inc.get('alert_incident_id')}" if base
+                    else "请登录感知快恢Agent，在告警接管清单查看并可重试")
+        if failed:
+            title_line = "【感知快恢Agent 告警接管】您的告警自动诊断失败"
+            verdict_line = f"结论：{service.reason_text(state_reason)}"
+        else:
+            title_line = "【感知快恢Agent 告警接管】您的告警已完成自动诊断"
+            verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
+            brief = f"｜{_notify_brief(conclusion)}" if conclusion else ""
+            verdict_line = f"结论：{verdict}{brief}"
+        matched = inc.get("matched_rules_json") or []
+        rule_name = str((matched[0] or {}).get("rule_name") or "") if matched else ""
+        # 规则名必带（2026-08-19 按 prompt 分单后同一告警可有多张姊妹单先后完成，
+        # 不带规则名的多条通知长得一样，会被当成重复发送的 bug 上报）
+        rule_line = f"命中规则：{rule_name}\n" if rule_name else ""
+        data = (f"{title_line}\n"
                 f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
-                f"结论：{verdict}{brief}\n"
+                f"{rule_line}"
+                f"{verdict_line}\n"
                 f"{link}")
+        log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s outcome=%s",
+                 inc.get("alert_incident_id"), owner, run_id, "failed" if failed else "completed")
         asyncio.create_task(asyncio.to_thread(send_welink_message_for_person, owner, data))
     except Exception:  # noqa: BLE001 —— 组装/派发失败也不许影响收割
         log.warning("[alerts][notify] WeLink 通知派发失败 incident=%s",
@@ -238,11 +283,20 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
         await runs_repo.set_run_title(run_id, f"[告警] {inc.get('title')}"[:60], "system")
 
     events, _total = await repo.list_incident_events(iid, limit=10)
+    # 本单 prompt 组的提示词（多规则命中按组分单，各单各注入）：组首 alert_rule_id 优先；
+    # 组首被软删时按 matched_rules_json 序回落组内下一条存活规则——同组建单时归一 prompt
+    # 必相同，任一存活规则等价。不回落会静默换成默认五步法且 skill_hint 一并丢失，
+    # 而删除同 prompt 冗余规则恰是合并语义鼓励的清理动作（2026-08-19 审查实证）。
     rule_prompt = ""
-    if inc.get("alert_rule_id"):  # 规则自定义提示词（配置弹窗可编辑；空=系统默认五步法）
-        rule = await repo.get_rule(str(inc["alert_rule_id"]))
-        if rule:
-            rule_prompt = (rule.get("prompt") or "").strip()
+    candidates = [str(inc["alert_rule_id"])] if inc.get("alert_rule_id") else []
+    candidates += [rid for m in (inc.get("matched_rules_json") or [])
+                   if (rid := str((m or {}).get("rule_id") or "")) and rid not in candidates]
+    if candidates:
+        alive = {str(r["alert_rule_id"]): r for r in await repo.list_rules_by_ids(candidates)}
+        for rid in candidates:
+            if rid in alive:
+                rule_prompt = (alive[rid].get("prompt") or "").strip()
+                break
     treq = _AlertTaskReq(client_request_id=f"alert-task-{iid}-r{retry}",
                          input_text=_build_prompt(inc, events,
                                                   rule_prompt or DEFAULT_RULE_PROMPT),
@@ -253,10 +307,14 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
     return run_id, str(res["task_id"]), st
 
 
-async def _harvest_summary(inc: dict[str, Any], st: Any | None) -> tuple[str | None, str | None]:
-    """result_summary 提取（优先级：rca 结论 → transcript 末条 assistant）；agent_result Phase1
-    仅在 rca 有结构化结论字段时回填，否则 None（UI 显「已完成」）。"""
-    rca = getattr(st, "rca", None) if st is not None else None
+async def _harvest_summary(inc: dict[str, Any],
+                           rca: dict[str, Any] | None) -> tuple[str | None, str | None]:
+    """result_summary 提取（优先级：rca 结论 → transcript 末条 assistant）；agent_result 仅在
+    模型经诊断板提交了 verdict（recovered/escalated）时回填，否则 None（UI 显「—」详见会话）。
+
+    rca 参数化（2026-08-19）：主链传 st.rca（内存），converge 补收割传 task 快照的
+    rca_json——此前 converge 传 None，重启补收割的单连 conclusion 都拿不到。
+    """
     if rca and rca.get("conclusion"):
         return str(rca["conclusion"])[:500], _agent_result_from_rca(rca)
     run_id = str(inc["agent_run_id"]) if inc.get("agent_run_id") else None
@@ -275,8 +333,11 @@ async def _harvest_summary(inc: dict[str, Any], st: Any | None) -> tuple[str | N
 
 
 def _agent_result_from_rca(rca: dict[str, Any] | None) -> str | None:
-    status = str((rca or {}).get("status") or "").lower()
-    return {"recovered": "recovered", "escalated": "escalated"}.get(status)
+    """结果列数据源=诊断板 verdict（模型经契约提交；2026-08-19 修）。此前误读 rca["status"]
+    ——其值域只有 in_progress/concluded（服务端派生、契约拒收模型提交），completed 单的
+    agent_result 因此恒 NULL，「已恢复/已升级」上线以来从未显示过。"""
+    verdict = str((rca or {}).get("verdict") or "").lower()
+    return verdict if verdict in ("recovered", "escalated") else None
 
 
 async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
@@ -298,6 +359,7 @@ async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
         audit_trace_id=_AUDIT_TRACE, event_type="alert.diagnosis_failed", user_id="system",
         instance_id=str(inc["agent_team_instance_id"]), action="dispatch",
         reason_code=str(code)[:64], payload_redacted={"incident_id": iid, "retries": retries})
+    _notify_owner_done(inc, "", None, failed=True, state_reason=reason)  # 起跑即败无 run→清单深链
 
 
 async def _run_diagnosis(inc: dict[str, Any]) -> None:
@@ -330,6 +392,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             log.warning("[alerts][dispatch] 超时取消失败 task=%s", task_id, exc_info=True)
         await repo.finish(iid, to_state="failed", state_reason="timeout",
                           result_summary=None, agent_result="failed")  # 清单结果列显「失败」
+        _notify_owner_done(inc, run_id, None, failed=True, state_reason="timeout")
         return
     except asyncio.CancelledError:
         raise
@@ -338,7 +401,8 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
 
     inc_now = await repo.get_incident(iid) or inc
     if st.status == "completed":
-        summary, agent_result = await _harvest_summary(inc_now, st)
+        rca = getattr(st, "rca", None)
+        summary, agent_result = await _harvest_summary(inc_now, rca)
         await repo.finish(iid, to_state="completed", state_reason=None,
                           result_summary=summary, agent_result=agent_result)
         await audit.insert_event(
@@ -346,7 +410,8 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
             action="harvest", payload_redacted={"incident_id": iid,
                                                 "summary_chars": len(summary or "")})
-        _notify_owner_done(inc_now, run_id, summary, agent_result)
+        _notify_owner_done(inc_now, run_id, agent_result,
+                           conclusion=(rca or {}).get("conclusion"))
     else:
         await repo.finish(iid, to_state="failed", state_reason=f"task_{st.status}",
                           result_summary=None, agent_result="failed")
@@ -355,6 +420,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
             action="harvest", reason_code=f"task_{st.status}",
             payload_redacted={"incident_id": iid})
+        _notify_owner_done(inc_now, run_id, None, failed=True, state_reason=f"task_{st.status}")
 
 
 # ============================ 重启收敛 ============================
@@ -375,22 +441,27 @@ async def converge_incidents() -> dict[str, int]:
         snap = await task_states.get_by_task(str(task_id)) if task_id else None
         status = (snap or {}).get("task_status")
         if status == "completed":
-            summary, agent_result = await _harvest_summary(inc, None)
+            # 快照 rca_json：重启后内存 TaskState 已失，结论/verdict 从落盘快照取（select * 已含）
+            rca = (snap or {}).get("rca_json")
+            summary, agent_result = await _harvest_summary(inc, rca)
             await repo.finish(iid, to_state="completed", state_reason=None,
                               result_summary=summary, agent_result=agent_result)
             counts["harvested"] += 1
             if inc.get("agent_run_id"):  # 重启补收割：owner 同样没收到过完成通知
-                _notify_owner_done(inc, str(inc["agent_run_id"]), summary, agent_result)
+                _notify_owner_done(inc, str(inc["agent_run_id"]), agent_result,
+                                   conclusion=(rca or {}).get("conclusion"))
             continue
         stale = _age_s(inc.get("last_alert_at")) > float(cfg["alert_requeue_max_age_s"])
         if not stale and int(inc.get("retry_count") or 0) < int(cfg["alert_max_retries"]):
             await repo.requeue(iid, bump_retry=True)
             counts["requeued"] += 1
         else:
-            await repo.finish(iid, to_state="failed",
-                              state_reason="stale" if stale else "interrupted_by_restart",
+            reason = "stale" if stale else "interrupted_by_restart"
+            await repo.finish(iid, to_state="failed", state_reason=reason,
                               result_summary=None, agent_result="failed")
             counts["failed"] += 1
+            _notify_owner_done(inc, str(inc.get("agent_run_id") or ""), None,
+                               failed=True, state_reason=reason)
     if any(counts.values()):
         log.warning("[alerts][converge] %s", counts)
     return counts

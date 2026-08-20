@@ -24,8 +24,10 @@ _TONES = {"good", "warning", "danger", "neutral"}
 # 顶层键 = 工具签名（除 step/step_completed 外全增量可选）；steps/revision/status 等派生键拒收
 _TOP_LEVEL_KEYS = {
     "step", "step_completed", "step_summary", "title", "tiles", "current_question", "why",
-    "facts", "unknowns", "sources", "hypotheses", "actions", "conclusion",
+    "facts", "unknowns", "sources", "hypotheses", "actions", "conclusion", "verdict",
 }
+# 结论判定枚举（2026-08-19：告警清单「结果」列的数据源——recovered=已恢复 escalated=需人工升级）
+_VERDICTS = {"recovered", "escalated"}
 _TILE_KEYS = {"label", "value"}
 _TEXT_ITEM_KEYS = {"text"}
 _SOURCE_KEYS = {"name", "status", "tone"}
@@ -126,6 +128,13 @@ def normalize_board_arguments(value: Any) -> dict[str, Any]:
         text = _short_text(value.get(src), src, limit=limit, required=False)
         if text:
             out[dst] = text
+
+    raw_verdict = value.get("verdict")
+    if raw_verdict not in (None, ""):
+        if not isinstance(raw_verdict, str) or raw_verdict not in _VERDICTS:
+            raise RcaBoardContractError(
+                "verdict 只支持 recovered（故障已恢复）或 escalated（需人工升级），未定请留空")
+        out["verdict"] = raw_verdict
 
     raw_tiles = value.get("tiles")
     if raw_tiles:

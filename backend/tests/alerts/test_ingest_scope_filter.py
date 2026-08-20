@@ -109,13 +109,16 @@ def test_scope_unavailable_fails_closed_with_warning(client, monkeypatch, caplog
 
 
 def test_scope_snapshot_fallback_when_omodel_down(client, monkeypatch):
-    """omodel 挂但有历史快照 → 用快照边界照常接管（夜间降级兜底，不因 omodel 抖动漏单）。"""
+    """omodel 挂但有历史快照（revision 与实例行一致）→ 用快照边界照常接管
+    （夜间降级兜底，不因 omodel 抖动漏单）。"""
     iid = _setup_instance(client)
+    from infra.repositories import agent_teams
     from infra.repositories import runs as runs_repo
 
+    inst = asyncio.run(agent_teams.get_instance(iid))
     asyncio.run(runs_repo.insert_scope_snapshot(
         user_id="0026demo01", instance_id=iid, run_id=str(uuid.uuid4()), task_id="t_snap",
-        workspace_id="ws_pay_abc", scope_revision="rev-snap", appids=["APP-A"],
+        workspace_id="ws_pay_abc", scope_revision=str(inst["scope_revision"]), appids=["APP-A"],
         omodel_request_id="req_snap", compute_reason="test"))
 
     async def _boom(*a, **k):
@@ -130,6 +133,59 @@ def test_scope_snapshot_fallback_when_omodel_down(client, monkeypatch):
     assert counters["queued"] == 1 and counters["out_of_scope"] == 0
     items = _incidents(client, iid)
     assert len(items) == 1 and items[0]["app_id"] == "APP-A"
+
+
+def test_stale_snapshot_rejected_after_scope_change(client, monkeypatch, caplog):
+    """范围变更后（实例行 revision 已推进）旧快照作废：omodel 挂也不采信旧边界——
+    fail-closed 拦截 + warning 留痕（2026-08-19：改范围后告警仍按旧 scope 接管的修复）。"""
+    iid = _setup_instance(client)
+    from infra.repositories import agent_teams
+    from infra.repositories import runs as runs_repo
+
+    asyncio.run(runs_repo.insert_scope_snapshot(
+        user_id="0026demo01", instance_id=iid, run_id=str(uuid.uuid4()), task_id="t_old",
+        workspace_id="ws_pay_abc", scope_revision="rev-before-change", appids=["APP-A"],
+        omodel_request_id="req_old", compute_reason="test"))
+    # 模拟写路径推进：workspace 范围内容变更 → 引用实例 revision 到新值
+    asyncio.run(agent_teams.bump_scope_revision_by_workspace(
+        "ws_pay_abc", "rev-after-change", "test"))
+
+    async def _boom(*a, **k):
+        raise RuntimeError("omodel down")
+
+    from infra.external import omodel_client
+
+    monkeypatch.setattr(omodel_client, "resolve_scope", _boom)
+    alert_platform_mock._inject(title="MySQL 主库延迟>5s", category="MySQL",
+                                severity="fatal", app_id="APP-A")
+    with caplog.at_level(logging.WARNING, logger="openops.alerts.ingest"):
+        counters = _pull(client)
+    assert counters["out_of_scope"] == 1 and counters["queued"] == 0
+    assert "历史快照作废" in caplog.text
+    assert _incidents(client, iid) == []
+
+
+def test_resolve_from_last_snapshot_rejects_stale_revision(client):
+    """start_task 夜间降级同口径（2026-08-19）：revision 一致 → 降级可用；
+    实例行 revision 被写路径推进后 → 旧快照不得用于起诊断（None，调用方按原错抛）。"""
+    iid = _setup_instance(client)
+    from app import scope_service
+    from infra.repositories import agent_teams
+    from infra.repositories import runs as runs_repo
+
+    inst = asyncio.run(agent_teams.get_instance(iid))
+    asyncio.run(runs_repo.insert_scope_snapshot(
+        user_id="0026demo01", instance_id=iid, run_id=str(uuid.uuid4()), task_id="t_deg",
+        workspace_id="ws_pay_abc", scope_revision=str(inst["scope_revision"]), appids=["APP-A"],
+        omodel_request_id="req_deg", compute_reason="test"))
+    ctx = asyncio.run(scope_service.resolve_from_last_snapshot(
+        "0026demo01", inst, str(uuid.uuid4()), "t_deg2", "trace"))
+    assert ctx is not None and ctx["degraded"] is True and ctx["effective_appids"] == ["APP-A"]
+
+    asyncio.run(agent_teams.bump_scope_revision_by_workspace("ws_pay_abc", "rev-changed", "test"))
+    inst2 = asyncio.run(agent_teams.get_instance(iid))
+    assert asyncio.run(scope_service.resolve_from_last_snapshot(
+        "0026demo01", inst2, str(uuid.uuid4()), "t_deg3", "trace")) is None
 
 
 def test_scope_override_seam(client, monkeypatch):

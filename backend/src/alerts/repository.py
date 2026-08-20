@@ -112,6 +112,10 @@ async def list_enabled_rules() -> list[dict[str, Any]]:
     inner join 白名单 = 名单外用户的存量规则**不参与匹配**（算力保护 fail-closed：
     被移出名单即刻断流，不必去关他的规则）。2026-08-15 拍板去掉订阅维度：实例总
     开关下线（三级开关变两级：全局热停 ＞ 规则），批量启停规则即整体暂停。
+
+    ORDER BY 是承重的（2026-08-19）：owner 归属与每个 prompt 组的 alert_rule_id 都取
+    组内第 0 条——无序 SQL 会让「哪条规则生效」随行迁移漂移。最老规则优先，对齐
+    配置页 list_rules 口径，creation_date 可并列故加主键 tiebreak。
     """
     return await q_all(
         """
@@ -119,6 +123,7 @@ async def list_enabled_rules() -> list[dict[str, Any]]:
         join sre_alert_user_grant g
           on g.user_id = r.owner_user_id and g.deleted_at is null
         where r.enabled and r.deleted_at is null
+        order by r.creation_date, r.alert_rule_id
         """,
     )
 
@@ -253,7 +258,8 @@ async def bump_open_incident_counts(event_id: str) -> int:
 
 
 async def create_incident(*, instance_id: str, owner: str, rule_id: str | None,
-                          matched_rules: list[dict[str, Any]], group_key: str, title: str,
+                          matched_rules: list[dict[str, Any]], group_key: str,
+                          prompt_group: str | None, title: str,
                           severity: str, category: str, state: str, state_reason: str | None,
                           first_alert_at: str | None) -> str:
     iid = str(uuid.uuid4())
@@ -261,15 +267,15 @@ async def create_incident(*, instance_id: str, owner: str, rule_id: str | None,
         """
         insert into sre_alert_incident
           (alert_incident_id, agent_team_instance_id, owner_user_id, alert_rule_id,
-           matched_rules_json, group_key, title, severity, category, incident_state,
-           state_reason, first_alert_at, last_alert_at)
+           matched_rules_json, group_key, prompt_group, title, severity, category,
+           incident_state, state_reason, first_alert_at, last_alert_at)
         values (%(id)s, %(i)s, %(o)s, %(r)s,
-                %(mr)s, %(g)s, %(t)s, %(sev)s, %(c)s, %(st)s,
+                %(mr)s, %(g)s, %(pg)s, %(t)s, %(sev)s, %(c)s, %(st)s,
                 %(sr)s, coalesce(%(fa)s::timestamptz, now()), now())
         """,
         {"id": iid, "i": instance_id, "o": owner, "r": rule_id, "mr": jsonb(matched_rules),
-         "g": group_key, "t": title, "sev": severity, "c": category, "st": state,
-         "sr": state_reason, "fa": first_alert_at},
+         "g": group_key, "pg": prompt_group, "t": title, "sev": severity, "c": category,
+         "st": state, "sr": state_reason, "fa": first_alert_at},
     )
     return iid
 
@@ -281,28 +287,39 @@ async def get_incident(incident_id: str) -> dict[str, Any] | None:
     )
 
 
-async def find_open_incident_by_group(group_key: str) -> dict[str, Any] | None:
-    """附着查找：同 group_key 未完结（queued/diagnosing）的最新 incident。"""
+async def find_open_incident_by_group(group_key: str, prompt_group: str) -> dict[str, Any] | None:
+    """附着查找：同 (group_key, prompt_group) 未完结（queued/diagnosing）的最新 incident。
+
+    prompt_group IS NULL 通配（2026-08-19 分单上线的过渡兼容）：存量旧单无组标，
+    对所有组可见——命中旧单时调用方按旧「一组一单」语义整体附着，防止部署切换
+    瞬间在途风暴双倍建单。精确组优先于 NULL 兜底。
+    """
     return await q_one(
         """
         select * from sre_alert_incident
-        where group_key=%(g)s and incident_state in ('queued','diagnosing') and deleted_at is null
-        order by creation_date desc limit 1
+        where group_key=%(g)s and (prompt_group=%(pg)s or prompt_group is null)
+          and incident_state in ('queued','diagnosing') and deleted_at is null
+        order by (prompt_group is not null) desc, creation_date desc limit 1
         """,
-        {"g": group_key},
+        {"g": group_key, "pg": prompt_group},
     )
 
 
-async def latest_ended_at_by_group(group_key: str) -> dict[str, Any] | None:
-    """组冷却判定：同 group_key 最近一个 completed/failed 的结束时间。"""
+async def latest_ended_at_by_group(group_key: str, prompt_group: str) -> dict[str, Any] | None:
+    """组冷却判定：同 (group_key, prompt_group) 最近一个 completed/failed 的结束时间。
+
+    prompt_group IS NULL 通配：部署前刚完结的旧单对所有新组继续冷却（防上线瞬间
+    重诊风暴）；新单不再写 NULL，旧值随时间自然淡出冷却窗。
+    """
     return await q_one(
         """
         select ended_at from sre_alert_incident
-        where group_key=%(g)s and incident_state in ('completed','failed')
+        where group_key=%(g)s and (prompt_group=%(pg)s or prompt_group is null)
+          and incident_state in ('completed','failed')
           and ended_at is not null and deleted_at is null
         order by ended_at desc limit 1
         """,
-        {"g": group_key},
+        {"g": group_key, "pg": prompt_group},
     )
 
 
@@ -568,6 +585,28 @@ async def summary_counts(*, owner: str, instance_id: str | None) -> dict[str, in
 # ---- incident ↔ event 关联 ----
 
 
+async def linked_pairs(event_id: str) -> set[tuple[str, str | None]]:
+    """该事件已链接过单的 (实例, prompt 组) 对集（含已完结单——接过≠再接，重建节奏归组冷却管）。
+
+    去重窗口补路由（2026-08-19）用：滚动窗口下持续重发永不过窗，仅对「命中规则但
+    从未建过单」的 (实例, 组) 补路由。组标 None 的存量单视为该实例**全组已接**
+    （宁漏勿双建：老 link 行无组标，按组补建会对已接实例重复建全套组单）。
+    alert_event_id 有索引。
+    """
+    rows = await q_all(
+        """
+        select distinct i.agent_team_instance_id, i.prompt_group
+        from sre_alert_incident_event l
+        join sre_alert_incident i on i.alert_incident_id = l.alert_incident_id
+        where l.alert_event_id=%(e)s and l.deleted_at is null and i.deleted_at is null
+        """,
+        {"e": event_id},
+    )
+    return {(str(r["agent_team_instance_id"]),
+             str(r["prompt_group"]) if r["prompt_group"] is not None else None)
+            for r in rows}
+
+
 async def link_event(incident_id: str, event_id: str, rule_ids: list[str]) -> None:
     await exec1(
         """
@@ -617,7 +656,7 @@ _LATERAL = """
              x.feedback_note as inc_feedback_note, x.agent_run_id as inc_run_id,
              x.owner_user_id as inc_owner, x.agent_team_instance_id as inc_instance_id,
              x.result_summary as inc_summary, x.manual_priority as inc_manual_priority,
-             x.state_reason as inc_state_reason
+             x.state_reason as inc_state_reason, x.matched_rules_json as inc_matched_rules
       from sre_alert_incident x
       join sre_alert_incident_event l
         on l.alert_incident_id = x.alert_incident_id
@@ -625,9 +664,26 @@ _LATERAL = """
       where x.deleted_at is null
         and (%(lat_owner)s::text is null or x.owner_user_id = %(lat_owner)s)
         and (%(lat_inst)s::uuid is null or x.agent_team_instance_id = %(lat_inst)s::uuid)
-      order by x.creation_date desc limit 1
+      order by (x.incident_state in ('queued','diagnosing')) desc,
+               x.last_update_date desc, x.alert_incident_id desc limit 1
     ) i on true
 """
+
+
+def _proj_exists(lateral_owner: str | None, lateral_instance: str | None) -> str:
+    """镜像 _LATERAL 过滤条件的存在性判定：该事件在当前视角（owner/inst）下有未删单。
+    与「投影非空（i.inc_id is not null）」严格等价——limit 1 只决定投影哪张单，不影响
+    是否存在；owner/inst 按参数是否为 None 在 Python 侧拼接（而非 `$1 is null or ...`），
+    planner 才能稳定走 incident 的 owner 索引做 semi-join。别名 le/xe 避开同查询的 l2/x2/lo/xo。"""
+    conds = ""
+    if lateral_owner is not None:
+        conds += " and xe.owner_user_id = %(lat_owner)s"
+    if lateral_instance is not None:
+        conds += " and xe.agent_team_instance_id = %(lat_inst)s::uuid"
+    return ("exists (select 1 from sre_alert_incident_event le "
+            "join sre_alert_incident xe on xe.alert_incident_id = le.alert_incident_id "
+            "where le.alert_event_id = e.alert_event_id and le.deleted_at is null "
+            f"and xe.deleted_at is null{conds})")
 
 
 async def list_events(*, lateral_owner: str | None, lateral_instance: str | None,
@@ -635,18 +691,29 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
                       alert_status: str | None, severities: list[str] | None,
                       takeover: str | None, category: str | None, search: str | None,
                       since_days: int | None = None, categories: list[str] | None = None,
-                      matched_only: bool = False,
+                      matched_only: bool = False, owner_filter: str | None = None,
                       page: int, page_size: int) -> tuple[list[dict[str, Any]], int]:
-    """事件 LEFT JOIN LATERAL「该视角下最新聚合单」。
+    """事件 LEFT JOIN LATERAL「该视角下最新聚合单」（活跃单优先——按 prompt 分单后
+    同事件可有多张姊妹单，投影先取 queued/diagnosing 再取最近更新，行状态不随创建毫秒序随机）。
 
     - lateral_owner/lateral_instance：接管投影取谁的单（用户视角=本人[+实例]；admin 按用户查看=目标用户；
       admin 全量=None 取任意 owner 最新单）。
+    - owner_filter：行集收窄为「该用户接管过的事件」（admin 按用户查看，2026-08-19 语义修正：
+      原纯 LATERAL 投影不收窄行集，管理员输了 user_id 看到的仍是全量行、只有接管列变化——
+      与直觉相悖）。与 lateral_owner 配套传同一用户：过滤+投影，接管人列全是他。
     - scope_appids：普通用户可见性——`有本人单` 或 `未接管但 appid ∈ 范围`；None=admin 不加可见性子句。
       注意：他人接管的告警若 appid 在我范围内，会以「未接管」形态出现（他人单不投影，隐私口径）。
     """
     params: dict[str, Any] = {"lat_owner": lateral_owner, "lat_inst": lateral_instance,
                               "scope": scope_appids}
     where = ["1=1"]
+    needs_lateral = False  # 引用投影列 i.* 的子句置 True：count 才带 _LATERAL（见下）
+    if owner_filter:
+        where.append("""exists (select 1 from sre_alert_incident_event lo
+            join sre_alert_incident xo on xo.alert_incident_id = lo.alert_incident_id
+            where lo.alert_event_id = e.alert_event_id and lo.deleted_at is null
+              and xo.deleted_at is null and xo.owner_user_id = %(owner_f)s)""")
+        params["owner_f"] = owner_filter
     if matched_only:
         # 管理台清单默认口径（2026-08-15）：只看「命中规则建过单 ∧ 属主仍在白名单」的行。
         # 用与 LATERAL 解耦的 EXISTS——朴素 i.inc_id is not null 会在「按用户查看」时把
@@ -659,20 +726,28 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
               and exists (select 1 from sre_alert_user_grant g
                           where g.user_id = x2.owner_user_id and g.deleted_at is null))""")
     if scope_appids is not None:
-        where.append("(i.inc_id is not null or e.appid = any(%(scope)s::text[]))")
+        # 「有本视角单」不用 i.inc_id is not null（会把全表逐行 LATERAL 拖进过滤路径），
+        # 改用与 LATERAL 解耦的等价 EXISTS；用户清单主路径恒传 []（只看本人接管过的单），
+        # 空数组臂恒假，裁掉 OR 才能让 planner 把 EXISTS 上拉成 semi-join 从 owner 索引反向驱动。
+        proj = _proj_exists(lateral_owner, lateral_instance)
+        where.append(f"({proj} or e.appid = any(%(scope)s::text[]))" if scope_appids else proj)
     if alert_status == "closed":
         where.append("e.alert_status = 'resolved'")
     elif alert_status == "assigned":
         where.append("e.alert_status <> 'resolved' and i.inc_id is not null "
                      "and i.inc_state not in ('skipped','ignored')")
+        needs_lateral = True
     elif alert_status == "unassigned":
         where.append("e.alert_status <> 'resolved' "
                      "and (i.inc_id is null or i.inc_state in ('skipped','ignored'))")
+        needs_lateral = True
     if severities:
         where.append("e.severity = any(%(sev)s)")
         params["sev"] = severities
     if takeover in _TAKEOVER_COND:
+        # 接管/分派筛选语义绑定「投影单」（top-1，非任意姊妹单），不可 EXISTS 化
         where.append(_TAKEOVER_COND[takeover])
+        needs_lateral = True
     if category:
         where.append("e.category = %(cat)s")
         params["cat"] = category
@@ -688,8 +763,11 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
         params["sd"] = int(since_days)
     cond = " and ".join(where)
 
+    # count 只在过滤条件真引用投影列时才带 LATERAL——PG 不会对带 order/limit 的相关
+    # 子查询做 join removal，无脑带上等于对全表每行跑一次两表探查（清单打开 1-3s 主因）。
     total_row = await q_one(
-        f"select count(*) as n from sre_alert_event e {_LATERAL} where {cond}", params)
+        f"select count(*) as n from sre_alert_event e "
+        f"{_LATERAL if needs_lateral else ''} where {cond}", params)
     params.update({"lim": page_size, "off": (page - 1) * page_size})
     # 排序键必须稳定（creation_date + id）：last_seen_at 会被 dedup touch 高频前移，
     # 内网流量下翻页窗口持续洗牌，第 2 页看到的还是刚顶上来的同一批行（2026-08-13 反馈）。
