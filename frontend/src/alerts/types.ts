@@ -28,6 +28,8 @@ export type AlertEventAgentResult = "recovered" | "escalated" | "failed";
 export interface AlertEventRow {
   /** 未接管细分（skip 原因透出，如 stale_consumer_lag=延迟放弃）；null=非 skip。 */
   state_reason?: string | null;
+  /** incident 原始状态透传（queued/diagnosing/…）：前端把排队单的「处理中」细分为「排队中」。 */
+  incident_state?: string | null;
   /** 告警编号（ALM-yyyymmdd-xxxxxx 风格）。 */
   alert_no: string;
   category: AlertCategory;
