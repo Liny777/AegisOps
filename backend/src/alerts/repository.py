@@ -636,6 +636,46 @@ async def link_event(incident_id: str, event_id: str, rule_ids: list[str]) -> No
     )
 
 
+async def takeovers_by_events(event_ids: list[str], *, owner: str | None,
+                              instance: str | None) -> dict[str, list[dict[str, Any]]]:
+    """页内事件 → 该视角下**全部**姊妹聚合单（2026-08-20 测试反馈：按 prompt 分单后
+    清单行只投影 top-1，第二条策略的诊断在页面上无入口，被当成「只跑了一次」）。
+
+    与 _LATERAL 同一套可见性过滤（owner/instance）与同一排序（活跃优先 → 最近更新），
+    首元素恒等于 LATERAL 投影单。独立小查询而非并进主查询：主查询刚做过 count 去
+    LATERAL 的性能治理（79b43d0），且 jsonb_agg 组装在 GaussDB 上无既有先例——20 行
+    一次 any(uuid[]) 的代价可忽略。
+    """
+    if not event_ids:
+        return {}
+    conds = ""
+    params: dict[str, Any] = {"ids": event_ids}
+    if owner is not None:
+        conds += " and i.owner_user_id = %(o)s"
+        params["o"] = owner
+    if instance is not None:
+        conds += " and i.agent_team_instance_id = %(inst)s::uuid"
+        params["inst"] = instance
+    rows = await q_all(
+        f"""
+        select l.alert_event_id, i.alert_incident_id, i.incident_state, i.agent_result,
+               i.state_reason, i.agent_run_id, i.owner_user_id, i.matched_rules_json
+        from sre_alert_incident_event l
+        join sre_alert_incident i on i.alert_incident_id = l.alert_incident_id
+        where l.alert_event_id = any(%(ids)s::uuid[]) and l.deleted_at is null
+          and i.deleted_at is null{conds}
+        order by l.alert_event_id,
+                 (i.incident_state in ('queued','diagnosing')) desc,
+                 i.last_update_date desc, i.alert_incident_id desc
+        """,
+        params,
+    )
+    out: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        out.setdefault(str(r["alert_event_id"]), []).append(r)
+    return out
+
+
 async def list_incident_events(incident_id: str, limit: int = 50) -> tuple[list[dict[str, Any]], int]:
     total_row = await q_one(
         "select count(*) as n from sre_alert_incident_event "

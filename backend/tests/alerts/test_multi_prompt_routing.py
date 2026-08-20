@@ -100,6 +100,15 @@ def test_two_prompts_two_incidents_each_dispatched_with_own_prompt(client):
                            params={"instance_id": iid}))["items"][0]
     assert ev["matched_rule"]["name"] in {"Docker 接管 A", "Docker 接管 B"}
     assert ev["matched_rule_total"] == 1
+    # takeovers 全量透出（2026-08-20 测试反馈「只跑了一次」）：两张姊妹单各带策略/会话，
+    # 首元素恒等于行级投影单——前端策略列逐条展示、各自会话可点
+    tks = ev["takeovers"]
+    assert len(tks) == 2
+    assert {t["matched_rule"]["name"] for t in tks} == {"Docker 接管 A", "Docker 接管 B"}
+    assert all(t["incident_state"] == "diagnosing" and t["run_id"] and t["run_clickable"]
+               for t in tks)
+    assert len({t["run_id"] for t in tks}) == 2
+    assert tks[0]["incident_id"] == ev["incident_id"]
 
     # 各 run 的诊断输入只含本组提示词（直读 sre_task_state 快照，同 test_dispatch_e2e 手法）
     by_rule = {r["matched_rule"]["name"]: r["run_id"] for r in rows}
@@ -113,6 +122,42 @@ def test_two_prompts_two_incidents_each_dispatched_with_own_prompt(client):
     assert PROMPT_B in texts["Docker 接管 B"] and PROMPT_A not in texts["Docker 接管 B"]
     for t in texts.values():
         assert "Docker 容器重启" in t  # 告警要素段照旧拼装
+
+    # 混合态钉排序（审查 mutation 实证：双 diagnosing 是并列态，把 takeovers_by_events
+    # 活跃集合删掉 'diagnosing' 或整删 _LATERAL 活跃优先项，上面的断言全绿抓不住）：
+    # A 完结且 last_update_date 最新、B 仍诊断中 → 行级投影与 takeovers[0] 必须都是 B，
+    # 一条断言同时钉死两份手拷的排序表达式
+    ids = {r["matched_rule"]["name"]: r["incident_id"] for r in rows}
+    _db_exec("update sre_alert_incident set incident_state='completed', ended_at=now(), "
+             "last_update_date=now() where alert_incident_id=%s", (ids["Docker 接管 A"],))
+    ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
+                           params={"instance_id": iid}))["items"][0]
+    assert ev["incident_id"] == ids["Docker 接管 B"]
+    assert ev["takeovers"][0]["incident_id"] == ids["Docker 接管 B"]
+    assert ev["takeovers"][0]["incident_state"] == "diagnosing"
+    assert {t["incident_state"] for t in ev["takeovers"]} == {"diagnosing", "completed"}
+
+
+def test_takeovers_scoped_to_selected_instance(client):
+    """takeovers 的实例过滤（审查 mutation 实证：删掉 takeovers_by_events 的 conds
+    过滤整套仍全绿——可见性过滤此前零覆盖）：同用户两实例各接一单，带 instance_id
+    查询只见本实例的姊妹单，不带时两单都见。"""
+    inst_a = create_instance(client, f"Docker 接管 {time.time_ns()}")["instance_id"]
+    inst_b = create_instance(client, f"Docker 接管 {time.time_ns()}")["instance_id"]
+    _add_rule(client, inst_a, "实例A规则", PROMPT_A)
+    _add_rule(client, inst_b, "实例B规则", PROMPT_B)
+
+    alert_platform_mock._inject(title="Docker 容器重启", category="Docker", severity="critical",
+                                app_id="APP-A", fingerprint="fp_inst_scope")
+    assert _pull(client)["queued"] == 2
+
+    ida = _incidents(client, inst_a)[0]["incident_id"]
+    idb = _incidents(client, inst_b)[0]["incident_id"]
+    ev_a = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
+                             params={"instance_id": inst_a}))["items"][0]
+    assert [t["incident_id"] for t in ev_a["takeovers"]] == [ida]
+    ev_all = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS))["items"][0]
+    assert {t["incident_id"] for t in ev_all["takeovers"]} == {ida, idb}
 
 
 def test_same_normalized_prompt_merges_into_one_incident(client):
@@ -265,6 +310,14 @@ def test_instance_cap_binds_across_prompt_groups(client):
     assert by_state["skipped"]["state_reason"] == "overflow_instance"
     # 留痕单归属另一个 prompt 组：retry 时按各自 alert_rule_id 注入各自提示词
     assert by_state["queued"]["matched_rule"]["name"] != by_state["skipped"]["matched_rule"]["name"]
+
+    # 清单行 takeovers 连留痕单一起透出：「第二条策略为什么没跑」在页面上有交代
+    ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
+                           params={"instance_id": iid}))["items"][0]
+    tk_states = {t["incident_state"]: t for t in ev["takeovers"]}
+    assert set(tk_states) == {"queued", "skipped"}
+    assert tk_states["skipped"]["state_reason"] == "overflow_instance"
+    assert ev["takeovers"][0]["incident_state"] == "queued"  # 活跃优先=行级投影单
 
 
 def test_window_dedup_backfills_late_prompt_group(client):

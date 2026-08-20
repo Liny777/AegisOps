@@ -844,6 +844,45 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
     }
 
 
+def _takeover_out(t: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
+    """单张姊妹单 → 清单行 takeovers[] 元素（口径逐字段对齐 event_row_out 的投影单列）。
+
+    按 prompt 分单后一条告警可有 N 张姊妹单（每策略组一张），行级列只放得下 top-1；
+    本投影把每张单的 策略/状态/结果/会话 都透出，前端接管策略列逐条展示——
+    「同一条告警跑了两次」终于在清单上看得见（2026-08-20 测试反馈）。
+    """
+    matched = t.get("matched_rules_json") or []
+    run_id = str(t["agent_run_id"]) if t.get("agent_run_id") else None
+    takeover = _takeover_of(t.get("incident_state"))
+    return {
+        "incident_id": str(t["alert_incident_id"]),
+        "incident_state": t.get("incident_state"),
+        "takeover_status": takeover,
+        "agent_result": t.get("agent_result") if takeover == "done" else (
+            "processing" if takeover == "processing" else None),
+        "state_reason": t.get("state_reason"),
+        "matched_rule": ({"rule_id": matched[0].get("rule_id"), "name": matched[0].get("rule_name")}
+                         if matched else None),
+        "matched_rule_total": len(matched),
+        "run_id": run_id,
+        "run_clickable": bool(run_id) and t.get("owner_user_id") == viewer_uid,
+    }
+
+
+async def _attach_takeovers(rows: list[dict[str, Any]], items: list[dict[str, Any]],
+                            viewer_uid: str, *, owner: str | None, instance: str | None) -> None:
+    """给清单页行补 takeovers[]（与 _LATERAL 同视角过滤；首元素恒等于投影单）。
+
+    「首元素=投影单」是同排序推论而非事务保证——本查询在主查询之后独立执行，
+    两语句间的状态跃迁可致单行瞬时不一致（一帧，刷新即齐）；前端各元素自带
+    run_id 不依赖该不变量，接受不加事务。"""
+    tk_map = await repo.takeovers_by_events([str(r["alert_event_id"]) for r in rows],
+                                            owner=owner, instance=instance)
+    for r, out in zip(rows, items):
+        out["takeovers"] = [_takeover_out(t, viewer_uid)
+                            for t in tk_map.get(str(r["alert_event_id"]), [])]
+
+
 def _check_enum(value: str | None, allowed: tuple[str, ...], label: str) -> str | None:
     if value and value not in allowed:
         raise ApiError(Err.VALIDATION_FAILED, f"非法{label} {value}")
@@ -856,6 +895,7 @@ async def list_alert_events(user: dict[str, Any], *, instance_id: str | None,
                             since_days: int | None = None,
                             page: int, page_size: int) -> dict[str, Any]:
     uid = user["user_id"]
+    instance_id = instance_id or None  # ?instance_id= 裸传空串会在 SQL 层 ''::uuid 炸 500
     if instance_id:
         _owner_instance(await agent_teams.get_instance(instance_id), uid)
     # 2026-07-31 拍板：未命中规则的告警**不进用户清单**（2026-08-13 起未命中根本不落库；
@@ -870,8 +910,9 @@ async def list_alert_events(user: dict[str, Any], *, instance_id: str | None,
         takeover=_check_enum(takeover, TAKEOVER_STATUSES, "接管状态"),
         category=category or None, search=search or None, since_days=since_days,
         page=page, page_size=page_size)
-    return {"items": [event_row_out(r, uid) for r in rows], "total": total,
-            "page": page, "page_size": page_size}
+    items = [event_row_out(r, uid) for r in rows]
+    await _attach_takeovers(rows, items, uid, owner=uid, instance=instance_id)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 async def _local_preview(uid: str, instance_id: str, appids: list[str], cats: list[str],
