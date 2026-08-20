@@ -48,6 +48,11 @@ export interface AlertEventRow {
   /** 企业 ID（29.10 enterpriseId；预览表展示列 + 跳转分发键）。清单存量行可缺省。 */
   enterprise_id?: string;
   incident_id: string | null;
+  /** 接管策略（2026-08-19 按提示词分单后 UI 后续）：投影单的组内首条命中规则；
+   *  未接管/存量无快照为 null（显「—」）。历史预览行可缺省。 */
+  matched_rule?: { rule_id: string; name: string } | null;
+  /** 组内命中规则总数（同提示词多规则合并一单时 >1，前端补「等 N 条」）。 */
+  matched_rule_total?: number;
   /** 诊断会话 id（run_alert_* 前缀）；未接管时为 null。 */
   run_id: string | null;
   /** 会话是否可打开（run 可能已过期清理，此时置 false）。 */

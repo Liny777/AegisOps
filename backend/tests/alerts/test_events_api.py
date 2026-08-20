@@ -77,12 +77,19 @@ def test_visibility_matrix_and_projection(client):
     assert e1["takeover_status"] == "processing" and e1["alert_status"] == "assigned"
     assert e1["detail_url"] == "https://alert.example/e1"
     assert e1["alert_object"] == "mysql-prod-03" and e1["appid"] == "APP-A"
+    # 接管策略列（2026-08-19）：投影单的组内规则快照透出——rule_id 对具体值断言
+    # （对自身比较是恒真式，rule_id 映射错键测不出来）
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    assert e1["matched_rule"] == {"rule_id": rules[0]["rule_id"], "name": "MySQL 接管"}
+    assert e1["matched_rule_total"] == 1
     assert _events(client, instance_id=iid, takeover="none") == []  # 清单无未命中行
 
     # 弹窗预览（since_days）：scope 内已恢复的 E2 以未接管形态可见，范围外 E3 仍不可见
     pv = {r["alert_no"]: r for r in _events(client, instance_id=iid, since_days=3)}
     assert set(pv) == {"ALM-E1", "ALM-E2"}
     assert pv["ALM-E2"]["takeover_status"] == "none" and pv["ALM-E2"]["alert_status"] == "closed"
+    assert pv["ALM-E2"]["matched_rule"] is None  # 未建单行无策略（前端「—」）
     assert pv["ALM-E2"]["run_clickable"] is False
 
     # 他人视角：未白名单直接 403（比空清单更强的隔离）

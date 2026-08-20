@@ -95,6 +95,12 @@ def test_two_prompts_two_incidents_each_dispatched_with_own_prompt(client):
     rows = wait_until(both_running, timeout=8, interval=0.1)
     assert rows, "两张姊妹单未全部进入 diagnosing+run 绑定"
 
+    # 事件清单「接管策略」列：投影单（活跃优先）的组内规则透出，姊妹单并存时为其一
+    ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
+                           params={"instance_id": iid}))["items"][0]
+    assert ev["matched_rule"]["name"] in {"Docker 接管 A", "Docker 接管 B"}
+    assert ev["matched_rule_total"] == 1
+
     # 各 run 的诊断输入只含本组提示词（直读 sre_task_state 快照，同 test_dispatch_e2e 手法）
     by_rule = {r["matched_rule"]["name"]: r["run_id"] for r in rows}
     texts = {}

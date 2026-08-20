@@ -78,6 +78,20 @@ const ResultCell = ({ it }: { it: AlertEventRow }) => {
   );
 };
 
+/** 接管策略：投影单的组内规则快照（首条 + 等 N 条）；未接管/存量无快照显「—」。 */
+const RuleCell = ({ it }: { it: AlertEventRow }) => {
+  if (!it.matched_rule) {
+    return <span title="未命中接管规则，或存量数据无规则快照" style={{ color: color.textFaint }}>—</span>;
+  }
+  const total = it.matched_rule_total ?? 1;
+  const text = `${it.matched_rule.name}${total > 1 ? ` 等${total}条` : ""}`;
+  return (
+    <span style={{ display: "block", maxWidth: 150, color: color.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={text}>
+      {text}
+    </span>
+  );
+};
+
 /** 用户评价（占位功能）：整列置灰由 td 样式统一处理，这里只管内容。 */
 const FeedbackCell = ({ it }: { it: AlertEventRow }) => {
   if (!it.user_feedback) return <span>-</span>;
@@ -147,7 +161,7 @@ const td: React.CSSProperties = { padding: "10px 12px", borderTop: `1px solid ${
 /** 用户评价整列置灰（占位功能未开放）：td 内容 + 列头一起淡。 */
 const feedbackDim: React.CSSProperties = { opacity: 0.4, filter: "grayscale(1)" };
 
-/** 告警清单（侧栏一级导航）：事件视角全宽表格页 = 56px header + 四下拉筛选条 + 十五列表格 + 分页。
+/** 告警清单（侧栏一级导航）：事件视角全宽表格页 = 56px header + 四下拉筛选条 + 十六列表格 + 分页。
  *  v2 起不再有行内详情抽屉/忽略/重试——事件详情归告警平台外链，处理过程看诊断会话。 */
 export function AlertsPage() {
   const nav = useNavigate();
@@ -338,8 +352,8 @@ export function AlertsPage() {
           </div>
         ) : (
           <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflowX: "auto" }}>
-            {/* overflowX auto（宿主 div）：十五列在窄视口整体横向滚动，操作列不被裁掉 */}
-            <table style={{ width: "100%", minWidth: 1560, borderCollapse: "collapse", fontSize: 12.5 }}>
+            {/* overflowX auto（宿主 div）：十六列在窄视口整体横向滚动，操作列不被裁掉 */}
+            <table style={{ width: "100%", minWidth: 1700, borderCollapse: "collapse", fontSize: 12.5 }}>
               <thead>
                 <tr>
                   <th style={th}>操作</th>{/* 2026-08-15 挪首列（用户反馈：操作是高频入口） */}
@@ -352,6 +366,7 @@ export function AlertsPage() {
                   <th style={th}>告警状态</th>
                   <th style={th}>告警等级</th>
                   <th style={th}>Agent 接管状态</th>
+                  <th style={th}>接管策略</th>
                   <th style={th}>接管结果</th>
                   {/* 用户评价整列占位置灰：列头一起浅灰 */}
                   <th style={{ ...th, color: color.textFaint, ...feedbackDim }}>用户评价</th>
@@ -423,6 +438,7 @@ export function AlertsPage() {
                       <td style={td}><Pill tone={EVENT_STATUS_META[it.alert_status].tone}>{EVENT_STATUS_META[it.alert_status].label}</Pill></td>
                       <td style={td}><SeverityPill severity={it.severity} /></td>
                       <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} /></td>
+                      <td style={{ ...td, maxWidth: 150 }}><RuleCell it={it} /></td>
                       <td style={td}><ResultCell it={it} /></td>
                       <td style={{ ...td, ...feedbackDim }}><FeedbackCell it={it} /></td>
                       <td style={{ ...td, color: color.textNav, whiteSpace: "nowrap" }}>{fmtTime(it.started_at)}</td>

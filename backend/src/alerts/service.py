@@ -790,6 +790,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
     duration_s = max(0, int((end_dt - start_dt).total_seconds())) \
         if (start_dt is not None and end_dt is not None) else None
     run_id = str(row["inc_run_id"]) if row.get("inc_run_id") else None
+    # 接管策略列（2026-08-19 分单后 UI 后续）：投影单的组内规则快照，口径同 incident_out——
+    # 首条展示、total 供前端补「等 N 条」；未接管/存量空快照为 None（前端「—」）
+    matched = row.get("inc_matched_rules") or []
     return {
         "alert_no": row.get("external_alert_id") or str(row["alert_event_id"]),
         "category": row.get("category") or "",
@@ -805,6 +808,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
         # 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag 等 skip 原因透出，
         # 前端据此把「未接管」细化为「延迟放弃」并给引导文案；不改三值投影口径。
         "state_reason": row.get("inc_state_reason"),
+        "matched_rule": ({"rule_id": matched[0].get("rule_id"), "name": matched[0].get("rule_name")}
+                         if matched else None),
+        "matched_rule_total": len(matched),
         "user_feedback": row.get("inc_user_feedback"),
         "feedback_note": row.get("inc_feedback_note") or "",
         "detail_url": detail_url,
