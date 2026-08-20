@@ -139,6 +139,16 @@ async def dispatch_once() -> int:
             await repo.transition(iid, from_states=["queued"], to_state="skipped", set_ended=True,
                                   state_reason="grant_revoked：属主的告警接管开通已被管理员关闭")
             continue
+        # 规则闸（主闸同样在 list_enabled_rules 的匹配面）：排队后策略被停用/删除，存量
+        # queued 单派发前再拦一道——置 skipped 留痕，不白耗诊断名额（否则最长要拖到
+        # alert_queue_max_age_s 排队超时才翻 failed，默认 1 天）。排在白名单之后：属主被
+        # 移出名单是更高优先的管理动作，grant_revoked 该压过 rule_revoked。
+        # 候选为空（存量单两个规则字段皆空）fail-open 放行，不误杀历史数据。
+        candidates = matcher.rule_candidates(inc)
+        if candidates and not await repo.any_rule_live(candidates):
+            await repo.transition(iid, from_states=["queued"], to_state="skipped", set_ended=True,
+                                  state_reason="rule_revoked")
+            continue
         # 条件 UPDATE 抢占：并发 dispatch_once / 多 worker 竞态下只有一个赢家
         if not await repo.transition(iid, from_states=["queued"], to_state="diagnosing",
                                      set_started=True):
@@ -288,9 +298,7 @@ async def _ensure_run_and_task(inc: dict[str, Any]) -> tuple[str, str, Any]:
     # 必相同，任一存活规则等价。不回落会静默换成默认五步法且 skill_hint 一并丢失，
     # 而删除同 prompt 冗余规则恰是合并语义鼓励的清理动作（2026-08-19 审查实证）。
     rule_prompt = ""
-    candidates = [str(inc["alert_rule_id"])] if inc.get("alert_rule_id") else []
-    candidates += [rid for m in (inc.get("matched_rules_json") or [])
-                   if (rid := str((m or {}).get("rule_id") or "")) and rid not in candidates]
+    candidates = matcher.rule_candidates(inc)
     if candidates:
         alive = {str(r["alert_rule_id"]): r for r in await repo.list_rules_by_ids(candidates)}
         for rid in candidates:

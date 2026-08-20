@@ -49,6 +49,18 @@ def app_id_from_group_key(gk: str) -> str:
     return parts[1]
 
 
+def rule_candidates(inc: dict[str, Any]) -> list[str]:
+    """本单命中的规则 id（组首 alert_rule_id 优先，matched_rules_json 序回落，去重保序）。
+
+    派发前的规则闸与 dispatcher 的提示词装配共用这一份口径——两处各抄一份必漂。
+    存量单两者皆空时返回 []，调用方按 fail-open 处理（宁放行勿误杀历史数据）。
+    """
+    ids = [str(inc["alert_rule_id"])] if inc.get("alert_rule_id") else []
+    ids += [rid for m in (inc.get("matched_rules_json") or [])
+            if (rid := str((m or {}).get("rule_id") or "")) and rid not in ids]
+    return ids
+
+
 def effective_prompt(p: str | None) -> str:
     """prompt 归一判等口径：空白 ≡ 系统默认（与 dispatcher 派发时 rule_prompt or
     DEFAULT_RULE_PROMPT 同源——归一后相等的两条规则派发行为完全一致，才可同组/合并）。"""

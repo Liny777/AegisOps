@@ -82,6 +82,20 @@ async def list_rules_by_ids(rule_ids: list[str]) -> list[dict[str, Any]]:
     )
 
 
+async def any_rule_live(rule_ids: list[str]) -> bool:
+    """这批规则里还有「未删除且启用」的吗——派发前的规则闸与 :retry 守卫共用。
+
+    不复用 list_rules_by_ids（它只滤 deleted_at 不滤 enabled，且拉全行）；limit 1 走
+    主键索引，放在派发热路径上成本可忽略。
+    """
+    row = await q_one(
+        "select 1 as x from sre_alert_rule "
+        "where alert_rule_id = any(%(ids)s::uuid[]) and deleted_at is null and enabled limit 1",
+        {"ids": rule_ids},
+    )
+    return row is not None
+
+
 async def set_rules_enabled(rule_ids: list[str], enabled: bool, by: str) -> int:
     return await exec1(
         "update sre_alert_rule set enabled=%(e)s, last_update_date=now(), last_updated_by=%(by)s "

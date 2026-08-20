@@ -530,6 +530,7 @@ _SKIP_REASON_TEXT = {
     "no_scope": "无可用范围快照（实例从未成功解析过 scope）",
     "disabled": "接管开关已关闭",
     "queue_expired": "排队超时未接管（超过配置时限自动放弃，可手动重试）",
+    "rule_revoked": "命中的告警策略已被停用或删除，本单不再自动诊断（留痕）",
     "stale_consumer_lag": "消费延迟超阈值，自动放弃处理（告警到达时已陈旧；可手动重试，或到对话界面自行诊断）",
     "task_failed": "诊断执行失败（模型或工具调用异常，详见会话活动栏）",
     "task_cancelled": "诊断任务被取消",
@@ -712,6 +713,12 @@ async def retry_incident(user: dict[str, Any], incident_id: str) -> dict[str, An
     if row.get("incident_state") not in ("failed", "skipped", "ignored"):
         raise ApiError(Err.ALERT_INCIDENT_STATE_INVALID,
                        f"仅失败/跳过/已忽略的聚合单可重新入队（当前 {row.get('incident_state')}）")
+    # 与 dispatcher 派发闸同一判定：不挡在这里，重试出来的单会被派发闸瞬间弹回 skipped，
+    # 看起来像按钮坏了。候选为空的存量单 fail-open 放行（与派发闸口径一致）。
+    candidates = matcher.rule_candidates(row)
+    if candidates and not await repo.any_rule_live(candidates):
+        raise ApiError(Err.ALERT_INCIDENT_STATE_INVALID,
+                       "本单命中的告警策略已被停用或删除，请先重新启用该策略再重试")
     await repo.requeue(incident_id, bump_retry=False, by=user["user_id"])
     await audit.insert_event(
         audit_trace_id=str(row["agent_team_instance_id"]), event_type="alert.incident_retried",
