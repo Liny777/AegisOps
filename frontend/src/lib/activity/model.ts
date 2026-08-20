@@ -396,7 +396,7 @@ function timeBounds(events: readonly ActivityEvent[], delegations: readonly Dele
     ...events.map((event) => event.occurredAt),
     ...delegations.flatMap((item) => [item.createdAt, item.updatedAt]).filter((v): v is string => Boolean(v)),
   ].filter(Boolean).sort((a, b) => Date.parse(a) - Date.parse(b));
-  return [values[0], values.at(-1)];
+  return [values[0], values[values.length - 1]]; // 不用 .at(-1)：Chrome<92 无此 API（WeLink 老内核）
 }
 
 /** reducer 状态 → 活动栏模型。账本终态覆盖事件推导，waiting approval 仅作 running 子态。 */

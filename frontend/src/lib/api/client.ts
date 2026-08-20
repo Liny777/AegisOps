@@ -1,5 +1,7 @@
 /** 真实后端 HTTP 客户端 —— 解析 envelope / error，注入 mock 登录头（B8 换真 IAM Cookie）。 */
 
+import { captureReturnPath } from "../loginReturn";
+
 // 单文根部署（内网 xxxx.com/openops）：打包时 VITE_OPENOPS_API_BASE=/openops/api，
 // 由前端 nginx 剥掉 /openops 前缀后转本机后端。本地默认 "/api"（dev proxy / 同机直连不变）——
 // ⚠该默认值在生产是唯一不可路由的值（网关只认 /openops），故 build-artifacts.sh 有正向断言。
@@ -64,9 +66,12 @@ export interface ApiErrorBody {
  */
 export function redirectToLoginIfUnauthorized(status: number, err: ApiErrorBody | undefined): boolean {
   if (status !== 401 || !err?.login_url) return false;
+  // 跳走前保存深链：IAM redirect 白名单写死站点根，登录回跳靠 HomeRedirect 回位（lib/loginReturn.ts）
+  captureReturnPath();
   // {host} 兜底替换：网关直连后端时 Host 头可能被改写成 ip:port，后端替出的域名不可用；
-  // 前端永远知道正确域名（当前地址栏），残留占位符或 ip:port 域都以它为准
-  window.location.assign(err.login_url.replaceAll("{host}", window.location.host));
+  // 前端永远知道正确域名（当前地址栏），残留占位符或 ip:port 域都以它为准。
+  // split/join 而非 replaceAll：本行在老内核（Chrome<85 无 replaceAll）的登录关键路径上
+  window.location.assign(err.login_url.split("{host}").join(window.location.host));
   return true;
 }
 

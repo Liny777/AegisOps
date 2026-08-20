@@ -1,16 +1,20 @@
-import { lazy, Suspense, useEffect } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
+import { lazy, Suspense, useEffect, useRef } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { ReactNode } from "react";
 import { AppProvider, useApp } from "./lib/appState";
 import { AppShell } from "./layout/AppShell";
-import { NotWhitelisted, Forbidden, Loading } from "./pages/states";
+import { NotWhitelisted, Forbidden, Loading, NotFound } from "./pages/states";
 import { api } from "./lib/api";
 import { captureAutoQuestion, peekAutoQuestion } from "./lib/autosend";
+import { clearReturnPath, consumeReturnPath } from "./lib/loginReturn";
 import { captureAlertContext } from "./lib/alertEntry";
 import { studioRoutes } from "./studio/entry";  // 垂直切片自注册路由（懒加载在切片内部）
 import { alertsRoutes } from "./alerts/entry";  // 7x24 告警接管切片（同律：入口只有 lazy 与常量）
 
 // 外链 ?q= / 告警直达三参捕获必须先于首个 fetch 的 401→IAM 重定向（b5c5c79 时序教训）——模块加载即执行。
+// 带这些实参进来是**新外部意图**：先废弃上次未完成登录往返残留的深链回位存根，否则本次 ?q=
+// 会被旧 run 劫持吞问题（本页面若随后 401，captureReturnPath 会重新存当前路径，清早了无损）。
+if (typeof window !== "undefined" && /[?&](q|entry_source)=/.test(window.location.search)) clearReturnPath();
 captureAutoQuestion();
 captureAlertContext();
 
@@ -28,8 +32,16 @@ const ProductIntro = lazy(() => import("./pages/intro/ProductIntro").then((m) =>
  *  已初始化→为该问题专门新建 run（防污染既有会话）再进对话。 */
 function HomeRedirect() {
   const { me, loading, currentAgentId } = useApp();
+  // IAM 往返深链回位（lib/loginReturn.ts）：懒 consume + ref 缓存——StrictMode 双 render 只
+  // consume 一次且两次结果一致；放在 loading 判定之后才取，getMe 再次 401（AUTH_REDIRECT 保持
+  // Loading）时存储未被消费，下一轮登录成功仍可回位。
+  const returnPathRef = useRef<string | null | undefined>(undefined);
   if (loading || !me) return <Loading />;
   if (!me.whitelisted) return <Navigate to="/not-whitelisted" replace />;
+  if (returnPathRef.current === undefined) returnPathRef.current = consumeReturnPath();
+  // 回位优先于 ?q= 分流：语义等价于用户当初直接打开该深链（直达 /agent-runs/:id 本就不经过
+  // has_instances 检查）；ExternalJump 会新建 run，对显式指向既有 run 的深链是错误行为。
+  if (returnPathRef.current) return <Navigate to={returnPathRef.current} replace />;
   if (!me.has_instances) return <Navigate to="/init" replace />;
   const agentId = me.recent_instance_id ?? currentAgentId;
   if (peekAutoQuestion()) return <ExternalJump instanceId={agentId} />;
@@ -58,6 +70,14 @@ function ExternalJump({ instanceId }: { instanceId: string }) {
     return () => { alive = false; };
   }, [instanceId, nav]);
   return <Loading />;
+}
+
+/** /agent-runs/:runId/chat 尾段归一：workbenchSession 已把两种形态解析为同一 run（不闪冷启动），
+ *  这里只负责把地址栏 replace 成规范形态（e2e 的 URL 断言习惯 `$` 锚定，脏尾段不能长期存在）。 */
+function RunChatAlias() {
+  const { runId = "" } = useParams();
+  const { search } = useLocation();
+  return <Navigate to={`/agent-runs/${encodeURIComponent(runId)}${search}`} replace />;
 }
 
 function WhitelistGuard({ children }: { children: ReactNode }) {
@@ -115,6 +135,9 @@ export default function App() {
               <Route path="/omodel" element={<OmodelPage />} />
               {/* 按 run 恢复（30.7）：Workbench 用 :runId 直接 GET /state，不新建实例 */}
               <Route path="/agent-runs/:runId" element={null} />
+              {/* 旧版部署/外部拼接的 /chat 尾段容错：workbenchSession 正则已等价解析同一 run
+                  （零闪动），此处仅 replace 归一 URL，避免脏尾段被复制传播 */}
+              <Route path="/agent-runs/:runId/chat" element={<RunChatAlias />} />
               {/* Agent Studio 切片自注册路由（/replay/*）：路径与懒加载都由切片决定 */}
               {studioRoutes}
               {/* 7x24 告警接管切片自注册路由（/alerts/*） */}
@@ -123,7 +146,8 @@ export default function App() {
               <Route path="/admin/:page" element={<RoleGuard><AdminConsole /></RoleGuard>} />
             </Route>
 
-            <Route path="*" element={<Navigate to="/" replace />} />
+            {/* 未知路径显式 404（曾静默弹回首页，把 WeLink 深链故障掩成「莫名到了 chat」） */}
+            <Route path="*" element={<NotFound />} />
           </Routes>
         </Suspense>
       </BrowserRouter>

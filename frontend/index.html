@@ -7,6 +7,58 @@
   </head>
   <body>
     <div id="root"></div>
+    <noscript>
+      <div style="font-family: system-ui; padding: 40px; text-align: center">
+        运维Agent 需要启用 JavaScript 才能运行，请更换浏览器或联系平台管理员。
+      </div>
+    </noscript>
+    <script>
+      // 白屏哨兵：主 bundle 拉取/求值失败（老 WebView SyntaxError、网关拦 assets、断网）时给可读
+      // 提示——这类失败发生在 React 之前，ErrorBoundary 兜不住。React 挂载（#root 有子元素）后
+      // 一切路径自动失效；运行时全局 handler 复用 window.__openopsShowFatal 同一兜底 UI。
+      (function () {
+        function showFatal(detail) {
+          var root = document.getElementById("root");
+          if (!root || root.childElementCount > 0) return;
+          root.innerHTML =
+            '<div style="height:100vh;display:flex;align-items:center;justify-content:center;background:#f7f8fa;font-family:system-ui,sans-serif">' +
+            '<div style="max-width:460px;padding:24px;text-align:center">' +
+            '<div style="font-size:17px;font-weight:700;color:#2a2f38">页面加载失败</div>' +
+            '<div style="margin-top:10px;font-size:13px;color:#788192;line-height:1.7">网络异常或浏览器兼容问题导致页面未能启动。请点击刷新重试；反复失败请截图联系平台管理员。</div>' +
+            (detail
+              ? '<div style="margin-top:10px;font-size:12px;color:#9aa0ab;word-break:break-all">' +
+                String(detail).slice(0, 200).replace(/</g, "&lt;") +
+                "</div>"
+              : "") +
+            '<button onclick="location.reload()" style="margin-top:16px;padding:8px 18px;border-radius:8px;border:1px solid #dfe3ea;background:#fff;cursor:pointer;font-size:13px">刷新重试</button>' +
+            "</div></div>";
+        }
+        window.__openopsShowFatal = showFatal;
+        window.addEventListener(
+          "error",
+          function (e) {
+            // setTimeout 0：等同一帧内可能完成的 React 挂载先落地，再判 #root 是否为空
+            setTimeout(function () {
+              showFatal(e && (e.message || (e.target && e.target.src)));
+            }, 0);
+          },
+          true
+        );
+        // 超时哨兵：只有资源都加载完（readyState complete）而 React 仍未挂载才判失败；
+        // 慢网还在下载（interactive）时顺延复查，避免弱网首访被误判成失败终态、
+        // 用户点「刷新重试」反而陷入整页重下的人肉循环。
+        function checkStall() {
+          var root = document.getElementById("root");
+          if (!root || root.childElementCount > 0) return;
+          if (document.readyState !== "complete") {
+            setTimeout(checkStall, 5000);
+            return;
+          }
+          showFatal("页面资源已加载但未能启动");
+        }
+        setTimeout(checkStall, 15000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

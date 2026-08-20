@@ -11,6 +11,13 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "VITE_");
   return {
   base: env.VITE_OPENOPS_BASE || "/",
+  build: {
+    // WeLink 内置浏览器内核不明（桌面 CEF 可能老至 Chromium 8x）：钉死语法下限，让 esbuild 把
+    // ??=/&&=/||= 等 Chrome 85+ 语法（依赖产物常见）转掉——语法级 SyntaxError 发生在模块解析期，
+    // ErrorBoundary 兜不住，只有 index.html 哨兵能兜，必须从产物层消除。显式钉值也防将来升
+    // Vite 默认 target 上移造成静默回归。实例方法级 API 的兜底见 src/lib/compat/polyfills.ts。
+    target: ["chrome80", "edge80", "firefox78", "safari13.1"],
+  },
   plugins: [react()],
   server: {
     port: 5175,

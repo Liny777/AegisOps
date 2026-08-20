@@ -63,6 +63,17 @@ test("解析 Run 恢复路由并以路径参数为准", () => {
   });
 });
 
+test("Run 路由容忍 /chat 尾段（WeLink 深链实测形态）且与无尾段等价", () => {
+  assert.deepEqual(parseWorkbenchTarget("/agent-runs/run-1/chat", ""), {
+    instanceId: "",
+    explicitRunId: "run-1",
+  });
+  assert.deepEqual(
+    parseWorkbenchTarget("/agent-runs/run%201/chat/", ""),
+    parseWorkbenchTarget("/agent-runs/run%201", ""),
+  );
+});
+
 test("非对话路由不产生 Workbench target", () => {
   for (const pathname of [
     "/settings",
