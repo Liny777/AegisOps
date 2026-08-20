@@ -62,6 +62,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
           .catch(() => { /* 探询失败不锁 */ });
         const a = await api.listAgents();
             if (alive) setAgents(a);
+            // workspace 中文名走外部 oModel（慢链路），移出阻塞路径：到货后按 id patch，
+            // 拉不到保持 id 回退。函数式 setAgents 幂等，alive 掐掉 refresh 重跑后的过期回调。
+            api.getWorkspaces().then((wss) => {
+              if (!alive || wss.length === 0) return;
+              const names = new Map(wss.map((w) => [w.workspace_id, w.name] as const));
+              setAgents((prev) => prev.map((ag) => ({
+                ...ag, workspace_label: names.get(ag.workspace_id) ?? ag.workspace_label,
+              })));
+            }).catch(() => { /* 名字拉不到回退 id */ });
           } catch { /* 列表失败不阻塞 */ }
         }
       } catch (e) {

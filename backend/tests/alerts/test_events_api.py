@@ -186,6 +186,35 @@ def test_filters_search_and_status_projection(client):
     assert _events(client, instance_id=iid, search="不存在关键词") == []
 
 
+def test_total_matches_items_across_count_paths(client):
+    """count 与 rows 的 SQL 自 2026-08-20 起按 needs_lateral 分叉（count 视条件省掉 LATERAL、
+    scope 行集过滤 EXISTS 化）——total 与行集背离是该分叉的核心回归面，逐路径钉死一致性。
+    既有用例大多只断言 items 集合，这里显式对 total。"""
+    iid = _setup_with_scope(client)
+    _seed_three(client)
+
+    admin_events = "/api/openops/v1/admin/alerts/events"
+    cases = [
+        # 覆盖 count 去 LATERAL（EXISTS/matched_only/全量）与保留 LATERAL（投影列筛选）两类路径
+        ("用户默认", f"{BASE}/events", USER_HEADERS, {"instance_id": iid}),
+        ("用户接管筛选", f"{BASE}/events", USER_HEADERS,
+         {"instance_id": iid, "takeover": "processing"}),
+        ("用户分派态筛选", f"{BASE}/events", USER_HEADERS,
+         {"instance_id": iid, "alert_status": "assigned"}),
+        ("admin 默认 matched_only", admin_events, ADMIN_HEADERS, {}),
+        ("admin 全量留痕", admin_events, ADMIN_HEADERS, {"matched_only": "false"}),
+        ("admin 按用户查看", admin_events, ADMIN_HEADERS, {"user_id": "0026demo01"}),
+        ("admin 按无单用户查看", admin_events, ADMIN_HEADERS, {"user_id": "0099other"}),
+    ]
+    for label, url, headers, params in cases:
+        d = unwrap(client.get(url, headers=headers, params=params))
+        assert d["total"] == len(d["items"]), \
+            f"{label}: total={d['total']} != items={len(d['items'])}"
+    # 行集语义本身有可见性矩阵专测；这里只锚一个绝对值防两边一起错成 0
+    d = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS, params={"instance_id": iid}))
+    assert {r["alert_no"] for r in d["items"]} == {"ALM-E1"} and d["total"] == 1
+
+
 def test_since_days_window_for_rule_preview(client):
     """配置弹窗「最近 3 天同类告警预览」的窗口语义：since_days 过滤 + 类型×级别组合。"""
     import os

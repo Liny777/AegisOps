@@ -459,14 +459,10 @@ const realApi: OpenOpsApi = {
     };
   },
   async listAgents() {
-    // 并取实例 + oModel workspace 清单：卡片「系统范围」显示工作空间名称而非 id；
-    // 名字拉不到（oModel 瞬断/会话过期）不阻塞列表，回退显示 id
-    const [rows, wss] = await Promise.all([
-      apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams"),
-      realApi.getWorkspaces().catch(() => []),
-    ]);
-    const wsNames = new Map(wss.map((w) => [w.workspace_id, w.name]));
-    return rows.map((r) => projectInstance(r, wsNames));
+    // 只打自家 /agent-teams：workspace 中文名由 appState 异步补齐（getWorkspaces 走外部
+    // oModel、超时 8s，捆在这里曾把冷启动整屏拖到白等）。名字未到/拉不到回退显示 id。
+    const rows = await apiFetch<Record<string, unknown>[]>("/openops/v1/agent-teams");
+    return rows.map((r) => projectInstance(r));
   },
   async getOmodelPageBase() {
     const d = await apiFetch<{ page_base?: string }>("/openops/v1/omodel/console-page");
