@@ -153,14 +153,18 @@ async def dispatch_once() -> int:
 _RESULT_TEXT = {"recovered": "已恢复", "escalated": "已升级"}
 
 
-def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | None) -> None:
-    """诊断完成 WeLink 通知 owner（2026-08-16，Phase2 通知项部分落地：仅 completed）。
+def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | None, *,
+                       conclusion: str | None = None, failed: bool = False,
+                       state_reason: str | None = None) -> None:
+    """诊断终态 WeLink 通知 owner（completed 与 failed 双形态，2026-08-19 v3）。
 
     fire-and-forget + to_thread：send_welink_message_for_person 是 sync httpx
     （timeout 30s）且全吞错——通知失败绝不影响收割主流程；仅日志留痕。
     链接根=OPENOPS_WEB_BASE_URL（感知快恢 Agent 前端域名）；未配则退化为文字指引（通知仍发）。
-    结论只发接管结果不带 summary 摘要（2026-08-19 拍板：并发中断的诊断收割出的残缺
-    文本会让通知看不懂——详情点链接进会话看）。
+    - completed：结论=接管结果 + 根因结论（只取模型经诊断板提交的 rca.conclusion，
+      transcript 兜底文本刻意不带——残缺文本会让通知看不懂）。
+    - failed：结论=失败原因中文（service.reason_text）；无 run 时链接退化为清单深链
+      /alerts/{incident_id}（可定位重试）。queue_expired/skipped 不通知（拍板：防批量轰炸）。
     """
     try:
         from infra.external.welink_client import send_welink_message_for_person
@@ -169,21 +173,32 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | Non
         if not owner:
             return
         base = os.environ.get("OPENOPS_WEB_BASE_URL", "").strip().rstrip("/")
-        link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
-                else "请登录感知快恢Agent，在告警接管清单查看诊断会话")
-        verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
+        if run_id:
+            link = (f"查看诊断会话：{base}/agent-runs/{run_id}" if base
+                    else "请登录感知快恢Agent，在告警接管清单查看诊断会话")
+        else:  # 起跑即败未绑定 run：深链到清单定位该单（前端 /alerts/:incidentId? 支持）
+            link = (f"处理入口：{base}/alerts/{inc.get('alert_incident_id')}" if base
+                    else "请登录感知快恢Agent，在告警接管清单查看并可重试")
+        if failed:
+            title_line = "【感知快恢Agent 告警接管】您的告警自动诊断失败"
+            verdict_line = f"结论：{service.reason_text(state_reason)}"
+        else:
+            title_line = "【感知快恢Agent 告警接管】您的告警已完成自动诊断"
+            verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
+            brief = f"｜{str(conclusion)[:200]}" if conclusion else ""
+            verdict_line = f"结论：{verdict}{brief}"
         matched = inc.get("matched_rules_json") or []
         rule_name = str((matched[0] or {}).get("rule_name") or "") if matched else ""
         # 规则名必带（2026-08-19 按 prompt 分单后同一告警可有多张姊妹单先后完成，
         # 不带规则名的多条通知长得一样，会被当成重复发送的 bug 上报）
         rule_line = f"命中规则：{rule_name}\n" if rule_name else ""
-        data = ("【感知快恢Agent 告警接管】您的告警已完成自动诊断\n"
+        data = (f"{title_line}\n"
                 f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
                 f"{rule_line}"
-                f"结论：{verdict}\n"
+                f"{verdict_line}\n"
                 f"{link}")
-        log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s",
-                 inc.get("alert_incident_id"), owner, run_id)
+        log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s outcome=%s",
+                 inc.get("alert_incident_id"), owner, run_id, "failed" if failed else "completed")
         asyncio.create_task(asyncio.to_thread(send_welink_message_for_person, owner, data))
     except Exception:  # noqa: BLE001 —— 组装/派发失败也不许影响收割
         log.warning("[alerts][notify] WeLink 通知派发失败 incident=%s",
@@ -322,6 +337,7 @@ async def _handle_start_failure(inc: dict[str, Any], exc: Exception) -> None:
         audit_trace_id=_AUDIT_TRACE, event_type="alert.diagnosis_failed", user_id="system",
         instance_id=str(inc["agent_team_instance_id"]), action="dispatch",
         reason_code=str(code)[:64], payload_redacted={"incident_id": iid, "retries": retries})
+    _notify_owner_done(inc, "", None, failed=True, state_reason=reason)  # 起跑即败无 run→清单深链
 
 
 async def _run_diagnosis(inc: dict[str, Any]) -> None:
@@ -354,6 +370,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             log.warning("[alerts][dispatch] 超时取消失败 task=%s", task_id, exc_info=True)
         await repo.finish(iid, to_state="failed", state_reason="timeout",
                           result_summary=None, agent_result="failed")  # 清单结果列显「失败」
+        _notify_owner_done(inc, run_id, None, failed=True, state_reason="timeout")
         return
     except asyncio.CancelledError:
         raise
@@ -362,7 +379,8 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
 
     inc_now = await repo.get_incident(iid) or inc
     if st.status == "completed":
-        summary, agent_result = await _harvest_summary(inc_now, getattr(st, "rca", None))
+        rca = getattr(st, "rca", None)
+        summary, agent_result = await _harvest_summary(inc_now, rca)
         await repo.finish(iid, to_state="completed", state_reason=None,
                           result_summary=summary, agent_result=agent_result)
         await audit.insert_event(
@@ -370,7 +388,8 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
             action="harvest", payload_redacted={"incident_id": iid,
                                                 "summary_chars": len(summary or "")})
-        _notify_owner_done(inc_now, run_id, agent_result)
+        _notify_owner_done(inc_now, run_id, agent_result,
+                           conclusion=(rca or {}).get("conclusion"))
     else:
         await repo.finish(iid, to_state="failed", state_reason=f"task_{st.status}",
                           result_summary=None, agent_result="failed")
@@ -379,6 +398,7 @@ async def _run_diagnosis(inc: dict[str, Any]) -> None:
             run_id=run_id, task_id=task_id, instance_id=str(inc["agent_team_instance_id"]),
             action="harvest", reason_code=f"task_{st.status}",
             payload_redacted={"incident_id": iid})
+        _notify_owner_done(inc_now, run_id, None, failed=True, state_reason=f"task_{st.status}")
 
 
 # ============================ 重启收敛 ============================
@@ -400,22 +420,26 @@ async def converge_incidents() -> dict[str, int]:
         status = (snap or {}).get("task_status")
         if status == "completed":
             # 快照 rca_json：重启后内存 TaskState 已失，结论/verdict 从落盘快照取（select * 已含）
-            summary, agent_result = await _harvest_summary(inc, (snap or {}).get("rca_json"))
+            rca = (snap or {}).get("rca_json")
+            summary, agent_result = await _harvest_summary(inc, rca)
             await repo.finish(iid, to_state="completed", state_reason=None,
                               result_summary=summary, agent_result=agent_result)
             counts["harvested"] += 1
             if inc.get("agent_run_id"):  # 重启补收割：owner 同样没收到过完成通知
-                _notify_owner_done(inc, str(inc["agent_run_id"]), agent_result)
+                _notify_owner_done(inc, str(inc["agent_run_id"]), agent_result,
+                                   conclusion=(rca or {}).get("conclusion"))
             continue
         stale = _age_s(inc.get("last_alert_at")) > float(cfg["alert_requeue_max_age_s"])
         if not stale and int(inc.get("retry_count") or 0) < int(cfg["alert_max_retries"]):
             await repo.requeue(iid, bump_retry=True)
             counts["requeued"] += 1
         else:
-            await repo.finish(iid, to_state="failed",
-                              state_reason="stale" if stale else "interrupted_by_restart",
+            reason = "stale" if stale else "interrupted_by_restart"
+            await repo.finish(iid, to_state="failed", state_reason=reason,
                               result_summary=None, agent_result="failed")
             counts["failed"] += 1
+            _notify_owner_done(inc, str(inc.get("agent_run_id") or ""), None,
+                               failed=True, state_reason=reason)
     if any(counts.values()):
         log.warning("[alerts][converge] %s", counts)
     return counts

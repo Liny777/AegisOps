@@ -538,6 +538,12 @@ _SKIP_REASON_TEXT = {
 }
 
 
+def reason_text(reason: str | None) -> str:
+    """state_reason → 用户话术（WeLink 失败通知/详情面板共用词表）；未收录裸 code 显原码。"""
+    key = str(reason or "")
+    return _SKIP_REASON_TEXT.get(key, key)
+
+
 def _duration_s(row: dict[str, Any]) -> int | None:
     start, end = row.get("first_alert_at"), row.get("ended_at")
     if start is None or end is None:

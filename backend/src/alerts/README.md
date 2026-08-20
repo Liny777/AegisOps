@@ -70,9 +70,11 @@ dispatcher.dispatch_once()（并发闸 alert_max_concurrent_diagnosis，条件 U
    OPENOPS_MCPREGISTRY_COOKIE（会被 cookie 优先策略选中且必过期→1001）。对端双鉴权上线前，
    后台 MCP 发现失败会在日志/活动栏现形（TOOL_DISCOVERY_EMPTY）；scope 侧另有快照兜底
    （omodel_request_id=snapshot-fallback，ctx degraded=true）。
-5. **完成通知**（2026-08-16）：completed 收割后 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
-   `OPENOPS_WEB_BASE_URL` 会话链接；未配=不发；failed/skipped 不通知——清单可见，2026-08-18 复议维持）。
-   全链日志留痕：grep `[alerts][notify]` 看派发，logger `openops.welink` 发送中/已发送/Failed 三态。
+5. **终态通知 v3**（2026-08-19）：completed 与 failed 均 WeLink 通知 owner（`SEND_WELINK_MESSAGE_URL` +
+   `OPENOPS_WEB_BASE_URL`；未配=不发）。completed 结论=接管结果+根因结论（只取 rca.conclusion 截 200 字，
+   transcript 兜底文本不进通知）；failed 结论=原因中文（reason_text 词表：诊断超时/执行失败等），
+   无 run 时链接退化清单深链 /alerts/{incident_id}。**queue_expired/skipped 不通知**（拍板：防
+   批量轰炸，清单可见）。全链日志：grep `[alerts][notify]`（含 outcome=），logger `openops.welink` 三态。
 6. agent_result（已恢复/已升级）=模型在诊断板 update_diagnosis_board 的 **verdict** 提交
    （recovered/escalated，契约枚举校验；2026-08-19 修——此前误读派生 status 恒 NULL），未提交
    显「—」详见会话；converge 补收割同样取 task 快照 rca_json。resolved 告警只落库不驱动状态机；

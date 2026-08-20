@@ -164,6 +164,8 @@ def test_full_diagnosis_chain(client, monkeypatch):
     assert notified and notified[0][0] == "0026demo01"
     assert "MySQL 主库延迟>5s" in notified[0][1]
     assert "https://openops.test/agent-runs/" in notified[0][1]
+    # v3：结论行带根因结论（demo 剧本闭环 rca.conclusion——竖线后是模型结论原文）
+    assert "结论：已恢复｜" in notified[0][1] and "H1" in notified[0][1]
     assert ev["run_clickable"] is True and ev["run_id"] == run_id
     assert ev["user_feedback"] == "positive"
 
@@ -328,12 +330,19 @@ def test_converge_requeues_interrupted_diagnosis():
 
 
 def test_start_failure_exhausted_marks_agent_result_failed(client, monkeypatch):
-    """起诊断失败（容量满等）超重试预算 → agent_result 与其余失败路径同口径回填 'failed'。
+    """起诊断失败（容量满等）超重试预算 → agent_result 与其余失败路径同口径回填 'failed'，
+    并发 WeLink 失败通知（v3 2026-08-19：原因中文 + 无 run 退化清单深链）。
 
     此前该路径走 repo.transition 不写 agent_result，清单结果列显「—」看不出失败。"""
     from alerts import dispatcher
     from alerts import service as alerts_service
     from domain.errors import ApiError, Err
+    from infra.external import welink_client
+
+    notified: list[tuple[str, str]] = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: notified.append((uid, data)))
+    monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.test")
 
     real_get_config = alerts_service.get_config
 
@@ -358,6 +367,16 @@ def test_start_failure_exhausted_marks_agent_result_failed(client, monkeypatch):
     assert inc["state_reason"] == Err.SANDBOX_CAPACITY_FULL
     assert inc["agent_result"] == "failed"
     assert inc["run_id"] is None  # 起跑即败：未绑定 run，清单「查看处理会话」不可点
+
+    import time as _t
+    for _ in range(50):  # to_thread fire-and-forget
+        if notified:
+            break
+        _t.sleep(0.02)
+    assert notified, "失败通知未派发"
+    d = notified[0][1]
+    assert "您的告警自动诊断失败" in d and "沙箱容量已满" in d
+    assert "处理入口：https://openops.test/alerts/" in d and "agent-runs" not in d
 
 
 def test_converge_harvests_completed_with_rca_verdict(client):
