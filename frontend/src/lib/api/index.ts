@@ -859,10 +859,12 @@ const realApi: OpenOpsApi = {
         title: "告警接管",
         cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
                { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
-               { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+               { label: "接管", width: "72px" }, { label: "策略", width: "120px" }, { label: "结果", width: "64px" },
                { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
         rows: d.items.map((r, i) => {
           const rowId = String(r.incident_id || `${r.alert_no}-${i}`);
+          const rule = r.matched_rule as { name?: string } | null | undefined;
+          const ruleTotal = Number(r.matched_rule_total ?? 1);
           alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
                                     incidentId: r.incident_id ? String(r.incident_id) : undefined,
                                     prioritized: Boolean(r.manual_priority) };
@@ -879,6 +881,7 @@ const realApi: OpenOpsApi = {
               { text: String(r.severity), kind: "badge" as const, tone: sevTone(String(r.severity)) },
               { text: takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
+              { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
               { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },
               { text: String(r.owner_user_id ?? "—"), mono: true },
               queued
@@ -1673,28 +1676,29 @@ const mockApi: OpenOpsApi = {
           { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
           { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
           { text: "fatal", kind: "badge" as const, tone: "danger" as const },
-          { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "—" },
+          { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "MySQL 全量接管" }, { text: "—" },
           { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
         ] },
         { id: "mock-inc-2", cells: [
           { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
           { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
           { text: "warning", kind: "badge" as const, tone: "neutral" as const },
-          { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "已恢复" },
+          { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "Docker 巡检接管" }, { text: "已恢复" },
           { text: "0099other", mono: true }, { text: "—" },
         ] },
-        // 与 real 档同语义的过滤（2026-08-19）：search 模糊搜 编号[1]/类型[2]/对象[3]，userId 精确匹配接管人[8]
+        // 与 real 档同语义的过滤（2026-08-19）：search 模糊搜 编号[1]/类型[2]/对象[3]，userId 精确匹配接管人[9]
+        // （策略列插在下标 7，接管人 8→9——插列必须同步这里的下标）
       ].filter((r) => {
         const q = (params?.q ?? "").trim().toLowerCase();
         const hitQ = !q || [1, 2, 3].some((i) => r.cells[i].text.toLowerCase().includes(q));
         const uid = (params?.userId ?? "").trim();
-        return hitQ && (!uid || r.cells[8].text === uid);
+        return hitQ && (!uid || r.cells[9].text === uid);
       });
       return delay({
         title: "告警接管",
         cols: [{ label: "时间", width: "128px" }, { label: "编号", width: "180px" }, { label: "类型", width: "96px" },
                { label: "对象" }, { label: "APPID" }, { label: "级别", width: "72px" },
-               { label: "接管", width: "72px" }, { label: "结果", width: "64px" },
+               { label: "接管", width: "72px" }, { label: "策略", width: "120px" }, { label: "结果", width: "64px" },
                { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
         rows,
         total: rows.length, page: 1, pageSize: 20,
