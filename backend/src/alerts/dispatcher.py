@@ -165,6 +165,18 @@ _RESULT_TEXT = {"recovered": "已恢复", "escalated": "已升级"}
 _MD_MARK_RE = re.compile(r"#{1,6}\s*|\*{1,2}|`+")
 
 
+def _fmt_local(ts: Any) -> str:
+    """datetime → 服务器本地时区 YYYY-MM-DD HH:MM:SS（通知展示用）；None/异常返回空串。"""
+    if ts is None:
+        return ""
+    try:
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return ts.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except Exception:  # noqa: BLE001 —— 展示字段，坏值不许影响通知派发
+        return ""
+
+
 def _notify_brief(text: str) -> str:
     """通知里的结论摘要（2026-08-19 内网反馈两个「看不懂」来源的确定性清洗）：
 
@@ -193,10 +205,12 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | Non
     fire-and-forget + to_thread：send_welink_message_for_person 是 sync httpx
     （timeout 30s）且全吞错——通知失败绝不影响收割主流程；仅日志留痕。
     链接根=OPENOPS_WEB_BASE_URL（感知快恢 Agent 前端域名）；未配则退化为文字指引（通知仍发）。
-    - completed：结论=接管结果 + 根因结论（只取模型经诊断板提交的 rca.conclusion，
-      transcript 兜底文本刻意不带——残缺文本会让通知看不懂）。
+    - completed：接管结果与结论分行（2026-08-20 验收拍板）——「接管结果：已恢复/已升级」+
+      「结论：{根因}」；根因只取模型经诊断板提交的 rca.conclusion（transcript 兜底文本
+      刻意不带——残缺文本会让通知看不懂）。
     - failed：结论=失败原因中文（service.reason_text）；无 run 时链接退化为清单深链
       /alerts/{incident_id}（可定位重试）。queue_expired/skipped 不通知（拍板：防批量轰炸）。
+    - 通用行：告警标题/告警开始时间（first_alert_at 本地时区，缺失省略）/命中策略。
     """
     try:
         from infra.external.welink_client import send_welink_message_for_person
@@ -213,21 +227,31 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | Non
                     else "请登录感知快恢Agent，在告警接管清单查看并可重试")
         if failed:
             title_line = "【感知快恢Agent 告警接管】您的告警自动诊断失败"
-            verdict_line = f"结论：{service.reason_text(state_reason)}"
+            result_lines = f"结论：{service.reason_text(state_reason)}"
         else:
             title_line = "【感知快恢Agent 告警接管】您的告警已完成自动诊断"
-            verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
-            brief = f"｜{_notify_brief(conclusion)}" if conclusion else ""
-            verdict_line = f"结论：{verdict}{brief}"
+            # 验收拍板（2026-08-20）：接管结果与根因结论拆行——不再「已恢复｜根因…」混排
+            parts: list[str] = []
+            verdict = _RESULT_TEXT.get(str(agent_result or ""))
+            if verdict:
+                parts.append(f"接管结果：{verdict}")
+            if conclusion:
+                parts.append(f"结论：{_notify_brief(conclusion)}")
+            elif not verdict:
+                parts.append("结论：详见会话")  # 双缺兜底：至少给一行引导
+            result_lines = "\n".join(parts)
+        started = _fmt_local(inc.get("first_alert_at"))
+        started_line = f"告警开始时间：{started}\n" if started else ""
         matched = inc.get("matched_rules_json") or []
         rule_name = str((matched[0] or {}).get("rule_name") or "") if matched else ""
-        # 规则名必带（2026-08-19 按 prompt 分单后同一告警可有多张姊妹单先后完成，
-        # 不带规则名的多条通知长得一样，会被当成重复发送的 bug 上报）
-        rule_line = f"命中规则：{rule_name}\n" if rule_name else ""
+        # 策略名必带（2026-08-19 按 prompt 分单后同一告警可有多张姊妹单先后完成，
+        # 不带策略名的多条通知长得一样，会被当成重复发送的 bug 上报）
+        rule_line = f"命中策略：{rule_name}\n" if rule_name else ""
         data = (f"{title_line}\n"
-                f"告警：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
+                f"告警标题：{inc.get('title')}（{inc.get('severity')}/{inc.get('category') or '未知'}）\n"
+                f"{started_line}"
                 f"{rule_line}"
-                f"{verdict_line}\n"
+                f"{result_lines}\n"
                 f"{link}")
         log.info("[alerts][notify] WeLink 通知派发 incident=%s owner=%s run=%s outcome=%s",
                  inc.get("alert_incident_id"), owner, run_id, "failed" if failed else "completed")
