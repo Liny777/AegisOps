@@ -1,4 +1,4 @@
-import { useNavigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useApp } from "../lib/appState";
 import { peekAutoQuestion } from "../lib/autosend";
 import { color, radius } from "../theme/tokens";
@@ -39,6 +39,9 @@ export function PendingQuestionNotice() {
 
 export function NotWhitelisted() {
   const { me, refresh } = useApp();
+  // 自愈：已开通用户落到本页（「重新检查」刷新成功、或旧回位/书签直达）即自动进工作台，
+  // 不困在语义相反的「尚未开通」死端（该路由在守卫外，没人替它把关）。
+  if (me?.whitelisted) return <Navigate to="/" replace />;
   const who = me ? `${me.display_name}（${me.user_id}）` : "当前账号";
   return (
     <Centered
@@ -59,6 +62,20 @@ export function Forbidden() {
       title="403 · 无权访问"
       desc="该页面仅平台管理员可访问。"
       action={<Button onClick={() => nav("/")}>返回工作台</Button>}
+    />
+  );
+}
+
+/** 通配 404：未知路径不再静默弹回首页（曾把 WeLink 深链故障掩成「莫名到了 chat」）。
+ *  守卫外渲染、不读 app state——链接失效时页面必须能独立立住。 */
+export function NotFound() {
+  const nav = useNavigate();
+  return (
+    <Centered
+      icon="error-404"
+      title="页面不存在或链接已失效"
+      desc="你访问的地址不在 运维Agent 内：可能链接拼写有误、来自旧版本，或内容已被移除。"
+      action={<Button onClick={() => nav("/", { replace: true })}>回到工作台</Button>}
     />
   );
 }

@@ -38,7 +38,9 @@ export function parseWorkbenchTarget(pathname: string, search: string): Workbenc
     };
   }
 
-  const runMatch = pathname.match(/^\/agent-runs\/([^/]+)\/?$/);
+  // 容忍旧版/外部拼接的 /chat 尾段（WeLink 深链实测形态）：等价解析到同一 run。
+  // 其他尾段（/events 等）仍不匹配——交由通配 404 显式暴露而非静默吞掉。
+  const runMatch = pathname.match(/^\/agent-runs\/([^/]+)(?:\/chat)?\/?$/);
   if (runMatch) {
     return {
       instanceId: "",

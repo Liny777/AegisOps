@@ -390,7 +390,7 @@ async function performLogout(): Promise<void> {
   }
   // ① 后台 POST 清 IAM SSO（带 cookie + CSRF 头）；失败不阻断本地清理 + 跳转
   if (cfg.signout_url) {
-    const url = cfg.signout_url.replaceAll("{host}", window.location.host);
+    const url = cfg.signout_url.split("{host}").join(window.location.host); // 不用 replaceAll：Chrome<85 登录链路
     const headerName = cfg.csrf_header_name || "IAM-Csrf-Token";
     const token = readCookie(cfg.csrf_cookie_name || "IAM-Csrf-Token");
     try {
@@ -405,6 +405,6 @@ async function performLogout(): Promise<void> {
   }
   // ② 只跳回跳地址（清 SSO 后再访问触发重新登录）；未配回跳 → login_url；都没有 → reload 兜底
   const dest = cfg.redirect_url || cfg.login_url;
-  if (dest) window.location.assign(dest.replaceAll("{host}", window.location.host));
+  if (dest) window.location.assign(dest.split("{host}").join(window.location.host)); // 同上：不用 replaceAll
   else window.location.reload();
 }
