@@ -36,6 +36,8 @@ import * as M from "./mockData";
 import { API_MODE, apiFetch, crid, demoIdentity } from "./client";
 import { auditToNode, projectInstance } from "./projection";
 import { normalizeActivityPage } from "../activity";
+import { SEVERITY_LABEL, SEVERITY_TONE } from "../../alerts/constants";
+import type { AlertSeverity } from "../../alerts/types";
 
 /** 后端 /assets/* 分页信封（snake_case 原样）→ 前端 Paged<T>（camelCase）。 */
 type AssetPageDto = { items: Record<string, unknown>[]; total: number; page: number; page_size: number };
@@ -847,7 +849,6 @@ const realApi: OpenOpsApi = {
       if (params?.q) qs.set("search", params.q);
       const d = await apiFetch<{ items: Record<string, unknown>[]; total: number; page: number; page_size: number }>(
         `/openops/v1/admin/alerts/events?${qs.toString()}`);
-      const sevTone = (v: string) => (v === "fatal" ? "danger" : v === "critical" ? "warning" : "neutral") as "danger" | "warning" | "neutral";
       const takeText: Record<string, string> = { done: "已完成", processing: "处理中", none: "未接管" };
       const resultText: Record<string, string> = { recovered: "已恢复", failed: "失败", escalated: "已升级", processing: "…" };
       for (const k of Object.keys(alertEventMeta)) delete alertEventMeta[k];  // 每次刷新重建行元数据
@@ -876,7 +877,11 @@ const realApi: OpenOpsApi = {
               { text: String(r.category ?? "") },
               { text: String(r.alert_object ?? "") },
               { text: String(r.appid ?? ""), mono: true },
-              { text: String(r.severity), kind: "badge" as const, tone: sevTone(String(r.severity)) },
+              // 级别中文化（2026-08-20）：复用 alerts 切片单一事实源，与用户侧清单同口径；
+              // severity 是后端开放值域回落字符串，未知值兜底显原文/中性色
+              { text: SEVERITY_LABEL[String(r.severity) as AlertSeverity] ?? String(r.severity),
+                kind: "badge" as const,
+                tone: SEVERITY_TONE[String(r.severity) as AlertSeverity] ?? ("neutral" as const) },
               { text: queuedLabel ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
               { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
@@ -1673,14 +1678,14 @@ const mockApi: OpenOpsApi = {
         { id: "mock-inc-1", cells: [
           { text: "2026-08-15 09:41" }, { text: "20260815000000000000000000000042", kind: "action" as const, onClickKey: "alert-open" },
           { text: "MySQL" }, { text: "mysql-prod-03" }, { text: "00000000000000000000000000000144", mono: true },
-          { text: "fatal", kind: "badge" as const, tone: "danger" as const },
+          { text: "致命", kind: "badge" as const, tone: "danger" as const },
           { text: "处理中", kind: "badge" as const, tone: "warning" as const }, { text: "MySQL 全量接管" }, { text: "—" },
           { text: "0026demo01", mono: true }, { text: "置顶", kind: "action" as const, onClickKey: "alert-prioritize" },
         ] },
         { id: "mock-inc-2", cells: [
           { text: "2026-08-15 09:12" }, { text: "20260815000000000000000000000017", mono: true },
           { text: "Docker" }, { text: "ngx-edge-1" }, { text: "app_0000000000011611", mono: true },
-          { text: "warning", kind: "badge" as const, tone: "neutral" as const },
+          { text: "普通", kind: "badge" as const, tone: "neutral" as const },
           { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "Docker 巡检接管" }, { text: "已恢复" },
           { text: "0099other", mono: true }, { text: "—" },
         ] },
