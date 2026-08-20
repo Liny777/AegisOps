@@ -814,6 +814,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
         # 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag 等 skip 原因透出，
         # 前端据此把「未接管」细化为「延迟放弃」并给引导文案；不改三值投影口径。
         "state_reason": row.get("inc_state_reason"),
+        # 处理中细分（2026-08-19）：queued/diagnosing 原始态透出，前端把排队单显「排队中」
+        # （灰色「查看处理会话」多因还没绑 run）；takeover_status 三值投影与筛选桶不动。
+        "incident_state": row.get("inc_state"),
         "matched_rule": ({"rule_id": matched[0].get("rule_id"), "name": matched[0].get("rule_name")}
                          if matched else None),
         "matched_rule_total": len(matched),

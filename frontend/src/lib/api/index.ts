@@ -875,7 +875,7 @@ const realApi: OpenOpsApi = {
               { text: String(r.alert_object ?? "") },
               { text: String(r.appid ?? ""), mono: true },
               { text: String(r.severity), kind: "badge" as const, tone: sevTone(String(r.severity)) },
-              { text: takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
+              { text: queued ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
               { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
               { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },
