@@ -670,6 +670,22 @@ _LATERAL = """
 """
 
 
+def _proj_exists(lateral_owner: str | None, lateral_instance: str | None) -> str:
+    """镜像 _LATERAL 过滤条件的存在性判定：该事件在当前视角（owner/inst）下有未删单。
+    与「投影非空（i.inc_id is not null）」严格等价——limit 1 只决定投影哪张单，不影响
+    是否存在；owner/inst 按参数是否为 None 在 Python 侧拼接（而非 `$1 is null or ...`），
+    planner 才能稳定走 incident 的 owner 索引做 semi-join。别名 le/xe 避开同查询的 l2/x2/lo/xo。"""
+    conds = ""
+    if lateral_owner is not None:
+        conds += " and xe.owner_user_id = %(lat_owner)s"
+    if lateral_instance is not None:
+        conds += " and xe.agent_team_instance_id = %(lat_inst)s::uuid"
+    return ("exists (select 1 from sre_alert_incident_event le "
+            "join sre_alert_incident xe on xe.alert_incident_id = le.alert_incident_id "
+            "where le.alert_event_id = e.alert_event_id and le.deleted_at is null "
+            f"and xe.deleted_at is null{conds})")
+
+
 async def list_events(*, lateral_owner: str | None, lateral_instance: str | None,
                       scope_appids: list[str] | None,
                       alert_status: str | None, severities: list[str] | None,
@@ -691,6 +707,7 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
     params: dict[str, Any] = {"lat_owner": lateral_owner, "lat_inst": lateral_instance,
                               "scope": scope_appids}
     where = ["1=1"]
+    needs_lateral = False  # 引用投影列 i.* 的子句置 True：count 才带 _LATERAL（见下）
     if owner_filter:
         where.append("""exists (select 1 from sre_alert_incident_event lo
             join sre_alert_incident xo on xo.alert_incident_id = lo.alert_incident_id
@@ -709,20 +726,28 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
               and exists (select 1 from sre_alert_user_grant g
                           where g.user_id = x2.owner_user_id and g.deleted_at is null))""")
     if scope_appids is not None:
-        where.append("(i.inc_id is not null or e.appid = any(%(scope)s::text[]))")
+        # 「有本视角单」不用 i.inc_id is not null（会把全表逐行 LATERAL 拖进过滤路径），
+        # 改用与 LATERAL 解耦的等价 EXISTS；用户清单主路径恒传 []（只看本人接管过的单），
+        # 空数组臂恒假，裁掉 OR 才能让 planner 把 EXISTS 上拉成 semi-join 从 owner 索引反向驱动。
+        proj = _proj_exists(lateral_owner, lateral_instance)
+        where.append(f"({proj} or e.appid = any(%(scope)s::text[]))" if scope_appids else proj)
     if alert_status == "closed":
         where.append("e.alert_status = 'resolved'")
     elif alert_status == "assigned":
         where.append("e.alert_status <> 'resolved' and i.inc_id is not null "
                      "and i.inc_state not in ('skipped','ignored')")
+        needs_lateral = True
     elif alert_status == "unassigned":
         where.append("e.alert_status <> 'resolved' "
                      "and (i.inc_id is null or i.inc_state in ('skipped','ignored'))")
+        needs_lateral = True
     if severities:
         where.append("e.severity = any(%(sev)s)")
         params["sev"] = severities
     if takeover in _TAKEOVER_COND:
+        # 接管/分派筛选语义绑定「投影单」（top-1，非任意姊妹单），不可 EXISTS 化
         where.append(_TAKEOVER_COND[takeover])
+        needs_lateral = True
     if category:
         where.append("e.category = %(cat)s")
         params["cat"] = category
@@ -738,8 +763,11 @@ async def list_events(*, lateral_owner: str | None, lateral_instance: str | None
         params["sd"] = int(since_days)
     cond = " and ".join(where)
 
+    # count 只在过滤条件真引用投影列时才带 LATERAL——PG 不会对带 order/limit 的相关
+    # 子查询做 join removal，无脑带上等于对全表每行跑一次两表探查（清单打开 1-3s 主因）。
     total_row = await q_one(
-        f"select count(*) as n from sre_alert_event e {_LATERAL} where {cond}", params)
+        f"select count(*) as n from sre_alert_event e "
+        f"{_LATERAL if needs_lateral else ''} where {cond}", params)
     params.update({"lim": page_size, "off": (page - 1) * page_size})
     # 排序键必须稳定（creation_date + id）：last_seen_at 会被 dedup touch 高频前移，
     # 内网流量下翻页窗口持续洗牌，第 2 页看到的还是刚顶上来的同一批行（2026-08-13 反馈）。

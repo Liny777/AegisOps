@@ -165,7 +165,9 @@ const feedbackDim: React.CSSProperties = { opacity: 0.4, filter: "grayscale(1)" 
  *  v2 起不再有行内详情抽屉/忽略/重试——事件详情归告警平台外链，处理过程看诊断会话。 */
 export function AlertsPage() {
   const nav = useNavigate();
-  const { agents, currentAgentId } = useApp();
+  // alertGranted 直接用 appState 启动时探询的结果（2026-08-20：原本页挂载再拉一次
+  // /alerts/access，纯重复请求）；默认 true 不闪锁、探询失败不锁，口径与原本页实现一致。
+  const { agents, currentAgentId, alertGranted } = useApp();
 
   // 清单跟随侧栏「选择 Agent」（不设本页的 Agent 筛选下拉）：每个 Agent 只看自己的
   // 接管清单（自己接管的 + 尚未被接管的）。切 Agent 由侧栏统一完成，本页自动重拉。
@@ -179,14 +181,6 @@ export function AlertsPage() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<AlertEventsPage | null>(null);
   const [err, setErr] = useState("");
-  const [granted, setGranted] = useState<boolean | null>(null);  // 2026-08-09 算力白名单
-
-  useEffect(() => {
-    let alive = true;
-    alertsApi.getAccess().then((a) => { if (alive) setGranted(a.granted); })
-      .catch(() => { if (alive) setGranted(true); });  // 探询失败不拦（清单只读，无数据自然空）
-    return () => { alive = false; };
-  }, []);
 
   useEffect(() => {
     const t = setTimeout(() => { setQ(search.trim()); setPage(1); }, 300);
@@ -237,7 +231,7 @@ export function AlertsPage() {
   const items = data?.items ?? [];
   const agentName = agents.find((a) => a.instance_id === currentAgentId)?.name;
 
-  if (granted === false) {
+  if (alertGranted === false) {
     return (
       <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         <div style={{ textAlign: "center", maxWidth: 440, padding: 24 }} data-testid="alerts-not-granted">
@@ -342,7 +336,12 @@ export function AlertsPage() {
           </div>
         ) : null}
 
-        {data && items.length === 0 ? (
+        {!data && !err ? (
+          /* 首次加载态（2026-08-20）：原先渲染"有表头没有行"的空表格，等待期观感差 */
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "72px 0", color: color.textSubtle, fontSize: 13 }} data-testid="alerts-loading">
+            <Icon name="loader-2" size={18} color={color.brand} spin />加载告警清单…
+          </div>
+        ) : data && items.length === 0 ? (
           <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12, padding: "72px 0", color: color.textSubtle }}>
             <Icon name="bell-bolt" size={36} color={color.textFaint} />
             <div style={{ fontSize: 13 }}>暂无告警记录</div>

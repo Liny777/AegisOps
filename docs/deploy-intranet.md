@@ -103,6 +103,8 @@ case "$DATABASE_MODE" in
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-17-model-asset-secret.sql"
     # ↑ 平台模型 API Key 密文列。本脚本只加列不搬数据（psql 读不到后端进程的环境变量）——
     #   存量 Key 由后端启动时的一次性 backfill 导入，见下方「平台模型 Key 迁移」小节，顺序不可颠倒。
+    psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/migrate-2026-08-20-alert-event-created-idx.sql"
+    # ↑ 告警清单排序键索引（清单打开 1-3s 修复）；重放 slices/alerts.sql 也会建，单列出防漏
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/alerts.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/slices/studio_span.sql"
     psql "host=<PG> dbname=<db> user=<u>" -v ON_ERROR_STOP=1 -f "$RELEASE/backend/sql/openops_v1_core.sql"

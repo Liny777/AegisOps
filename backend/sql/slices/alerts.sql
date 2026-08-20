@@ -82,6 +82,8 @@ CREATE INDEX IF NOT EXISTS ix_alert_event_seen
   ON sre_alert_event (last_seen_at DESC);
 CREATE INDEX IF NOT EXISTS ix_alert_event_expire
   ON sre_alert_event (expire_at);
+CREATE INDEX IF NOT EXISTS ix_alert_event_created
+  ON sre_alert_event (creation_date DESC, alert_event_id DESC);
 
 COMMENT ON TABLE sre_alert_event IS '原始告警事件（去重仓）：(source_key,fingerprint) 唯一 upsert；去重窗口内同指纹仅 seen_count++；到期硬删（expire_at，默认 30 天）';
 COMMENT ON COLUMN sre_alert_event.alert_event_id IS '事件主键';
