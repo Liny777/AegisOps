@@ -800,6 +800,9 @@ def event_row_out(row: dict[str, Any], viewer_uid: str) -> dict[str, Any]:
     # 首条展示、total 供前端补「等 N 条」；未接管/存量空快照为 None（前端「—」）
     matched = row.get("inc_matched_rules") or []
     return {
+        # 事件主键显式下发（2026-08-20）：incident_id 同页可重复（一单挂多事件），前端清单
+        # 行 key 必须用它——重复 key 曾致管理台翻页旧行残留叠加
+        "alert_event_id": str(row["alert_event_id"]),
         "alert_no": row.get("external_alert_id") or str(row["alert_event_id"]),
         "category": row.get("category") or "",
         "alert_object": row.get("alert_object") or "",

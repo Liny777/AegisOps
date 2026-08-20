@@ -152,6 +152,14 @@ def test_admin_search_and_pagination(client):
     assert len(p1["items"]) == len(p2["items"]) == 1
     assert p1["items"][0]["alert_no"] != p2["items"][0]["alert_no"]
 
+    # alert_event_id=行级唯一键（2026-08-20）：incident_id 同页可重复（一单挂多事件），
+    # 前端清单行 key 换用它——各行必带且全量+跨页不重复
+    full = unwrap(client.get(admin_events, headers=ADMIN_HEADERS,
+                             params={"matched_only": "false"}))["items"]
+    ids = [r["alert_event_id"] for r in full]
+    assert all(ids) and len(ids) == len(set(ids))
+    assert p1["items"][0]["alert_event_id"] != p2["items"][0]["alert_event_id"]
+
 
 def test_filters_search_and_status_projection(client):
     iid = _setup_with_scope(client)
