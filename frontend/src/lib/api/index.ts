@@ -865,7 +865,9 @@ const realApi: OpenOpsApi = {
           alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
                                     incidentId: r.incident_id ? String(r.incident_id) : undefined,
                                     prioritized: Boolean(r.manual_priority) };
-          const queued = r.incident_state === "queued";
+          const queued = r.incident_state === "queued"; // 置顶按钮闸：严格 queued（diagnosing 置顶后端 409）
+          // 「排队中」徽标与用户清单 TakeoverCell 同口径：queued 或处理中未绑 run（退避重试窗口）
+          const queuedLabel = queued || (r.takeover_status === "processing" && !r.run_id);
           return {
             id: rowId,
             cells: [
@@ -880,7 +882,7 @@ const realApi: OpenOpsApi = {
               { text: SEVERITY_LABEL[String(r.severity) as AlertSeverity] ?? String(r.severity),
                 kind: "badge" as const,
                 tone: SEVERITY_TONE[String(r.severity) as AlertSeverity] ?? ("neutral" as const) },
-              { text: queued ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
+              { text: queuedLabel ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
               { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
               { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },

@@ -39,13 +39,15 @@ const SeverityPill = ({ severity }: { severity: AlertSeverity }) => (
 /** Agent 接管状态：shield（蓝）= 已完成/处理中；shield-off（灰）= 未接管。
  * 未接管细分（2026-08-15 陈旧留痕拍板）：stale_consumer_lag → 「延迟放弃」——
  * 命中了规则但消费延迟超阈值未自动处理，告知用户可自行诊断（不静默丢）。
- * 处理中细分（2026-08-19）：incident_state=queued → 「排队中」——还没绑 run，
- * 「查看处理会话」灰色属正常等待，别当成异常。 */
-const TakeoverCell = ({ takeover, stateReason, incidentState }: {
+ * 处理中细分（2026-08-19，口径=与灰色链接严格对齐）：未绑 run 的处理中单 → 「排队中」
+ * ——涵盖 queued 与「起跑失败退避重试」窗口（diagnosing 但 run 未绑），灰色属正常等待；
+ * 绑了 run（蓝色可点）才是真「处理中」。 */
+const TakeoverCell = ({ takeover, stateReason, incidentState, runId }: {
   takeover: AlertTakeoverStatus; stateReason?: string | null; incidentState?: string | null;
+  runId?: string | null;
 }) => {
   const stale = takeover === "none" && stateReason === "stale_consumer_lag";
-  const queued = takeover === "processing" && incidentState === "queued";
+  const queued = takeover === "processing" && (incidentState === "queued" || !runId);
   const meta = {
     done: { icon: "shield", c: color.brand, label: "已完成" },
     processing: { icon: "shield", c: color.brand, label: queued ? "排队中" : "处理中" },
@@ -442,7 +444,7 @@ export function AlertsPage() {
                       </td>
                       <td style={td}><Pill tone={EVENT_STATUS_META[it.alert_status].tone}>{EVENT_STATUS_META[it.alert_status].label}</Pill></td>
                       <td style={td}><SeverityPill severity={it.severity} /></td>
-                      <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} incidentState={it.incident_state} /></td>
+                      <td style={td}><TakeoverCell takeover={it.takeover_status} stateReason={it.state_reason} incidentState={it.incident_state} runId={it.run_id} /></td>
                       <td style={{ ...td, maxWidth: 150 }}><RuleCell it={it} /></td>
                       <td style={td}><ResultCell it={it} /></td>
                       <td style={{ ...td, ...feedbackDim }}><FeedbackCell it={it} /></td>
