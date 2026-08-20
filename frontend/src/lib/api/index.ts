@@ -843,10 +843,10 @@ const realApi: OpenOpsApi = {
       };
     }
     if (key === "alert-events") {
-      // 管理员全量事件视角（§3.0 D1）：userId 精确=按该用户投影接管状态；q 模糊搜 编号/类型/对象
+      // 管理员全量事件视角（§3.0 D1）：userId 精确=按该用户投影接管状态。
+      // 编号/类型/对象模糊框 2026-08-20 拍板下线（只留按工号）；后端 search 参数保留但 UI 不再传。
       const qs = new URLSearchParams({ page: String(params?.page ?? 1), page_size: String(params?.pageSize ?? 20) });
       if (params?.userId) qs.set("user_id", params.userId);
-      if (params?.q) qs.set("search", params.q);
       const d = await apiFetch<{ items: Record<string, unknown>[]; total: number; page: number; page_size: number }>(
         `/openops/v1/admin/alerts/events?${qs.toString()}`);
       const takeText: Record<string, string> = { done: "已完成", processing: "处理中", none: "未接管" };
@@ -859,13 +859,18 @@ const realApi: OpenOpsApi = {
                { label: "接管", width: "72px" }, { label: "策略", width: "120px" }, { label: "结果", width: "64px" },
                { label: "接管人", width: "104px" }, { label: "置顶", width: "88px" }],
         rows: d.items.map((r, i) => {
-          const rowId = String(r.incident_id || `${r.alert_no}-${i}`);
+          // 行 key 必须是**事件**唯一键：incident_id 会在同页重复（一单可挂多事件），重复
+          // React key 让翻页时旧行残留/新行叠加（2026-08-20 管理台翻页「三层堆叠」真凶），
+          // 且 alertEventMeta 同 id 互相覆盖。回落 alert_no-i 保证页内唯一（防混版本部署老后端未下发）。
+          const rowId = String(r.alert_event_id ?? `${r.alert_no}-${i}`);
           const rule = r.matched_rule as { name?: string } | null | undefined;
           const ruleTotal = Number(r.matched_rule_total ?? 1);
           alertEventMeta[rowId] = { detailUrl: r.detail_url ? String(r.detail_url) : undefined,
                                     incidentId: r.incident_id ? String(r.incident_id) : undefined,
                                     prioritized: Boolean(r.manual_priority) };
-          const queued = r.incident_state === "queued";
+          const queued = r.incident_state === "queued"; // 置顶按钮闸：严格 queued（diagnosing 置顶后端 409）
+          // 「排队中」徽标与用户清单 TakeoverCell 同口径：queued 或处理中未绑 run（退避重试窗口）
+          const queuedLabel = queued || (r.takeover_status === "processing" && !r.run_id);
           return {
             id: rowId,
             cells: [
@@ -880,7 +885,7 @@ const realApi: OpenOpsApi = {
               { text: SEVERITY_LABEL[String(r.severity) as AlertSeverity] ?? String(r.severity),
                 kind: "badge" as const,
                 tone: SEVERITY_TONE[String(r.severity) as AlertSeverity] ?? ("neutral" as const) },
-              { text: queued ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
+              { text: queuedLabel ? "排队中" : takeText[String(r.takeover_status)] ?? String(r.takeover_status), kind: "badge" as const,
                 tone: r.takeover_status === "done" ? "good" as const : r.takeover_status === "processing" ? "warning" as const : "neutral" as const },
               { text: rule?.name ? `${rule.name}${ruleTotal > 1 ? ` 等${ruleTotal}条` : ""}` : "—" },
               { text: r.agent_result ? (resultText[String(r.agent_result)] ?? String(r.agent_result)) : "—" },
@@ -1687,13 +1692,11 @@ const mockApi: OpenOpsApi = {
           { text: "已完成", kind: "badge" as const, tone: "good" as const }, { text: "Docker 巡检接管" }, { text: "已恢复" },
           { text: "0099other", mono: true }, { text: "—" },
         ] },
-        // 与 real 档同语义的过滤（2026-08-19）：search 模糊搜 编号[1]/类型[2]/对象[3]，userId 精确匹配接管人[9]
-        // （策略列插在下标 7，接管人 8→9——插列必须同步这里的下标）
+        // 与 real 档同语义的过滤：userId 精确匹配接管人[9]（策略列插在下标 7，接管人 8→9——
+        // 插列必须同步这里的下标）。编号/类型/对象模糊过滤随搜索框 2026-08-20 一并下线。
       ].filter((r) => {
-        const q = (params?.q ?? "").trim().toLowerCase();
-        const hitQ = !q || [1, 2, 3].some((i) => r.cells[i].text.toLowerCase().includes(q));
         const uid = (params?.userId ?? "").trim();
-        return hitQ && (!uid || r.cells[9].text === uid);
+        return !uid || r.cells[9].text === uid;
       });
       return delay({
         title: "告警接管",

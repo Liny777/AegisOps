@@ -75,17 +75,16 @@ export function AdminConsole() {
   // 用户表标签筛选（服务端 tag 过滤，与 q 为 AND）：tagFilter=""=全部；userTags=下拉候选（标签全集）
   const [tagFilter, setTagFilter] = useState("");
   const [userTags, setUserTags] = useState<string[]>([]);
-  // 告警事件表（管理员全量视角 §3.0 D1）：按用户精确 + 编号/类型/对象模糊，两者 AND。
+  // 告警事件表（管理员全量视角 §3.0 D1）：只按工号精确查（2026-08-20 拍板去掉
+  // 编号/类型/对象模糊框；后端 search 参数保留，仅 UI 无入口）。
   // raw=输入框受控值；D=300ms 防抖后的生效值（load 只认 D）——输入即查在内网延迟下逐字符
-  // 打请求，且「按用户查看」是精确匹配，中间前缀全不命中，表会整页闪「未接管」（2026-08-19）。
+  // 打请求，且按工号是精确匹配，中间前缀全不命中，表会整页闪「未接管」（2026-08-19）。
   const [alertUserQ, setAlertUserQ] = useState("");
-  const [alertSearchQ, setAlertSearchQ] = useState("");
   const [alertUserQD, setAlertUserQD] = useState("");
-  const [alertSearchQD, setAlertSearchQD] = useState("");
   useEffect(() => {
-    const t = setTimeout(() => { setAlertUserQD(alertUserQ); setAlertSearchQD(alertSearchQ); }, 300);
+    const t = setTimeout(() => setAlertUserQD(alertUserQ), 300);
     return () => clearTimeout(t);
-  }, [alertUserQ, alertSearchQ]);
+  }, [alertUserQ]);
 
   const isTable = ["templates", "model-assets", "model-templates", "skills", "mcps", "users", "alerts"].includes(page);
 
@@ -142,8 +141,7 @@ export function AdminConsole() {
       } else if (isTable) {
         const d = await api.getAdminTable(page === "alerts" ? "alert-events" : page, {
           page: tablePage, pageSize: ADMIN_PAGE_SIZE,
-          q: page === "users" ? userQ.trim() || undefined
-             : page === "alerts" ? alertSearchQD.trim() || undefined : undefined,
+          q: page === "users" ? userQ.trim() || undefined : undefined,
           tag: page === "users" ? tagFilter || undefined : undefined,
           userId: page === "alerts" ? alertUserQD.trim() || undefined : undefined,
         });
@@ -162,7 +160,7 @@ export function AdminConsole() {
       setTable(null);
       setActionErr(err.message || "加载失败");
     }
-  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter, alertUserQD, alertSearchQD]);
+  }, [page, isTable, tplDrill, mcpDrill, traceFilter, tablePage, userQ, tagFilter, alertUserQD]);
 
   // 进用户页拉标签下拉候选（标签全集）；离开或失败置空，不阻断列表
   useEffect(() => {
@@ -177,13 +175,13 @@ export function AdminConsole() {
     // 本 effect 按 loc.key 触发，会把刚设的钻取又清掉；意图放导航 state 里让 effect 自己消费。
     const drill = (loc.state as { drill?: string } | null)?.drill ?? null;
     setTplDrill(null); setMcpDrill(page === "mcps" ? drill : null);
-    setUserQ(""); setTagFilter(""); setAlertUserQ(""); setAlertSearchQ("");
-    setAlertUserQD(""); setAlertSearchQD("");  // 同步清生效值：否则 300ms 内还会带旧词打一发
+    setUserQ(""); setTagFilter(""); setAlertUserQ("");
+    setAlertUserQD("");  // 同步清生效值：否则 300ms 内还会带旧词打一发
     // 切页签立即清表：table 是跨页签复用的单一容器，不清会拿旧页的行顶着新页签标题
     // 继续渲染到新请求 resolve（2026-08-19 反馈：告警清单搜索结果挂到 MCP/Skill 页上）。
     setTable(null);
   }, [page, loc.key, loc.state]);
-  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQD, alertSearchQD]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
+  useEffect(() => { setTablePage(1); }, [page, tplDrill, mcpDrill, userQ, tagFilter, alertUserQD]);  // 换页签/钻取/改搜索词/改标签回第 1 页，免停在越界页看空表
   // 错误处理（含失败清 table）已随请求代次守卫收进 load 自身——effect 级 catch 拿不到
   // 代次，旧请求的迟到失败会误清新表。
   useEffect(() => {
@@ -467,20 +465,12 @@ export function AdminConsole() {
             onClick={() => setAssetDialog(page === "skills" ? "skill" : "mcp")}>{table.primary.label}</Button>
         ) : null}
         {page === "alerts" ? (
-          <>
-            <input
-              placeholder="按用户查看（user_id 精确）"
-              value={alertUserQ}
-              onChange={(e) => setAlertUserQ(e.target.value)}
-              style={{ width: 200, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
-            />
-            <input
-              placeholder="搜索 编号/类型/对象"
-              value={alertSearchQ}
-              onChange={(e) => setAlertSearchQ(e.target.value)}
-              style={{ width: 200, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
-            />
-          </>
+          <input
+            placeholder="按工号查看（精确）"
+            value={alertUserQ}
+            onChange={(e) => setAlertUserQ(e.target.value)}
+            style={{ width: 200, border: `1px solid ${color.border}`, borderRadius: radius.md, padding: "6px 10px", fontSize: 12, outline: "none" }}
+          />
         ) : null}
         {page === "users" ? (
           <input
