@@ -151,6 +151,7 @@ def test_full_diagnosis_chain(client, monkeypatch):
     ev = unwrap(client.get(f"{BASE}/events", headers=USER_HEADERS,
                            params={"instance_id": iid}))["items"][0]
     assert ev["takeover_status"] == "done" and ev["alert_status"] == "assigned"
+    assert ev["incident_state"] == "completed"  # 原始态透传（排队中细分的另一半口径）
 
     # WeLink 通知已派发：收件人=owner 工号，data 带标题与可点会话链接
     import time as _t

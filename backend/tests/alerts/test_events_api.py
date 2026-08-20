@@ -75,6 +75,7 @@ def test_visibility_matrix_and_projection(client):
     assert set(by_no) == {"ALM-E1"}, "无本人单的 E2/E3 不应进用户清单"
     e1 = by_no["ALM-E1"]
     assert e1["takeover_status"] == "processing" and e1["alert_status"] == "assigned"
+    assert e1["incident_state"] == "queued"  # 原始态透传：前端把排队单的「处理中」细分为「排队中」
     assert e1["detail_url"] == "https://alert.example/e1"
     assert e1["alert_object"] == "mysql-prod-03" and e1["appid"] == "APP-A"
     assert _events(client, instance_id=iid, takeover="none") == []  # 清单无未命中行
