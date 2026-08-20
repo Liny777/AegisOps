@@ -152,6 +152,28 @@ async def dispatch_once() -> int:
 
 _RESULT_TEXT = {"recovered": "已恢复", "escalated": "已升级"}
 
+_MD_MARK_RE = re.compile(r"#{1,6}\s*|\*{1,2}|`+")
+
+
+def _notify_brief(text: str) -> str:
+    """通知里的结论摘要（2026-08-19 内网反馈两个「看不懂」来源的确定性清洗）：
+
+    ① 剥 Markdown 标记——模型爱用 #/**/` 写结论，契约把换行压成空格后全成纯文本噪音
+    （「## 诊断结论 ### 影响边界」）；列表分隔「 - 」换「 · 」。
+    ② 按句边界截断——200 字硬截会拦腰砍句（「…堆内存趋势确」）：前 200 字内找最后的
+    句读（。；！？）收口；全段无句读才硬截 200 补省略号。
+    只影响通知文案；诊断面板/result_summary 的 conclusion 原文不动。
+    """
+    t = _MD_MARK_RE.sub("", str(text)).replace(" - ", " · ")
+    t = re.sub(r"\s+", " ", t).strip()
+    if len(t) <= 200:
+        return t
+    head = t[:200]
+    cut = max(head.rfind(ch) for ch in "。；！？")
+    if cut >= 80:
+        return head[:cut + 1]
+    return head + "……"
+
 
 def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | None, *,
                        conclusion: str | None = None, failed: bool = False,
@@ -185,7 +207,7 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, agent_result: str | Non
         else:
             title_line = "【感知快恢Agent 告警接管】您的告警已完成自动诊断"
             verdict = _RESULT_TEXT.get(str(agent_result or ""), "详见会话")
-            brief = f"｜{str(conclusion)[:200]}" if conclusion else ""
+            brief = f"｜{_notify_brief(conclusion)}" if conclusion else ""
             verdict_line = f"结论：{verdict}{brief}"
         matched = inc.get("matched_rules_json") or []
         rule_name = str((matched[0] or {}).get("rule_name") or "") if matched else ""

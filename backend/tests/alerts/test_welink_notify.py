@@ -144,7 +144,34 @@ def test_notify_completed_carries_rca_conclusion(monkeypatch):
 
     asyncio.run(_run())
     assert "结论：已恢复｜Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
-    assert "长" * 200 + "\n" in sent[1][1] and "长" * 201 not in sent[1][1]  # 200 字截断
+    assert "长" * 200 + "……" in sent[1][1] and "长" * 201 not in sent[1][1]  # 无句读硬截+省略号
+
+
+def test_notify_brief_strips_markdown_and_cuts_on_sentence():
+    """结论摘要清洗（2026-08-19 内网四样本反馈）：①Markdown 标记剥离（## 标题符/星号/
+    反引号原样露出是「看不懂」主源）；②按句边界截断（200 字硬截会拦腰砍句）。"""
+    from alerts.dispatcher import _notify_brief
+
+    # 内网样本 3 原文形态（契约压平后的 Markdown 噪音）
+    md = ("## 诊断结论 ### 影响边界 - 告警对象：Docker实例 kweekshcct-dxba8:64770 "
+          "- 影响应用：智能监控告警(多租) ### 根因判定 最可能根因：**CPU资源规格不足**（置信度：70%） `top` 确认")
+    out = _notify_brief(md)
+    assert "#" not in out and "*" not in out and "`" not in out
+    assert out.startswith("诊断结论")
+    assert " · 告警对象" in out  # 列表符转分隔点
+
+    # 句边界截断：超 200 字在最后句读处收口，不拦腰
+    long = "最可能根因：流量激增导致连接池打满。" + "补充细节" * 60
+    out2 = _notify_brief(long)
+    assert out2 == "最可能根因：流量激增导致连接池打满。" or out2.endswith("……")
+    sent_cut = _notify_brief("影响边界描述" * 15 + "。最可能根因在此句结束。" + "后续建议内容" * 30)
+    assert sent_cut.endswith("最可能根因在此句结束。")  # 在句读处收口，不拦腰
+
+    # 全段无句读：硬截 200 + 省略号；短文本原样
+    nostop = "一逗到底" * 80
+    out3 = _notify_brief(nostop)
+    assert len(out3) == 202 and out3.endswith("……")
+    assert _notify_brief("Redis 连接泄漏已修复，P99 恢复 210ms") == "Redis 连接泄漏已修复，P99 恢复 210ms"
 
 
 def test_notify_failed_reason_and_link_fallback(monkeypatch):

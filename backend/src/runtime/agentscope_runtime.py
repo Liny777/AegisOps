@@ -792,6 +792,8 @@ async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
             hypotheses: 假设排行，形如 [{"text": "H1 Redis 连接泄漏", "tag": "支持", "tagTone": "good", "conf": 0.72}]；conf 是 0..1 的置信度。
             actions: 建议动作，形如 [{"tier": "立即", "text": "重启 svc-a", "confirm": true, "impact": "3 实例", "status": "待确认", "statusTone": "warning"}]，最多 8 条。
             conclusion: 诊断结论（step=5 时必填）：影响边界、最可能根因方向、建议下一步。
+                用纯文本、不要 Markdown 标记（#、**、`、列表符）；第一句先给最可能根因——
+                该文本会作为告警通知摘要（截前 200 字）直接推送给用户。
             verdict: 结论判定（step=5 收尾时随 conclusion 一并提交）：recovered=故障已恢复/已自愈，
                 escalated=需人工升级处理；无法判定时留空。该值会显示为告警清单的「接管结果」列。
         """
