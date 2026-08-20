@@ -121,3 +121,63 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     assert "OpenOps" not in data2  # 品牌词全量替换
     _, data3 = sent[2]
     assert "命中规则：Docker 接管 A\n" in data3  # 姊妹单通知的唯一区分项
+
+
+def test_notify_completed_carries_rca_conclusion(monkeypatch):
+    """v3（2026-08-19）：completed 结论行带根因结论（只取模型经诊断板提交的 rca.conclusion，
+    200 字截断）；未提交 conclusion 时无竖线（残缺 transcript 永不进通知）。"""
+    from alerts import dispatcher
+    from infra.external import welink_client
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: sent.append((uid, data)))
+    monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.example.com")
+    inc = {"alert_incident_id": "i2", "owner_user_id": "w_owner", "title": "MySQL 主库延迟>5s",
+           "severity": "fatal", "category": "MySQL"}
+
+    async def _run():
+        dispatcher._notify_owner_done(inc, "run-1", "recovered",
+                                      conclusion="Redis 连接泄漏已修复，P99 恢复 210ms")
+        dispatcher._notify_owner_done(inc, "run-2", "recovered", conclusion="长" * 300)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_run())
+    assert "结论：已恢复｜Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
+    assert "长" * 200 + "\n" in sent[1][1] and "长" * 201 not in sent[1][1]  # 200 字截断
+
+
+def test_notify_failed_reason_and_link_fallback(monkeypatch):
+    """v3（2026-08-19 拍板 failed 也通知）：标题「自动诊断失败」+ 结论=原因中文
+    （诊断超时/执行失败等 service.reason_text 词表）；无 run 时链接退化清单深链
+    /alerts/{incident_id}（可定位重试）。"""
+    from alerts import dispatcher
+    from infra.external import welink_client
+
+    sent: list[tuple[str, str]] = []
+    monkeypatch.setattr(welink_client, "send_welink_message_for_person",
+                        lambda uid, data: sent.append((uid, data)))
+    monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.example.com")
+    inc = {"alert_incident_id": "i3", "owner_user_id": "w_owner", "title": "MySQL 主库延迟>5s",
+           "severity": "fatal", "category": "MySQL"}
+
+    async def _run():
+        dispatcher._notify_owner_done(inc, "run-9", None, failed=True, state_reason="timeout")
+        dispatcher._notify_owner_done(inc, "", None, failed=True,
+                                      state_reason="task_failed")  # 无 run：起跑即败形态
+        monkeypatch.delenv("OPENOPS_WEB_BASE_URL")
+        dispatcher._notify_owner_done(inc, "", None, failed=True, state_reason="SOME_RAW_CODE")
+        await asyncio.sleep(0.05)
+
+    asyncio.run(_run())
+    assert len(sent) == 3
+    d1 = sent[0][1]
+    assert "您的告警自动诊断失败" in d1 and "结论：诊断超时被取消" in d1
+    assert "https://openops.example.com/agent-runs/run-9" in d1
+    d2 = sent[1][1]
+    assert "结论：诊断执行失败（模型或工具调用异常" in d2
+    assert "处理入口：https://openops.example.com/alerts/i3" in d2  # 无 run→清单深链
+    assert "agent-runs" not in d2
+    d3 = sent[2][1]
+    assert "结论：SOME_RAW_CODE" in d3  # 未收录裸 code 显原码
+    assert "请登录感知快恢Agent，在告警接管清单查看并可重试" in d3  # base 未配退化
