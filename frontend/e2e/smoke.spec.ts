@@ -150,13 +150,9 @@ test("紧凑消息：复制按钮可用，窄屏 RCA/HITL 自动降列", async (
 
   await page.setViewportSize({ width: 700, height: 900 });
   // 诊断时间线挂在右侧面板「诊断」tab（默认选中）：窄屏 overlay 面板容器 420px（<520px）
-  // → 容器查询降列 tiles 2 列 / facts 1 列（facts 在步 2 展开态内，先点开步卡）；
+  // → 容器查询降列 facts 1 列（facts 在步 2 展开态内，先点开步卡；tiles 概览格已删）；
   // HITL 卡仍在对话流，按视口媒体查询降列。
   const rail = page.getByLabel("活动 · 调查时间线");
-  await expect(rail.locator(".oa-rca-tiles")).toBeVisible();
-  await expect.poll(() => rail.locator(".oa-rca-tiles").evaluate((el) =>
-    getComputedStyle(el).gridTemplateColumns.split(" ").length,
-  )).toBe(2);
   await rail.getByTestId("diagnosis-step-2").click();
   await expect(rail.locator(".oa-rca-facts")).toBeVisible();
   await expect.poll(() => rail.locator(".oa-rca-facts").evaluate((el) =>

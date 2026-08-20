@@ -255,18 +255,8 @@ export function DiagnosisTimeline({
         </div>
       ) : null}
 
-      {/* incident tiles：概览常驻 header 下（容器查询降列见 DiagnosisTimeline.css） */}
-      {rca.tiles.length ? (
-        <div className="oa-rca-tiles" style={{ display: "grid", gap: 1, background: color.borderInner, borderBottom: `1px solid ${color.borderInner}` }}>
-          {rca.tiles.map((t, i) => (
-            <div key={i} style={{ background: "#fff", padding: "11px 13px" }}>
-              <div style={{ fontSize: 11, color: color.textSubtle, marginBottom: 3 }}>{t.label}</div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: color.textStrong, lineHeight: 1.4 }}>{t.value}</div>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
+      {/* tiles 概览格已删（内网反馈：只留标题+时间线）——tiles 数据链保留，
+          信息经 fallbackSummary 拼进第 1 步「诊断范围」的摘要文本，不丢 */}
       {/* 垂直时间线：五步 + 常驻第六节点「恢复执行」（连线自步 5 接入，last 恒 false） */}
       <ol className="oa-diag-timeline">
         {rca.steps.map((step) => (
@@ -443,7 +433,7 @@ function StepBody({ rca, step }: { rca: RcaCardData; step: RcaStep }) {
 
   switch (step.num) {
     case 1: {
-      // 范围：summary 即可（tiles 概览已常驻顶部，不重复）
+      // 范围：summary 即可（tiles 概览格已删，其信息由 fallbackSummary 拼进本步文本）
       sections.push(summaryParagraph ?? (
         <div style={{ fontSize: 12, color: color.textBody, lineHeight: 1.6 }}>{fallbackSummary(rca, 1, step.state)}</div>
       ));
