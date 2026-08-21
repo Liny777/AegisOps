@@ -31,6 +31,14 @@ RULE_TEMPLATES: list[dict[str, Any]] = [
      "keywords": ["资源", "limit"]},
     {"category": "Docker", "name": "Docker 健康检查监控", "description": "检测健康检查失败",
      "keywords": ["健康检查", "health"]},
+    # OpenGauss（2026-08-21 加类；category=慧眼 moType，按 PostgreSQL/Docker 首字母大写
+    # 先例取 "OpenGauss"——内网实测若为 openGauss 等其他形态，改这里的 category 一处即齐）
+    {"category": "OpenGauss", "name": "OpenGauss 资源饱和标准监控", "description": "监控CPU/内存/连接数",
+     "keywords": ["CPU", "内存", "连接"]},
+    {"category": "OpenGauss", "name": "OpenGauss 主备复制延迟监控", "description": "检测主备同步延迟",
+     "keywords": ["主备", "延迟", "复制"]},
+    {"category": "OpenGauss", "name": "OpenGauss 锁等待与慢查询监控", "description": "检测锁等待与慢SQL",
+     "keywords": ["锁等待", "慢查询", "deadlock"]},
 ]
 
 # 配置弹窗「默认提示词」（用户可改，存 rule.prompt；空=派发时用这份）。

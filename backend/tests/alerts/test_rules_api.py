@@ -32,8 +32,8 @@ def test_rule_templates_v2_shape(client):
     data = unwrap(client.get(f"{BASE}/rule-templates", headers=USER_HEADERS))
     assert data["severities"] == ["fatal", "critical", "warning"]  # UI 三档（info 雪藏）
     cats = {t["category"] for t in data["templates"]}
-    assert cats == {"MySQL", "PostgreSQL", "Docker"}  # 本期三类
-    assert len(data["templates"]) == 9
+    assert cats == {"MySQL", "PostgreSQL", "Docker", "OpenGauss"}  # 2026-08-21 加 OpenGauss
+    assert len(data["templates"]) == 12
     assert "五步法" in data["default_prompt"] and "写入对话" in data["default_prompt"]
 
 

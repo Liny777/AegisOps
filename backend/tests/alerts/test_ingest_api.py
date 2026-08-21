@@ -238,3 +238,19 @@ def test_owner_only_rule_takes_only_own_alerts(client):
     assert counters["queued"] == 1 and counters["unmatched"] == 2
     items = _incidents(client, iid, state="queued")
     assert len(items) == 1 and items[0]["title"] == "MySQL 本人告警"
+
+
+def test_opengauss_category_full_chain(client):
+    """OpenGauss 类型全链 smoke（2026-08-21 加类）：模板类别建规 → moType=OpenGauss 告警命中
+    （类别精确等值——内网 moType 若非 "OpenGauss" 形态改模板一处即齐）。"""
+    iid = create_instance(client)["instance_id"]
+    unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
+                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
+                             "name": "OpenGauss 接管", "categories": ["OpenGauss"],
+                             "severities": [], "strategies": [], "prompt": ""}))
+    alert_platform_mock._inject(title="OpenGauss 主备延迟>10s", category="OpenGauss",
+                                severity="critical", app_id="APP-A", fingerprint="fp_og_1")
+    counters = _pull(client)
+    assert counters["queued"] == 1
+    items = _incidents(client, iid, state="queued")
+    assert len(items) == 1 and items[0]["category"] == "OpenGauss"

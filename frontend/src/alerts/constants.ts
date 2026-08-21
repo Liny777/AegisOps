@@ -7,7 +7,7 @@ export const SEVERITY_LABEL: Record<AlertSeverity, string> = { fatal: "致命", 
 export const SEVERITY_TONE: Record<AlertSeverity, Tone> = { fatal: "danger", critical: "warning", warning: "neutral", info: "neutral" };
 export const SEVERITY_ORDER: AlertSeverity[] = ["fatal", "critical", "warning", "info"];
 /** payload 未到位时类型下拉的兜底档（清单页筛选亦用作固定档；开放枚举的其余类型走「全部」）。 */
-export const FALLBACK_CATEGORIES = ["MySQL", "PostgreSQL", "Docker"];
+export const FALLBACK_CATEGORIES = ["MySQL", "PostgreSQL", "Docker", "OpenGauss"];
 
 /** 失败/放弃原因 → 用户话术（与后端 service._SKIP_REASON_TEXT 同源口径；未知码由调用方回落原始 code）。 */
 export const STATE_REASON_TEXT: Record<string, string> = {
