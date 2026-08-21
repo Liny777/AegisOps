@@ -20,6 +20,8 @@ class CreateRuleRequest(BaseModel):
     description: str = Field(default="", max_length=500)
     enabled: bool = True
     source: Literal["template", "custom"] = "custom"
+    # 仅接管责任人为本人的告警（2026-08-21）：告警 alarmOwnerLname 含本人工号才触发
+    owner_only: bool = False
 
 
 class EnsureRuleRequest(BaseModel):
@@ -48,6 +50,7 @@ class UpdateRuleRequest(BaseModel):
     keywords: list[str] | None = None
     label_selectors: dict[str, str] | None = None
     enabled: bool | None = None
+    owner_only: bool | None = None
 
 
 class BatchRulesRequest(BaseModel):

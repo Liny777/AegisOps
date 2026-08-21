@@ -67,6 +67,10 @@ _KAFKA_LABEL_MAP = {
     "monitorTool": "monitor_tool",
     "eventTool": "event_tool",
     "enterpriseId": "enterprise_id",
+    # 告警责任人（2026-08-21 owner_only 维）：形态「姓名 空格 工号」（如 "xiakun x30068076"、
+    # "吕鹏博 lWX1346639"），matcher 按 token 化大小写不敏感与规则属主 user_id 比对。
+    # responsePerson 是 uuid/加密形态不可用、assignLName 实测恒空——只认本键。
+    "alarmOwnerLname": "alarm_owner",
 }
 
 

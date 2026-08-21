@@ -40,7 +40,7 @@ COMMENT ON COLUMN sre_alert_rule.owner_user_id IS '实例 owner 工号（冗余�
 COMMENT ON COLUMN sre_alert_rule.rule_name IS '规则名（实例内唯一，未删除范围）';
 COMMENT ON COLUMN sre_alert_rule.description IS '规则描述（模板生成时抄模板描述）';
 COMMENT ON COLUMN sre_alert_rule.rule_source IS 'template=快速配置模板生成 / custom=自定义（Phase2 条件编辑器）';
-COMMENT ON COLUMN sre_alert_rule.match_json IS '匹配声明：{categories:["MySQL",...](多选,任一命中;存量单值 category 兼容读),severities:[],strategies:[监控策略名],appids:[],label_selectors:{k:v},keywords:[],keyword_mode:any|all}；维度间 AND、维度内 OR，空数组/缺省=该维度不限（strategies 空=该类型全部策略）';
+COMMENT ON COLUMN sre_alert_rule.match_json IS '匹配声明：{categories:["MySQL",...](多选,任一命中;存量单值 category 兼容读),severities:[],strategies:[监控策略名],appids:[],label_selectors:{k:v},keywords:[],keyword_mode:any|all,owner_only:bool(仅接管责任人为本人:labels.alarm_owner token 化大小写不敏感比对规则属主)}；维度间 AND、维度内 OR，空数组/缺省=该维度不限（strategies 空=该类型全部策略）';
 COMMENT ON COLUMN sre_alert_rule.prompt IS '诊断提示词（配置弹窗可编辑；空=用系统默认 DEFAULT_RULE_PROMPT），派发建 task 时注入「要求」段';
 COMMENT ON COLUMN sre_alert_rule.enabled IS '规则启停（实例订阅总开关之下的第三级开关）';
 COMMENT ON COLUMN sre_alert_rule.priority IS '预留：同实例多规则命中时的展示排序，当前不参与调度';

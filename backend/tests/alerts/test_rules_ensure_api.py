@@ -209,3 +209,17 @@ def test_idempotent_replay_and_conflict(client):
     # 同 crid 不同体 → 409
     conflict = _ensure(client, iid, severities=["warning"], crid=crid)
     assert conflict.status_code == 409
+
+
+def test_owner_only_rule_not_treated_as_coverage(client):
+    """owner_only 规则比宽规则窄（只接本人责任告警），不得作为 ensure 的覆盖判定基准
+    （2026-08-21 _is_generic 排除）——同类型同级别下 ensure 仍新建。"""
+    iid = create_instance(client)["instance_id"]
+    unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
+                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
+                             "name": "仅本人宽面", "categories": ["MySQL"],
+                             "severities": ["fatal", "critical"], "strategies": [],
+                             "prompt": "", "owner_only": True}))
+    got = unwrap(_ensure(client, iid, severities=["critical"]))
+    assert got["outcome"] == "created"  # 不判 already_covered，也不合并进 owner_only 规则
+    assert got["rule"]["name"] != "仅本人宽面"

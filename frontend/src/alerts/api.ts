@@ -216,6 +216,7 @@ const realAlertsApi: AlertsApi = {
         categories: input.categories,
         severities: input.severities,
         strategies: input.strategies ?? [],  // 空=该类型全部策略（后端 matcher 空数组短路）
+        owner_only: input.owner_only ?? false,
         prompt: input.prompt,
         enabled: input.enabled ?? true,
       },

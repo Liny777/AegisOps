@@ -262,8 +262,13 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
                       onChange={() => toggleSelect(r.rule_id)}
                       style={{ width: 15, height: 15, accentColor: color.brand, cursor: "pointer", margin: 0 }}
                     />
-                    <span style={{ fontWeight: 600, color: color.textStrong, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>
-                      {r.name}
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                      <span style={{ fontWeight: 600, color: color.textStrong, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={r.name}>
+                        {r.name}
+                      </span>
+                      {r.owner_only ? (
+                        <span title="仅接管责任人为本人的告警" style={{ flexShrink: 0 }}><Pill tone="neutral">仅本人</Pill></span>
+                      ) : null}
                     </span>
                     <span style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {r.categories.map((c) => <Pill key={c} tone="neutral">{c}</Pill>)}
@@ -338,6 +343,8 @@ interface RuleDraft {
   categories: string[];
   severities: AlertSeverity[];
   prompt: string;
+  /** 仅接管责任人为本人的告警（2026-08-21）：告警 alarmOwnerLname 含本人工号才触发。 */
+  owner_only: boolean;
 }
 
 function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
@@ -355,6 +362,8 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
   const [catSel, setCatSel] = useState<string[]>(() =>
     rule ? [...rule.categories] : categories[0] ? [categories[0]] : []);
   const [sevSel, setSevSel] = useState<AlertSeverity[]>(rule ? [...rule.severities] : ["fatal", "critical"]);
+  // 仅本人责任告警：新建默认勾选（值班默认口径，取消须谨慎——见勾选框下说明文案）
+  const [ownerOnly, setOwnerOnly] = useState<boolean>(rule ? Boolean(rule.owner_only) : true);
   // 新建预填默认提示词；编辑预填 rule.prompt（都可改）
   const [prompt, setPrompt] = useState(rule ? rule.prompt : payload.default_prompt);
   // 两步向导：1=基本信息（名称/类型/级别/提示词），2=命中告警预览（确认才保存）
@@ -427,6 +436,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
       categories: categories.filter((c) => catSel.includes(c)),  // 按模板顺序回写，顺序稳定可比对
       severities: SEVERITY_ORDER.filter((s) => sevSel.includes(s)),
       prompt: prompt.trim(),
+      owner_only: ownerOnly,
     });
   };
 
@@ -450,6 +460,18 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
                 <div style={fieldTitle}>规则名称 <span style={{ color: color.danger }}>*</span></div>
                 <TextInput value={name} onChange={setName} placeholder="规则名称（必填）" />
               </div>
+
+              <label data-testid="alerts-rule-owner-only"
+                     style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={ownerOnly} onChange={(e) => setOwnerOnly(e.target.checked)}
+                       style={{ marginTop: 2, accentColor: color.brand, width: 15, height: 15, cursor: "pointer" }} />
+                <span style={{ minWidth: 0 }}>
+                  <span style={{ fontSize: 12.5, fontWeight: 700 }}>仅接管责任人为本人的告警</span>
+                  <span style={{ display: "block", marginTop: 3, fontSize: 11.5, lineHeight: 1.6, color: color.textSubtle }}>
+                    勾选后，仅当告警责任人指派为本人时才触发 Agent 自动接管；取消勾选后，本规则可接管责任人为他人或暂未指派的告警，请结合值班职责谨慎开启。
+                  </span>
+                </span>
+              </label>
 
               <div>
                 <div style={fieldTitle}>策略类型 <span style={{ fontWeight: 400, fontSize: 11.5, color: color.textSubtle }}>可多选，任一类型命中即接管</span></div>
