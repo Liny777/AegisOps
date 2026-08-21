@@ -92,6 +92,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | R12 | Kafka 是否推 status=5；大消息内存量级 | 风暴演练观测；内网实测全网 ≈3000 条/s（2026-08-13），匹配前置零 DB 后单循环可扛 4000+/s，追不上先把 alert_pull_batch_limit 调到 1000（admin config:update 运行时生效） | alert_pull_batch_limit 可调 |
 | R13 | ~~projectIds 等四选一必填~~（2026-08-10 内网实证 `[Required]:必须输入应用或产品或子产品或模块或Hrn列表`） | **已解决**：peek 实时取 projectIds，空则本地降级不打请求 | scope_service.peek_effective_appids |
 | R14 | **app_id（appIdList 首元素）缺失的告警会被匹配面拦截**（2026-08-11 宁漏勿越权：无法判定归属即不接管）。内网消息若普遍缺 appIdList，`out_of_scope` 计数会异常高 | 联调期观察批摘要 warning 里的 out_of_scope；缺失面大则找告警平台补字段，或临时用 OPENOPS_SCOPE_OVERRIDE_APPIDS 放行验证 | ingest._instance_scope + 批摘要计数 |
+| R15 | **OpenGauss 的 moType 实际值待实测**（2026-08-21 加类，按 PostgreSQL/Docker 首字母大写先例取 `OpenGauss`；类别匹配精确等值大小写敏感，官方拼写是小写 openGauss——形态不符则规则永不命中） | 首条 OpenGauss 告警后自查：`select distinct category from sre_alert_event where category ilike '%gauss%';` 或 `OPENOPS_ALERT_TRACE=<alarmId>` 看 trace 里的类别；不符改 rule_templates.py 该组 category 一处即齐 | rule_templates.RULE_TEMPLATES + matcher category 等值 |
 
 **联调日自检**：`OPENOPS_ALERT=real` + 全量 env → `python check-net.py` ⑦ 两段 ✅
 

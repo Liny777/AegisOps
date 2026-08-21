@@ -42,6 +42,7 @@ export const mockRuleTemplates = [
   { category: "Docker", name: "资源限制监控", description: "容器触及 CPU/内存限额告警，自动核对限额与实际用量。", keywords: ["oom_killed", "cpu_throttle"] },
   { category: "Docker", name: "健康检查监控", description: "健康检查连续失败告警，自动探测端口与依赖服务。", keywords: ["healthcheck_fail"] },
   { category: "EKS", name: "EKS 节点资源压力监控", description: "节点 CPU / 内存 / 磁盘压力告警，自动定位高负载 Pod 与驱逐风险。", keywords: ["node_pressure", "pod_evicted"] },
+  { category: "OpenGauss", name: "OpenGauss 主备复制延迟监控", description: "主备同步延迟告警，自动核对复制位点与网络时延。", keywords: ["replication_lag"] },
 ];
 
 /** 新建规则默认预填的诊断提示词（五步法口径，用户可在编辑器里改）。 */
