@@ -271,7 +271,7 @@ def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement
     head_id = alarm_ids[0] if alarm_ids else "未知"
     id_suffix = f"（等 {len(alarm_ids)} 条，全列见下方明细）" if len(alarm_ids) > 1 else ""
     lines = [
-        "【7x24 告警自动接管】以下告警命中了本 Agent 的接管规则，请立即开展自动诊断。",
+        "【7x24 告警自动接管】",
         "",
         f"告警编号：{head_id}{id_suffix}",
         f"告警标题：{inc.get('title')}",

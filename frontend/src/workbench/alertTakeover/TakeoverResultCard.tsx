@@ -48,7 +48,7 @@ export function TakeoverResultCard({ vm }: { vm: TakeoverVm }) {
       <CardShell>
         <div style={{ fontSize: 13.5, fontWeight: 700, color: color.textStrong }}>✅ 告警接管策略已创建成功!</div>
         <div className="oa-takeover-result-rows">
-          <span style={rowLabel}>规则名称</span>
+          <span style={rowLabel}>策略名称</span>
           <span style={rowValue}>
             {rule.name}
             {result.renamed ? (
