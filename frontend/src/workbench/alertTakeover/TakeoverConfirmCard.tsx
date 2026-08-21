@@ -29,8 +29,8 @@ export function TakeoverConfirmCard({ vm }: { vm: TakeoverVm }) {
       <div style={{ fontSize: 13.5, fontWeight: 700, color: color.textStrong }}>帮您确认此次告警接管策略：</div>
 
       <div>
-        <div className="oa-takeover-label" style={{ fontSize: 11.5, fontWeight: 700, color: color.textSubtle, marginBottom: 5 }}>规则名称</div>
-        <TextInput value={name} onChange={setName} placeholder="规则名称" />
+        <div className="oa-takeover-label" style={{ fontSize: 11.5, fontWeight: 700, color: color.textSubtle, marginBottom: 5 }}>策略名称</div>
+        <TextInput value={name} onChange={setName} placeholder="策略名称" />
       </div>
 
       <div className="oa-takeover-readonly-row">

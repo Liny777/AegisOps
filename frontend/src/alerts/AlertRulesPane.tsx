@@ -24,7 +24,7 @@ const EVENT_STATUS_META: Record<AlertEventStatus, { label: string; tone: Tone }>
   closed: { label: "已关闭", tone: "good" },
 };
 
-/** 表格网格列：☑ | 规则名称 | 策略类型 | 告警级别 | 提示词 | 操作 | 启用 */
+/** 表格网格列：☑ | 策略名称 | 策略类型 | 告警级别 | 提示词 | 操作 | 启用 */
 const GRID_COLS = "30px minmax(150px, 1.1fr) 104px 158px minmax(170px, 1.5fr) 96px 56px";
 
 /** 多选/单选共用的 chip（编辑器的 类型/级别 两组）。 */
@@ -241,7 +241,7 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
                   onChange={toggleSelectAll}
                   style={{ width: 15, height: 15, accentColor: color.brand, cursor: "pointer", margin: 0 }}
                 />
-                <span>规则名称</span><span>策略类型</span><span>告警级别</span><span>提示词</span><span>操作</span><span>启用</span>
+                <span>策略名称</span><span>策略类型</span><span>告警级别</span><span>提示词</span><span>操作</span><span>启用</span>
               </div>
               {visible.length === 0 ? (
                 <div style={{ padding: "34px 0", textAlign: "center", fontSize: 12.5, color: color.textSubtle }}>未找到匹配的策略</div>
@@ -457,8 +457,8 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
           {step === 1 ? (
             <>
               <div>
-                <div style={fieldTitle}>规则名称 <span style={{ color: color.danger }}>*</span></div>
-                <TextInput value={name} onChange={setName} placeholder="规则名称（必填）" />
+                <div style={fieldTitle}>策略名称 <span style={{ color: color.danger }}>*</span></div>
+                <TextInput value={name} onChange={setName} placeholder="策略名称（必填）" />
               </div>
 
               <label data-testid="alerts-rule-owner-only"

@@ -93,7 +93,7 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
   await expect(editor.getByTestId("alerts-rule-preview")).toHaveCount(0);
   await expect(editor.getByText("最近 3 天该类型告警")).toHaveCount(0);
   await expect(editor.getByText("监控策略", { exact: true })).toHaveCount(0);
-  await editor.getByPlaceholder("规则名称（必填）").fill("MySQL 核心库接管");
+  await editor.getByPlaceholder("策略名称（必填）").fill("MySQL 核心库接管");
 
   // 策略类型可多选：加选 PostgreSQL → 全取消时「下一步」禁用 + 警示 → 回到只选 MySQL（保住下方预览计数断言）
   await editor.getByText("PostgreSQL", { exact: true }).click();
@@ -134,7 +134,7 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
 
   // 上一步回退：第一步表单原样保留 → 再下一步 → 确认保存
   await editor.getByRole("button", { name: "上一步" }).click();
-  await expect(editor.getByPlaceholder("规则名称（必填）")).toHaveValue("MySQL 核心库接管");
+  await expect(editor.getByPlaceholder("策略名称（必填）")).toHaveValue("MySQL 核心库接管");
   await editor.getByRole("button", { name: "下一步" }).click();
   await editor.getByRole("button", { name: "确认", exact: true }).click();
 
