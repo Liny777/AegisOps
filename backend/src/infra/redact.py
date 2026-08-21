@@ -314,7 +314,9 @@ def sanitize_activity_payload(
             _copy_scalar(source, out, key, limit=200)
 
     if event.startswith("skill."):
-        for key in ("skill", "status", "exit_code"):
+        # staged：手册型 Skill 的参考文件是否真投递进容器。投递失败时仍发 succeeded（正文可用即算成功），
+        # 不放行这个标量，审计面就分不出「含 0 个参考文件」是包里本来没有还是投递炸了（2026-08-20 内网教训）
+        for key in ("skill", "status", "exit_code", "staged"):
             _copy_scalar(source, out, key, limit=200)
         result_status = source.get("result", {}).get("status") if isinstance(source.get("result"), dict) else None
         if result_status is not None:

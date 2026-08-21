@@ -18,6 +18,7 @@ from typing import Any, Sequence
 
 from agentscope.tool import BackendBase, ExecResult
 
+from sandbox.backends import b64_chunks
 from sandbox.executor import _OUTPUT_MAX_BYTES
 from sandbox.executor import executor as sandbox_executor
 
@@ -56,9 +57,11 @@ class SandboxToolBackend(BackendBase):
     # 路径不适配）。用 python3 而非 base64 CLI：沙箱本就是 python 镜像，且规避 BSD/GNU base64 的差异
     # （BSD 不吃位置文件名、解码是 -D 不是 -d，fake 模式在 macOS 上会挂）。path/data 走 argv，免引号地雷。
     _READ_PY = "import base64,sys;sys.stdout.write(base64.b64encode(open(sys.argv[1],'rb').read()).decode())"
+    # 写模式由 argv[3] 传入（首片 wb 覆盖 / 后续 ab 追加）：整包 b64 塞单个 argv 会撞 execve 的
+    # MAX_ARG_STRLEN（128KiB），>96KB 的文件必炸 E2BIG，故与容器后端同样分片（见 b64_chunks）。
     _WRITE_PY = ("import base64,os,sys;p=sys.argv[1];d=os.path.dirname(p);"
                  "os.makedirs(d,exist_ok=True) if d else None;"
-                 "open(p,'wb').write(base64.b64decode(sys.argv[2]))")
+                 "open(p,sys.argv[3]).write(base64.b64decode(sys.argv[2]))")
 
     async def read_file(self, path: str) -> bytes:
         r = await self.exec_shell(["python3", "-c", self._READ_PY, path])
@@ -67,7 +70,9 @@ class SandboxToolBackend(BackendBase):
         return base64.b64decode(r.stdout)
 
     async def write_file(self, path: str, data: bytes) -> None:
-        b64 = base64.b64encode(data).decode("ascii")
-        r = await self.exec_shell(["python3", "-c", self._WRITE_PY, path, b64])
-        if r.exit_code != 0:
-            raise OSError(f"write_file 失败（exit={r.exit_code}）：{r.stderr.decode('utf-8', 'replace')[:200]}")
+        chunks = b64_chunks(data)
+        for i, chunk in enumerate(chunks):
+            r = await self.exec_shell(["python3", "-c", self._WRITE_PY, path, chunk, "wb" if i == 0 else "ab"])
+            if r.exit_code != 0:
+                raise OSError(f"write_file 失败（{path}，{len(data)}B，第 {i + 1}/{len(chunks)} 片，"
+                              f"exit={r.exit_code}）：{r.stderr.decode('utf-8', 'replace')[:200]}")

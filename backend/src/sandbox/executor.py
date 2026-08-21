@@ -105,6 +105,18 @@ class Container:
         }
 
 
+def _reject_unsafe_names(files: dict[str, bytes]) -> None:
+    """拒绝会写出 per-tool_call 目录之外的 ZIP 条目名（`../`、绝对路径、NUL）。
+
+    `skill_hub_client._unzip` 对 SkillHub 下发的条目名零校验，而投递路径是 `{rel_dir}/{name}`
+    直拼——`../../x` 可跨 task 污染同一用户容器。落盘前一次性拒掉整包。
+    """
+    for name in files:
+        if (name.startswith(("/", "\\")) or "\x00" in name
+                or ".." in name.replace("\\", "/").split("/")):
+            raise ApiError(Err.SKILL_PACKAGE_INVALID, f"Skill 包含非法文件路径，拒绝投递：{name[:80]}")
+
+
 class SandboxExecutor:
     def __init__(self) -> None:
         self._by_user: dict[str, Container] = {}
@@ -255,7 +267,12 @@ class SandboxExecutor:
 
     async def _stage(self, c: Container, rel_dir: str, files: dict[str, bytes],
                      expected_checksum: str | None) -> None:
-        """投递整包进容器（只写不执行）：checksum 校验 → 逐文件写入（嵌套路径两后端均自动建父目录）。"""
+        """投递整包进容器（只写不执行）：路径校验 → checksum 校验 → 逐文件写入（两后端均自动建父目录）。
+
+        全有全无：任一校验不过则一个字节都不落盘（checksum 保的是整包一致性，半包目录会让 agent
+        面对「看起来完整实则缺文件」的现场，比直接降级更难排查）。
+        """
+        _reject_unsafe_names(files)
         if expected_checksum and package_checksum(files) != expected_checksum:
             raise ApiError(Err.SKILL_CHECKSUM_MISMATCH, "Skill 包 checksum 不匹配，拒绝投递")
         for name, data in files.items():

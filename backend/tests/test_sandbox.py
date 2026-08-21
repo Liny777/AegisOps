@@ -433,6 +433,11 @@ def test_docker_real_run_skill_write_exec_isolation(client):
             payload = b"import json;open('output.json','w').write(json.dumps({'status':'success','n':7}))"
             await be_a.write_file("skills/t/tc/run.py", payload)
             assert await be_a.read_file("skills/t/tc/run.py") == payload  # 读回一致
+            # 越过 execve 单 argv 上限（~96KB 原始）的参考文件：分片写必须落全
+            # （2026-08-20 内网 system-grafana-ops 投递失败 "argument list too long" 的真复现）
+            big = bytes((i * 7 + 11) % 256 for i in range(300_000))
+            await be_a.write_file("skills/t/tc/references/big.bin", big)
+            assert await be_a.read_file("skills/t/tc/references/big.bin") == big
             r = await be_a.exec_shell(["sh", "-lc", "cd " + be_a.workdir + "/skills/t/tc && python3 run.py && cat output.json"],
                                       timeout=30, max_output_bytes=65536)
             assert r.exit_code == 0 and '"n": 7' in r.stdout
@@ -443,6 +448,167 @@ def test_docker_real_run_skill_write_exec_isolation(client):
         finally:
             await be_a.close()
             await be_b.close()
+
+    asyncio.run(scenario())
+
+
+# ── 写盘 argv 上限（E2BIG）回归：2026-08-20 内网 system-grafana-ops 参考文件投递失败 ────────────
+
+_MAX_ARG_STRLEN = 131_072  # execve 单个 argv 字符串上限（32 页），内核硬编码不可调
+
+
+def test_sbx_b64_chunks_are_independently_decodable():
+    """分片切点取 4 的倍数 → 每片自身是完整 base64 块，可独立解码后追加（免临时文件拼接）。"""
+    import base64
+
+    from sandbox.backends import B64_ARG_CHUNK, b64_chunks
+
+    assert B64_ARG_CHUNK % 4 == 0
+    for data in (b"", b"x", b"A" * (B64_ARG_CHUNK * 3 // 4), bytes(range(256)) * 4000):
+        chunks = b64_chunks(data)
+        assert chunks, "空数据也要回单个空片，保证空文件被创建"
+        assert max(len(c) for c in chunks) <= B64_ARG_CHUNK
+        assert b"".join(base64.b64decode(c) for c in chunks) == data  # 逐片独立解码可还原
+
+
+def _replay_sh_writes(lines: list[str]) -> dict[str, bytes]:
+    """把录到的 `printf %s <b64> | base64 -d >|>> <path>` 命令行回放成 {路径: 内容}。"""
+    import base64
+    import shlex
+
+    out: dict[str, bytes] = {}
+    for line in lines:
+        toks = shlex.split(line)
+        chunk = toks[toks.index("%s") + 1]
+        path, redirect = toks[-1], toks[-2]
+        assert redirect in (">", ">>")
+        out[path] = (b"" if redirect == ">" else out.get(path, b"")) + base64.b64decode(chunk)
+    return out
+
+
+def test_sbx_docker_write_file_chunks_under_execve_arg_limit():
+    """DockerContainerBackend.write_file 分片：任一 argv 元素都不得逼近 MAX_ARG_STRLEN。
+
+    修复前整包 base64 内联单个 `sh -lc` 参数 → >96KB 的 Skill 参考文件必炸
+    `exec /usr/bin/sh: argument list too long`（免真 Docker 的跨平台护栏）。
+    """
+    from sandbox.backends import DockerContainerBackend
+
+    payload = bytes((i * 31 + 7) % 256 for i in range(1_000_000))
+    be = DockerContainerBackend("uA", image="python:3.11-slim", cpu=0.5, mem_mib=512)
+    seen: list[list[str]] = []
+
+    async def _fake_exec(command, *, timeout):
+        seen.append(list(command))
+        return type("R", (), {"exit_code": 0, "stdout": b"", "stderr": b""})()
+
+    be._exec = _fake_exec  # 不起真容器，只验命令行构造
+    asyncio.run(be.write_file("skills/t/tc/references/big.md", payload))
+
+    assert len(seen) > 1, "1MB 必须分成多片"
+    for argv in seen:
+        for element in argv:
+            assert len(element.encode()) < _MAX_ARG_STRLEN, "单个 argv 元素超 execve 上限 → E2BIG"
+    lines = [argv[2] for argv in seen]
+    assert lines[0].startswith("mkdir -p ") and all("mkdir" not in ln for ln in lines[1:])  # 只首片建目录
+    replayed = _replay_sh_writes(lines)
+    assert replayed == {"/openops/workspace/skills/t/tc/references/big.md": payload}
+
+
+def test_sbx_docker_write_file_quotes_hostile_names():
+    """路径经 shlex.quote：ZIP 条目名带引号/空格不得逃逸成容器内的另一条命令。"""
+    from sandbox.backends import DockerContainerBackend
+
+    be = DockerContainerBackend("uA", image="python:3.11-slim", cpu=0.5, mem_mib=512)
+    seen: list[str] = []
+
+    async def _fake_exec(command, *, timeout):
+        seen.append(command[2])
+        return type("R", (), {"exit_code": 0, "stdout": b"", "stderr": b""})()
+
+    be._exec = _fake_exec
+    asyncio.run(be.write_file("refs/x'; touch /tmp/pwned; '.md", b"hi"))
+
+    import shlex
+    for line in seen:  # 恶意片段整体停在一个词里，没被 sh 解析成 `touch …` 这条独立命令
+        assert "touch" not in shlex.split(line)
+    assert _replay_sh_writes(seen) == {"/openops/workspace/refs/x'; touch /tmp/pwned; '.md": b"hi"}
+
+
+def test_sbx_tool_backend_write_file_chunks_under_arg_limit(client):
+    """agent 的 Write 工具（SandboxToolBackend）同一天花板：也必须分片，首片 wb 其余 ab。"""
+    from agentscope.tool import ExecResult as _ExecResult
+
+    from runtime.sandbox_tool_backend import SandboxToolBackend
+
+    payload = b"Z" * 900_000
+    be = SandboxToolBackend("uA", "run-x", {})
+    seen: list[list[str]] = []
+
+    async def _fake_exec_shell(command, *, cwd=None, timeout=None):
+        seen.append(list(command))
+        return _ExecResult(exit_code=0, stdout=b"", stderr=b"")
+
+    be.exec_shell = _fake_exec_shell
+    asyncio.run(be.write_file("/openops/workspace/big.txt", payload))
+
+    assert len(seen) > 1
+    for argv in seen:
+        for element in argv:
+            assert len(element.encode()) < _MAX_ARG_STRLEN
+    assert [argv[-1] for argv in seen] == ["wb"] + ["ab"] * (len(seen) - 1)  # 首片覆盖，其余追加
+    import base64
+    assert b"".join(base64.b64decode(argv[-2]) for argv in seen) == payload
+
+
+def test_sbx_tool_backend_writes_large_file_roundtrip(client):
+    """端到端（fake 后端真 subprocess）：大文件写入→读回一致。
+
+    修复前此处即复现——900KB 的 base64 约 1.2MB，超宿主 ARG_MAX，subprocess 直接 E2BIG。
+    """
+    from runtime.sandbox_tool_backend import SandboxToolBackend
+
+    st, _, _ = _bash_ctx(client, crid="stb_big", task_id="tk_stb_big")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        be = SandboxToolBackend("0026demo01", st.run_id, {})
+        path = f"{c.backend.workdir}/refs/big.md"
+        payload = bytes((i * 13 + 5) % 256 for i in range(900_000))
+        await be.write_file(path, payload)
+        assert await be.read_file(path) == payload
+        await be.write_file(path, b"small")  # 覆盖写：不得残留上一次的尾巴
+        assert await be.read_file(path) == b"small"
+
+    asyncio.run(scenario())
+
+
+def test_sbx_stage_rejects_unsafe_package_names(client):
+    """ZIP 条目名穿越（`../`/绝对路径）在落盘前整包拒绝，一个字节都不写。"""
+    from domain.errors import ApiError
+
+    st, _, _ = _bash_ctx(client, crid="stg_evil", task_id="tk_evil")
+
+    async def scenario():
+        c = sandbox_executor.get("0026demo01")
+        wrote: list[str] = []
+        orig = c.backend.write_file
+
+        async def _spy(rel_path, data):
+            wrote.append(rel_path)
+            return await orig(rel_path, data)
+
+        c.backend.write_file = _spy
+        try:
+            for bad in ("../../evil.sh", "/etc/evil.sh", "refs/../../evil.sh"):
+                with pytest.raises(ApiError) as ei:
+                    await sandbox_executor.stage_files(
+                        "0026demo01", task_id="tk_evil", tool_call_id="tc1",
+                        files={"SKILL.md": b"# ok", bad: b"x"}, run_id=st.run_id, cfg={})
+                assert ei.value.code == "SKILL_PACKAGE_INVALID"
+            assert wrote == [], "校验不过时不得有任何落盘"
+        finally:
+            c.backend.write_file = orig
 
     asyncio.run(scenario())
 
@@ -975,6 +1141,12 @@ def test_skill_017_manual_stage_failure_degrades_gracefully(client, monkeypatch)
         assert st.tool_blocked is False  # 不算拦截/失败
 
     asyncio.run(scenario())
+    # 降级在审计面必须可见（此前只是 n_refs=0，看起来与正常调用无异）
+    events = unwrap(client.get(f"/api/openops/v1/audit/runs/{run['agent_run_id']}", headers=USER_HEADERS))
+    ev = next(e for e in events if e["event_type"] == "openops.skill.call.succeeded")
+    payload = ev["payload_redacted_json"]
+    assert payload["staged"] is False and "container down" in payload["error_summary"]
+    assert "降级" in str(payload.get("summary", ""))
 
 
 def test_skill_018_script_skill_notes_staged_dir(client, monkeypatch):
