@@ -71,7 +71,7 @@ export function SettingsHome() {
                 <span title="规则作用于当前 Agent；在侧栏切换 Agent 即切换配置对象" style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, color: color.textNav, background: color.neutralBg, border: `1px solid ${color.border}`, padding: "4px 10px", borderRadius: radius.pill }}>
                   <Icon name="robot" size={14} color={color.brand} />{currentAgent.name}
                 </span>
-                <span style={{ fontSize: 11.5, color: color.textSubtle }}>命中规则的告警将由该 Agent 自动接管诊断</span>
+                <span style={{ fontSize: 11.5, color: color.textSubtle }}>命中策略的告警将由该 Agent 自动接管诊断</span>
               </div>
               <Suspense fallback={null}>
                 <AlertRulesPane instanceId={currentAgentId} />
@@ -84,7 +84,7 @@ export function SettingsHome() {
                   <Icon name="robot" size={28} color={color.textFaint} />
                 </div>
                 <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 6 }}>还没有 Agent</div>
-                <div style={{ fontSize: 12.5, color: color.textMuted, lineHeight: 1.7 }}>先在初始化向导创建 Agent，再回到这里配置它的告警接管规则。</div>
+                <div style={{ fontSize: 12.5, color: color.textMuted, lineHeight: 1.7 }}>先在初始化向导创建 Agent，再回到这里配置它的告警接管策略。</div>
               </div>
             </div>
           )}

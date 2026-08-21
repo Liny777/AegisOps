@@ -220,15 +220,15 @@ export function AlertRulesPane({ instanceId }: { instanceId: string }) {
                 ) : null}
               </div>
             ) : null}
-            <Button icon="plus" disabled={!payload} onClick={() => setEditor({ open: true, rule: null })}>添加告警策略</Button>
+            <Button icon="plus" disabled={!payload} onClick={() => setEditor({ open: true, rule: null })}>添加告警接管策略</Button>
           </div>
 
           {rules.length === 0 ? (
             <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, display: "flex", flexDirection: "column", alignItems: "center", gap: 10, padding: "56px 0", color: color.textSubtle }}>
               <Icon name="shield-exclamation" size={34} color={color.textFaint} />
-              <div style={{ fontSize: 13.5, fontWeight: 700, color: color.textStrong }}>暂无告警策略</div>
-              <div style={{ fontSize: 12 }}>添加策略后，命中的告警会自动排队并创建诊断会话</div>
-              <Button icon="plus" disabled={!payload} onClick={() => setEditor({ open: true, rule: null })}>添加告警策略</Button>
+              <div style={{ fontSize: 13.5, fontWeight: 700, color: color.textStrong }}>暂无告警接管策略</div>
+              <div style={{ fontSize: 12 }}>添加接管策略后，命中的告警会自动排队并创建诊断会话</div>
+              <Button icon="plus" disabled={!payload} onClick={() => setEditor({ open: true, rule: null })}>添加告警接管策略</Button>
             </div>
           ) : (
             <div style={{ background: "#fff", border: `1px solid ${color.border}`, borderRadius: radius.xl, overflow: "hidden" }}>
@@ -449,7 +449,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
     <Modal open onClose={onClose} maxWidth={step === 1 ? 640 : 860}>
       <div data-testid="alerts-rule-editor" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <OverlayHeader
-          title={rule ? "编辑告警策略" : "添加告警策略"}
+          title={rule ? "编辑告警接管策略" : "添加告警接管策略"}
           onClose={onClose}
         />
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>

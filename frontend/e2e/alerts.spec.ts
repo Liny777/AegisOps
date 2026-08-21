@@ -13,7 +13,7 @@ import { test, expect } from "@playwright/test";
 
 test("清单：未接管行灰态不可点，已接管行跳会话且历史无告警 run", async ({ page }) => {
   await page.goto("/alerts");
-  await expect(page.getByText("命中本 Agent 订阅规则的告警自动排队诊断")).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("命中本 Agent 接管策略的告警自动排队诊断")).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("alerts-incident-row").first()).toBeVisible();
 
   // 未接管行：shield-off 图标 + 操作列灰色 cursor:not-allowed（非链接、点了不跳）
@@ -80,11 +80,11 @@ test("筛选：状态+接管联动过滤、计数徽标与清除、搜索收敛"
 
 test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第二步窗口预览后确认建规则", async ({ page }) => {
   await page.goto("/settings/alerts");
-  await expect(page.getByRole("button", { name: "添加告警策略" }).first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "添加告警接管策略" }).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByTestId("alerts-rule-row").first()).toBeVisible();
   const rulesBefore = await page.getByTestId("alerts-rule-row").count();
 
-  await page.getByRole("button", { name: "添加告警策略" }).first().click();
+  await page.getByRole("button", { name: "添加告警接管策略" }).first().click();
   const editor = page.getByTestId("alerts-rule-editor");
   await expect(editor).toBeVisible();
 
