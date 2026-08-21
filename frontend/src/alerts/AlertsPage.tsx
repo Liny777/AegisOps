@@ -104,7 +104,7 @@ const RuleCell = ({ it, onOpenRun }: { it: AlertEventRow; onOpenRun: (runId: str
   const list = it.takeovers?.filter((t) => t.matched_rule) ?? [];
   if (!list.length) {
     if (!it.matched_rule) {
-      return <span title="未命中接管规则，或存量数据无规则快照" style={{ color: color.textFaint }}>—</span>;
+      return <span title="未命中接管策略，或存量数据无策略快照" style={{ color: color.textFaint }}>—</span>;
     }
     const total = it.matched_rule_total ?? 1;
     const text = `${it.matched_rule.name}${total > 1 ? ` 等${total}条` : ""}`;
@@ -271,7 +271,7 @@ export function AlertsPage() {
   const activeFilters = [statusF, sevF, takeF, catF].filter(Boolean).length;
   const clearFilters = () => { setStatusF(""); setSevF(""); setTakeF(""); setCatF(""); setPage(1); };
 
-  // 「接管规则」/空态跳转的目标实例 = 当前 Agent（清单与侧栏同源，无本页切换）
+  // 「接管策略」/空态跳转的目标实例 = 当前 Agent（清单与侧栏同源，无本页切换）
   const settingsTarget = instanceId;
   const items = data?.items ?? [];
   const agentName = agents.find((a) => a.instance_id === currentAgentId)?.name;
@@ -302,16 +302,16 @@ export function AlertsPage() {
             <Icon name="robot" size={14} color={color.brand} />{agentName}
           </span>
         ) : null}
-        <span style={{ fontSize: 11, color: color.textSubtle }}>命中本 Agent 订阅规则的告警自动排队诊断</span>
+        <span style={{ fontSize: 11, color: color.textSubtle }}>命中本 Agent 接管策略的告警自动排队诊断</span>
         <div style={{ flex: 1 }} />
         <Button
           variant="secondary"
           icon="shield-bolt"
           disabled={!instanceId}
-          title="配置本 Agent 的告警接管规则（设置 → 告警接管配置）"
+          title="配置本 Agent 的告警接管策略（设置 → 告警接管配置）"
           onClick={() => nav("/settings/alerts")}
         >
-          接管规则
+          接管策略
         </Button>
       </header>
 
@@ -391,7 +391,7 @@ export function AlertsPage() {
             <Icon name="bell-bolt" size={36} color={color.textFaint} />
             <div style={{ fontSize: 13 }}>暂无告警记录</div>
             {settingsTarget ? (
-              <Button variant="secondary" icon="settings" onClick={() => nav("/settings/alerts")}>去配置接管规则</Button>
+              <Button variant="secondary" icon="settings" onClick={() => nav("/settings/alerts")}>去配置接管策略</Button>
             ) : null}
           </div>
         ) : (
