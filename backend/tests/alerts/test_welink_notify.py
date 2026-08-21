@@ -78,7 +78,7 @@ def test_welink_client_success_logs_and_strips_url(monkeypatch, caplog):
 
 def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     """_notify_owner_done：data 含品牌标题/结论中文/会话直达链接，收件人=owner 工号；
-    结论只带接管结果不带 summary（2026-08-19：并发中断的残缺摘要看不懂，详情进会话）；
+    结论只带根因不带 summary（2026-08-19）；「接管结果」判定行 2026-08-21 验收后删除；
     OPENOPS_WEB_BASE_URL 未配退化为文字指引（通知仍发）；派发时留 info 痕。"""
     import logging
 
@@ -94,15 +94,15 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
 
     async def _run():
         monkeypatch.setenv("OPENOPS_WEB_BASE_URL", "https://openops.example.com/")
-        dispatcher._notify_owner_done(inc, "run-123", "recovered")
+        dispatcher._notify_owner_done(inc, "run-123")
         await asyncio.sleep(0.05)  # 驱动 to_thread fire-and-forget
         monkeypatch.delenv("OPENOPS_WEB_BASE_URL")
-        dispatcher._notify_owner_done(inc, "run-456", None)
+        dispatcher._notify_owner_done(inc, "run-456")
         await asyncio.sleep(0.05)
         # 按 prompt 分单后姊妹单通知靠规则名区分（2026-08-19）：带 matched_rules_json 时必有此行
         dispatcher._notify_owner_done(
             dict(inc, matched_rules_json=[{"rule_id": "r1", "rule_name": "Docker 接管 A"}]),
-            "run-789", "recovered")
+            "run-789")
         await asyncio.sleep(0.05)
 
     with caplog.at_level(logging.INFO, logger="openops.alerts.dispatcher"):
@@ -112,7 +112,8 @@ def test_notify_owner_done_builds_link_and_dispatches(monkeypatch, caplog):
     uid, data = sent[0]
     assert uid == "w_owner"
     assert "【感知快恢Agent 告警接管】" in data
-    assert "告警标题：MySQL 主库延迟>5s" in data and "接管结果：已恢复" in data
+    assert "告警标题：MySQL 主库延迟>5s" in data and "结论：详见会话" in data
+    assert "接管结果" not in data  # 2026-08-21 验收删判定行（清单页该列不受影响）
     assert "告警开始时间" not in data  # inc 无 first_alert_at：整行省略
     assert "主从延迟已恢复" not in data  # summary 摘要不进通知（残缺文本防看不懂）
     assert "https://openops.example.com/agent-runs/run-123" in data  # rstrip 后无双斜杠
@@ -141,14 +142,15 @@ def test_notify_completed_carries_rca_conclusion(monkeypatch):
            "first_alert_at": datetime(2026, 8, 20, 3, 38, 29, tzinfo=timezone.utc)}
 
     async def _run():
-        dispatcher._notify_owner_done(inc, "run-1", "recovered",
+        dispatcher._notify_owner_done(inc, "run-1",
                                       conclusion="Redis 连接泄漏已修复，P99 恢复 210ms")
-        dispatcher._notify_owner_done(inc, "run-2", "recovered", conclusion="长" * 300)
+        dispatcher._notify_owner_done(inc, "run-2", conclusion="长" * 300)
         await asyncio.sleep(0.05)
 
     asyncio.run(_run())
-    # 验收拍板（2026-08-20）：接管结果与结论拆行，不再「已恢复｜根因」混排
-    assert "接管结果：已恢复\n结论：Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
+    # 2026-08-21 验收：只留结论行（「接管结果：已恢复」判定行已删）
+    assert "结论：Redis 连接泄漏已修复，P99 恢复 210ms" in sent[0][1]
+    assert "接管结果" not in sent[0][1]
     assert "告警开始时间：2026-08-20 " in sent[0][1]  # first_alert_at 本地时区单独一行
     assert "长" * 200 + "……" in sent[1][1] and "长" * 201 not in sent[1][1]  # 无句读硬截+省略号
 
@@ -195,11 +197,11 @@ def test_notify_failed_reason_and_link_fallback(monkeypatch):
            "severity": "fatal", "category": "MySQL"}
 
     async def _run():
-        dispatcher._notify_owner_done(inc, "run-9", None, failed=True, state_reason="timeout")
-        dispatcher._notify_owner_done(inc, "", None, failed=True,
+        dispatcher._notify_owner_done(inc, "run-9", failed=True, state_reason="timeout")
+        dispatcher._notify_owner_done(inc, "", failed=True,
                                       state_reason="task_failed")  # 无 run：起跑即败形态
         monkeypatch.delenv("OPENOPS_WEB_BASE_URL")
-        dispatcher._notify_owner_done(inc, "", None, failed=True, state_reason="SOME_RAW_CODE")
+        dispatcher._notify_owner_done(inc, "", failed=True, state_reason="SOME_RAW_CODE")
         await asyncio.sleep(0.05)
 
     asyncio.run(_run())

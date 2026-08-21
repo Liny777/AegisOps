@@ -166,8 +166,9 @@ def test_full_diagnosis_chain(client, monkeypatch):
     assert "MySQL 主库延迟>5s" in notified[0][1]
     assert "https://openops.test/agent-runs/" in notified[0][1]
     # v3：结论行带根因结论（demo 剧本闭环 rca.conclusion——竖线后是模型结论原文）
-    # 2026-08-20 验收：接管结果/结论拆行 + 告警标题/开始时间/命中策略标签
-    assert "接管结果：已恢复\n结论：" in notified[0][1] and "H1" in notified[0][1]
+    # 2026-08-21 验收：只留结论行（判定行已删）+ 告警标题/开始时间/命中策略标签
+    assert "结论：" in notified[0][1] and "H1" in notified[0][1]
+    assert "接管结果" not in notified[0][1]
     assert "告警标题：" in notified[0][1] and "告警开始时间：" in notified[0][1]
     assert "命中策略：" in notified[0][1]
     assert ev["run_clickable"] is True and ev["run_id"] == run_id
