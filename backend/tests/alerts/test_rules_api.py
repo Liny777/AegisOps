@@ -169,3 +169,31 @@ def test_config_env_override_pins_key(client, monkeypatch):
     unwrap(client.post("/api/openops/v1/admin/alerts/config:update", headers=ADMIN_HEADERS,
                        json={"client_request_id": f"crid_{time.time_ns()}",
                              "updates": {"alert_pull_batch_limit": 200}, "reason": "复位"}))
+
+
+def test_owner_only_roundtrip_and_update(client):
+    """owner_only（2026-08-21「仅接管责任人为本人」）：创建勾选往返回显、update 翻转、
+    缺省 false（存量契约零影响）。"""
+    iid = create_instance(client)["instance_id"]
+    unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
+                       json={"client_request_id": f"crid_oo_{time.time_ns()}",
+                             "agent_team_instance_id": iid, "name": "仅本人接管",
+                             "categories": ["MySQL"], "severities": ["fatal"],
+                             "strategies": [], "prompt": "", "owner_only": True}))
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    rule = next(r for r in rules if r["name"] == "仅本人接管")
+    assert rule["owner_only"] is True
+
+    unwrap(client.post(f"{BASE}/rules/{rule['rule_id']}:update", headers=USER_HEADERS,
+                       json={"client_request_id": f"crid_oo2_{time.time_ns()}",
+                             "owner_only": False}))
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    assert next(r for r in rules if r["name"] == "仅本人接管")["owner_only"] is False
+
+    r2 = unwrap(_create_rule(client, iid, name="缺省不勾"))  # helper 不带 owner_only
+    _ = r2
+    rules = unwrap(client.get(f"{BASE}/rules", headers=USER_HEADERS,
+                              params={"instance_id": iid}))["rules"]
+    assert next(r for r in rules if r["name"] == "缺省不勾")["owner_only"] is False

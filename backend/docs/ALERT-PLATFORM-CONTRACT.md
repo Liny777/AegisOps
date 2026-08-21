@@ -42,7 +42,7 @@ Kafka 消息(29.11 体) ─→ alerts/kafka_source._parse ─┐
 | strategy_name | `metricName` | R10：与本地「监控策略名」不是同一词表——存量勾选 strategies 的规则将失配，见迁移 SQL 可选段 |
 | alert_object | `ciName` → `displayName` | 回退链 |
 | app_id | `appIdList[0]` | 元素=omodel projectId（包名风格与 32 位 hex 混合口径，纯字符串比较）；**全列表存 `annotations.app_id_list`**（R9：本地 appids 匹配/可见性仅首元素参与；本期 UI 未暴露该维度） |
-| labels | 白名单 11 键 | alarm_level/alarm_status/mo_subtype/metric/policy_id/ci_policy_id/data_source/source_category/monitor_tool/event_tool/enterprise_id；**有意丢弃** prodTreeList/extraInfo（大对象防 64 键裁剪噪声）、isFilter/isAdmin、三个 modify 时间戳 |
+| labels | 白名单 12 键 | alarm_level/alarm_status/mo_subtype/metric/policy_id/ci_policy_id/data_source/source_category/monitor_tool/event_tool/enterprise_id/**alarm_owner**（alarmOwnerLname，形态「姓名 空格 工号」——owner_only 维 token 化大小写不敏感比对规则属主；responsePerson 是 uuid/加密态不可用）；**有意丢弃** prodTreeList/extraInfo（大对象防 64 键裁剪噪声）、isFilter/isAdmin、三个 modify 时间戳 |
 | annotations | 派生三键 | app_id_list（JSON 数组串）、display_name（≠ciName 时）、alarm_code（≠alert_id 时）；**无 detail_url**（内网无详情外链，UI 编号列退纯文本） |
 | started_at | `alarmTimeStamp` → `alarmTime` | epoch ms 优先；无时区串按 **+08:00**（R1，改 `CST` 常量一处） |
 | source | 固定 `"inet"` | 参与 fingerprint fallback 的去重域 |

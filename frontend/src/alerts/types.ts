@@ -167,6 +167,8 @@ export interface AlertRule {
   prompt: string;
   app_ids: string[];
   keywords: string[];
+  /** 仅接管责任人为本人的告警（2026-08-21；存量规则/旧后端缺省 = false）。 */
+  owner_only?: boolean;
   updated_at: string;
 }
 
@@ -213,11 +215,12 @@ export interface NewRuleInput {
   strategies?: string[];
   prompt: string;
   enabled?: boolean;
+  owner_only?: boolean;
 }
 
 /** :update 部分更新可传的字段面（与后端冻结契约一致）。 */
 export type AlertRulePatch = Partial<
-  Pick<AlertRule, "name" | "description" | "categories" | "severities" | "strategies" | "prompt" | "enabled">
+  Pick<AlertRule, "name" | "description" | "categories" | "severities" | "strategies" | "prompt" | "enabled" | "owner_only">
 >;
 
 /** rules:batch 的动作枚举。 */

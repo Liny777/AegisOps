@@ -232,6 +232,7 @@ def rule_out(row: dict[str, Any]) -> dict[str, Any]:
         "app_ids": match.get("appids") or [],
         "keywords": match.get("keywords") or [],
         "label_selectors": match.get("label_selectors") or {},
+        "owner_only": bool(match.get("owner_only")),
         "updated_at": row_json(row).get("last_update_date"),
     }
 
@@ -258,6 +259,7 @@ async def create_rule(user: dict[str, Any], req: CreateRuleRequest) -> dict[str,
             "severities": _check_ui_severities(req.severities),
             "strategies": [s for s in req.strategies if s],
             "appids": [], "label_selectors": {}, "keywords": [], "keyword_mode": "any",
+            "owner_only": req.owner_only,
         }
         rid = await repo.create_rule(
             instance_id=req.agent_team_instance_id, owner=uid, name=req.name,
@@ -284,11 +286,13 @@ def _effective_prompt(p: str | None) -> str:
 
 def _is_generic(match: dict[str, Any]) -> bool:
     """覆盖/合并资格门槛：strategies/appids/keywords/label_selectors 全空的「纯类型×级别」
-    规则。任一维非空只匹配子集，判成已覆盖会漏告警——宁新建不误判。"""
+    规则。任一维非空只匹配子集，判成已覆盖会漏告警——宁新建不误判。
+    owner_only 规则同样排除（2026-08-21）：只接本人责任告警，比宽规则窄。"""
     return (not [s for s in (match.get("strategies") or []) if s]
             and not [a for a in (match.get("appids") or []) if a]
             and not [k for k in (match.get("keywords") or []) if k]
-            and not (match.get("label_selectors") or {}))
+            and not (match.get("label_selectors") or {})
+            and not match.get("owner_only"))
 
 
 async def _pick_available_name(instance_id: str, requested: str) -> str:
@@ -479,6 +483,8 @@ async def update_rule(user: dict[str, Any], rule_id: str, req: UpdateRuleRequest
         match["keywords"] = [k for k in req.keywords if k]
     if req.label_selectors is not None:
         match["label_selectors"] = dict(req.label_selectors)
+    if req.owner_only is not None:
+        match["owner_only"] = req.owner_only
     match.setdefault("keyword_mode", "any")
     await repo.update_rule(
         rule_id, name=name,

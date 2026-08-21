@@ -150,6 +150,7 @@ def test_kafka_labels_whitelist_exactly():
         "monitor_tool": "PROMETHEUS_KAFKA_KAFKAINSTANCE",
         "event_tool": "慧眼-资源监控-中间件-Kafka",
         "enterprise_id": "11111111111111111111111111111111",
+        "alarm_owner": "xxx",  # alarmOwnerLname（owner_only 维比对源，2026-08-21）
     }
     # 大对象有意丢弃：prodTreeList / extraInfo 绝不进 labels（防 64 键/1000B 裁剪噪声）
     flat = json.dumps(dto["labels"], ensure_ascii=False)

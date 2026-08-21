@@ -131,12 +131,17 @@ def candidate_rules(index: dict[str, Any], category: str) -> list[dict[str, Any]
     return [rules[i] for i in picked]
 
 
-def match(alert: dict[str, Any], match_json: dict[str, Any]) -> bool:
+def match(alert: dict[str, Any], match_json: dict[str, Any], rule_owner: str = "") -> bool:
     """alert 为 ingest 规范化后的形态：category/severity/strategy_name/app_id/labels/title/description。
 
     v2 规则形态：categories 多值（2026-08-07 弹窗改多选，任一命中即过；存量单值 category
     兼容读取）；strategies 为勾选的监控策略名集合（空=该类型全部策略）。
     其余维度语义不变（维度间 AND、维度内 OR、空=不限）。
+
+    owner_only 维（2026-08-21「仅接管责任人为本人」）：labels.alarm_owner（Kafka
+    alarmOwnerLname，形态「姓名 空格 工号」且工号大小写混杂）按空白切 token，任一 token
+    与 rule_owner（规则属主 user_id）**大小写不敏感等值**即本人；无责任人/未传属主
+    fail-closed 不接管——勾选=严格本人（token 等值而非子串，防工号短串误命中姓名拼音）。
     """
     cats = rule_categories(match_json)  # categories 多值 ∪ legacy 单值回退（与索引同源）
     if cats and alert.get("category") not in cats:
@@ -144,6 +149,11 @@ def match(alert: dict[str, Any], match_json: dict[str, Any]) -> bool:
     sevs = match_json.get("severities") or []
     if sevs and alert.get("severity") not in sevs:
         return False
+    if match_json.get("owner_only"):
+        owner = str((alert.get("labels") or {}).get("alarm_owner") or "")
+        target = str(rule_owner or "").strip().lower()
+        if not owner or not target or not any(t.lower() == target for t in owner.split()):
+            return False
     strategies = [s for s in (match_json.get("strategies") or []) if s]
     if strategies and alert.get("strategy_name") not in strategies:
         return False

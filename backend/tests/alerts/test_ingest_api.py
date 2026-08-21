@@ -215,3 +215,26 @@ def test_unmatched_batch_zero_fingerprint_lookups(client, monkeypatch):
     counters = _aio.run(ingest.ingest_batch(alerts))
     assert counters["unmatched"] == 50 and counters["queued"] == 0
     assert calls["n"] == 0, "未命中告警不应触达指纹查询（零 DB 粗滤被破坏）"
+
+
+def test_owner_only_rule_takes_only_own_alerts(client):
+    """owner_only e2e（2026-08-21）：labels.alarm_owner「姓名 空格 工号」含本人工号
+    （大小写混合）→ 接管；他人/缺失 → unmatched（fail-closed）。"""
+    iid = create_instance(client)["instance_id"]
+    unwrap(client.post(f"{BASE}/rules", headers=USER_HEADERS,
+                       json={"client_request_id": _crid(), "agent_team_instance_id": iid,
+                             "name": "仅本人 MySQL", "categories": ["MySQL"],
+                             "severities": [], "strategies": [], "prompt": "",
+                             "owner_only": True}))
+    alert_platform_mock._inject(title="MySQL 本人告警", category="MySQL", severity="critical",
+                                app_id="APP-A", fingerprint="fp_own_1",
+                                labels={"alarm_owner": "林一 0026DEMO01"})  # 工号大小写混合
+    alert_platform_mock._inject(title="MySQL 他人告警", category="MySQL", severity="critical",
+                                app_id="APP-A", fingerprint="fp_own_2",
+                                labels={"alarm_owner": "别人 x9999"})
+    alert_platform_mock._inject(title="MySQL 无责任人", category="MySQL", severity="critical",
+                                app_id="APP-A", fingerprint="fp_own_3")
+    counters = _pull(client)
+    assert counters["queued"] == 1 and counters["unmatched"] == 2
+    items = _incidents(client, iid, state="queued")
+    assert len(items) == 1 and items[0]["title"] == "MySQL 本人告警"

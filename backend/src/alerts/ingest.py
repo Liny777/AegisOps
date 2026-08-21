@@ -253,7 +253,8 @@ async def _ingest_alert(alert: dict[str, Any], rule_index: dict[str, Any],
     # 候选仍逐条完整 match() 精判，六维语义零变。
     by_instance: dict[str, list[dict[str, Any]]] = {}
     for rule in matcher.candidate_rules(rule_index, alert.get("category") or ""):
-        if matcher.match(alert, rule.get("match_json") or {}):
+        if matcher.match(alert, rule.get("match_json") or {},
+                         str(rule.get("owner_user_id") or "")):  # owner_only 维用属主比对责任人
             by_instance.setdefault(str(rule["agent_team_instance_id"]), []).append(rule)
     if not by_instance:
         counters["unmatched"] += 1  # 未命中：不查库不存档直接丢

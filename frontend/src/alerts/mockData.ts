@@ -889,15 +889,17 @@ export const mockCreateRule = (instanceId: string, input: NewRuleInput): void =>
     prompt: input.prompt,
     app_ids: [],
     keywords: [],
+    owner_only: input.owner_only ?? false,
     updated_at: nowIso(),
   });
   changeSeq += 1;
 };
 
-/** ensure 覆盖/合并判定只看「纯类别规则」：strategies/app_ids/keywords 任一非空的规则条件
- *  更窄，既不能替直达兜底（不算覆盖）也不被 ensure 改写（对齐后端设计；mock 规则无 label_selectors）。 */
+/** ensure 覆盖/合并判定只看「纯类别规则」：strategies/app_ids/keywords/owner_only 任一非空的
+ *  规则条件更窄，既不能替直达兜底（不算覆盖）也不被 ensure 改写（对齐后端 _is_generic；
+ *  mock 规则无 label_selectors）。 */
 const isEnsureCandidate = (r: AlertRule): boolean =>
-  r.enabled && !r.strategies.length && !r.app_ids.length && !r.keywords.length;
+  r.enabled && !r.strategies.length && !r.app_ids.length && !r.keywords.length && !r.owner_only;
 
 /** 提示词归一判等口径（同后端 _effective_prompt）：空白 ≡ 系统默认，派发行为一致才可合并。 */
 const effectivePrompt = (p: string): string => p.trim() || DEFAULT_PROMPT;
