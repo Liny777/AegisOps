@@ -65,6 +65,7 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
             # 投递优雅降级：手册正文独立有值，容器抖动/校验失败不让整个调用失败，只在文本里说明
             n_refs = 0
             abs_dir: str | None = None  # 成功投递才有值；截断标记按有无落盘正文分别指引
+            stage_err: str | None = None
             try:
                 abs_dir, names = await sandbox_executor.stage_files(
                     getattr(st, "sandbox_uid", "") or st.user_id, task_id=st.task_id, tool_call_id=tool_call_id,
@@ -78,11 +79,17 @@ async def run_bound_skill(st: TaskState, run: dict[str, Any], skill_name: str,
                                f"需要细则时用 Read 工具读取完整文件（如 Read file_path={abs_dir}/{example}，"
                                f"大文件用 offset/limit 分页），或 run_container_command。\n")
             except Exception as e:  # noqa: BLE001 — 投递失败降级：仅手册正文可用
-                log.warning("[skill] %s 参考文件投递失败 %s: %s", skill_name, type(e).__name__, str(e)[:200])
+                stage_err = f"{type(e).__name__}: {str(e)[:200]}"
+                log.warning("[skill] %s 参考文件投递失败 %s", skill_name, stage_err)
                 staged_note = f"⚠ 参考文件投递失败（{type(e).__name__}），仅手册正文可用。\n"
+            # 降级必须在审计面可见：此前投递失败也照发 succeeded（只是 n_refs=0），
+            # 内网 2026-08-20 的 references 全丢因此在审计里看起来像一次正常调用，极难定位
             await emit(st, run, "openops.skill.call.succeeded", action=skill_name,
-                       message=f"Skill 手册已装载：{skill_name}（含 {n_refs} 个参考文件）",
-                       payload={"skill": skill_name, "mode": "manual", "chars": len(md)})
+                       message=(f"Skill 手册已装载：{skill_name}（含 {n_refs} 个参考文件）" if stage_err is None
+                                else f"Skill 手册已装载（降级：参考文件未投递）：{skill_name}"),
+                       payload={"skill": skill_name, "mode": "manual", "chars": len(md),
+                                "staged": stage_err is None,
+                                **({"error": stage_err} if stage_err else {})})
             # 正文超 cap 时显式标记（此前静默丢尾，agent 不知正文被切）：落盘则指全文文件，否则通用提示
             trunc = ("" if len(md) <= cap else
                      (f"\n\n（⚠ 手册正文超 {cap} 字符已截断，完整正文在容器 {abs_dir}/SKILL.md，"

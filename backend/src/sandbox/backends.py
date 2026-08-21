@@ -12,11 +12,13 @@ stdout/stderr 已按 `max_output_bytes` 脱敏截断（命令行与产物不含�
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -104,6 +106,22 @@ def _truncate(data: bytes, limit: int) -> str:
     if len(text) > limit:
         return text[:limit] + f"\n…（输出超 {limit} 字符已截断）"
     return text
+
+
+# execve 对**单个 argv 字符串**有 MAX_ARG_STRLEN = 32 页 = 128KiB 的硬上限（与 ARG_MAX 总量无关、
+# 不可调）。base64 膨胀 4/3，故整包内联进一条命令行时，原始文件超 ~96KB 必然 E2BIG——内核把
+# execve 打回，runc 原样回 "exec /usr/bin/sh: argument list too long"（2026-08-20 内网：
+# system-grafana-ops 参考文件投递失败即此）。写盘一律分片，每片一次 exec。
+B64_ARG_CHUNK = 60_000  # 必须是 4 的倍数：保证每片自身就是完整 base64 块，可独立解码后追加
+
+
+def b64_chunks(data: bytes) -> list[str]:
+    """编码成可**逐片独立解码**的 base64 片段（故切点取 4 的倍数，免临时文件拼接+二次解码）。
+
+    空数据回单个空片：让调用方照常发一次 exec，空文件同样被创建（与整包写语义一致）。
+    """
+    b64 = base64.b64encode(data).decode("ascii")
+    return [b64[i:i + B64_ARG_CHUNK] for i in range(0, len(b64), B64_ARG_CHUNK)] or [""]
 
 
 class SandboxBackend(Protocol):
@@ -216,23 +234,31 @@ class DockerContainerBackend:
         return ExecResult(int(r.exit_code), _truncate(out, max_output_bytes), _truncate(err, max_output_bytes))
 
     async def write_file(self, rel_path: str, data: bytes) -> None:
-        # B8-SBX-001：只读 rootfs 下 Docker 拒绝 put_archive/get_archive（archive API 整体被禁），
-        # 改用 exec_shell 向可写 tmpfs 落盘：base64 内联 + mkdir -p 建嵌套父目录（put_archive 不可靠）。
-        import base64
+        """base64 分片写入容器可写 tmpfs（首片建父目录并覆盖，后续片追加）。
 
+        B8-SBX-001：只读 rootfs 下 Docker 拒绝 put_archive/get_archive（archive API 整体被禁），
+        只能经 exec 落盘。**必须分片**：整包 base64 内联进一条命令行会撞 execve 的单 argv 上限
+        （见 b64_chunks），>96KB 的参考文件必炸 "argument list too long"。
+        路径/分片一律 shlex.quote——rel_path 源自 Skill 包的 ZIP 条目名，裸单引号拼接可被文件名注入。
+        """
         path = f"{self.CONTAINER_WORKDIR}/{rel_path}"
-        b64 = base64.b64encode(data).decode("ascii")
-        parent = path.rsplit("/", 1)[0]
-        r = await self._exec(["sh", "-lc", f"mkdir -p '{parent}' && printf %s '{b64}' | base64 -d > '{path}'"], timeout=30)
-        if int(r.exit_code) != 0:
-            err = r.stderr if isinstance(r.stderr, bytes) else str(r.stderr).encode()
-            raise RuntimeError(f"write_file 失败：{err.decode('utf-8', 'replace')[:200]}")
+        q_path = shlex.quote(path)
+        q_parent = shlex.quote(path.rsplit("/", 1)[0])
+        chunks = b64_chunks(data)
+        for i, chunk in enumerate(chunks):
+            prefix = f"mkdir -p {q_parent} && " if i == 0 else ""
+            redirect = ">" if i == 0 else ">>"  # 首片覆盖（重写幂等），其余追加
+            line = f"{prefix}printf %s {shlex.quote(chunk)} | base64 -d {redirect} {q_path}"
+            r = await self._exec(["sh", "-lc", line], timeout=30)
+            if int(r.exit_code) != 0:
+                err = r.stderr if isinstance(r.stderr, bytes) else str(r.stderr).encode()
+                # 带上文件名/大小/片号：内网那次只有一句 argument list too long，看不出是哪个文件
+                raise RuntimeError(f"write_file 失败（{rel_path}，{len(data)}B，第 {i + 1}/{len(chunks)} 片）："
+                                   f"{err.decode('utf-8', 'replace')[:200]}")
 
     async def read_file(self, rel_path: str) -> bytes:
-        import base64
-
         path = f"{self.CONTAINER_WORKDIR}/{rel_path}"
-        r = await self._exec(["sh", "-lc", f"base64 '{path}'"], timeout=30)
+        r = await self._exec(["sh", "-lc", f"base64 {shlex.quote(path)}"], timeout=30)
         out = r.stdout if isinstance(r.stdout, bytes) else str(r.stdout).encode()
         return base64.b64decode(out)
 
