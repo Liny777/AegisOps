@@ -89,7 +89,7 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
   await expect(editor).toBeVisible();
 
   // 第一步只留 名称/类型/级别/提示词：预览与监控策略区块都不在
-  await expect(editor.getByText("第 1 步 / 共 2 步")).toBeVisible();
+  await expect(editor.getByTestId("alerts-rule-owner-only")).toBeVisible();
   await expect(editor.getByTestId("alerts-rule-preview")).toHaveCount(0);
   await expect(editor.getByText("最近 3 天该类型告警")).toHaveCount(0);
   await expect(editor.getByText("监控策略", { exact: true })).toHaveCount(0);
@@ -114,14 +114,13 @@ test("配置编辑器：两步向导——第一步表单+斜杠选 skill，第�
 
   // 第二步：默认近 7 天预览，切近 3 天计数收窄（mock 日期相对生成：D1/D2 在 3 天窗、D5/D6 仅 7 天窗）
   await editor.getByRole("button", { name: "下一步" }).click();
-  await expect(editor.getByText("第 2 步 / 共 2 步")).toBeVisible();
   await expect(editor.getByTestId("alerts-rule-preview")).toBeVisible();
   await expect(editor.getByTestId("alerts-rule-window")).toHaveValue("7");
   await expect
     .poll(async () => editor.getByTestId("alerts-rule-preview-row").count())  // mock delay 120ms，等数据到位
     .toBeGreaterThan(0);
   const count7 = await editor.getByTestId("alerts-rule-preview-row").count();
-  await expect(editor.getByText(`共 ${count7} 条告警`)).toBeVisible();
+  await expect(editor.getByText(`最近 ${count7} 条告警`)).toBeVisible();
   await expect(editor.getByText("未分派").first()).toBeVisible();          // 状态徽标列在位
   await expect(editor.getByText("企业ID")).toBeVisible();                  // 企业 ID 展示列（2026-08-10）
   // 编号跳转：mock 假链按企业分发拼 ?alarmCode=（首行应为可点 <a>）

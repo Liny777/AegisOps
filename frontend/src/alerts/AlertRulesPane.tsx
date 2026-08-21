@@ -450,7 +450,6 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
       <div data-testid="alerts-rule-editor" style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <OverlayHeader
           title={rule ? "编辑告警策略" : "添加告警策略"}
-          sub={step === 1 ? "第 1 步 / 共 2 步 · 基本信息" : "第 2 步 / 共 2 步 · 命中告警预览，确认后保存"}
           onClose={onClose}
         />
         <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "16px 20px", display: "flex", flexDirection: "column", gap: 16 }}>
@@ -536,7 +535,8 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
             </>
           ) : (
             <div data-testid="alerts-rule-preview">
-              {/* 工具行：时间窗下拉 + 计数（对齐原型「近7天告警 · 共 N 条告警」） */}
+              {/* 工具行：时间窗下拉 + 计数（「近7天告警 · 最近 N 条告警」——只取第 1 页 20 条，
+                  文案说「最近 N 条」而非「共 N 条」，免得窗内更多告警时读成全量） */}
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 <span style={{ fontSize: 12.5, color: color.textNav }}>这些告警符合您的筛选条件，如果缺少某些告警，请返回上一步并修改筛选条件。</span>
               </div>
@@ -551,7 +551,7 @@ function RuleEditor({ instanceId, payload, rule, busy, onClose, onSubmit }: {
                   <option value={3}>近3天告警</option>
                 </select>
                 {preview ? (
-                  <span style={{ fontSize: 12.5, color: color.textNav }}>共 <b>{preview.total}</b> 条告警</span>
+                  <span style={{ fontSize: 12.5, color: color.textNav }}>最近 <b>{preview.rows.length}</b> 条告警</span>
                 ) : null}
                 {preview?.source === "local_fallback" ? (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: color.textSubtle }}>
