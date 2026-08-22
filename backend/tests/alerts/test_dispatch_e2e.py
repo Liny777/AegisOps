@@ -202,6 +202,31 @@ def test_full_diagnosis_chain(client, monkeypatch):
     assert run_id not in user_c.active_run_ids
 
 
+def test_build_prompt_appends_output_language_requirement():
+    """派发提示词末尾固定钉一句「输出语言=简体中文」（2026-08-21 换模型后新增，纯函数无需 DB）。
+
+    换用的模型默认全英文作答，而本链路的 conclusion 前 200 字会直接当 WeLink 通知摘要推给用户。
+    加在 _build_prompt 而**不是** DEFAULT_RULE_PROMPT：后者的文本参与 matcher.prompt_hash
+    （=incident.prompt_group，改了组标就漂）、且前端把它原文预填落库（存量规则存的是副本）。
+    故默认提示词与用户自定义提示词两条路径都必须命中——下面各测一条。
+    """
+    from alerts.dispatcher import _build_prompt
+    from alerts.rule_templates import DEFAULT_RULE_PROMPT
+
+    inc = {"alert_incident_id": "i1", "title": "MySQL 连接飙升", "severity": "critical",
+           "category": "MySQL", "group_key": "inst|APP-A|MySQL 连接飙升", "alert_count": 1,
+           "first_alert_at": "2026-08-21T10:00:00Z"}
+    events = [{"severity": "critical", "alert_name": "conn_high", "external_alert_id": "AL-1",
+               "annotations_json": {"description": "connections 95%"}, "labels_json": {"app": "APP-A"}}]
+
+    for requirement in (DEFAULT_RULE_PROMPT, "【专属指引】先看主从复制线程。"):
+        text = _build_prompt(inc, events, requirement)
+        assert requirement in text                       # 规则提示词本体不被挤掉
+        assert "一律使用简体中文" in text
+        assert "保持原样不翻译" in text                   # 告警编号/APPID 不得被汉化
+        assert text.index("简体中文") > text.index(requirement[:20])  # 语言要求压在要求段之后
+
+
 def test_rule_prompt_slash_skill_sets_hint(client):
     """规则提示词句中 /inspection（seed 平台 skill）→ 派发任务 skill_hint 生效。
 

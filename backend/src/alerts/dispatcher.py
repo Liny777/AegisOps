@@ -253,8 +253,21 @@ def _notify_owner_done(inc: dict[str, Any], run_id: str, *,
                     inc.get("alert_incident_id"), exc_info=True)
 
 
+# 输出语言（2026-08-21 换模型后新增）：与 agentscope_runtime 的系统提示词语言块同口径，
+# 在告警链路再钉一遍——本链路的 conclusion 前 200 字会直接当 WeLink 通知摘要推给用户。
+# **刻意不改 DEFAULT_RULE_PROMPT**：那份常量的文本参与 matcher.prompt_hash → incident.prompt_group
+# （改了存量未完结单的组标就对不上，同一告警多开姊妹单、组冷却失效），且前端新建规则时把
+# default_prompt 原文预填并落库，存量规则存的是旧文本副本、改常量根本覆盖不到。挂在这里则对
+# 默认提示词 / 存量副本 / 用户自定义提示词一视同仁。
+_OUTPUT_LANG_REQUIREMENT = (
+    "输出语言：本次诊断的对话正文、最终结论与诊断面板内容（含 conclusion——其前 200 字会作为通知"
+    "摘要直接推送给用户）一律使用简体中文；告警编号、APPID、实例名、指标名、错误码、命令与日志"
+    "原文片段保持原样不翻译。"
+)
+
+
 def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement: str) -> str:
-    """结构化诊断输入：告警要素 + 要求段（规则自定义提示词优先，空则系统默认五步法）。
+    """结构化诊断输入：告警要素 + 要求段（规则自定义提示词优先，空则系统默认五步法）+ 语言要求。
 
     告警编号必带（2026-08-16）：Agent/子 Agent 的 MCP 告警工具按编号查平台详情
     （query_alarm_detail 类入参=alarmCode），提示词里没编号等于工具废掉一半。
@@ -283,7 +296,7 @@ def _build_prompt(inc: dict[str, Any], events: list[dict[str, Any]], requirement
         lines.append(seg)
     if len(events) > 5:
         lines.append(f"-（其余 {len(events) - 5} 条同组告警略）")
-    lines += ["", requirement]
+    lines += ["", requirement, "", _OUTPUT_LANG_REQUIREMENT]
     return "\n".join(lines)
 
 
