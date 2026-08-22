@@ -237,13 +237,18 @@ async def start_task(user: dict[str, Any], run_id: str, req: Any,
     sandbox_uid = ALERT_SANDBOX_UID if origin == "alert" else uid
     run = await owned_run(uid, run_id)
     if run["run_status"] == "closed":
-        # 告警 run 的「追问自动复开」：仅系统关闭（idle 回收/告警专属 TTL）可复开——先容量再准入
-        # （refcount 账目必须补，否则 release 时账目错乱），用户主动 close 的会话语义不变。
-        if run.get("entry_source") == "alert" and run.get("status_reason_code") in ("idle_timeout", "alert_idle"):
+        # 「追问自动复开」：仅**系统关闭**（idle 回收/告警专属 TTL）可复开——先容量再准入
+        # （refcount 账目必须补，否则 release 时账目错乱）。用户主动 close 语义不变：主动关走
+        # set_run_status(reason_code=None)，status_reason_code 为 NULL，天然落不进这里。
+        # 告警 run 额外接受 alert_idle（reopen_alert_run 守 entry_source）；普通会话走 reopen_run
+        # （守 status_reason_code='idle_timeout'）。二者都是条件 UPDATE，并发重入幂等。
+        _reason = run.get("status_reason_code")
+        _is_alert = run.get("entry_source") == "alert"
+        if _reason == "idle_timeout" or (_is_alert and _reason == "alert_idle"):
             _sb_cfg = {c["config_key"]: c["config_value_json"]
                        for c in await runtime_config.get_domain("sandbox")}
             await sandbox_executor.ensure_user_container(sandbox_uid, run_id, _sb_cfg)
-            await runs.reopen_alert_run(run_id)
+            await (runs.reopen_alert_run(run_id) if _is_alert else runs.reopen_run(run_id))
             run = await runs.get_run(run_id) or run
         if run["run_status"] == "closed":
             raise ApiError(Err.RUN_ALREADY_CLOSED, "Run 已关闭，不能启动新任务")  # RUN-005 / CANCEL-006
@@ -726,7 +731,10 @@ async def reclaim_idle_runs(cfg: dict[str, Any]) -> int:
             for _sb_key in _sandbox_release_keys(row):
                 await sandbox_executor.release_user_container(_sb_key, run_id)
             await sandbox_executor.sweep_idle(cfg)
-            msg = f"会话超过 {ttl} 分钟无活动，已自动关闭并释放沙箱资源；发送新消息将自动开启新会话。"
+            # 文案须与 start_task 的自动复开行为一致：复开的是**同一条 run**（记忆按
+            # framework_session_id 延续），不是新建会话。别改回「开启新会话」。
+            msg = (f"会话超过 {ttl} 分钟无活动，已自动休眠并释放沙箱资源；"
+                   "发送新消息将自动唤醒本会话，聊天记录不受影响。")
             eid = await audit.insert_event(
                 audit_trace_id=str(row["audit_trace_id"]), event_type="run.closed", user_id=uid,
                 run_id=run_id, instance_id=str(row["agent_team_instance_id"]),

@@ -232,3 +232,38 @@ export function projectInstance(r: Record<string, unknown>, wsNames?: Map<string
     model: undefined,
   };
 }
+
+/* ---- 会话可用性投影（idle 休眠 ≠ 会话终结） ---- */
+
+/** 平台 idle 回收写的 status_reason_code（reclaim_idle_runs）。 */
+export const IDLE_DORMANT_REASON = "idle_timeout";
+
+/**
+ * 「系统关闭」的全部 reason_code —— 必须与后端 start_task 的自动复开条件保持同一口径
+ * （run_state_service.py 里 reopen_run / reopen_alert_run 的守卫）。
+ *
+ * `alert_idle` 是告警专属提前回收（alert_run_idle_ttl_minutes 旋钮），当前后端尚无写入方，
+ * 但复开分支已经认它。这里一并认下：等那个旋钮实现时，前端不会反过来把能复开的告警会话锁死。
+ * 用户主动关闭 / 管理员终止不在此列（reason 为空或其它值）——那才是真只读。
+ */
+const SYSTEM_CLOSE_REASONS = new Set([IDLE_DORMANT_REASON, "alert_idle"]);
+
+/** 该 run 是否只是「休眠」：被系统回收关掉，但下次发消息后端会自动复开同一条 run。 */
+export function isDormantRun(runStatus: unknown, reasonCode: unknown): boolean {
+  return String(runStatus ?? "") === "closed" && SYSTEM_CLOSE_REASONS.has(String(reasonCode ?? ""));
+}
+
+/**
+ * 后端 `run_status` + `status_reason_code` → 前端「会话是否还能对话」两态。
+ *
+ * idle 回收只释放沙箱名额，不终结会话：对话记忆按 `framework_session_id` 存在 PG
+ * （`sre_agent_session_state`，无 TTL、无清理），后端 `start_task` 见到
+ * `status_reason_code='idle_timeout'` 会先补容量再 `reopen_run` 复开同一条 run。
+ * 所以前端一切「会话可用性」判定都必须把休眠态归一成 active，否则输入框会被白白锁死。
+ *
+ * 真正的只读态只剩：用户主动关闭 / 管理员终止（`status_reason_code` 为空或其它值）。
+ */
+export function projectRunStatus(runStatus: unknown, reasonCode: unknown): "active" | "closed" {
+  if (String(runStatus ?? "") !== "closed") return "active";
+  return isDormantRun(runStatus, reasonCode) ? "active" : "closed";
+}

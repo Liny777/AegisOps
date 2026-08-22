@@ -3,10 +3,13 @@ import { useNavigate } from "react-router-dom";
 import { color, radius, type Tone } from "../theme/tokens";
 import { toneColor } from "../theme/tokens";
 import { Icon, IconButton, Button } from "../ui";
-import { api, API_MODE, forgetEnsuredRun, isAbortError } from "../lib/api";
+import { api, API_MODE, forgetEnsuredRun, invalidateConversationHistory, isAbortError } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
-import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes, projectRca } from "../lib/api/projection";
+import {
+  approvalToHitl, buildApprovalFacts, eventToNode, groupNodes, projectRca,
+  isDormantRun, projectRunStatus,
+} from "../lib/api/projection";
 import { activityReducer, createActivityState, projectRailModel } from "../lib/activity";
 import { API_BASE } from "../lib/api/client";
 import { mockRcaFinal, mockRecoveryClosureEvents } from "../lib/api/mockData";
@@ -161,6 +164,8 @@ export function Workbench({
   // 平台默认模型。这是用户**唯一**能看见降级的地方——主 Agent 时间线 real 模式恒空，该事件也没有
   // delegation_id 进不了子 Agent 轮次，不弹这条横幅用户就只能在管理员审计页才看得到。
   const [modelDegraded, setModelDegraded] = useState<string | null>(null);
+  // 会话休眠提示（idle 回收）。不是错误、不锁输入：发消息即自动唤醒，仅告知沙箱临时文件已释放。
+  const [dormantNotice, setDormantNotice] = useState<string | null>(null);
   const [retryGeneration, setRetryGeneration] = useState(0);
   const [copilotConnectionGeneration, setCopilotConnectionGeneration] = useState(0);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -450,6 +455,7 @@ export function Workbench({
         setTaskStatus("running");
         taskStatusRef.current = "running"; // 镜像同步收紧：紧随其后的首批 delta 不吃 effect 延迟
         setQueuePosition(null);           // 轮到自己了，排队条撤下
+        setDormantNotice(null);           // 任务起得来即 run 已复开，休眠提示撤下
         if (e.task_id) setTaskId(e.task_id);
         if (USE_COPILOT_CHAT) {
           const reject = explainObserverSignals(observerSignals(e.agent_run_id, { taskStatus: "running" }));
@@ -573,8 +579,22 @@ export function Workbench({
         setModelDegraded(e.message || "原自带模型不可用，本次已改用平台默认模型，请重新选择模型");
         break;
       case "openops.run.closed":
+        // 两类 closed 必须分开处理，靠 reason_code 分辨：
+        // ① idle 回收（idle_timeout）= 休眠。只释放沙箱名额，会话记忆按 framework_session_id
+        //    留在 PG；后端 start_task 见到该 reason 会自动复开同一条 run。此处**保持可输入**，
+        //    只挂一条提示——锁掉输入反而让后端那条「发消息即自动唤醒」的承诺无法兑现。
+        // ② 用户主动关 / 管理员终止（reason 为空或其它）= 真只读。除翻 closed 外还要失效会话
+        //    列表缓存：conversationCache 无 TTL，不失效的话 ensureRun 会从陈旧列表里读到这条
+        //    仍标 active 的 run，把用户又送回这个已关闭的会话（主动关走 api.closeRun 有失效，
+        //    唯独被动收到事件这条路漏了）。
+        if (isDormantRun("closed", e.reason_code)) {
+          setDormantNotice(e.message
+            || "会话已休眠并释放沙箱资源；发送新消息将自动唤醒，聊天记录不受影响。");
+          break;
+        }
         setRunStatus("closed");
         if (activeInstanceRef.current) forgetEnsuredRun(activeInstanceRef.current, e.agent_run_id);
+        invalidateConversationHistory();
         break;
       default:
         break;
@@ -589,7 +609,12 @@ export function Workbench({
   ): { instanceId: string; runStatus: "active" | "closed"; lastEventSeq: number | null } => {
     const stateInstanceId = String(d.instance?.agent_team_instance_id ?? fallbackInstanceId ?? "");
     if (!stateInstanceId) throw new Error("会话状态缺少 Agent 归属信息");
-    const nextRunStatus = d.run?.run_status === "closed" ? "closed" : "active";
+    // 刷新页面 / 切回该会话走这条：同样按 status_reason_code 分辨休眠与真关闭。
+    // get_state 已 row_json(run) 全字段透出，后端契约无需改动。
+    const nextRunStatus = projectRunStatus(d.run?.run_status, d.run?.status_reason_code);
+    setDormantNotice(isDormantRun(d.run?.run_status, d.run?.status_reason_code)
+      ? "会话此前因长时间无活动已休眠；发送新消息将自动唤醒，聊天记录不受影响。"
+      : null);
     const activeTask = d.active_task as Record<string, any> | null | undefined;
 
     setResolvedInstanceId(stateInstanceId);
@@ -1310,6 +1335,30 @@ export function Workbench({
             </Button>
           ) : null}
           <IconButton icon="x" title="关闭提示" onClick={() => setModelDegraded(null)} />
+        </div>
+      ) : null}
+
+      {/* 会话休眠（idle 回收）：中性提示而非 alert——输入框照常可用，发消息即自动唤醒同一条
+          run，聊天记录不受影响。刻意不做成阻断态：这里若锁输入，就回到了「会话锁死」的老问题。 */}
+      {dormantNotice ? (
+        <div
+          role="status"
+          data-testid="run-dormant-notice"
+          style={{
+            flex: "0 0 auto",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "9px 20px",
+            borderBottom: `1px solid ${color.border}`,
+            background: toneColor.neutral.bg,
+            color: toneColor.neutral.text,
+            fontSize: 12.5,
+          }}
+        >
+          <Icon name="moon" size={15} />
+          <span style={{ flex: 1 }}>{dormantNotice}</span>
+          <IconButton icon="x" title="关闭提示" onClick={() => setDormantNotice(null)} />
         </div>
       ) : null}
 
