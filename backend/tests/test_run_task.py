@@ -190,7 +190,16 @@ def test_build_system_prompt_uses_role_and_platform_rules():
     assert "补充：优先看 redis 指标" in rt._build_system_prompt(st)   # 实例级追加生效
 
     st.skill_hint = "fault-diagnosis"
-    assert "第一步调用 run_platform_skill(skill_name='fault-diagnosis')" in rt._build_system_prompt(st)
+    p_hint = rt._build_system_prompt(st)
+    assert "第一步调用 run_platform_skill(skill_name='fault-diagnosis')" in p_hint
+
+    # 输出语言硬约束（换模型后新增）：换用的模型默认全英文作答，平台交付面全中文
+    assert "一律用简体中文" in p_hint
+    assert "render_chart 的图表标题" in p_hint            # 主 Agent 专属（该工具只注册给 main）
+    # 例外清单不能被后人删：模型会原样复制 appid 去填工具参数，汉化一次就被 Gateway fail-closed
+    assert "所有工具调用参数" in p_hint and "不得翻译或改写" in p_hint
+    # 压轴位：语言块必须排在 skill_hint 子句之后（近因位 + 自带优先级声明）
+    assert p_hint.index("【输出语言") > p_hint.index("run_platform_skill(skill_name='fault-diagnosis')")
 
     st_bare = TaskState(task_id="t", run_id="r", user_id="u", instance_id="i", input_text="x")
     assert rt._DEFAULT_MAIN_ROLE in rt._build_system_prompt(st_bare)  # role 缺失 → 兜底默认
@@ -220,6 +229,11 @@ def test_build_sub_system_prompt_carries_skill_and_safety_rules():
     assert "render_chart" not in p                                # 该工具只注册给 main，规则不下发
     # 顺序：Skill 规则必须在汇报纪律之前，否则「禁止无差别调用通用工具」会被读成对 Skill 的抑制
     assert p.index("必须优先调用该 Skill") < p.index("禁止无差别调用所有通用工具")
+
+    # 输出语言硬约束同样下沉到子 Agent——子的汇报会被主 Agent 引用进最终结论，漏了子就漏半条链
+    # （上面那条 "render_chart" not in p 现在同时守着语言块：主 Agent 版多一条图表条款，不得混进子版）
+    assert "一律用简体中文" in p and "所有工具调用参数" in p
+    assert p.index("【输出语言") > p.index("【汇报纪律】")        # 压轴位（近因）
 
 
 def test_sub_skill_hint_propagates_only_when_child_assembled_it():

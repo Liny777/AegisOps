@@ -212,13 +212,17 @@ async def _build_model(st: TaskState) -> Any:
         from agentscope.credential import OpenAICredential
         from agentscope.model import OpenAIChatModel
         from infra.external.mcp_registry_client import console_tls_verify, http_trust_env
+        from runtime import inline_think
 
         # 构建目标一眼可见（同 [db]/[startup] 模式；不含 key 值）——DB base_url 错时这行即诊断
         # 自定义 header 只打条数不打名值（值可能是租户/路由凭据，SEC-001 同口径）
         extra_headers: dict[str, str] = spec.get("extra_headers") or {}
+        # 内联 think 切流（网关把思考混在 content 里、只吐 </think> 闭标签时按 model_id 白名单开启）
+        inline = inline_think.enabled_for(spec["model_id"])
         print(f"[OpenOps][model] building {spec['model_id']} "
               f"base_url={spec.get('base_url') or 'default(api.openai.com)'} key={key_src} "
-              f"extra_headers={len(extra_headers)} trust_env={http_trust_env()}", flush=True)
+              f"extra_headers={len(extra_headers)} trust_env={http_trust_env()} "
+              f"inline_think={'on' if inline else 'off'}", flush=True)
         # 自定义 http_client：trust_env 默认 False——openai SDK 默认信任环境/Windows 注册表代理，
         # 内网 GLM 会被公司 SWG 劫走（实测返回 HIS Proxy 错误页而非模型响应）。超时对齐推理耗时。
         # max_retries 默认 0：openai SDK 默认重试 2 次，坏 base_url（内网实测 DB 里填了占位假地址）
@@ -238,7 +242,9 @@ async def _build_model(st: TaskState) -> Any:
             # 用户高级选项自定义 Header（内网网关路由/租户标识等）：openai SDK 每请求附带。
             # 与「测试连接」探测（llm_provider_client）同源，避免测通了但真跑缺头。
             client_kwargs["default_headers"] = dict(extra_headers)
-        return OpenAIChatModel(
+        # 白名单命中 → 切流子类（只覆写 _call_api，构造参数与基类逐字相同）
+        model_cls = inline_think.patched_model_cls() if inline else OpenAIChatModel
+        return model_cls(
             credential=OpenAICredential(api_key=api_key),
             model=spec["model_id"],
             stream=True,
@@ -595,6 +601,29 @@ _MAIN_ONLY_RULES = (
 )
 _PLATFORM_RULES = _RULES_HEADER + _SKILL_PREFERENCE_RULE + _BOARD_RULE_MAIN + _SAFETY_RULES + _MAIN_ONLY_RULES
 
+# 输出语言（2026-08-21 换模型后新增）：新模型默认全英文作答，而平台交付面（对话正文、诊断面板、
+# 图表、WeLink 通知摘要取 conclusion 前 200 字）全中文——英文结论等于交付物不可用。语言是平台层
+# 硬约束、与角色人设无关，故与 _PLATFORM_RULES 同源下沉；同本文件既有的「按受众拆块」纪律拆主/子
+# 两版（render_chart 只注册给 main，不能拿去教子 Agent），子 Agent 也必须有——它的汇报会被主
+# Agent 直接引用进最终结论，漏了子就漏半条链。位置刻意放**最末**取近因位。
+_OUTPUT_LANGUAGE_HEADER = "\n\n【输出语言（平台硬约束，优先级高于角色设定与本提示词其余各节）】\n"
+_OUTPUT_LANGUAGE_CORE = (
+    "- 无论用户输入、工具返回、Skill 手册、日志与告警原文是什么语言，你产出的所有文字一律用简体中文："
+    "对话正文与最终结论、思考过程、update_diagnosis_board 的 facts / hypotheses / sources / "
+    "step_summary / conclusion、以及你返回给上游的汇报文本，全部包含在内。\n"
+    # 例外清单不是客套：模型会原样复制 appid 去填工具参数（见 _render_workspace_scope 的注释），
+    # 「顺手汉化」一次就被 Tool Gateway 的精确成员校验 fail-closed。
+    "- 例外（原样保留，不得翻译或改写）：appid、实例名/主机名、服务名、指标名、告警编号、错误码、"
+    "命令、代码、文件路径、日志原文片段，以及所有工具调用参数；需要解释时在其后用中文括注。\n"
+    "- 不要中英对照输出两份，也不要先写英文再附译文——直接只给中文。\n"
+)
+# 仅主 Agent：render_chart 只注册给 main（与 _MAIN_ONLY_RULES 同一条边界）
+_OUTPUT_LANGUAGE_MAIN = _OUTPUT_LANGUAGE_HEADER + _OUTPUT_LANGUAGE_CORE + (
+    "- render_chart 的图表标题与坐标轴/系列名同样用简体中文。"
+)
+# 子 Agent：rstrip 对齐行距（拼在【汇报纪律】之后，末尾不留空行）
+_OUTPUT_LANGUAGE_SUB = (_OUTPUT_LANGUAGE_HEADER + _OUTPUT_LANGUAGE_CORE).rstrip("\n")
+
 # D 块：worker 汇报纪律（37 号老 roles.yaml 口径翻译）——拼进每个 sub agent 的 system_prompt。
 # 原住 infra.seed（DB 播种模块）却只被运行时消费，与 _PLATFORM_RULES 不同源；迁来与之并置。
 SUB_REPORT_DISCIPLINE = (
@@ -615,20 +644,20 @@ def _skill_hint_clause(skill_hint: str) -> str:
 
 def _build_system_prompt(st: TaskState) -> str:
     """装配主 Agent 的 system_prompt：用户人设（模板 main.role + 实例 main_role_append）在前领跑，
-    平台规则在后固定兜底，skill_hint 命中时再追加确定性执行指令。修「主 Agent 人设被丢弃、
-    硬编码『先巡检定界』逼模型自行诊断」——子 Agent 早已走 sub['role']，主 Agent 对齐。"""
+    平台规则在后固定兜底，skill_hint 命中时再追加确定性执行指令，输出语言硬约束收尾。修「主 Agent
+    人设被丢弃、硬编码『先巡检定界』逼模型自行诊断」——子 Agent 早已走 sub['role']，主 Agent 对齐。"""
     persona = (st.main_role or _DEFAULT_MAIN_ROLE).strip() or _DEFAULT_MAIN_ROLE
     if st.main_role_append:
         persona = f"{persona}\n{st.main_role_append.strip()}"
     prompt = persona + _PLATFORM_RULES
     if st.skill_hint:  # /<skill> 显式触发：确定性优先执行指定 Skill（start_task 已按 available_skills 校验命中）
         prompt += _skill_hint_clause(st.skill_hint)
-    return prompt
+    return prompt + _OUTPUT_LANGUAGE_MAIN  # 语言块压轴：近因位 + 自带优先级声明，用户人设压不过它
 
 
 def _build_sub_system_prompt(child: TaskState, sub: dict[str, Any]) -> str:
     """装配子 Agent 的 system_prompt：画像人设 + 子 Agent 版平台规则（面板规则用 _BOARD_RULE_SUB：
-    只提内容、不推进不收尾）+ 汇报纪律。
+    只提内容、不推进不收尾）+ 汇报纪律 + 输出语言硬约束。
 
     顺序刻意：Skill 规则**先于**汇报纪律，否则纪律里的「禁止无差别调用通用工具」会被读成
     对 Skill 的抑制。skill_hint 必须按 **child** 的技能面重新校验——子技能面是 leader 的子集，
@@ -641,7 +670,7 @@ def _build_sub_system_prompt(child: TaskState, sub: dict[str, Any]) -> str:
         prompt += _skill_hint_clause(child.skill_hint)
     # 独立小节标题：纪律原本紧贴规则列表，读起来像上一条 bullet 的续行——本次修复的要害正是
     # 让模型把「优先用 Skill」和「别乱调工具」当成两条互不覆盖的指令，分节可降低误读
-    return f"{prompt}\n\n【汇报纪律】\n{SUB_REPORT_DISCIPLINE}"
+    return f"{prompt}\n\n【汇报纪律】\n{SUB_REPORT_DISCIPLINE}" + _OUTPUT_LANGUAGE_SUB
 
 
 async def _build_toolkit(st: TaskState, run: dict[str, Any]) -> Any:
