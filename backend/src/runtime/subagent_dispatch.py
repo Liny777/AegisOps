@@ -240,9 +240,10 @@ async def _run_one(st: TaskState, run: dict[str, Any], sub: dict[str, Any],
     finally:
         studio.reset_task_context(_studio_tok)
         task_registry.unregister_subtask(child.task_id)
-        try:  # DEF-1 级联收口：子任务任何终止路径都把自己的 pending 审批置 cancelled——
+        try:  # DEF-1 级联收口：子任务任何终止路径都把自己的 pending 审批/四号校验置 cancelled——
             # 否则遗留 pending 卡片的迟到 decide 无人认领（旧 fallback 时代会污染主任务握手）
             await runs_repo.cancel_pending_approvals(child.task_id, st.user_id)
+            await runs_repo.cancel_pending_flow_checks(child.task_id, st.user_id)
         except Exception:  # noqa: BLE001 —— 收口失败不改变子任务结果
             log.warning("[OpenOps][subagent] 子任务 %s pending 审批收口失败", child.task_id)
 

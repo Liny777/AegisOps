@@ -6,7 +6,7 @@ import { Icon, IconButton, Button } from "../ui";
 import { api, API_MODE, forgetEnsuredRun, isAbortError } from "../lib/api";
 import { subscribeSse } from "../lib/runtime/sse";
 import { runAguiTask, TRANSPORT } from "../lib/runtime/agui";
-import { approvalToHitl, buildApprovalFacts, eventToNode, groupNodes, projectRca } from "../lib/api/projection";
+import { approvalToHitl, buildApprovalFacts, eventToNode, flowCheckFromPayload, flowCheckToCard, groupNodes, projectRca } from "../lib/api/projection";
 import { activityReducer, createActivityState, projectRailModel } from "../lib/activity";
 import { API_BASE } from "../lib/api/client";
 import { mockRcaFinal, mockRecoveryClosureEvents } from "../lib/api/mockData";
@@ -22,6 +22,7 @@ import {
 import type {
   ActivityNode,
   ChatMessage,
+  FlowCheckCardData,
   HitlCardData,
   OpenOpsEvent,
   RcaCardData,
@@ -31,6 +32,7 @@ import type {
 } from "../lib/api/types";
 import { newSendNonce, type PendingSend } from "./copilot/programmaticSend";
 import { HitlCard } from "./HitlCard";
+import { FlowCheckCard } from "./FlowCheckCard";
 import { HypothesisCheckpointCard } from "./HypothesisCheckpointCard";
 import { CopilotCheckpointFloat } from "./copilot/CopilotCheckpointFloat";
 import { Composer } from "./Composer";
@@ -39,6 +41,7 @@ import { ActivityRail } from "./ActivityRail";
 import { CopilotChatPanel, CopilotWorkbenchProvider } from "./copilot/CopilotChatPanel";
 import { CopilotErrorBoundary } from "./copilot/CopilotErrorBoundary";
 import { CopilotHitlFloat } from "./copilot/CopilotHitlFloat";
+import { CopilotFlowCheckFloat } from "./copilot/CopilotFlowCheckFloat";
 import { useApp, useSyncCurrentAgent } from "../lib/appState";
 import { consumeAutoQuestion } from "../lib/autosend";
 import { consumeAlertContext } from "../lib/alertEntry";
@@ -171,6 +174,8 @@ export function Workbench({
   const [queuePosition, setQueuePosition] = useState<number | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [hitl, setHitl] = useState<HitlCardData | undefined>(undefined);
+  // 四号校验卡（29.14）：风控 SDK 弹窗的状态容器；与审批卡同生命周期口径（linger 淡出/会话切换清卡）
+  const [flowCheck, setFlowCheck] = useState<FlowCheckCardData | undefined>(undefined);
   // 假设 checkpoint 卡（诊断 step=3 后弹出：添加假设/继续排查/超时自动继续；服务端权威计时）
   const [checkpoint, setCheckpoint] = useState<CheckpointCardState | undefined>(undefined);
   const [rca, setRca] = useState<RcaCardData | undefined>(undefined); // 诊断面板（右栏「诊断」tab）
@@ -504,6 +509,27 @@ export function Workbench({
         );
         break;
       }
+      // 四号校验（29.14）：required 挂卡（卡内自动拉起风控 SDK 弹窗）；决策/超时翻结果态后淡出
+      case "openops.flow_check.required": {
+        setFlowCheck(flowCheckFromPayload(p));
+        break;
+      }
+      case "openops.flow_check.approved":
+      case "openops.flow_check.rejected":
+      case "openops.flow_check.timeout": {
+        const decidedFc = e.event_type === "openops.flow_check.approved"
+          ? "approved" as const
+          : e.event_type === "openops.flow_check.timeout" ? "timeout" as const : "rejected" as const;
+        const fid = String(p.flow_check_request_id ?? "");
+        // 翻态必须按 id 命中：timeout 由后端按 run 批量扫描产生（并发子 Agent/重启遗留行），
+        // 异 id 事件不得误杀当前正在等用户输入的另一张 pending 卡
+        setFlowCheck((f) => (f && (!fid || f.flow_check_request_id === fid) ? { ...f, status: decidedFc } : f));
+        window.setTimeout(
+          () => setFlowCheck((cur) => (cur && cur.status !== "pending" && (!fid || cur.flow_check_request_id === fid) ? undefined : cur)),
+          HITL_RESULT_LINGER_MS,
+        );
+        break;
+      }
       // 假设 checkpoint：opened 弹卡；extended（hold 冻结倒计时）更新 deadline；closed 定格
       // 结果态后按 id 守卫计时器淡出（与审批卡同口径）。倒计时纯展示，超时判定在服务端。
       case "openops.diagnosis.checkpoint.opened": {
@@ -651,6 +677,19 @@ export function Workbench({
     if (pending.length) setHitl(approvalToHitl(pending[0]));
     else if (replaceSession) setHitl(undefined);
     else setHitl((current) => (current && current.status !== "pending" ? current : undefined));
+
+    // 四号校验恢复（29.14）：/state.pending_flow_checks 权威快照（刷新后卡片重挂并重新拉起 SDK 弹窗）。
+    // 同 id 且本端已决 → 保留结果态：陈旧快照（decide 与 /state 竞态）不得把卡翻回 pending 二次拉弹窗
+    const pendingFc = (d.pending_flow_checks ?? []) as Record<string, unknown>[];
+    if (pendingFc.length) {
+      setFlowCheck((current) => {
+        const next = flowCheckToCard(pendingFc[0]);
+        return current && current.flow_check_request_id === next.flow_check_request_id
+          && current.status !== "pending" ? current : next;
+      });
+    }
+    else if (replaceSession) setFlowCheck(undefined);
+    else setFlowCheck((current) => (current && current.status !== "pending" ? current : undefined));
 
     // 假设 checkpoint 恢复：/state.diagnosis_checkpoint 是内存挂起态投影（刷新后倒计时按
     // deadline-now 续算）。快照缺失时：换会话清空；同 Run resync 只清仍 pending 的旧卡
@@ -949,6 +988,7 @@ export function Workbench({
     if (!runId) return;  // 上方两分支已保证非空；此守卫仅为类型收窄
     const actionRunId = runId;
     setHitl(undefined);
+    setFlowCheck(undefined);
     if (TRANSPORT === "agui") {
       // B5：任务经 AG-UI 端点启动并流式接收（标准事件→对话区；CUSTOM→同一 openops 处理器）
       setTaskStatus("running");
@@ -1029,6 +1069,18 @@ export function Workbench({
       HITL_RESULT_LINGER_MS,
     );
   }, [hitl]);
+
+  // 四号校验决策后回调（decide API 由卡内发起——token 只在 SDK→卡内闭环，不经 Workbench）：
+  // 翻结果态 + linger 淡出；远端/超时决策由 handleOpenOpsEvent 的 flow_check.* 分支幂等兜底。
+  const resolveFlowCheck = useCallback((d: "approved" | "rejected" | "timeout") => {
+    if (!flowCheck) return;
+    const id = flowCheck.flow_check_request_id;
+    setFlowCheck((f) => (f ? { ...f, status: d } : f));
+    window.setTimeout(
+      () => setFlowCheck((cur) => (cur && cur.flow_check_request_id === id ? undefined : cur)),
+      HITL_RESULT_LINGER_MS,
+    );
+  }, [flowCheck]);
 
   // 假设 checkpoint 决策（本端点击）：hold 只冻结服务端倒计时（不翻态，等 extended 事件更新
   // deadline）；continue/add_hypothesis 乐观翻结果态 + linger 淡出，服务端 closed 事件幂等兜底。
@@ -1172,6 +1224,13 @@ export function Workbench({
               onDecide={resolveHitl}
             />
           ) : null}
+          {flowCheck ? (
+            <FlowCheckCard
+              key={flowCheck.flow_check_request_id + flowCheck.status}
+              data={flowCheck}
+              onDecided={resolveFlowCheck}
+            />
+          ) : null}
           <AlertTakeoverProvider vm={alertTakeover} enabled={runStatus === "active"}>
             <AlertTakeoverSlot />
           </AlertTakeoverProvider>
@@ -1229,6 +1288,7 @@ export function Workbench({
         ? (
           <>
             <CopilotHitlFloat hitl={hitl} onDecide={resolveHitl} />
+            <CopilotFlowCheckFloat flowCheck={flowCheck} onDecided={resolveFlowCheck} />
             <CopilotCheckpointFloat checkpoint={checkpoint} rca={rca} onDecide={resolveCheckpoint} />
           </>
         )

@@ -65,10 +65,10 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 return await _finish_cancel(st, run)
 
         # 恢复动作（B4）：未标注/blocked → 直接 fail-closed（不 ASK，Gateway 拦）；
-        # allowed 免审批 → 直接执行；allowed 需审批 → ASK
+        # allowed 免审批/免四号 → 直接执行；allowed 需审批 → ASK；allowed 需四号校验 → 四号握手（29.14）
         ann = (st.tool_annotations or {}).get("recover_execute")
         allowed = ann is not None and ann.get("status") == "allowed"
-        if not allowed or not ann.get("is_approval_required"):
+        if not allowed or not (ann.get("is_approval_required") or ann.get("is_flow_check_required")):
             await tool_gateway.invoke(st, run, "recover_execute", {"appid": "APP-A", "action": "restart"},
                                       started_msg="执行恢复动作（标注免审批）",
                                       succeeded_msg="恢复动作已执行（execution 受控追踪）")
@@ -76,6 +76,32 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             await _emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
             st.status = "completed"
             return await _emit(st, run, "openops.task.completed", message="任务完成：根因 H1，已执行恢复", action="task")
+
+        if ann.get("is_flow_check_required"):
+            # 四号校验（29.14）：mock 与真 runtime 共用同一握手实现（_handle_flow_check 不依赖 agentscope）
+            # ——decide_flow_check 置位 flow_check_ev 后，Gateway 在调用边界注入 token/code header
+            from runtime.agentscope_runtime import _handle_flow_check
+            decision = await _handle_flow_check(
+                st, run, "recover_execute",
+                {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"}, ann)
+            if st.status != "running":
+                return await _finish_cancel(st, run)
+            if decision == "approved":
+                await tool_gateway.invoke(st, run, "recover_execute", {"appid": "APP-A", "action": "restart"},
+                                          started_msg="执行恢复动作（四号校验通过）",
+                                          succeeded_msg="恢复动作已执行（execution 受控追踪）")
+                st.rca = _rca(3, "已闭环")
+                await _emit(st, run, "openops.rca.updated", message="结论确认：H1 连接泄漏，已恢复", payload=st.rca)
+                st.status = "completed"
+                return await _emit(st, run, "openops.task.completed", message="任务完成：根因 H1，已执行恢复", action="task")
+            if decision == "timeout":
+                # flow_check.timeout 事件已由 expire_stale_flow_checks_and_audit 单出口发过
+                st.status = "completed"
+                return await _emit(st, run, "openops.task.completed", message="任务结束：四号校验超时，待人工跟进恢复动作", action="task")
+            st.rca = _rca(2, "验证 H1", {"conclusion": "四号校验未通过：恢复动作未执行，保持观察。"})
+            await _emit(st, run, "openops.rca.updated", message="四号校验未通过，保持观察", payload=st.rca)
+            st.status = "completed"
+            return await _emit(st, run, "openops.task.completed", message="任务结束：未执行恢复（四号校验未通过）", action="task")
 
         # ASK：恢复动作需人工批准（标注 is_approval_required=true）
         args = redact_args({"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"})

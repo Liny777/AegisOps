@@ -16,12 +16,16 @@ from infra.db import row_json
 from infra.redact import redact_text, sanitize_activity_payload, sanitize_approval_arguments
 from infra.repositories import agent_teams, audit, delegations, runs, runtime_config, secrets, task_states, templates
 from runtime import events, task_registry
-from runtime.emit import activity_context_of_task, expire_stale_approvals_and_audit
+from runtime.emit import (activity_context_of_task, expire_stale_approvals_and_audit,
+                          expire_stale_flow_checks_and_audit)
 from runtime.task_registry import TaskState
 from sandbox.executor import ALERT_SANDBOX_UID
 from sandbox.executor import executor as sandbox_executor
 
 log = logging.getLogger("openops.run")
+
+# 四号校验凭证的 header 安全字符集（可见 ASCII，无空白/控制符）——decide_flow_check 入口校验用
+_HEADER_SAFE = re.compile(r"[\x21-\x7e]+")
 
 
 def _auto_title(text: str) -> str:
@@ -70,6 +74,15 @@ def _event_json(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _approval_json(row: dict[str, Any]) -> dict[str, Any]:
+    item = row_json(row)
+    item["arguments_redacted_json"] = sanitize_approval_arguments(
+        item.get("arguments_redacted_json") or {}
+    )
+    return item
+
+
+def _flow_check_json(row: dict[str, Any]) -> dict[str, Any]:
+    """四号校验行投影（/state 恢复用）：入参走审批同款脱敏；config 快照本就不含凭证。"""
     item = row_json(row)
     item["arguments_redacted_json"] = sanitize_approval_arguments(
         item.get("arguments_redacted_json") or {}
@@ -611,6 +624,11 @@ async def cancel_task_state(st: TaskState, by_user_id: str) -> bool:
         await runs.decide_approval(st.approval_id, "cancelled", by_user_id)
     st.approval_result = st.approval_result or "cancelled"
     st.approval_ev.set()
+    # pending 四号校验同款收口（29.14：与审批同为 ASK 语义，取消必须双链都放行等待方）
+    if st.flow_check_id:
+        await runs.decide_flow_check(st.flow_check_id, "cancelled", by_user_id)
+    st.flow_check_result = st.flow_check_result or "cancelled"
+    st.flow_check_ev.set()
     if st.orchestrator and not st.orchestrator.done():
         st.orchestrator.cancel()
     return True
@@ -710,9 +728,10 @@ async def reclaim_idle_runs(cfg: dict[str, Any]) -> int:
             live = task_registry.get_by_run(run_id)
             if live is not None and live.status in ("running", "cancel_requested"):
                 continue
-            # (b) pending ASK 否决：先把过期审批翻 timeout，再看是否仍有真 pending
+            # (b) pending ASK 否决：先把过期审批/四号校验翻 timeout，再看是否仍有真 pending
             await expire_stale_approvals_and_audit(run_id)
-            if await runs.pending_approvals(run_id):
+            await expire_stale_flow_checks_and_audit(run_id)
+            if await runs.pending_approvals(run_id) or await runs.pending_flow_checks(run_id):
                 continue
             # (c) 条件翻转：并发被用户 close/delete 时 0 行 → 跳过
             if await runs.close_idle(run_id, "idle_timeout") == 0:
@@ -788,6 +807,77 @@ async def decide_approval(user: dict[str, Any], approval_id: str, req: Any) -> d
     return {"approval_request_id": approval_id, "decision": req.decision}
 
 
+async def list_pending_flow_checks(user: dict[str, Any], run_id: str) -> list[dict[str, Any]]:
+    """当前 Run 的 pending 四号校验（owner 校验后返回；形制同 list_pending）。"""
+    await owned_run(user["user_id"], run_id)
+    return [_flow_check_json(r) for r in await runs.pending_flow_checks(run_id)]
+
+
+async def decide_flow_check(user: dict[str, Any], flow_check_id: str, req: Any) -> dict[str, Any]:
+    """四号校验决策（29.14）：approved 必须带风控 SDK 返回的 token/flow_code——凭证只写入
+    TaskState 内存槽（Gateway 调用边界注 header 后即弃），不落库、不进事件/审计/日志。"""
+    fc = await runs.get_flow_check(flow_check_id)
+    if fc is None:
+        raise ApiError(Err.NOT_FOUND, "四号校验请求不存在")
+    if fc["user_id"] != user["user_id"]:
+        raise ApiError(Err.FORBIDDEN, "无权处理该四号校验")
+    if fc["decision"] != "pending":
+        return {"flow_check_request_id": flow_check_id, "decision": fc["decision"]}
+    if req.decision == "approved":
+        token, flow_code = (req.token or "").strip(), (req.flow_code or "").strip()
+        if not (token and flow_code):
+            raise ApiError(Err.VALIDATION_FAILED, "approved 决策必须携带风控校验返回的 token 与 flow_code")
+        # header 安全字符集（可见 ASCII）+ 长度上限：含 CR/LF 的值会在 h11 组头时抛错，
+        # 异常信息把凭证原文带进日志/审计——在入口拒掉，凭证不落日志铁律不靠下游兜底
+        if len(token) > 4096 or len(flow_code) > 256 or not _HEADER_SAFE.fullmatch(token) \
+                or not _HEADER_SAFE.fullmatch(flow_code):
+            raise ApiError(Err.VALIDATION_FAILED, "token / flow_code 含非法字符或超长")
+    await expire_stale_flow_checks_and_audit(str(fc["agent_run_id"]))  # 翻转即审计（同 ASK-004）
+    fresh = await runs.get_flow_check(flow_check_id)
+    assert fresh is not None
+    if fresh["decision"] == "timeout":
+        return {"flow_check_request_id": flow_check_id, "decision": "timeout"}
+
+    if await runs.decide_flow_check(flow_check_id, req.decision, user["user_id"]) == 0:
+        # 并发对手（另一标签页/超时翻转）先落子：以 DB 终态为准，不置握手、不发本次决策事件——
+        # 否则 DB 已 rejected 仍向 TaskState 写 approved+token，工具被放行且审计自相矛盾
+        lost = await runs.get_flow_check(flow_check_id)
+        return {"flow_check_request_id": flow_check_id,
+                "decision": str((lost or {}).get("decision") or "pending")}
+    run_id = str(fc["agent_run_id"])
+    run = await runs.get_run(run_id)
+    assert run is not None
+    # 与审批同款：只按行 task_id 精确路由（子 Agent 也能命中 _subtasks 表），无人在等只落库
+    task_id = str(fc["task_id"])
+    st = task_registry.get_by_task(task_id)
+    if st is not None and st.task_id != task_id:
+        st = None
+    agent_key = _agent_key_of_task(task_id, st)
+    ctx = {**(await activity_context_of_task(task_id)), "agent_key": agent_key}
+    message = "四号校验通过，恢复动作将执行" if req.decision == "approved" else "四号校验已拒绝，当前工具调用终止"
+    # payload 刻意不含 token/flow_code（sanitize 白名单亦不放行——双保险）
+    payload = {"flow_check_request_id": flow_check_id, "tool": str(fc["tool_call_name"]),
+               **ctx, "summary": message}
+    eid = await audit.insert_event(
+        audit_trace_id=str(run["audit_trace_id"]),
+        event_type=f"flow_check.{req.decision}", user_id=user["user_id"], run_id=run_id,
+        instance_id=str(fc["agent_team_instance_id"]), task_id=fc["task_id"],
+        action="decide", decision=req.decision, actor_type="user",
+        payload_redacted=payload,
+    )
+    events.publish(run_id, events.envelope(
+        run_id, f"openops.flow_check.{req.decision}", task_id=fc["task_id"],
+        message=message, payload=payload, audit_trace_id=str(run["audit_trace_id"]), event_id=eid,
+    ))
+    if st is not None:
+        st.flow_check_result = req.decision
+        if req.decision == "approved":
+            st.flow_check_token = str(req.token).strip()
+            st.flow_check_code = str(req.flow_code).strip()
+        st.flow_check_ev.set()
+    return {"flow_check_request_id": flow_check_id, "decision": req.decision}
+
+
 async def decide_diagnosis_checkpoint(user: dict[str, Any], run_id: str, req: Any) -> dict[str, Any]:
     """假设 checkpoint 决策：置位 st.checkpoint_ev 唤醒等待中的 diagnosis_checkpoint。
 
@@ -815,9 +905,11 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
     """聚合状态（30.7 恢复事实入口）。"""
     run = await owned_run(user["user_id"], run_id)
     await expire_stale_approvals_and_audit(run_id)
+    await expire_stale_flow_checks_and_audit(run_id)
     inst = await agent_teams.get_instance(str(run["agent_team_instance_id"]))
     st = task_registry.get_by_run(run_id)
     pend = await runs.pending_approvals(run_id)
+    pend_fc = await runs.pending_flow_checks(run_id)
     recent, events_has_more = await audit.list_page_by_run(run_id, limit=100)
     active_task: dict[str, Any] | None = None
     rca: Any = None
@@ -867,6 +959,7 @@ async def get_state(user: dict[str, Any], run_id: str) -> dict[str, Any]:
         "rca": rca,
         "diagnosis_checkpoint": diagnosis_checkpoint,
         "pending_approvals": [_approval_json(a) for a in pend],
+        "pending_flow_checks": [_flow_check_json(f) for f in pend_fc],
         "recent_events": recent_items,
         "events_next_cursor": (recent_items[0]["audit_event_id"]
                                if events_has_more and recent_items else None),

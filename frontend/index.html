@@ -59,6 +59,9 @@
         setTimeout(checkStall, 15000);
       })();
     </script>
+    <!-- 风控 SDK（29.14 四号校验）：外部依赖随部署提供；开发/未部署环境 404 不影响页面
+         （window.RiskControlSDK 缺席时 FlowCheckCard 显式报错并走拒绝决策） -->
+    <script src="/sdk/risk-control.js" defer></script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

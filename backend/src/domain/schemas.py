@@ -252,6 +252,15 @@ class DecisionRequest(BaseModel):
     reason: str = ""
 
 
+class FlowCheckDecisionRequest(BaseModel):
+    """四号校验决策（29.14）：approved 必须带风控 SDK 校验返回的 token/flow_code（服务层校验），
+    两者仅写入 TaskState 内存槽、调用边界注 header 后即弃——不落库、不进事件/审计/日志。"""
+    client_request_id: str = Field(min_length=1)
+    decision: str = Field(pattern="^(approved|rejected)$")
+    token: str = ""
+    flow_code: str = ""
+
+
 class CheckpointDecisionRequest(BaseModel):
     """假设 checkpoint 决策：continue=继续排查；add_hypothesis=补充假设（text 必填，服务层清洗）；
     hold=用户开始输入，冻结倒计时（服务端延长窗口）。timed_out 只由服务端产生，不在枚举内。"""

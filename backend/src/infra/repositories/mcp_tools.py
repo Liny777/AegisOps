@@ -52,6 +52,7 @@ async def list_catalog_with_annotation(*, exclude_placeholder: bool = False) -> 
         select c.tool_catalog_id, c.tool_name, c.description, c.schema_hash, c.mcp_version_id,
                m.display_name mcp_display_name,
                a.annotation_id, a.is_approval_required, a.is_secret_required,
+               a.is_flow_check_required, a.flow_check_config,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
         from sre_mcp_tool_catalog c
         join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id and v.deleted_at is null
@@ -81,6 +82,7 @@ async def get_runtime_annotation(
         f"""
         select c.tool_catalog_id, c.tool_name, c.schema_hash, m.display_name mcp_display_name,
                a.annotation_id, a.is_approval_required, a.is_secret_required,
+               a.is_flow_check_required, a.flow_check_config,
                a.scope_mode, a.appid_arg_path, a.status annotation_status, a.blocked_reason
         from sre_mcp_tool_catalog c
         join sre_mcp_asset_version v on v.mcp_version_id = c.mcp_version_id and v.deleted_at is null
@@ -204,6 +206,7 @@ async def remove_absent_catalog_tools(mcp_version_id: str, keep_names: set[str])
 async def save_annotation(
     tool_catalog_id: str, is_approval_required: bool, is_secret_required: bool,
     scope_mode: str, appid_arg_path: str | None, status: str, blocked_reason: str | None, by: str,
+    *, is_flow_check_required: bool = False, flow_check_config: dict[str, Any] | None = None,
 ) -> None:
     # 唯一索引 ux_mcp_tool_annotation_catalog 落在 (tool_catalog_id)（非 partial，软删行也占位）→ 每 tool 至多一行。
     # 故不能过滤 deleted_at：schema 变更（sync_catalog_tool）软删旧标注后，tool_catalog_id 不变，重新标注
@@ -212,26 +215,29 @@ async def save_annotation(
         "select annotation_id from sre_mcp_tool_annotation where tool_catalog_id=%(t)s",
         {"t": tool_catalog_id},
     )
+    params = {"t": tool_catalog_id, "a": is_approval_required, "s": is_secret_required,
+              "fc": is_flow_check_required, "fcc": jsonb(flow_check_config or {}),
+              "m": scope_mode, "p": appid_arg_path, "st": status, "r": blocked_reason, "b": by}
     if row:
         await exec1(
             """
             update sre_mcp_tool_annotation
-            set is_approval_required=%(a)s, is_secret_required=%(s)s, scope_mode=%(m)s,
+            set is_approval_required=%(a)s, is_secret_required=%(s)s,
+                is_flow_check_required=%(fc)s, flow_check_config=%(fcc)s, scope_mode=%(m)s,
                 appid_arg_path=%(p)s, status=%(st)s, blocked_reason=%(r)s, deleted_at=null,
                 annotated_by=%(b)s, annotated_at=now(), last_updated_by=%(b)s, last_update_date=now()
             where annotation_id=%(id)s
             """,
-            {"id": row["annotation_id"], "a": is_approval_required, "s": is_secret_required,
-             "m": scope_mode, "p": appid_arg_path, "st": status, "r": blocked_reason, "b": by},
+            {**params, "id": row["annotation_id"]},
         )
     else:
         await exec1(
             """
             insert into sre_mcp_tool_annotation
-              (annotation_id, tool_catalog_id, is_approval_required, is_secret_required, scope_mode,
+              (annotation_id, tool_catalog_id, is_approval_required, is_secret_required,
+               is_flow_check_required, flow_check_config, scope_mode,
                appid_arg_path, status, blocked_reason, annotated_by, annotated_at, created_by, last_updated_by)
-            values (%(id)s, %(t)s, %(a)s, %(s)s, %(m)s, %(p)s, %(st)s, %(r)s, %(b)s, now(), %(b)s, %(b)s)
+            values (%(id)s, %(t)s, %(a)s, %(s)s, %(fc)s, %(fcc)s, %(m)s, %(p)s, %(st)s, %(r)s, %(b)s, now(), %(b)s, %(b)s)
             """,
-            {"id": str(uuid.uuid4()), "t": tool_catalog_id, "a": is_approval_required, "s": is_secret_required,
-             "m": scope_mode, "p": appid_arg_path, "st": status, "r": blocked_reason, "b": by},
+            {**params, "id": str(uuid.uuid4())},
         )

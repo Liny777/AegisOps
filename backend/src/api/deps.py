@@ -50,7 +50,8 @@ async def current_user(
                                extra={"login_url": iam_client.login_url(host)}) from None
             raise ApiError(Err.IAM_UPSTREAM, e.message, retryable=True) from None
         user = await identity_service.resolve_user(ident["login_key"], ident["display_name"])
-        request_context.set_request_user(user["user_id"], cookie)  # 出站 console 系透传+按用户缓存登录态
+        # 出站 console 系透传+按用户缓存登录态；operator=IAM 用户 UUID（四号校验风控接口的操作者）
+        request_context.set_request_user(user["user_id"], cookie, operator=ident.get("operator", ""))
         return user
 
     if not x_openops_mock_user:

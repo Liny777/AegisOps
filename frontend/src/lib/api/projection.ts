@@ -3,6 +3,7 @@ import type {
   ActivityGroup,
   ActivityNode,
   AgentInstance,
+  FlowCheckCardData,
   HitlCardData,
   HitlFact,
   OpenOpsEvent,
@@ -49,6 +50,14 @@ const EVENT_META: Record<string, { icon: string; tone: Tone; title: string }> = 
   "approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
   "openops.approval.rejected": { icon: "shield-x", tone: "danger", title: "已拒绝" },
   "openops.approval.timeout": { icon: "clock-x", tone: "warning", title: "批准超时" },
+  // 四号校验（29.14）；双写裸名：审计行无 openops. 前缀
+  "openops.flow_check.required": { icon: "shield-lock", tone: "warning", title: "四号校验 · 等待校验" },
+  "flow_check.approved": { icon: "shield-check", tone: "good", title: "四号校验通过" },
+  "openops.flow_check.approved": { icon: "shield-check", tone: "good", title: "四号校验通过" },
+  "flow_check.rejected": { icon: "shield-x", tone: "danger", title: "四号校验拒绝" },
+  "openops.flow_check.rejected": { icon: "shield-x", tone: "danger", title: "四号校验拒绝" },
+  "flow_check.timeout": { icon: "clock-x", tone: "warning", title: "四号校验超时" },
+  "openops.flow_check.timeout": { icon: "clock-x", tone: "warning", title: "四号校验超时" },
   // 假设 checkpoint（step=3 后弹卡等用户补充假设/继续）；双写裸名：审计行无 openops. 前缀
   "openops.diagnosis.checkpoint.opened": { icon: "bulb", tone: "warning", title: "等待补充假设" },
   "diagnosis.checkpoint.opened": { icon: "bulb", tone: "warning", title: "等待补充假设" },
@@ -194,6 +203,65 @@ export function approvalToHitl(a: Record<string, unknown>): HitlCardData {
     status: "pending",
     tone: "warning",
   };
+}
+
+function fmtCountdown(expireAt: unknown): string {
+  const expire = expireAt ? new Date(String(expireAt)) : null;
+  const remainMs = expire ? expire.getTime() - Date.now() : 0;
+  const mm = Math.max(0, Math.floor(remainMs / 60000));
+  const ss = Math.max(0, Math.floor((remainMs % 60000) / 1000));
+  return `${mm}:${String(ss).padStart(2, "0")}`;
+}
+
+function flowCheckCard(
+  id: string, tool: string, args: Record<string, unknown>,
+  cfg: Record<string, unknown>, countdown: string,
+): FlowCheckCardData {
+  const facts = buildApprovalFacts(tool, args);
+  const targetObject = cfg.target_object as { value?: unknown; path?: unknown } | undefined;
+  return {
+    flow_check_request_id: id,
+    tool,
+    summary: `工具「${tool}」为恢复类操作，需输入变更/事件流程号（四号）完成风控校验后才会执行。`,
+    facts,
+    initPath: String(cfg.init_path ?? ""),
+    verifyPath: String(cfg.verify_path ?? ""),
+    serviceId: String(cfg.service_id ?? ""),
+    invokingMethod: String(cfg.invoking_method ?? ""),
+    operator: String(cfg.operator ?? ""),
+    enterpriseId: String(cfg.enterprise_id ?? ""),
+    targetObject: targetObject && targetObject.path !== undefined
+      ? { value: targetObject.value, path: String(targetObject.path) }
+      : undefined,
+    countdown,
+    status: "pending",
+    tone: "warning",
+  };
+}
+
+/** flow_check.required SSE payload → 四号校验卡（配置键与 payload 平铺同名）。 */
+export function flowCheckFromPayload(p: Record<string, unknown>): FlowCheckCardData {
+  return flowCheckCard(
+    String(p.flow_check_request_id ?? ""),
+    String(p.tool ?? "tool"),
+    (p.args && typeof p.args === "object" ? p.args : {}) as Record<string, unknown>,
+    p,
+    "5:00",
+  );
+}
+
+/** flow_check_request 行（/state.pending_flow_checks）→ 四号校验卡（刷新恢复路径，同口径）。 */
+export function flowCheckToCard(row: Record<string, unknown>): FlowCheckCardData {
+  const cfg = (row.flow_check_config_json ?? {}) as Record<string, unknown>;
+  const card = flowCheckCard(
+    String(row.flow_check_request_id),
+    String(row.tool_call_name ?? "tool"),
+    (row.arguments_redacted_json ?? {}) as Record<string, unknown>,
+    cfg,
+    fmtCountdown(row.expire_at),
+  );
+  card.facts.push({ label: "任务", value: String(row.task_id ?? "—") });
+  return card;
 }
 
 /** 后端 rca payload（编排器产）→ RcaCardData（形状即为前端模型，补 time）。
