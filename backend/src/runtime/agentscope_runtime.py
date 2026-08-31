@@ -38,6 +38,8 @@ from runtime.tool_gateway import ToolBlocked
 
 log = logging.getLogger("openops.runtime")
 ASK_TIMEOUT_S = float(os.environ.get("OPENOPS_ASK_TIMEOUT_S", "300"))
+# 四号校验等待上限（29.14）：用户要先在风控弹窗申请/输入四号，可能比普通审批更耗时，独立可配
+FLOW_CHECK_TIMEOUT_S = float(os.environ.get("OPENOPS_FLOW_CHECK_TIMEOUT_S", "300"))
 
 
 def _clamped_env_int(name: str, dft: int, lo: int, hi: int) -> int:
@@ -1158,7 +1160,9 @@ def _permission_context(st: TaskState) -> Any:
             continue  # 复合键身份条目（启动快照）非注册名——规则只发给真实注册名，免生无主规则噪音
         if ann.get("status") != "allowed":
             continue
-        if ann.get("is_approval_required"):
+        # 审批与四号校验都是「暂停等用户」= ASK 语义（29.14 拍板：不加新 PermissionBehavior），
+        # _handle_ask 入口按标注分流到审批 / 四号校验两条握手链
+        if ann.get("is_approval_required") or ann.get("is_flow_check_required"):
             ask[name] = [_rule(name, PermissionBehavior.ASK)]
         else:
             allow[name] = [_rule(name, PermissionBehavior.ALLOW)]
@@ -1173,18 +1177,28 @@ def _permission_context(st: TaskState) -> Any:
     return PermissionContext(allow_rules=allow, ask_rules=ask)
 
 
-async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> str:
-    """恢复动作 ASK 门：建审批→发 approval.required→等 approval_ev（decide/cancel 置位）。
-
-    返回 approved/rejected/timeout/cancelled；approval.{decision} 由 run_state_service.decide_approval 发。
-    """
-    # 审批卡按真实工具呈现（tool_calls[0].name/.input）；demo recover_execute 保留剧本文案（叙事一致）
+def _ask_tool_call(require_ev: Any) -> tuple[str, dict[str, Any]]:
+    """RequireUserConfirmEvent → (tool_name, 原始入参)；审批与四号校验共用的解析。"""
     tcs = list(getattr(require_ev, "tool_calls", None) or [])
     tool_name = tcs[0].name if tcs else "unknown_tool"
     try:
         tool_args = json.loads(tcs[0].input) if tcs and tcs[0].input else {}
     except Exception:  # noqa: BLE001 —— 模型给的原始 JSON 串可能不完整
         tool_args = {}
+    return tool_name, tool_args
+
+
+async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> str:
+    """恢复动作 ASK 门：按标注分流——四号校验走 _handle_flow_check，其余走审批握手
+    （建审批→发 approval.required→等 approval_ev，decide/cancel 置位）。
+
+    返回 approved/rejected/timeout/cancelled；approval.{decision} 由 run_state_service.decide_approval 发。
+    """
+    # 审批卡按真实工具呈现（tool_calls[0].name/.input）；demo recover_execute 保留剧本文案（叙事一致）
+    tool_name, tool_args = _ask_tool_call(require_ev)
+    _ask_snap = (st.tool_annotations or {}).get(tool_name) or {}
+    if _ask_snap.get("is_flow_check_required"):
+        return await _handle_flow_check(st, run, tool_name, tool_args, _ask_snap)
     if tool_name == "recover_execute":
         tool_args = {"appid": "APP-A", "action": "restart", "target": "svc-payment-api/svc-a"}
         ask_msg = "恢复动作待批准：重启 svc-a 释放连接"
@@ -1218,6 +1232,95 @@ async def _handle_ask(st: TaskState, run: dict[str, Any], require_ev: Any) -> st
         await _exp(st.run_id, force_approval_id=st.approval_id)  # 循环超时 ⇒ 本行必达 timeout
         st.approval_result = "timeout"
     return st.approval_result or "rejected"
+
+
+def _extract_target_object(arguments: dict[str, Any], path: str | None) -> dict[str, Any] | None:
+    """按 object_arg_path（如 `$.target.appid`）从工具入参提取操作对象信息（供风控 SDK 展示/校验）。
+
+    解析规则同 tool_gateway._extract_appid（点分 JSONPath-lite）；path 为空/取不到 → None（不提取）。
+    脱敏口径与 args 一致：按路径末段键名过 redact_args（键名命中敏感模式即打码，嵌套值递归打码），
+    防止同一参数在 args 中已打码、在 target_object 中却明文落行/进事件。
+    """
+    if not path:
+        return None
+    from infra.redact import redact_args as _redact_args
+    cur: Any = arguments
+    parts = str(path).lstrip("$").strip(".").split(".")
+    for part in parts:
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    if cur is None:
+        return None
+    last_key = parts[-1] if parts else "value"
+    return {"value": _redact_args({last_key: cur}).get(last_key), "path": str(path)}
+
+
+def _resolve_flow_check_service_id(st: TaskState, config: dict[str, Any]) -> tuple[str, str]:
+    """(tenant_id, service_id)：标注存全局 service_id_by_tenant map，运行时按当前租户解析。
+
+    租户取值链：scope_ctx.enterprise_id（预留口径）> 平台当前企业（apptree 配置，与 omodel 出站同源）。
+    """
+    from infra.external.apptree_client import current_enterprise_id
+    tenant_id = str((st.scope_ctx or {}).get("enterprise_id") or "") or current_enterprise_id()
+    sid_map = config.get("service_id_by_tenant") or {}
+    service_id = str(sid_map.get(tenant_id) or config.get("service_id") or "")
+    return tenant_id, service_id
+
+
+async def _handle_flow_check(
+    st: TaskState, run: dict[str, Any], tool_name: str, tool_args: dict[str, Any], snap: dict[str, Any]
+) -> str:
+    """四号校验门（29.14）：建校验请求行 → 发 flow_check.required → 等 flow_check_ev。
+
+    前端收 SSE 后用 origin + init/verify path 拉起风控 SDK 弹窗，用户输入四号，校验通过把
+    token/flowCode 经 decide 回写到 st（仅内存）；Gateway 在调用边界注 header。
+    返回 approved/rejected/timeout/cancelled。
+    """
+    from infra.redact import redact_args as _redact_args
+    from infra.request_context import cached_user_operator, user_operator
+
+    args = _redact_args(tool_args)
+    config = snap.get("flow_check_config") or {}
+    tenant_id, service_id = _resolve_flow_check_service_id(st, config)
+    # operator：IAM userinfo 的用户 UUID（29.16）；mock 模式/缓存失效回退 user_id（联调可用）
+    operator = user_operator() or cached_user_operator(st.user_id) or st.user_id
+    target_object = _extract_target_object(tool_args, config.get("object_arg_path"))
+    cfg_snapshot = {
+        "init_path": str(config.get("init_path") or ""),
+        "verify_path": str(config.get("verify_path") or ""),
+        "service_id": service_id,
+        "invoking_method": str(config.get("invoking_method") or ""),
+        "operator": operator,
+        "enterprise_id": tenant_id,
+        **({"target_object": target_object} if target_object else {}),
+    }
+    fc = await runs.create_flow_check(
+        st.user_id, str(run["agent_team_instance_id"]), st.run_id, st.task_id, tool_name,
+        args, cfg_snapshot, str(run["audit_trace_id"]), str(run["framework_session_id"]),
+        # 向上取整：行内过期不得早于等待窗口，否则非 60 整倍配置下 60~cfg 秒间任何 get_state/decide
+        # 都会把仍在等待的行提前翻 timeout（用户输入中的四号作废）
+        expire_minutes=max(1, -(-int(FLOW_CHECK_TIMEOUT_S) // 60)),
+    )
+    st.flow_check_ev.clear()  # 同 approval_ev 规矩：等待前清位+清旧结果/旧凭证
+    st.flow_check_result = None
+    st.flow_check_token = None
+    st.flow_check_code = None
+    st.flow_check_tool = tool_name  # 凭证与本次被批准的工具绑定（Gateway 校验后消费式注入）
+    st.flow_check_id = str(fc["flow_check_request_id"])
+    await emit(st, run, "openops.flow_check.required", severity="warning",
+               message=f"操作需四号校验：{tool_name}",
+               payload={"flow_check_request_id": st.flow_check_id, "tool": tool_name, "args": args,
+                        "server_name": snap.get("mcp_display_name"), **cfg_snapshot})
+    try:
+        await asyncio.wait_for(st.flow_check_ev.wait(), timeout=FLOW_CHECK_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        from runtime.emit import expire_stale_flow_checks_and_audit as _exp_fc
+        await _exp_fc(st.run_id, force_flow_check_id=st.flow_check_id)  # 循环超时 ⇒ 行必达 timeout
+        # or 守卫（同 cancel_task_state 写法）：压秒 decide 已把 approved 写进 st 时不得覆写成
+        # timeout——否则 DB/审计/SSE 全是 approved、运行时却按 timeout 收口且无任何矛盾事件
+        st.flow_check_result = st.flow_check_result or "timeout"
+    return st.flow_check_result or "rejected"
 
 
 async def _finish_cancel(st: TaskState, run: dict[str, Any]) -> None:
@@ -1358,10 +1461,17 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
             confirmed = decision == "approved"
             if not confirmed:
                 recovery_denied = True
-                fallback_conclusion = {
+                # ASK 种类决定收口文案/超时事件：四号校验（is_flow_check_required）与人工审批分开表述
+                _ask_tool, _ = _ask_tool_call(require_ev)
+                _was_flow_check = bool(((st.tool_annotations or {}).get(_ask_tool) or {})
+                                       .get("is_flow_check_required"))
+                fallback_conclusion = ({
+                    "rejected": "四号校验未通过：恢复动作未执行，保持观察。",
+                    "timeout": "四号校验超时：恢复动作未执行，待人工跟进。",
+                } if _was_flow_check else {
                     "rejected": "恢复动作被拒绝：保持观察，建议走短期配置优化。",
                     "timeout": "批准超时：恢复动作未执行，待人工跟进。",
-                }.get(decision, "恢复动作未执行。")
+                }).get(decision, "恢复动作未执行。")
                 # 面板在场（demo 剧本或模型自报）才有可更新对象；真流程无面板时不得用 rca_demo 剧本造假
                 # ——曾在真对话结束时弹出「支付延迟突增/H1 连接泄漏」假 RCA 卡（与「根因 H1」误报同族）。
                 # 安全事实优先：拒绝/超时结论覆盖模型面板并拉回「进行中」（恢复未执行≠闭环；
@@ -1369,7 +1479,8 @@ async def run_task(st: TaskState, run: dict[str, Any]) -> None:
                 if st.rca:
                     st.rca = reopen_with_conclusion(st.rca, fallback_conclusion)
                     await emit(st, run, "openops.rca.updated", message="恢复动作未执行", payload=st.rca)
-                if decision == "timeout":
+                if decision == "timeout" and not _was_flow_check:
+                    # 四号校验的 timeout 事件已由 expire_stale_flow_checks_and_audit 单出口发过
                     await emit(st, run, "openops.approval.timeout", severity="warning",
                                message="批准超时：恢复动作未执行", reason_code="APPROVAL_TIMEOUT")
             inputs = UserConfirmResultEvent(

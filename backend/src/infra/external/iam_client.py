@@ -182,8 +182,13 @@ async def verify(cookie_header: str, client_ip: str | None) -> dict[str, str]:
         raise IamError(401, "IAM 未返回用户标识（检查 OPENOPS_IAM_LOGIN_KEY_FIELD）")
     login_key = str(raw_key).strip().lower()
     display_name = _dot_get(userinfo, name_field)
+    # operator（29.14 四号校验）：风控接口的操作者 = IAM 用户 UUID（userinfo `data.attributes.id`），
+    # 与 login_key（可能配置成工号 identity）不必然同值，故单独提取；取不到留空由调用方回退 user_id。
+    op_field = os.getenv("OPENOPS_IAM_OPERATOR_FIELD", "data.attributes.id").strip() or "data.attributes.id"
+    raw_op = _dot_get(userinfo, op_field)
     ident = {"login_key": login_key,
-             "display_name": str(display_name).strip() if display_name else login_key}
+             "display_name": str(display_name).strip() if display_name else login_key,
+             "operator": str(raw_op).strip() if raw_op is not None else ""}
 
     if len(_CACHE) >= _CACHE_MAX:  # 简单逐出：清最早过期的一批
         for k in sorted(_CACHE, key=lambda x: _CACHE[x][0])[: _CACHE_MAX // 4]:

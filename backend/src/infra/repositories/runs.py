@@ -1,4 +1,4 @@
-"""sre_agent_run / sre_scope_snapshot / sre_approval_request 仓储。"""
+"""sre_agent_run / sre_scope_snapshot / sre_approval_request / sre_flow_check_request 仓储。"""
 from __future__ import annotations
 
 import uuid
@@ -256,6 +256,94 @@ async def expire_stale_approvals(run_id: str) -> list[dict[str, Any]]:
         update sre_approval_request set decision='timeout', last_update_date=now(), last_updated_by='system'
         where agent_run_id=%(r)s and decision='pending' and expire_at is not null and expire_at < now()
         returning approval_request_id, task_id, agent_run_id, agent_team_instance_id, tool_call_name, audit_trace_id, user_id
+        """,
+        {"r": run_id},
+    )
+
+
+# ---- 四号校验（29.14）：函数族镜像 approval，独立表 sre_flow_check_request ----
+
+async def create_flow_check(
+    user_id: str, instance_id: str, run_id: str, task_id: str, tool_call_name: str,
+    arguments_redacted: dict[str, Any], config_snapshot: dict[str, Any],
+    audit_trace_id: str, framework_session_id: str, expire_minutes: int = 5,
+) -> dict[str, Any]:
+    """创建四号校验请求行；config_snapshot=创建时按租户解析后的配置（SSE 与 /state 恢复同口径）。"""
+    fid = str(uuid.uuid4())
+    await exec1(
+        """
+        insert into sre_flow_check_request
+          (flow_check_request_id, user_id, agent_team_instance_id, agent_run_id, framework_session_id,
+           task_id, tool_call_name, arguments_redacted_json, flow_check_config_json,
+           decision, audit_trace_id, created_by, last_updated_by, expire_at)
+        values (%(f)s, %(u)s, %(i)s, %(r)s, %(fs)s,
+                %(t)s, %(n)s, %(arg)s, %(cfg)s,
+                'pending', %(tr)s, %(u)s, %(u)s, now() + make_interval(mins => %(exp)s))
+        """,
+        {"f": fid, "u": user_id, "i": instance_id, "r": run_id, "fs": framework_session_id,
+         "t": task_id, "n": tool_call_name, "arg": jsonb(arguments_redacted),
+         "cfg": jsonb(config_snapshot), "tr": audit_trace_id, "exp": expire_minutes},
+    )
+    return (await get_flow_check(fid))  # type: ignore[return-value]
+
+
+async def get_flow_check(flow_check_id: str) -> dict[str, Any] | None:
+    return await q_one(
+        "select * from sre_flow_check_request where flow_check_request_id=%(f)s", {"f": flow_check_id}
+    )
+
+
+async def pending_flow_checks(run_id: str) -> list[dict[str, Any]]:
+    return await q_all(
+        """
+        select * from sre_flow_check_request
+        where agent_run_id=%(r)s and decision='pending'
+        order by creation_date
+        """,
+        {"r": run_id},
+    )
+
+
+async def decide_flow_check(flow_check_id: str, decision: str, decided_by: str) -> int:
+    return await exec1(
+        """
+        update sre_flow_check_request
+        set decision=%(d)s, decided_by=%(b)s, decided_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where flow_check_request_id=%(f)s and decision='pending'
+        """,
+        {"f": flow_check_id, "d": decision, "b": decided_by},
+    )
+
+
+async def cancel_pending_flow_checks(task_id: str, by: str) -> int:
+    """任务终止级联收口（同 cancel_pending_approvals）：防遗留 pending 卡片与迟到 decide。"""
+    return await exec1(
+        """
+        update sre_flow_check_request
+        set decision='cancelled', decided_by=%(b)s, decided_at=now(), last_updated_by=%(b)s, last_update_date=now()
+        where task_id=%(t)s and decision='pending'
+        """,
+        {"t": task_id, "b": by},
+    )
+
+
+async def force_expire_flow_check(flow_check_id: str) -> None:
+    """等待方主循环超时先于行内 expire_at：置过期交 expire_stale_flow_checks 统一翻转（单出口）。"""
+    await exec1(
+        "update sre_flow_check_request set expire_at=now() - interval '1 second', "
+        "last_update_date=now(), last_updated_by='system' "
+        "where flow_check_request_id=%(f)s and decision='pending'",
+        {"f": flow_check_id},
+    )
+
+
+async def expire_stale_flow_checks(run_id: str) -> list[dict[str, Any]]:
+    """四号校验超时：pending 且过期 → timeout；返回被翻转行（供调用方补审计/SSE）。"""
+    return await q_all(
+        """
+        update sre_flow_check_request set decision='timeout', last_update_date=now(), last_updated_by='system'
+        where agent_run_id=%(r)s and decision='pending' and expire_at is not null and expire_at < now()
+        returning flow_check_request_id, task_id, agent_run_id, agent_team_instance_id, tool_call_name, audit_trace_id, user_id
         """,
         {"r": run_id},
     )

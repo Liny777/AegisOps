@@ -19,6 +19,7 @@ from api.routers import (
     approvals,
     assets,
     audit,
+    flow_checks,
     identity,
     runs,
     secrets,
@@ -211,7 +212,7 @@ async def health():
     return {"status": "ok"}
 
 
-for r in (identity, templates, agent_teams, assets, secrets, runs, approvals, audit, admin):
+for r in (identity, templates, agent_teams, assets, secrets, runs, approvals, flow_checks, audit, admin):
     app.include_router(r.router)
 
 # 垂直切片自带路由（Agent Studio：/admin/studio/* 与 /agent-runs/{id}/replay）

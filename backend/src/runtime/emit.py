@@ -25,9 +25,11 @@ _SNAPSHOT_STATUS = {
     "openops.task.failed": "failed",
     "openops.task.cancelled": "cancelled",
 }
-# 不改状态但需刷新快照内容的事件（RCA 面板 / 审批引用）
+# 不改状态但需刷新快照内容的事件（RCA 面板 / 审批引用 / 四号校验引用）
 _SNAPSHOT_REFRESH = {"openops.rca.updated", "openops.approval.required",
-                     "openops.approval.approved", "openops.approval.rejected"}
+                     "openops.approval.approved", "openops.approval.rejected",
+                     "openops.flow_check.required", "openops.flow_check.approved",
+                     "openops.flow_check.rejected"}
 
 
 def activity_context(st: TaskState) -> dict[str, Any]:
@@ -164,6 +166,42 @@ async def expire_stale_approvals_and_audit(run_id: str, *, force_approval_id: st
             log.warning("[OpenOps][ask] approval.timeout 审计写入失败 task=%s", r["task_id"])
         events.publish(str(r["agent_run_id"]), events.envelope(
             str(r["agent_run_id"]), "openops.approval.timeout", task_id=task_id,
+            severity="warning", message=message, payload=payload,
+            audit_trace_id=str(r["audit_trace_id"]), event_id=eid,
+        ))
+    return len(rows)
+
+
+async def expire_stale_flow_checks_and_audit(run_id: str, *, force_flow_check_id: str | None = None) -> int:
+    """四号校验超时收口（29.14；形制同 expire_stale_approvals_and_audit）：
+    pending→timeout 翻转行补 flow_check.timeout 审计+SSE。force_flow_check_id 语义同审批版——
+    等待方主循环超时（OPENOPS_FLOW_CHECK_TIMEOUT_S）可能早于行内 expire_at，先行置过期保证必达 timeout。"""
+    if force_flow_check_id:
+        await runs.force_expire_flow_check(force_flow_check_id)
+    rows = await runs.expire_stale_flow_checks(run_id)
+    for r in rows:
+        task_id = str(r["task_id"])
+        ctx = await activity_context_of_task(task_id)
+        message = "四号校验超时未处理，按拒绝收口"
+        payload = sanitize_activity_payload(
+            "openops.flow_check.timeout",
+            {"flow_check_request_id": str(r["flow_check_request_id"]),
+             "tool": r["tool_call_name"], **ctx, "summary": message},
+            message=message,
+        )
+        eid: str | None = None
+        try:
+            eid = await audit.insert_event(
+                audit_trace_id=str(r["audit_trace_id"]), event_type="flow_check.timeout",
+                user_id=str(r["user_id"]), run_id=str(r["agent_run_id"]),
+                instance_id=str(r["agent_team_instance_id"]), task_id=task_id,
+                action="expire", decision="timeout", actor_type="system",
+                payload_redacted=payload,
+            )
+        except Exception:  # noqa: BLE001 —— 审计失败不阻断超时收口
+            log.warning("[OpenOps][flow-check] flow_check.timeout 审计写入失败 task=%s", r["task_id"])
+        events.publish(str(r["agent_run_id"]), events.envelope(
+            str(r["agent_run_id"]), "openops.flow_check.timeout", task_id=task_id,
             severity="warning", message=message, payload=payload,
             audit_trace_id=str(r["audit_trace_id"]), event_id=eid,
         ))

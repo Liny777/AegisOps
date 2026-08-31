@@ -169,6 +169,14 @@ export interface OpenOpsApi {
   cancelTask(taskId: string): Promise<void>;
   closeRun(runId: string): Promise<void>;
   decideApproval(id: string, decision: "approved" | "rejected"): Promise<void>;
+  /** 四号校验决策（29.14）：approved 必须带风控 SDK 校验返回的 token/flowCode。
+   *  返回**后端实际收口的 decision**（超时/异端已决竞态下可能 ≠ 请求值，卡片须按它显示）。 */
+  decideFlowCheck(
+    id: string,
+    decision: "approved" | "rejected",
+    token?: string,
+    flowCode?: string,
+  ): Promise<string>;
   /** 假设 checkpoint 决策：continue/add_hypothesis/hold（hold=开始输入，冻结服务端倒计时）。 */
   decideDiagnosisCheckpoint(
     runId: string,
@@ -573,6 +581,13 @@ const realApi: OpenOpsApi = {
       method: "POST",
       body: { client_request_id: crid(), decision },
     });
+  },
+  async decideFlowCheck(id, decision, token, flowCode) {
+    const d = await apiFetch<{ decision?: string }>(`/openops/v1/flow-checks/${id}:decide`, {
+      method: "POST",
+      body: { client_request_id: crid(), decision, token: token ?? "", flow_code: flowCode ?? "" },
+    });
+    return d?.decision ?? decision;
   },
   async decideDiagnosisCheckpoint(runId, checkpointId, action, text) {
     await apiFetch(`/openops/v1/agent-runs/${runId}/diagnosis-checkpoint:decide`, {
@@ -1075,6 +1090,7 @@ const realApi: OpenOpsApi = {
         const annotated = r.annotation_id != null;
         const blocked = annotated && r.annotation_status !== "allowed";
         const needAsk = Boolean(r.is_approval_required);
+        const needFlowCheck = Boolean(r.is_flow_check_required);
         return {
           id: String(r.tool_catalog_id),
           cells: [
@@ -1084,7 +1100,9 @@ const realApi: OpenOpsApi = {
               ? { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const }
               : blocked
                 ? { text: `blocked${r.blocked_reason ? " · " + r.blocked_reason : ""}`, kind: "badge" as const, tone: "danger" as const }
-                : { text: needAsk ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: needAsk ? "warning" as const : "good" as const },
+                : needFlowCheck
+                  ? { text: "allowed · 需四号校验", kind: "badge" as const, tone: "warning" as const }
+                  : { text: needAsk ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: needAsk ? "warning" as const : "good" as const },
             { text: annotated ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
           ],
         };
@@ -1497,6 +1515,7 @@ const mockApi: OpenOpsApi = {
   cancelTask: () => delay(undefined as unknown as void),
   closeRun: () => delay(undefined as unknown as void).then(() => invalidateConversationHistory()),
   decideApproval: () => delay(undefined as unknown as void),
+  decideFlowCheck: (_id: string, decision: "approved" | "rejected") => delay(decision as string),
   decideDiagnosisCheckpoint: () => delay(undefined as unknown as void),
   selectModel: () => delay(undefined as unknown as void),
   getActivityEvents: () => delay(normalizeActivityPage({
@@ -1794,7 +1813,9 @@ const mockApi: OpenOpsApi = {
           { text: String(r.mcp_display_name ?? "") },
           r.annotation_id == null
             ? { text: "未标注 → 运行时 block", kind: "badge" as const, tone: "danger" as const }
-            : { text: r.is_approval_required ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: r.is_approval_required ? "warning" as const : "good" as const },
+            : r.is_flow_check_required
+              ? { text: "allowed · 需四号校验", kind: "badge" as const, tone: "warning" as const }
+              : { text: r.is_approval_required ? "allowed · 需审批" : "allowed", kind: "badge" as const, tone: r.is_approval_required ? "warning" as const : "good" as const },
           { text: r.annotation_id != null ? "编辑标注" : "标注", kind: "action" as const, onClickKey: "annotate" },
         ],
       })),

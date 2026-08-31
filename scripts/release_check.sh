@@ -118,12 +118,12 @@ if [ -n "$PRODUCTION_ENV" ]; then
   set +a
 fi
 
-echo "== ① DDL 表数核对（core.sql + sql/slices/*.sql 的 CREATE TABLE 计数 vs 基线 35） =="
+echo "== ① DDL 表数核对（core.sql + sql/slices/*.sql 的 CREATE TABLE 计数 vs 基线 36） =="
 N=$(cat backend/sql/openops_v1_core.sql backend/sql/slices/*.sql | grep -ci "^create table if not exists")
-if [ "$N" -eq 35 ]; then
-  echo "   OK：35 表（2026-08-15 订阅表随实例总开关下线）"
+if [ "$N" -eq 36 ]; then
+  echo "   OK：36 表（2026-08-30 新增四号校验表 sre_flow_check_request）"
 else
-  fail "表数=$N ≠ 35（新增表时须同步 test_ddl 基线；切片表放 backend/sql/slices/）"
+  fail "表数=$N ≠ 36（新增表时须同步 test_ddl 基线；切片表放 backend/sql/slices/）"
 fi
 
 echo "== ② 敏感信息扫描（全部受版本控制文本） =="

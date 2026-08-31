@@ -31,7 +31,7 @@ from runtime.task_registry import TaskState
 
 
 class ToolBlocked(Exception):
-    """工具调用被 fail-closed 拦截（reason_code ∈ TOOL_NOT_ANNOTATED/TOOL_BLOCKED/APPID_OUT_OF_SCOPE/SECRET_REQUIRED）。"""
+    """工具调用被 fail-closed 拦截（reason_code ∈ TOOL_NOT_ANNOTATED/TOOL_BLOCKED/APPID_OUT_OF_SCOPE/SECRET_REQUIRED/FLOW_CHECK_REQUIRED）。"""
 
     def __init__(self, reason_code: str, message: str):
         super().__init__(message)
@@ -146,6 +146,9 @@ async def _effective_annotation(
         fresh = {
             "is_approval_required": bool(row["is_approval_required"]),
             "is_secret_required": bool(row["is_secret_required"]),
+            # 四号校验（29.14）：热更新必须与开关同步读取，防「开关新、配置旧」的半更新
+            "is_flow_check_required": bool(row.get("is_flow_check_required") or False),
+            "flow_check_config": row.get("flow_check_config") or {},
             "scope_mode": row["scope_mode"],
             "appid_arg_path": row["appid_arg_path"],
             "status": row["annotation_status"],
@@ -236,6 +239,20 @@ async def invoke(
         # 28.2：恢复类/ASK tool 批准后透传 approval id（可空）——仅当本 tool 需 ASK（避免带上无关审批）
         if ann.get("is_approval_required") and st.approval_id:
             headers["X-OpenOps-Approval-Request-Id"] = str(st.approval_id)
+        # 29.14：四号校验凭证仅在调用边界注入——不入事件/审计/日志（对齐 Secret 铁律）。
+        # 一号一操作三重守卫：①凭证与被批准的那次工具绑定（st.flow_check_tool，防标注热切换
+        # 把 A 的 token 错发给 B）；②消费式注入——注完即弃，同一凭证不复用于后续调用；
+        # ③标注需四号而凭证缺席（热切换绕过 ASK 计划）→ fail-closed，不放行裸调用。
+        if ann.get("is_flow_check_required"):
+            _tool_match = st.flow_check_tool in (None, tool_name)  # None=旧路径/单测手搓兜底
+            if st.flow_check_token and _tool_match:
+                headers["X-OpenOps-Flow-Check-Token"] = str(st.flow_check_token)
+                headers["X-OpenOps-Flow-Check-Code"] = str(st.flow_check_code or "")
+                st.flow_check_token = None
+                st.flow_check_code = None
+            else:
+                raise await _blocked(st, run, tool_name, "FLOW_CHECK_REQUIRED",
+                                     f"工具 {tool_name} 需四号校验但无本次校验凭证，运行时 fail-closed")
     # 用户分支：不注入 X-OpenOps-*、无 Cookie、不做 scope 校验（用户自担责任，仅审计）
 
     await emit(st, run, "openops.tool.call.started", action=tool_name,

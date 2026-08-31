@@ -138,6 +138,25 @@ export interface HitlCardData {
   tone: Tone;
 }
 
+/* 四号校验卡（29.14）：风控 SDK 弹窗的状态容器（弹窗 UI 由 SDK 内部管理）。
+ * initPath/verifyPath 只是 URI 路径（不含域名）——完整 URL 由前端用 window.location.origin 拼接。 */
+export interface FlowCheckCardData {
+  flow_check_request_id: string;
+  tool: string;
+  summary: string;
+  facts: HitlFact[];
+  initPath: string;
+  verifyPath: string;
+  serviceId: string;
+  invokingMethod: string;
+  operator: string;
+  enterpriseId: string;
+  targetObject?: { value: unknown; path: string };
+  countdown: string;
+  status: "pending" | "approved" | "rejected" | "timeout";
+  tone: Tone;
+}
+
 /* 活动时间线 */
 export interface ActivityNode {
   id: string;

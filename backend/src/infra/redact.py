@@ -291,6 +291,25 @@ def sanitize_activity_payload(
             for key in ("command", "target", "impact"):
                 _copy_scalar(source, out, key, limit=300)
 
+    if event.startswith("flow_check."):
+        # 四号校验（29.14）：前端 FlowCheckCard 靠这些标量初始化风控 SDK（路径不含域名，origin 前端拼）。
+        # token / flow_code **刻意不在白名单**——即使调用方误传也在此被剥掉（纵深防线，Secret 铁律）。
+        for key in ("flow_check_request_id", "tool", "decision", "server_name",
+                    "init_path", "verify_path", "service_id", "invoking_method",
+                    "operator", "enterprise_id"):
+            _copy_scalar(source, out, key, limit=300)
+        if event == "flow_check.required":
+            if source.get("args") is not None:
+                out["args"] = _bounded_mapping(source["args"])
+            target_object = source.get("target_object")
+            if isinstance(target_object, dict):
+                clean_to: dict[str, Any] = {}
+                _copy_scalar(target_object, clean_to, "value", limit=300)
+                _copy_scalar(target_object, clean_to, "path", limit=200)
+                if not isinstance(target_object.get("value"), (str, bool, int, float)):
+                    clean_to["value"] = _summary(target_object.get("value"), max_length=300)
+                out["target_object"] = clean_to
+
     if event.startswith("subagent."):
         if event.endswith("dispatched") or event.endswith("started"):
             task_summary = _summary(source.get("task_summary") or source.get("task"), max_length=300)

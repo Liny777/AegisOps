@@ -229,6 +229,8 @@ CREATE TABLE IF NOT EXISTS sre_mcp_tool_annotation (
   tool_catalog_id uuid NOT NULL,
   is_approval_required boolean NOT NULL DEFAULT false,
   is_secret_required boolean NOT NULL DEFAULT false,
+  is_flow_check_required boolean NOT NULL DEFAULT false,
+  flow_check_config jsonb NOT NULL DEFAULT '{}'::jsonb,
   scope_mode text NOT NULL DEFAULT 'none',
   appid_arg_path text,
   status text NOT NULL DEFAULT 'unreviewed',
@@ -243,6 +245,10 @@ CREATE TABLE IF NOT EXISTS sre_mcp_tool_annotation (
   -- 单表列组合约束（非外键、非触发器）；若倾向零 CHECK 可删除，应用层已有同等校验
   CONSTRAINT ck_mcp_tool_annot_scope_path CHECK (
     scope_mode <> 'required' OR appid_arg_path IS NOT NULL
+  ),
+  -- 互斥：人工审批与四号校验二选一（29.14；应用层同等校验，前端联动三重保障）
+  CONSTRAINT ck_annot_approval_xor_flow CHECK (
+    NOT (is_approval_required AND is_flow_check_required)
   )
 );
 
@@ -410,6 +416,30 @@ CREATE TABLE IF NOT EXISTS sre_approval_request (
   scope_snapshot_id uuid,
   arguments_redacted_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   suggested_rules_redacted_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  decision text NOT NULL DEFAULT 'pending',
+  decided_by text,
+  decided_at timestamptz,
+  audit_trace_id uuid NOT NULL,
+  creation_date timestamptz NOT NULL DEFAULT now(),
+  last_update_date timestamptz NOT NULL DEFAULT now(),
+  created_by text NOT NULL DEFAULT 'system',
+  last_updated_by text NOT NULL DEFAULT 'system',
+  expire_at timestamptz
+);
+
+-- 四号校验请求（29.14）：形制对齐 sre_approval_request（独立表防混合语义膨胀）。
+-- token / 四号编码**不落库**（对齐 Secret 铁律：仅 TaskState 内存驻留、调用边界注入后即弃）；
+-- flow_check_config_json 存创建时按租户解析后的配置快照（前端恢复/SSE 同口径）。
+CREATE TABLE IF NOT EXISTS sre_flow_check_request (
+  flow_check_request_id uuid NOT NULL PRIMARY KEY,
+  user_id text NOT NULL,
+  agent_team_instance_id uuid NOT NULL,
+  agent_run_id uuid NOT NULL,
+  framework_session_id text NOT NULL,
+  task_id text,
+  tool_call_name text NOT NULL,
+  arguments_redacted_json jsonb NOT NULL DEFAULT '{}'::jsonb,
+  flow_check_config_json jsonb NOT NULL DEFAULT '{}'::jsonb,
   decision text NOT NULL DEFAULT 'pending',
   decided_by text,
   decided_at timestamptz,
@@ -669,6 +699,20 @@ CREATE INDEX IF NOT EXISTS ix_appr_trace
 -- expire_at 仅服务 pending 超时扫描，部分索引更小更准
 CREATE INDEX IF NOT EXISTS ix_appr_pending_expire
   ON sre_approval_request (expire_at)
+  WHERE decision = 'pending';
+
+CREATE INDEX IF NOT EXISTS ix_fc_run_decision
+  ON sre_flow_check_request (agent_run_id, decision);
+
+CREATE INDEX IF NOT EXISTS ix_fc_user_created
+  ON sre_flow_check_request (user_id, creation_date DESC);
+
+CREATE INDEX IF NOT EXISTS ix_fc_trace
+  ON sre_flow_check_request (audit_trace_id);
+
+-- expire_at 仅服务 pending 超时扫描，部分索引更小更准（同 ix_appr_pending_expire）
+CREATE INDEX IF NOT EXISTS ix_fc_pending_expire
+  ON sre_flow_check_request (expire_at)
   WHERE decision = 'pending';
 
 CREATE INDEX IF NOT EXISTS ix_audit_event_trace_time
@@ -1066,6 +1110,26 @@ COMMENT ON COLUMN sre_approval_request.created_by IS '创建人工号';
 COMMENT ON COLUMN sre_approval_request.last_updated_by IS '最后更新人工号';
 COMMENT ON COLUMN sre_approval_request.expire_at IS 'ASK 确认超时时间，pending 超过即按 timeout 关闭';
 
+COMMENT ON TABLE sre_flow_check_request IS '四号校验（风控二次认证）请求；token/四号编码不落库，仅存决策终态';
+COMMENT ON COLUMN sre_flow_check_request.flow_check_request_id IS '四号校验记录主键';
+COMMENT ON COLUMN sre_flow_check_request.user_id IS '发起人工号';
+COMMENT ON COLUMN sre_flow_check_request.agent_team_instance_id IS '所属实例 ID';
+COMMENT ON COLUMN sre_flow_check_request.agent_run_id IS '所属运行 ID';
+COMMENT ON COLUMN sre_flow_check_request.framework_session_id IS 'AgentScope session ID';
+COMMENT ON COLUMN sre_flow_check_request.task_id IS '任务 ID，可空';
+COMMENT ON COLUMN sre_flow_check_request.tool_call_name IS '待执行的恢复类 tool 名称';
+COMMENT ON COLUMN sre_flow_check_request.arguments_redacted_json IS '脱敏参数摘要';
+COMMENT ON COLUMN sre_flow_check_request.flow_check_config_json IS '创建时按租户解析后的四号校验配置快照（init_path/verify_path/service_id/invoking_method/operator/enterprise_id/target_object）';
+COMMENT ON COLUMN sre_flow_check_request.decision IS 'pending / approved / rejected / timeout / cancelled';
+COMMENT ON COLUMN sre_flow_check_request.decided_by IS '确认人工号';
+COMMENT ON COLUMN sre_flow_check_request.decided_at IS '确认时间';
+COMMENT ON COLUMN sre_flow_check_request.audit_trace_id IS '关联 trace';
+COMMENT ON COLUMN sre_flow_check_request.creation_date IS '创建时间';
+COMMENT ON COLUMN sre_flow_check_request.last_update_date IS '最后更新时间';
+COMMENT ON COLUMN sre_flow_check_request.created_by IS '创建人工号';
+COMMENT ON COLUMN sre_flow_check_request.last_updated_by IS '最后更新人工号';
+COMMENT ON COLUMN sre_flow_check_request.expire_at IS '四号校验超时时间，pending 超过即按 timeout 关闭';
+
 COMMENT ON TABLE sre_audit_event IS 'OpenOps 结构化审计事件表';
 COMMENT ON COLUMN sre_audit_event.audit_event_id IS '审计事件主键';
 COMMENT ON COLUMN sre_audit_event.audit_trace_id IS '关联 trace 根 ID';
@@ -1267,3 +1331,14 @@ ALTER TABLE sre_model_asset ADD COLUMN IF NOT EXISTS secret_fingerprint text;
 COMMENT ON COLUMN sre_model_asset.secret_ciphertext IS '平台模型 API Key 密文（Fernet，见 infra/crypto）；明文不可回显，只在模型构建/探测边界瞬时解密，绝不进 API 响应/审计/日志';
 COMMENT ON COLUMN sre_model_asset.secret_key_version IS '加密 key 版本（cfg=OPENOPS_ENCRYPTION_KEY / dev=派生），轮换时据此批量重加密';
 COMMENT ON COLUMN sre_model_asset.secret_fingerprint IS '脱敏指纹 fp_<sha256 前 12 位>：唯一可回显给管理台的密钥信息';
+
+-- ---- 增量（2026-08-30）：MCP 工具标注新增四号校验（独立增量文件：migrate-2026-08-30-flow-check.sql）----
+-- sre_flow_check_request 新表由上方主体段的建表语句幂等补齐；此处只补旧库的标注新列。
+ALTER TABLE sre_mcp_tool_annotation ADD COLUMN IF NOT EXISTS is_flow_check_required boolean NOT NULL DEFAULT false;
+ALTER TABLE sre_mcp_tool_annotation ADD COLUMN IF NOT EXISTS flow_check_config jsonb NOT NULL DEFAULT '{}'::jsonb;
+-- 互斥约束：ADD CONSTRAINT 无 IF NOT EXISTS，用 DROP IF EXISTS + ADD 保持幂等可重跑
+ALTER TABLE sre_mcp_tool_annotation DROP CONSTRAINT IF EXISTS ck_annot_approval_xor_flow;
+ALTER TABLE sre_mcp_tool_annotation ADD CONSTRAINT ck_annot_approval_xor_flow
+  CHECK (NOT (is_approval_required AND is_flow_check_required));
+COMMENT ON COLUMN sre_mcp_tool_annotation.is_flow_check_required IS '是否需要四号校验（风控二次认证）；与 is_approval_required 互斥';
+COMMENT ON COLUMN sre_mcp_tool_annotation.flow_check_config IS '四号校验配置：init_path/verify_path/invoking_method/service_id_by_tenant/object_arg_path（29.14）';

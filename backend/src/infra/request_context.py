@@ -20,6 +20,7 @@ from contextvars import ContextVar
 
 _user_cookie: ContextVar[str] = ContextVar("openops_user_cookie", default="")
 _user_id: ContextVar[str] = ContextVar("openops_user_id", default="")
+_user_operator_cv: ContextVar[str] = ContextVar("openops_user_operator", default="")
 _request_host: ContextVar[str] = ContextVar("openops_request_host", default="")
 _client_ip: ContextVar[str] = ContextVar("openops_client_ip", default="")
 
@@ -44,15 +45,25 @@ def _ttl() -> float:
         return 300.0
 
 
-def set_request_user(user_id: str, cookie: str) -> None:
-    """每请求写入（deps.current_user）：contextvar（本请求透传）+ 按用户缓存原始 cookie。"""
+# user_id → IAM operator（userinfo `data.attributes.id`，四号校验风控接口的操作者标识）。
+# 非凭证（用户标识符，可进事件），且对同一用户恒定 → 无 TTL 直存；上限同 _CACHE_MAX。
+_operator_cache: dict[str, str] = {}
+
+
+def set_request_user(user_id: str, cookie: str, operator: str = "") -> None:
+    """每请求写入（deps.current_user）：contextvar（本请求透传）+ 按用户缓存原始 cookie/operator。"""
     _user_cookie.set(cookie or "")
     _user_id.set(user_id or "")
+    _user_operator_cv.set(operator or "")
     if user_id and cookie:
         if len(_cookie_cache) >= _CACHE_MAX:  # 简单逐出：清最早过期的一批
             for k in sorted(_cookie_cache, key=lambda x: _cookie_cache[x][0])[: _CACHE_MAX // 4]:
                 _cookie_cache.pop(k, None)
         _cookie_cache[user_id] = (time.monotonic() + _ttl(), cookie)
+    if user_id and operator:
+        if len(_operator_cache) >= _CACHE_MAX:
+            _operator_cache.clear()  # 极端场景整体重建（operator 可随下次请求再缓存）
+        _operator_cache[user_id] = operator
 
 
 def user_cookie() -> str:
@@ -74,9 +85,20 @@ def cached_user_cookie(user_id: str) -> str:
     return ""
 
 
+def user_operator() -> str:
+    """当前请求用户的 IAM operator（contextvar；后台 task 经 create_task 继承）。"""
+    return _user_operator_cv.get()
+
+
+def cached_user_operator(user_id: str) -> str:
+    """按 user_id 反查 IAM operator（四号校验风控接口用）；未命中返回 ""（调用方回退 user_id）。"""
+    return _operator_cache.get(user_id, "") if user_id else ""
+
+
 def clear() -> None:
     """测试钩子：清缓存（contextvar 由 pytest 各用例自然隔离）。"""
     _cookie_cache.clear()
+    _operator_cache.clear()
 
 
 def set_request_host(host: str) -> None:

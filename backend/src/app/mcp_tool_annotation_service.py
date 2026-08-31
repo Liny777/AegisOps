@@ -45,6 +45,8 @@ async def runtime_annotations() -> dict[str, dict[str, Any]]:
         out[key] = {
             "is_approval_required": bool(r["is_approval_required"]),
             "is_secret_required": bool(r["is_secret_required"]),
+            "is_flow_check_required": bool(r.get("is_flow_check_required") or False),
+            "flow_check_config": r.get("flow_check_config") or {},
             "scope_mode": r["scope_mode"],
             "appid_arg_path": r["appid_arg_path"],
             "status": r["annotation_status"],
@@ -67,13 +69,44 @@ async def save(tool_catalog_id: str, payload: dict[str, Any], by: str) -> None:
     appid_path = payload.get("appid_arg_path")
     if scope_mode == "required" and not (appid_path or "").strip():
         raise ApiError(Err.VALIDATION_FAILED, "scope_mode=required 时 appid_arg_path 必填")
+    is_approval = bool(payload.get("is_approval_required", False))
+    is_flow_check = bool(payload.get("is_flow_check_required", False))
+    if is_approval and is_flow_check:  # 互斥（29.14）：DB CHECK 之外的应用层同等校验（报错更友好）
+        raise ApiError(Err.VALIDATION_FAILED,
+                       "is_approval_required 与 is_flow_check_required 不可同时为 true")
+    flow_config = payload.get("flow_check_config") or {}
+    if is_flow_check:
+        _validate_flow_config(flow_config)
     await mcp_tools.save_annotation(
         tool_catalog_id,
-        bool(payload.get("is_approval_required", False)),
+        is_approval,
         bool(payload.get("is_secret_required", False)),
         scope_mode,
         appid_path,
         payload.get("status", "allowed"),
         payload.get("blocked_reason"),
         by,
+        is_flow_check_required=is_flow_check,
+        flow_check_config=flow_config if is_flow_check else {},
     )
+
+
+def _validate_flow_config(cfg: Any) -> None:
+    """四号校验配置完整性（29.14）：init/verify 只许 URI 路径（域名由前端 origin 拼接）。"""
+    if not isinstance(cfg, dict):
+        raise ApiError(Err.VALIDATION_FAILED, "flow_check_config 必须是对象")
+    for key in ("init_path", "verify_path", "invoking_method"):
+        if not str(cfg.get(key) or "").strip():
+            raise ApiError(Err.VALIDATION_FAILED, f"flow_check_config.{key} 必填")
+    for path_key in ("init_path", "verify_path"):
+        val = str(cfg.get(path_key) or "")
+        if not val.startswith("/") or "://" in val:
+            raise ApiError(Err.VALIDATION_FAILED,
+                           f"flow_check_config.{path_key} 必须是以 / 开头的 URI 路径，禁止含域名")
+    sids = cfg.get("service_id_by_tenant") or cfg.get("service_id")
+    if not sids:
+        raise ApiError(Err.VALIDATION_FAILED, "flow_check_config 至少配置一个租户的 service_id")
+    obj_path = str(cfg.get("object_arg_path") or "").strip()
+    if obj_path and not obj_path.startswith("$"):
+        raise ApiError(Err.VALIDATION_FAILED,
+                       "flow_check_config.object_arg_path 须为 $ 开头的 JSONPath（留空表示不提取）")

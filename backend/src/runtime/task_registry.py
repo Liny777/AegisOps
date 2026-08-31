@@ -64,6 +64,15 @@ class TaskState:
     approval_ev: asyncio.Event = field(default_factory=asyncio.Event)
     approval_result: str | None = None  # approved/rejected/timeout/cancelled
     approval_id: str | None = None
+    # 四号校验决策握手（29.14；三件套形制同 approval_*，另带凭证两槽）。
+    # token/code **仅内存驻留**：decide_flow_check 写入 → tool_gateway 调用边界注 header 后
+    # 生命周期即止——不落库、不进事件/审计/日志（对齐 Secret 铁律）。
+    flow_check_ev: asyncio.Event = field(default_factory=asyncio.Event)
+    flow_check_result: str | None = None  # approved/rejected/timeout/cancelled
+    flow_check_id: str | None = None
+    flow_check_tool: str | None = None  # 本次校验授权的工具（注册名）；Gateway 凭证只发给它（一号一操作）
+    flow_check_token: str | None = None
+    flow_check_code: str | None = None
     # 假设 checkpoint 握手（诊断 step>=3 首次上报后暂停等用户补充假设/继续；decide 置位，
     # diagnosis_checkpoint 等待）。三件套形制同 approval_*；活对象不落影子表。
     checkpoint_ev: asyncio.Event = field(default_factory=asyncio.Event)
