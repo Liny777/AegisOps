@@ -34,7 +34,7 @@ import type {
 } from "./types";
 import * as M from "./mockData";
 import { API_MODE, apiFetch, crid, demoIdentity } from "./client";
-import { auditToNode, projectInstance } from "./projection";
+import { auditToNode, projectInstance, projectRunStatus } from "./projection";
 import { normalizeActivityPage } from "../activity";
 import { SEVERITY_LABEL, SEVERITY_TONE } from "../../alerts/constants";
 import type { AlertSeverity } from "../../alerts/types";
@@ -359,7 +359,9 @@ async function loadConversationHistory(signal: AbortSignal): Promise<Conversatio
     id: String(r.agent_run_id),
     title: String(r.run_title ?? "") || "新对话",
     instance_id: String(r.agent_team_instance_id),
-    status: (r.run_status === "closed" ? "closed" : "active") as "active" | "closed",
+    // idle 休眠的 run 在这里必须报 active：侧栏不该给它挂锁图标，ensureRun 也应当复用它
+    // （后端发消息即自动复开同一条 run，记忆延续）。真只读的是用户主动关 / 管理员终止。
+    status: projectRunStatus(r.run_status, r.status_reason_code),
   }));
 }
 

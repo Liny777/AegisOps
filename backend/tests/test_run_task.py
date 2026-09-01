@@ -60,6 +60,63 @@ def test_run_005_closed_run_rejects_new_task(client):
     assert response.json()["error"]["code"] == "RUN_ALREADY_CLOSED"
 
 
+def test_run_005b_idle_closed_run_auto_reopens_on_new_task(client):
+    """idle 回收关掉的会话必须能被「发新消息」自动唤醒（同一条 run，不是新建）。
+
+    这条守的是用户报的「会话过一会就锁住不能对话」：reclaim_idle_runs 把 run 翻
+    closed(idle_timeout) 后，start_task 应先补容量再 reopen_run，而不是 409。
+    """
+    import asyncio
+
+    from infra.repositories import runs as runs_repo
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+
+    # 走真实回收 SQL（而非直接 update），确保 status_reason_code 与生产一致
+    assert asyncio.run(runs_repo.close_idle(rid, "idle_timeout")) == 1
+    closed = asyncio.run(runs_repo.get_run(rid))
+    assert closed["run_status"] == "closed" and closed["status_reason_code"] == "idle_timeout"
+
+    fsid_before = str(closed["framework_session_id"])
+
+    task = start_task(client, rid, "休眠后继续追问")
+    assert task["status"] in ("running", "queued")
+
+    reopened = asyncio.run(runs_repo.get_run(rid))
+    assert reopened["run_status"] == "active"
+    assert reopened["status_reason_code"] is None
+    # 记忆的检索键必须原样保留，否则「唤醒后还记得前面聊过什么」就不成立
+    assert str(reopened["framework_session_id"]) == fsid_before
+
+
+def test_run_005c_user_closed_run_still_rejects_after_reopen_change(client):
+    """复开只认系统关闭：用户主动 close 的会话（status_reason_code 为 NULL）必须仍然 409。
+
+    守产品语义——「用户说结束就是结束」，别被 005b 的放宽顺手带走。
+    """
+    import asyncio
+
+    from infra.repositories import runs as runs_repo
+
+    instance = create_instance(client)
+    run = create_run(client, instance["instance_id"])
+    rid = run["agent_run_id"]
+    unwrap(client.post(f"/api/openops/v1/agent-runs/{rid}:close", headers=USER_HEADERS, json={}))
+
+    assert asyncio.run(runs_repo.get_run(rid))["status_reason_code"] is None
+
+    response = client.post(
+        f"/api/openops/v1/agent-runs/{rid}/tasks",
+        headers=USER_HEADERS,
+        json={"client_request_id": "user_closed_task", "input_text": "还想继续"},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "RUN_ALREADY_CLOSED"
+    assert asyncio.run(runs_repo.get_run(rid))["run_status"] == "closed"
+
+
 def test_cancel_001_task_cancel_keeps_run_active(client):
     instance = create_instance(client)
     run = create_run(client, instance["instance_id"])
